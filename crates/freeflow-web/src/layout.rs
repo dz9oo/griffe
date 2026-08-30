@@ -130,7 +130,8 @@ pub fn page(active: ViewId, vault_label: &str, content: Markup) -> Markup {
                         (tabs(active))
                         div class="cmdbar-right" {
                             div class="lock" { span class="dot" {} (vault_label) }
-                            div class="palette-hint" onclick="document.getElementById('palette-overlay').classList.add('open'); document.getElementById('palette-input').focus();" { "⌘K palette de commandes" }
+                            button class="lock-btn" hx-post="/lock" hx-swap="none" title="verrouiller le coffre" { "verrouiller" }
+                            div class="palette-hint" { "⌘K palette de commandes" }
                         }
                     }
                     div class="body-grid" {
@@ -140,6 +141,26 @@ pub fn page(active: ViewId, vault_label: &str, content: Markup) -> Markup {
                 }
                 (palette())
                 script src="/assets/app.js" {}
+            }
+        }
+    }
+}
+
+/// Coque nue pour `/unlock` et `/setup` : ni onglets, ni rail d'audit, ni palette ⌘K — et
+/// surtout pas `app.js`, qui suppose leur présence (`#palette-overlay`/`#palette-input`) et
+/// pilote le signal d'activité qui n'a pas de sens tant que le coffre n'est pas ouvert.
+pub fn bare_page(title: &str, content: Markup) -> Markup {
+    html! {
+        (DOCTYPE)
+        html lang="fr" {
+            head {
+                meta charset="UTF-8";
+                title { "FreeFlow — " (title) }
+                meta name="viewport" content="width=device-width, initial-scale=1.0";
+                link rel="stylesheet" href="/assets/app.css";
+            }
+            body {
+                div class="auth-shell" { (content) }
             }
         }
     }

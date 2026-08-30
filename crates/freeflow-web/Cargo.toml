@@ -16,7 +16,7 @@ maud = { version = "0.27.0", features = ["axum"] }
 serde = { version = "1.0.229", features = ["derive"] }
 shell-words = "1.1.1"
 time = { version = "0.3.55", features = ["formatting", "parsing"] }
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "sync", "net"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "sync", "net", "time"] }
 tower = "0.5.3"
 
 [dev-dependencies]

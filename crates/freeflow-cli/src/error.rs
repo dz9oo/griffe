@@ -1,13 +1,21 @@
 //! Erreurs de la CLI et leur code de sortie associé — un code distinct par famille, pour
 //! qu'un agent (ou un script) puisse réagir sans avoir à analyser le texte du message.
 
+use std::path::PathBuf;
+
 use freeflow_core::app::AppError;
 use freeflow_core::store::StoreError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum CliError {
-    #[error("coffre verrouillé : fournissez FREEFLOW_PASSPHRASE ou lancez `freeflow unlock`")]
+    #[error(
+        "coffre verrouillé : lancez `freeflow unlock`, ou fournissez --passphrase-file, \
+         --passphrase-command ou --passphrase-stdin"
+    )]
     Locked,
+
+    #[error("aucun coffre à {0} — lancez `freeflow init` pour en créer un")]
+    NoVault(PathBuf),
 
     #[error("erreur de coffre : {0}")]
     Store(#[from] StoreError),
@@ -34,6 +42,7 @@ impl From<AppError> for CliError {
     fn from(e: AppError) -> Self {
         match e {
             AppError::Store(StoreError::Locked) => Self::Locked,
+            AppError::Store(StoreError::VaultNotFound(path)) => Self::NoVault(path),
             AppError::Store(store_err) => Self::Store(store_err),
             AppError::Domain(msg) => Self::Domain(msg),
             AppError::PendingActionNotFound(id) | AppError::PendingActionAlreadyResolved(id) => {
@@ -61,6 +70,7 @@ impl CliError {
             Self::Domain(_) => 4,
             Self::PendingAction(_) => 5,
             Self::UnknownConfirmableCommand(_) | Self::InvalidLinesJson(_) => 6,
+            Self::NoVault(_) => 7,
             Self::Unexpected(_) => 1,
         }
     }

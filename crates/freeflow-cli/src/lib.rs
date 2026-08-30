@@ -5,7 +5,6 @@
 mod backup;
 mod client;
 mod company;
-mod context;
 mod error;
 mod expense;
 mod fiscal;
@@ -17,14 +16,16 @@ mod parsers;
 mod pending;
 mod prospect;
 mod quote;
+mod vault;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 use freeflow_core::app::{Actor, ExecutionContext, PendingActionId};
 use freeflow_core::store::Store;
 
 use error::CliError;
+use vault::PassphraseOpts;
 
 #[derive(Parser)]
 #[command(
@@ -48,17 +49,24 @@ struct Cli {
     /// Désactive la coloration (déjà minimale) de la sortie humaine.
     #[arg(long, global = true)]
     no_color: bool,
+    #[command(flatten)]
+    passphrase: PassphraseOpts,
     #[command(subcommand)]
     command: TopCommand,
 }
 
 #[derive(Subcommand)]
 enum TopCommand {
-    /// Déverrouille (ou crée) le coffre à partir de `FREEFLOW_PASSPHRASE`, et met la clé en
-    /// cache dans le trousseau OS pour les appels suivants.
+    /// Crée le coffre. Échoue s'il existe déjà — double saisie masquée en mode interactif.
+    Init,
+    /// Vérifie la passphrase et, avec `--remember`, met la clé en cache dans le trousseau OS.
+    /// Ne crée jamais le coffre (utilisez `freeflow init`).
     Unlock,
-    /// Verrouille le coffre : purge la clé du trousseau OS.
+    /// Verrouille le coffre : purge la session du trousseau OS.
     Lock,
+    /// État du coffre (existence, version du sidecar, session en cache), sans le déverrouiller.
+    #[command(subcommand)]
+    Vault(VaultCommand),
     /// Clients.
     #[command(subcommand)]
     Client(client::ClientCommand),
@@ -109,9 +117,31 @@ enum TopCommand {
     Backup(backup::BackupCommand),
 }
 
+#[derive(Subcommand)]
+enum VaultCommand {
+    /// Chemin résolu, existence du coffre, version du sidecar, session en cache.
+    Status,
+}
+
 /// Durée en-dessous de laquelle une sauvegarde existante est considérée assez fraîche pour que
 /// [`dispatch`] n'en écrive pas une nouvelle.
 const AUTO_BACKUP_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
+
+/// Comment [`dispatch`] obtient le `Store` sur lequel exécuter la commande.
+pub enum VaultAccess<'a> {
+    /// Process CLI ordinaire : session déjà en cache en priorité, sinon sources de passphrase
+    /// déclarées puis invite TTY masquée en dernier recours. C'est le *seul* chemin qui peut
+    /// prompter — voir [`vault::open_or_prompt`].
+    Process,
+    /// Coffre déjà ouvert et détenu par l'appelant — la console de la fenêtre. Aucune invite
+    /// possible, aucune autre source de passphrase lue : `vault::open_or_prompt` n'est jamais
+    /// appelée sur ce chemin, donc le prompt TTY y est inatteignable par construction, pas
+    /// seulement par convention.
+    Borrowed {
+        store: &'a mut Store,
+        db_path: &'a Path,
+    },
+}
 
 /// Analyse `args` et exécute la commande correspondante — imprime sur stdout/stderr, renvoie
 /// un code de sortie normalisé (voir [`error::CliError::exit_code`]). C'est le point d'entrée
@@ -129,7 +159,7 @@ where
         }
     };
 
-    match dispatch(cli) {
+    match dispatch(cli, VaultAccess::Process) {
         Ok(output) => {
             println!("{output}");
             0
@@ -141,18 +171,18 @@ where
     }
 }
 
-/// Analyse `args` et exécute la commande correspondante *sans rien imprimer* : la sortie
-/// (succès ou message d'erreur, sous la même forme que verrait un terminal) est renvoyée en
-/// `String`, accompagnée du code de sortie normalisé. C'est le point d'entrée qu'emprunte la
-/// console de la GUI (lot 9) — elle tape verbatim la même commande qu'un terminal, mais
-/// l'affiche dans son propre journal au lieu du stdout du process serveur.
+/// Analyse `args` et exécute la commande correspondante *sans rien imprimer*, contre `access` —
+/// la variante générale qu'emprunte [`run_capturing`], et celle qu'utilise la console de la GUI
+/// pour agir sur son coffre déjà ouvert plutôt que d'en rouvrir un second. La sortie (succès ou
+/// message d'erreur, sous la même forme que verrait un terminal) est renvoyée en `String`,
+/// accompagnée du code de sortie normalisé.
 ///
 /// # Panics
 ///
 /// Ne panique jamais : les erreurs de parsing `clap` sont converties en texte, pas en process
 /// `exit` (contrairement à [`run`], qui est un vrai binaire et peut se le permettre).
 #[must_use]
-pub fn run_capturing<I, T>(args: I) -> (String, i32)
+pub fn run_capturing_with_vault<I, T>(args: I, access: VaultAccess<'_>) -> (String, i32)
 where
     I: IntoIterator<Item = T>,
     T: Into<std::ffi::OsString> + Clone,
@@ -162,64 +192,119 @@ where
         Err(e) => return (e.render().to_string(), e.exit_code()),
     };
 
-    match dispatch(cli) {
+    match dispatch(cli, access) {
         Ok(output) => (output, 0),
         Err(err) => (format!("✗ {err}"), err.exit_code()),
     }
 }
 
-fn dispatch(cli: Cli) -> Result<String, CliError> {
+/// Équivalent à [`run_capturing_with_vault`] avec [`VaultAccess::Process`] — le chemin d'un
+/// process CLI ordinaire, qui peut ouvrir son propre coffre (et prompter si besoin).
+///
+/// # Panics
+///
+/// Voir [`run_capturing_with_vault`].
+#[must_use]
+pub fn run_capturing<I, T>(args: I) -> (String, i32)
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
+    run_capturing_with_vault(args, VaultAccess::Process)
+}
+
+fn dispatch(cli: Cli, access: VaultAccess<'_>) -> Result<String, CliError> {
     let Cli {
         db,
         json,
         actor,
         dry_run,
         no_color: _,
+        passphrase,
         command,
     } = cli;
-    let db_path = context::resolve_db_path(db)?;
+    let requested_db_path = vault::resolve_db_path(db)?;
 
-    if matches!(command, TopCommand::Unlock) {
-        let passphrase = std::env::var("FREEFLOW_PASSPHRASE").map_err(|_| {
-            CliError::Unexpected("définissez FREEFLOW_PASSPHRASE pour déverrouiller".to_string())
-        })?;
-        Store::open_with_passphrase(&db_path, &passphrase)?;
-        return Ok(format!("✓ coffre déverrouillé : {}", db_path.display()));
-    }
-    if matches!(command, TopCommand::Lock) {
-        let _ = Store::lock(&db_path);
-        return Ok("✓ coffre verrouillé".to_string());
-    }
-    if let TopCommand::Backup(backup::BackupCommand::Restore { from, to }) = &command {
-        // Ne touche jamais le coffre par défaut : doit rester possible même si celui-là est
-        // justement celui qui est cassé, donc traité ici plutôt qu'après son ouverture ci-dessous.
-        return backup::restore(from.clone(), to.clone());
-    }
+    match access {
+        VaultAccess::Borrowed { store, db_path } => {
+            // La session de la CLI (trousseau OS) et celle de la fenêtre (mémoire) ne sont pas
+            // le même objet : la console ne peut agir que sur le coffre déjà ouvert par la
+            // fenêtre, jamais en ouvrir ou verrouiller un autre.
+            if requested_db_path != *db_path {
+                return Err(CliError::Unexpected(
+                    "--db ne peut pas pointer ailleurs que le coffre déjà ouvert par la fenêtre"
+                        .to_string(),
+                ));
+            }
+            match &command {
+                TopCommand::Init | TopCommand::Unlock | TopCommand::Lock => {
+                    return Err(CliError::Unexpected(
+                        "utilisez le bouton de verrouillage de la fenêtre plutôt que cette commande"
+                            .to_string(),
+                    ));
+                }
+                TopCommand::Backup(backup::BackupCommand::Restore { .. }) => {
+                    return Err(CliError::Unexpected(
+                        "`backup restore` est un geste de reprise après sinistre : lancez-la depuis un terminal".to_string(),
+                    ));
+                }
+                _ => {}
+            }
+            let ctx = ExecutionContext::new(actor, dry_run);
+            run_command(command, store, &ctx, json)
+        }
+        VaultAccess::Process => {
+            let db_path = requested_db_path;
+            match &command {
+                TopCommand::Init => return vault::init(&db_path, &passphrase),
+                TopCommand::Unlock => return vault::unlock(&db_path, &passphrase),
+                TopCommand::Lock => return vault::lock(&db_path),
+                TopCommand::Vault(VaultCommand::Status) => return vault::status(&db_path, json),
+                TopCommand::Backup(backup::BackupCommand::Restore { from, to }) => {
+                    // Ne touche jamais le coffre par défaut : doit rester possible même si
+                    // celui-là est justement celui qui est cassé, donc traité ici plutôt qu'après
+                    // son ouverture ci-dessous.
+                    return backup::restore(from.clone(), to.clone(), &passphrase);
+                }
+                _ => {}
+            }
 
-    let mut store = context::open_store(&db_path)?;
-    if let Err(e) =
-        store.auto_backup_if_stale(&db_path.with_file_name("backups"), AUTO_BACKUP_MAX_AGE)
-    {
-        eprintln!("⚠ sauvegarde automatique échouée : {e}");
+            let mut store = vault::open_or_prompt(&db_path, &passphrase)?;
+            if let Err(e) =
+                store.auto_backup_if_stale(&db_path.with_file_name("backups"), AUTO_BACKUP_MAX_AGE)
+            {
+                eprintln!("⚠ sauvegarde automatique échouée : {e}");
+            }
+            let ctx = ExecutionContext::new(actor, dry_run);
+            run_command(command, &mut store, &ctx, json)
+        }
     }
-    let ctx = ExecutionContext::new(actor, dry_run);
+}
 
+fn run_command(
+    command: TopCommand,
+    store: &mut Store,
+    ctx: &ExecutionContext,
+    json: bool,
+) -> Result<String, CliError> {
     match command {
-        TopCommand::Unlock | TopCommand::Lock => unreachable!("traités ci-dessus"),
-        TopCommand::Backup(cmd) => backup::run(cmd, &store),
-        TopCommand::Client(cmd) => client::run(cmd, &mut store, &ctx, json),
-        TopCommand::Company(cmd) => company::run(cmd, &mut store, &ctx, json),
-        TopCommand::Prospect(cmd) => prospect::run(cmd, &mut store, &ctx, json),
-        TopCommand::Mission(cmd) => mission::run(cmd, &mut store, &ctx, json),
-        TopCommand::Quote(cmd) => quote::run(cmd, &mut store, &ctx, json),
-        TopCommand::Invoice(cmd) => invoice::run_invoice(cmd, &mut store, &ctx, json),
-        TopCommand::Payment(cmd) => invoice::run_payment(cmd, &mut store, &ctx, json),
-        TopCommand::Bank(cmd) => invoice::run_bank(cmd, &mut store, &ctx, json),
-        TopCommand::Pending(cmd) => pending::run_pending(cmd, &mut store, json),
-        TopCommand::Audit(cmd) => pending::run_audit(cmd, &mut store, json),
-        TopCommand::Confirm { id } => pending::confirm(&mut store, id, json),
-        TopCommand::Expense(cmd) => expense::run(cmd, &mut store, &ctx, json),
+        TopCommand::Init | TopCommand::Unlock | TopCommand::Lock | TopCommand::Vault(_) => {
+            unreachable!("traitées avant l'ouverture du coffre, dans dispatch")
+        }
+        TopCommand::Backup(cmd) => backup::run(cmd, store),
+        TopCommand::Client(cmd) => client::run(cmd, store, ctx, json),
+        TopCommand::Company(cmd) => company::run(cmd, store, ctx, json),
+        TopCommand::Prospect(cmd) => prospect::run(cmd, store, ctx, json),
+        TopCommand::Mission(cmd) => mission::run(cmd, store, ctx, json),
+        TopCommand::Quote(cmd) => quote::run(cmd, store, ctx, json),
+        TopCommand::Invoice(cmd) => invoice::run_invoice(cmd, store, ctx, json),
+        TopCommand::Payment(cmd) => invoice::run_payment(cmd, store, ctx, json),
+        TopCommand::Bank(cmd) => invoice::run_bank(cmd, store, ctx, json),
+        TopCommand::Pending(cmd) => pending::run_pending(cmd, store, json),
+        TopCommand::Audit(cmd) => pending::run_audit(cmd, store, json),
+        TopCommand::Confirm { id } => pending::confirm(store, id, json),
+        TopCommand::Expense(cmd) => expense::run(cmd, store, ctx, json),
         TopCommand::Fiscal(cmd) => fiscal::run(cmd, json),
-        TopCommand::Forecast(cmd) => forecast::run(cmd, &store, json),
+        TopCommand::Forecast(cmd) => forecast::run(cmd, store, json),
     }
 }

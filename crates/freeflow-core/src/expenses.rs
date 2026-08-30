@@ -150,7 +150,7 @@ pub fn expenses_between(
 mod tests {
     use super::*;
     use crate::app::{Actor, ExecutionContext, Executor, Outcome};
-    use crate::store::Store;
+    use crate::store::{Passphrase, Store};
     use time::Month;
 
     fn test_store(label: &str) -> Store {
@@ -159,7 +159,7 @@ mod tests {
             std::process::id(),
             uuid::Uuid::now_v7()
         ));
-        Store::open_with_passphrase(&dir.join("vault.db"), "s3cret").unwrap()
+        Store::create(&dir.join("vault.db"), &Passphrase::from("s3cret")).unwrap()
     }
 
     fn human_ctx() -> ExecutionContext {

@@ -21,7 +21,7 @@ mod tests {
     use super::*;
     use crate::app::{Actor, AppError, ExecutionContext, Executor, Outcome};
     use crate::domain::{ClientId, MissionKind, Money, Month, TimeCategory};
-    use crate::store::Store;
+    use crate::store::{Passphrase, Store};
 
     fn date(year: i32, month: TimeMonth, day: u8) -> Date {
         Date::from_calendar_date(year, month, day).unwrap()
@@ -33,7 +33,7 @@ mod tests {
             std::process::id(),
             uuid::Uuid::now_v7()
         ));
-        let store = Store::open_with_passphrase(&dir.join("vault.db"), "s3cret").unwrap();
+        let store = Store::create(&dir.join("vault.db"), &Passphrase::from("s3cret")).unwrap();
         let client_id = ClientId::new();
         store
             .connection()

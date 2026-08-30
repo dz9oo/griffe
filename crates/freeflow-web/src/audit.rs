@@ -58,11 +58,17 @@ fn item(entry: &AuditEntry) -> Markup {
 }
 
 /// Rendu du rail : déclenché par `hx-trigger="load, every 2s"` sur `#audit-items`, en
-/// remplacement intégral (`hx-swap="innerHTML"`).
+/// remplacement intégral (`hx-swap="innerHTML"`). Ce polling est délibérément exclu du calcul
+/// d'activité de [`AppState`] (voir `state.rs`) : c'est lui qui garantit qu'une requête arrive
+/// assez vite pour basculer vers l'écran de déverrouillage après expiration, mais il ne doit
+/// jamais, lui-même, repousser cette expiration.
 pub async fn recent(State(state): State<AppState>) -> Html<String> {
-    let store = state.store.lock().await;
-    let entries = recent_audit_entries(store.connection(), 0, RAIL_PAGE_SIZE).unwrap_or_default();
-    drop(store);
+    let entries = state
+        .with_store(|store| {
+            recent_audit_entries(store.connection(), 0, RAIL_PAGE_SIZE).unwrap_or_default()
+        })
+        .await
+        .unwrap_or_default();
 
     let markup = if entries.is_empty() {
         html! { div class="audit-empty" { "aucune activité pour l'instant" } }

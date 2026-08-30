@@ -12,7 +12,7 @@ use std::thread;
 use freeflow_core::app::{Actor, ExecutionContext, Executor};
 use freeflow_core::billing::EmitInvoice;
 use freeflow_core::domain::{ClientId, InvoiceLine, Money, VatRate};
-use freeflow_core::store::Store;
+use freeflow_core::store::{Passphrase, Store};
 use time::{Date, Month};
 
 const ENV_DB_PATH: &str = "FREEFLOW_TEST_DB_PATH";
@@ -30,7 +30,7 @@ fn sample_line() -> InvoiceLine {
 }
 
 fn emit_one(db_path: &std::path::Path, client_id: ClientId) {
-    let mut store = Store::open_with_passphrase(db_path, "s3cret").unwrap();
+    let mut store = Store::open_with_passphrase(db_path, &Passphrase::from("s3cret")).unwrap();
     let cmd = EmitInvoice {
         client_id,
         mission_id: None,
@@ -71,7 +71,7 @@ fn numbering_has_no_gap_or_duplicate_across_threads_and_processes() {
     let db_path = dir.join("vault.db");
 
     let client_id = {
-        let store = Store::open_with_passphrase(&db_path, "s3cret").unwrap();
+        let store = Store::create(&db_path, &Passphrase::from("s3cret")).unwrap();
         let id = ClientId::new();
         store.connection().execute("INSERT INTO clients (id, name, created_at) VALUES (?1, 'Argon Digital', '2026-01-01T00:00:00Z')", [id.to_string()]).unwrap();
         id
@@ -111,7 +111,7 @@ fn numbering_has_no_gap_or_duplicate_across_threads_and_processes() {
         );
     }
 
-    let store = Store::open_with_passphrase(&db_path, "s3cret").unwrap();
+    let store = Store::open_with_passphrase(&db_path, &Passphrase::from("s3cret")).unwrap();
     let mut stmt = store
         .connection()
         .prepare("SELECT number FROM invoices ORDER BY sequence ASC")

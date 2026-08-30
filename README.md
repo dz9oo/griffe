@@ -59,8 +59,13 @@ implémentation.
   facturées + pipeline pondéré − charges connues).
 
 ### Sécurité & fiabilité
-- Chiffrement SQLCipher, clé dérivée par Argon2id, jamais écrite en clair sur disque — mise en
-  cache uniquement dans le trousseau OS (Keychain macOS / Secret Service Linux).
+- Chiffrement SQLCipher, clé dérivée par Argon2id. Aucune variable d'environnement de passphrase
+  n'existe : la passphrase est saisie au clavier (invite masquée), lue dans un fichier
+  (`--passphrase-file`, permissions vérifiées), ou produite par une commande externe
+  (`--passphrase-command`, ex. `pass show freeflow`) — jamais écrite en clair sur disque, jamais
+  visible dans l'historique du shell ou `/proc/<pid>/environ`. La clé n'est mise en cache dans le
+  trousseau OS (Keychain macOS / Secret Service Linux) que sur demande explicite
+  (`--remember`/case « se souvenir »), toujours avec une expiration bornée (12 h par défaut).
 - Aucun port réseau ouvert, aucune connexion sortante. Les relances/emails sont générés en
   brouillons `.eml` ouverts dans ton client mail par défaut — rien n'est jamais envoyé par l'app
   elle-même.
@@ -97,16 +102,46 @@ just check            # fmt, lint, tests, cargo-deny/cargo-audit — doit être 
 
 ### Premier lancement
 
+**En CLI** — aucune variable d'environnement à exporter. Sans `--db`/`FREEFLOW_DB`, le coffre
+vit à l'emplacement standard de ton système (`~/.local/share/freeflow/vault.db` sur Linux,
+`~/Library/Application Support/FreeFlow/vault.db` sur macOS) :
+
 ```bash
-export FREEFLOW_DB=~/Documents/freeflow/vault.db   # emplacement définitif de ton coffre
-export FREEFLOW_PASSPHRASE="une-vraie-passphrase-forte"
-freeflow unlock                                     # crée le coffre s'il n'existe pas encore
-freeflow company set-profile --help                 # renseigne SIREN, TVA intra, adresse...
+freeflow init                        # crée le coffre, demande la passphrase deux fois au clavier
+                                      # (invite masquée) — aucune récupération n'est possible si
+                                      # tu la perds, note-le où tu notes déjà tes mots de passe
+freeflow unlock --remember --ttl 12h # ouvre une session de 12h dans le trousseau OS
+freeflow company set-profile --help  # renseigne SIREN, TVA intra, adresse...
 ```
 
-Après ce premier déverrouillage, la clé est mise en cache dans le trousseau de ton OS : les
-commandes suivantes (CLI, MCP, GUI) n'ont plus besoin de `FREEFLOW_PASSPHRASE` tant que tu ne fais
-pas `freeflow lock`.
+Sans `--remember`, `freeflow unlock` vérifie seulement la passphrase — chaque commande suivante en
+redemandera une, tant qu'aucune session n'est active. `freeflow vault status` affiche le chemin
+résolu, si un coffre y existe, et jusqu'à quand une session est en cache. `freeflow lock` purge
+cette session à tout moment.
+
+Pour un usage non interactif (scripts, CI, `freeflow-mcp`) : `--passphrase-file <fichier>` (dont
+les permissions doivent être 0600) ou `--passphrase-command "<commande>"` (ex.
+`--passphrase-command "pass show freeflow"`) remplacent l'invite au clavier sur n'importe quelle
+commande.
+
+**En GUI** : `cargo run -p freeflow-desktop` ouvre une vraie fenêtre native — toujours, même si le
+coffre n'existe pas encore ou est verrouillé : elle affiche alors l'écran de création ou de
+déverrouillage plutôt que de disparaître. La case « rester déverrouillé 12h » y correspond à
+`--remember`. La fenêtre se reverrouille elle-même après 15 minutes d'inactivité réelle (la
+frappe et le clic comptent, le rafraîchissement automatique du journal d'audit non).
+
+**Piloté par un agent** : lance d'abord `freeflow unlock --remember --ttl <durée>` dans un
+terminal, puis `freeflow-mcp` (stdio) — ce serveur, sans terminal, ne peut jamais demander de
+passphrase lui-même et dépend entièrement de cette session déjà en cache. Branche-le dans Claude
+Code ou un autre client MCP compatible. Toute action à effet sensible proposée par l'agent attend
+ta confirmation (`freeflow pending list`, `freeflow confirm <id>`).
+
+> **Tu utilisais `FREEFLOW_PASSPHRASE` ?** Cette variable a été supprimée : plus aucune commande
+> ne la lit. Si tu l'avais exportée dans un fichier de shell (`.bashrc`, `.envrc`...), retire-la
+> et considère cette passphrase comme potentiellement compromise (elle est restée en clair dans
+> ton historique de shell et dans l'environnement de chaque process que tu as lancé) —
+> remplace-la par une nouvelle avec `freeflow init` sur un nouveau coffre, ou par la commande
+> `passphrase change` une fois disponible (voir feuille de route).
 
 ### Usage quotidien
 
@@ -114,12 +149,9 @@ pas `freeflow lock`.
   (`client`, `prospect`, `mission`, `quote`, `invoice`, `payment`, `bank`, `expense`, `fiscal`,
   `forecast`, `audit`, `backup`...). Ajoute `--json` pour scripter, `--dry-run` pour prévisualiser
   sans écrire.
-- **En GUI** : `cargo run -p freeflow-desktop` (ou le binaire empaqueté une fois le packaging
-  natif finalisé — voir ci-dessous). Ouvre une vraie fenêtre native, sans rien exposer sur le
-  réseau.
-- **Piloté par un agent** : lance `freeflow-mcp` (stdio) et branche-le dans Claude Code ou un
-  autre client MCP compatible. Toute action à effet sensible proposée par l'agent attend ta
-  confirmation (`freeflow pending list`, `freeflow confirm <id>`).
+- **En GUI** : voir « Premier lancement » ci-dessus. Le bouton « verrouiller » de la barre de
+  commandes ferme la connexion et purge la session du trousseau OS, comme `freeflow lock`.
+- **Piloté par un agent** : voir « Premier lancement » ci-dessus.
 
 ### Sauvegarde et restauration
 
@@ -155,6 +187,10 @@ distribués prêts à l'emploi — voir la checklist ci-dessous.
 
 ## Feuille de route / améliorations futures
 
+- [ ] `freeflow passphrase change` : re-dérivation de la clé et `PRAGMA rekey` en place. Volontairement
+      hors périmètre du chantier de déverrouillage initial — c'est l'opération la plus risquée du
+      dépôt (réécriture de toutes les pages chiffrées) et mérite son propre lot, avec sauvegarde
+      préalable obligatoire.
 - [ ] Bundle `.dmg` macOS signé et notarisé, construit et testé sur une vraie machine macOS.
 - [ ] Bundle `.AppImage` Linux fonctionnel (résoudre l'incompatibilité `linuxdeploy-plugin-gtk` /
       chemin `gdk-pixbuf` non-FHS, ou bundler depuis une distribution Linux FHS conventionnelle).

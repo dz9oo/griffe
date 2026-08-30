@@ -4,6 +4,8 @@
 //! nécessitant un format spécifique à la CLI (dates, montants, acteur) ont un analyseur dédié
 //! ici.
 
+use std::time::Duration;
+
 use freeflow_core::app::Actor;
 use freeflow_core::domain::{self, LossReason, Money, Siren, VatNumber};
 use time::Date;
@@ -53,6 +55,26 @@ pub fn parse_actor(s: &str) -> Result<Actor, String> {
                 format!("acteur invalide : {other} (attendu human, system, ou agent:<session>)")
             }),
     }
+}
+
+/// Durée de session : un entier suivi de `m` (minutes), `h` (heures) ou `d` (jours) — `12h`,
+/// `30m`, `7d`. Volontairement minimal : le dépôt parse déjà ses dates à la main plutôt que
+/// d'ajouter une dépendance dédiée pour un format aussi simple.
+///
+/// # Errors
+pub fn parse_ttl(s: &str) -> Result<Duration, String> {
+    let invalid =
+        || format!("durée invalide : {s} (attendu un entier suivi de m, h ou d — ex. 12h)");
+    let (digits, unit) = s.split_at(s.len().saturating_sub(1));
+    let amount: u64 = digits.parse().map_err(|_| invalid())?;
+    let seconds = match unit {
+        "m" => amount.checked_mul(60),
+        "h" => amount.checked_mul(3_600),
+        "d" => amount.checked_mul(86_400),
+        _ => None,
+    }
+    .ok_or_else(invalid)?;
+    Ok(Duration::from_secs(seconds))
 }
 
 /// Format : `budget`, `timing`, `competitor`, `no-response`, `scope-mismatch`, ou

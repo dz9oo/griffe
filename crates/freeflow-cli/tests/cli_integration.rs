@@ -1,6 +1,13 @@
 //! Parcours réels via `assert_cmd` (le binaire compilé, pas la bibliothèque), snapshots
 //! `insta` du contrat `--help` et des sorties `--json`, et vérification qu'un code de sortie
 //! distinct existe par famille d'erreur.
+//!
+//! Ces tests lancent un vrai sous-processus (`assert_cmd`), donc ne peuvent pas injecter de
+//! trousseau en mémoire (réservé aux tests dans le même process, via
+//! `freeflow_core::store::testing`). `provision()` crée le coffre avec `--passphrase-file` et
+//! `--remember` : une seule écriture dans le trousseau OS réel par coffre de test (identifié par
+//! un `vault_id` aléatoire propre au sidecar — aucune collision possible entre exécutions), très
+//! en-deçà du volume d'écritures d'avant ce lot (une par commande, implicitement).
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -22,11 +29,28 @@ fn freeflow() -> Command {
     Command::cargo_bin("freeflow").expect("le binaire freeflow doit être compilé pour les tests")
 }
 
-fn unlock(db: &Path) {
+/// Écrit une passphrase dans un fichier temporaire en 0600 (Unix) et renvoie son chemin.
+fn passphrase_file(db: &Path, passphrase: &str) -> PathBuf {
+    let path = db.with_extension("passphrase");
+    std::fs::write(&path, passphrase).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    path
+}
+
+/// Crée le coffre et met la clé en cache dans le trousseau OS (`--remember`) : les commandes
+/// suivantes de ce test, chacune un nouveau sous-processus, la retrouvent via
+/// `Store::open_cached` sans avoir à repasser de passphrase.
+fn provision(db: &Path) {
+    let pass_file = passphrase_file(db, "s3cret");
     freeflow()
         .env("FREEFLOW_DB", db)
-        .env("FREEFLOW_PASSPHRASE", "s3cret")
-        .arg("unlock")
+        .args(["--passphrase-file"])
+        .arg(&pass_file)
+        .args(["init", "--remember"])
         .assert()
         .success();
 }
@@ -38,7 +62,7 @@ fn json_result(output: &[u8]) -> serde_json::Value {
 #[test]
 fn golden_path_from_prospection_to_paid_invoice() {
     let db = temp_db("golden-path");
-    unlock(&db);
+    provision(&db);
 
     let client_out = freeflow()
         .env("FREEFLOW_DB", &db)
@@ -208,7 +232,7 @@ fn golden_path_from_prospection_to_paid_invoice() {
 #[test]
 fn emitting_an_invoice_with_no_lines_fails_with_the_domain_exit_code() {
     let db = temp_db("empty-invoice");
-    unlock(&db);
+    provision(&db);
     freeflow()
         .env("FREEFLOW_DB", &db)
         .args([
@@ -230,7 +254,7 @@ fn emitting_an_invoice_with_no_lines_fails_with_the_domain_exit_code() {
 #[test]
 fn a_missing_invoice_fails_with_the_domain_exit_code() {
     let db = temp_db("missing-invoice");
-    unlock(&db);
+    provision(&db);
     freeflow()
         .env("FREEFLOW_DB", &db)
         .args([
@@ -250,7 +274,7 @@ fn a_missing_invoice_fails_with_the_domain_exit_code() {
 #[test]
 fn a_locked_vault_fails_with_its_own_exit_code() {
     let db = temp_db("locked-vault");
-    unlock(&db);
+    provision(&db);
     freeflow()
         .env("FREEFLOW_DB", &db)
         .arg("lock")
@@ -258,7 +282,30 @@ fn a_locked_vault_fails_with_its_own_exit_code() {
         .success();
     freeflow()
         .env("FREEFLOW_DB", &db)
+        // Positionnée sur le sous-processus, pas sur ce process de test : prouve que la
+        // variable n'est plus lue nulle part, pas seulement qu'elle est absente de l'environnement.
+        .env("FREEFLOW_PASSPHRASE", "s3cret")
         .args(["prospect", "pipeline"])
+        .assert()
+        .failure()
+        .code(2);
+}
+
+#[test]
+fn freeflow_passphrase_env_var_is_never_read_even_when_set() {
+    let db = temp_db("passphrase-env-ignored");
+    provision(&db);
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .arg("lock")
+        .assert()
+        .success();
+    // Coffre verrouillé, FREEFLOW_PASSPHRASE positionnée mais non-interactif : doit échouer
+    // avec le code « verrouillé », jamais réussir en lisant l'ancienne variable d'environnement.
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .env("FREEFLOW_PASSPHRASE", "s3cret")
+        .args(["--non-interactive", "client", "list", "--json"])
         .assert()
         .failure()
         .code(2);
@@ -267,7 +314,7 @@ fn a_locked_vault_fails_with_its_own_exit_code() {
 #[test]
 fn invalid_lines_json_fails_with_its_own_exit_code() {
     let db = temp_db("invalid-lines-json");
-    unlock(&db);
+    provision(&db);
     freeflow()
         .env("FREEFLOW_DB", &db)
         .args([
@@ -295,6 +342,99 @@ fn a_bad_argument_fails_with_clap_s_own_usage_exit_code() {
 }
 
 #[test]
+fn init_refuses_an_existing_vault() {
+    let db = temp_db("init-twice");
+    provision(&db);
+    let pass_file = passphrase_file(&db, "another");
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--passphrase-file"])
+        .arg(&pass_file)
+        .arg("init")
+        .assert()
+        .failure()
+        .code(3); // StoreError::VaultAlreadyExists, via CliError::Store
+}
+
+#[test]
+fn unlock_never_creates_a_vault() {
+    let db = temp_db("unlock-no-create");
+    let pass_file = passphrase_file(&db, "s3cret");
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--passphrase-file"])
+        .arg(&pass_file)
+        .arg("unlock")
+        .assert()
+        .failure()
+        .code(7); // StoreError::VaultNotFound, via CliError::NoVault
+    assert!(!db.exists(), "unlock ne doit jamais créer le coffre");
+}
+
+#[test]
+fn a_command_with_no_passphrase_source_and_non_interactive_exits_2() {
+    let db = temp_db("no-source-non-interactive");
+    provision(&db);
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .arg("lock")
+        .assert()
+        .success();
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--non-interactive", "client", "list", "--json"])
+        .assert()
+        .failure()
+        .code(2);
+}
+
+#[test]
+fn a_passphrase_file_readable_by_others_is_refused() {
+    let db = temp_db("insecure-passphrase-file");
+    let pass_file = passphrase_file(&db, "s3cret");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&pass_file, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+    let assertion = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--passphrase-file"])
+        .arg(&pass_file)
+        .arg("init")
+        .assert();
+    #[cfg(unix)]
+    assertion
+        .failure()
+        .stderr(predicate::str::contains("chmod 600"));
+    #[cfg(not(unix))]
+    let _ = assertion; // le contrôle de permissions est spécifique à Unix.
+}
+
+#[test]
+fn vault_status_reports_absence_then_presence() {
+    let db = temp_db("vault-status");
+    let absent = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["vault", "status", "--json"])
+        .output()
+        .unwrap();
+    let absent_value: serde_json::Value = serde_json::from_slice(&absent.stdout).unwrap();
+    assert_eq!(absent_value["exists"], false);
+
+    provision(&db);
+    let present = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["vault", "status", "--json"])
+        .output()
+        .unwrap();
+    let present_value: serde_json::Value = serde_json::from_slice(&present.stdout).unwrap();
+    assert_eq!(present_value["exists"], true);
+    assert_eq!(present_value["sidecar_version"], 2);
+    assert!(present_value["session_expires_at"].is_string());
+}
+
+#[test]
 fn top_level_help_is_a_stable_interface_contract() {
     let output = freeflow().arg("--help").output().unwrap();
     insta::assert_snapshot!(String::from_utf8(output.stdout).unwrap());
@@ -309,7 +449,7 @@ fn invoice_help_is_a_stable_interface_contract() {
 #[test]
 fn client_create_json_output_matches_the_documented_shape() {
     let db = temp_db("json-shape");
-    unlock(&db);
+    provision(&db);
     let output = freeflow()
         .env("FREEFLOW_DB", &db)
         .args(["--json", "client", "create", "--name", "Kappa Software"])
@@ -322,7 +462,7 @@ fn client_create_json_output_matches_the_documented_shape() {
 #[test]
 fn empty_pipeline_json_output_matches_the_documented_shape() {
     let db = temp_db("pipeline-shape");
-    unlock(&db);
+    provision(&db);
     let output = freeflow()
         .env("FREEFLOW_DB", &db)
         .args(["--json", "prospect", "pipeline"])

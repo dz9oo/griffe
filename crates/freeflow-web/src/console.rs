@@ -1,18 +1,29 @@
 //! `POST /console/run` : exécute la ligne tapée dans la console via
-//! [`freeflow_cli::run_capturing`] — le même parseur, la même sortie, qu'un terminal verrait,
-//! simplement renvoyée en HTML au lieu d'être imprimée sur un stdout de process serveur.
+//! [`freeflow_cli::run_capturing_with_vault`] avec [`freeflow_cli::VaultAccess::Borrowed`] — le
+//! coffre déjà ouvert par la fenêtre, jamais une seconde connexion. C'est ce qui permet à la
+//! console de continuer à fonctionner maintenant que la mise en cache dans le trousseau OS est
+//! opt-in : `Store::open_cached` n'a plus rien à retrouver par défaut. `Borrowed` interdit aussi
+//! structurellement tout prompt TTY sur ce chemin, et la CLI refuse elle-même `init`/`unlock`/
+//! `lock`/`backup restore` (la session de la fenêtre et celle du trousseau OS ne sont pas le
+//! même objet — voir `CLAUDE.md`).
 
 use axum::Form;
+use axum::extract::State;
 use axum::response::Html;
+use freeflow_cli::VaultAccess;
 use maud::html;
 use serde::Deserialize;
 
-#[derive(Debug, Deserialize)]
+use crate::state::AppState;
+
+/// Pas de `Debug` : la ligne tapée est un texte libre qui pourrait, par accident, contenir
+/// quelque chose que l'utilisateur ne voudrait pas voir apparaître dans un futur `{:?}`.
+#[derive(Deserialize)]
 pub struct ConsoleInput {
     line: String,
 }
 
-pub async fn run(Form(input): Form<ConsoleInput>) -> Html<String> {
+pub async fn run(State(state): State<AppState>, Form(input): Form<ConsoleInput>) -> Html<String> {
     let trimmed = input.line.trim();
     if trimmed.is_empty() {
         return Html(String::new());
@@ -32,7 +43,25 @@ pub async fn run(Form(input): Form<ConsoleInput>) -> Html<String> {
     };
 
     let args = std::iter::once("freeflow".to_string()).chain(tokens);
-    let (output, exit_code) = freeflow_cli::run_capturing(args);
+    let db_path = state.db_path().to_path_buf();
+    let outcome = state
+        .with_store_mut(|store| {
+            freeflow_cli::run_capturing_with_vault(
+                args,
+                VaultAccess::Borrowed {
+                    store,
+                    db_path: &db_path,
+                },
+            )
+        })
+        .await;
+
+    let (output, exit_code) = outcome.unwrap_or_else(|| {
+        (
+            "✗ coffre verrouillé — rechargez la page pour le déverrouiller".to_string(),
+            2,
+        )
+    });
 
     Html(
         html! {

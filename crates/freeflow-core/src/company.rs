@@ -124,7 +124,7 @@ pub fn company_profile(conn: &Connection) -> Result<Option<CompanyProfile>, AppE
 mod tests {
     use super::*;
     use crate::app::{Actor, ExecutionContext, Executor, Outcome};
-    use crate::store::Store;
+    use crate::store::{Passphrase, Store};
 
     fn test_store(label: &str) -> Store {
         let dir = std::env::temp_dir().join(format!(
@@ -132,7 +132,7 @@ mod tests {
             std::process::id(),
             uuid::Uuid::now_v7()
         ));
-        Store::open_with_passphrase(&dir.join("vault.db"), "s3cret").unwrap()
+        Store::create(&dir.join("vault.db"), &Passphrase::from("s3cret")).unwrap()
     }
 
     fn sample() -> SetCompanyProfile {

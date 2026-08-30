@@ -5,7 +5,7 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use freeflow_core::store::Store;
+use freeflow_core::store::{Passphrase, Store};
 use freeflow_mcp::FreeflowServer;
 use rmcp::RoleClient;
 use rmcp::ServiceExt;
@@ -69,7 +69,7 @@ async fn call(
 
 #[tokio::test]
 async fn lists_every_domain_tool_with_correct_annotations() {
-    let store = Store::open_with_passphrase(&test_db_path("list-tools"), "s3cret").unwrap();
+    let store = Store::create(&test_db_path("list-tools"), &Passphrase::from("s3cret")).unwrap();
     let client = spawn_client(store).await;
 
     let tools = client.list_tools(None).await.unwrap().tools;
@@ -149,7 +149,7 @@ async fn lists_every_domain_tool_with_correct_annotations() {
 #[tokio::test]
 async fn an_agent_emitting_an_invoice_only_deposits_a_pending_action_no_invoice_row_is_written() {
     let db_path = test_db_path("confirm-gate");
-    let store = Store::open_with_passphrase(&db_path, "s3cret").unwrap();
+    let store = Store::create(&db_path, &Passphrase::from("s3cret")).unwrap();
     let client = spawn_client(store).await;
 
     let created = call(&client, "clients.create", json!({"name": "Kappa Software"})).await;
@@ -173,7 +173,7 @@ async fn an_agent_emitting_an_invoice_only_deposits_a_pending_action_no_invoice_
 
     // Preuve directe en base, pas seulement sur la réponse de l'outil : ouvrir une seconde
     // connexion sur le même coffre (comme le ferait un autre process) et compter les factures.
-    let check = Store::open_with_passphrase(&db_path, "s3cret").unwrap();
+    let check = Store::open_with_passphrase(&db_path, &Passphrase::from("s3cret")).unwrap();
     let invoice_count: i64 = check
         .connection()
         .query_row("SELECT count(*) FROM invoices", [], |row| row.get(0))
@@ -188,7 +188,7 @@ async fn an_agent_emitting_an_invoice_only_deposits_a_pending_action_no_invoice_
 
 #[tokio::test]
 async fn a_field_that_fails_to_parse_is_a_tool_level_error_not_a_protocol_error() {
-    let store = Store::open_with_passphrase(&test_db_path("parse-error"), "s3cret").unwrap();
+    let store = Store::create(&test_db_path("parse-error"), &Passphrase::from("s3cret")).unwrap();
     let client = spawn_client(store).await;
 
     let result = call(&client, "clients.show", json!({"id": "not-a-uuid"})).await;
@@ -208,7 +208,7 @@ async fn a_field_that_fails_to_parse_is_a_tool_level_error_not_a_protocol_error(
 #[tokio::test]
 async fn golden_path_from_prospection_to_paid_invoice_over_mcp() {
     let db_path = test_db_path("golden-path");
-    let store = Store::open_with_passphrase(&db_path, "s3cret").unwrap();
+    let store = Store::create(&db_path, &Passphrase::from("s3cret")).unwrap();
     let client = spawn_client(store).await;
 
     let created = call(&client, "clients.create", json!({"name": "Kappa Software"})).await;

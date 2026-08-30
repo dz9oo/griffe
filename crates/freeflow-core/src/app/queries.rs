@@ -94,7 +94,7 @@ pub fn recent_audit_entries(
 mod tests {
     use super::*;
     use crate::app::{Actor, Command, ExecutionContext, Executor, Outcome};
-    use crate::store::Store;
+    use crate::store::{Passphrase, Store};
     use rusqlite::Connection as RusqliteConnection;
     use serde::{Deserialize, Serialize};
 
@@ -118,7 +118,7 @@ mod tests {
             std::process::id(),
             uuid::Uuid::now_v7()
         ));
-        Store::open_with_passphrase(&dir.join("vault.db"), "s3cret").unwrap()
+        Store::create(&dir.join("vault.db"), &Passphrase::from("s3cret")).unwrap()
     }
 
     #[test]

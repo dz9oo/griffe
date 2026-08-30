@@ -24,7 +24,7 @@ mod tests {
     use serde::{Deserialize, Serialize};
 
     use super::*;
-    use crate::store::Store;
+    use crate::store::{Passphrase, Store};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     struct CreateWidget {
@@ -78,7 +78,7 @@ mod tests {
             std::process::id(),
             uuid::Uuid::now_v7()
         ));
-        let store = Store::open_with_passphrase(&dir.join("vault.db"), "s3cret").unwrap();
+        let store = Store::create(&dir.join("vault.db"), &Passphrase::from("s3cret")).unwrap();
         store
             .connection()
             .execute(

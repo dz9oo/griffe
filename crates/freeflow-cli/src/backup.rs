@@ -10,6 +10,7 @@ use clap::Subcommand;
 use freeflow_core::store::Store;
 
 use crate::error::CliError;
+use crate::vault::{self, PassphraseOpts};
 
 #[derive(Debug, Subcommand)]
 pub enum BackupCommand {
@@ -32,12 +33,8 @@ pub enum BackupCommand {
 /// possible même quand ce coffre-là est justement celui qui est cassé.
 ///
 /// # Errors
-pub fn restore(from: PathBuf, to: PathBuf) -> Result<String, CliError> {
-    let passphrase = std::env::var("FREEFLOW_PASSPHRASE").map_err(|_| {
-        CliError::Unexpected(
-            "définissez FREEFLOW_PASSPHRASE pour restaurer une sauvegarde".to_string(),
-        )
-    })?;
+pub fn restore(from: PathBuf, to: PathBuf, opts: &PassphraseOpts) -> Result<String, CliError> {
+    let passphrase = vault::resolve_passphrase(opts, "Passphrase de la sauvegarde : ")?;
     Store::restore_from(&from, &to, &passphrase)?;
     Ok(format!("✓ coffre restauré : {}", to.display()))
 }
@@ -49,6 +46,8 @@ pub fn run(cmd: BackupCommand, store: &Store) -> Result<String, CliError> {
             store.backup_to(&out)?;
             Ok(format!("✓ sauvegarde écrite : {}", out.display()))
         }
-        BackupCommand::Restore { from, to } => restore(from, to),
+        BackupCommand::Restore { .. } => {
+            unreachable!("`backup restore` est interceptée par crate::dispatch avant ce point")
+        }
     }
 }

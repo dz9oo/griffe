@@ -4,31 +4,33 @@
 //! `tower::Service::oneshot` (in-process), puis reconvertit la réponse. Aucun port TCP
 //! n'écoute jamais : pas de surface CSRF/DNS-rebinding depuis un autre process ou un onglet de
 //! navigateur, conformément au plan.
+//!
+//! La fenêtre s'ouvre **toujours** : contrairement au comportement précédent (`exit(1)` avant
+//! même de construire `tauri::Builder` si le coffre était verrouillé ou `FREEFLOW_DB` absent),
+//! l'état du coffre est maintenant porté par [`freeflow_web::AppState`] et rendu comme un écran
+//! ordinaire du routeur (`/unlock`, `/setup`) — lancée depuis un lanceur graphique, sans
+//! terminal pour voir un `eprintln!`, l'application reste utilisable.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::path::PathBuf;
 
-use freeflow_core::store::{Store, StoreError};
+use freeflow_core::store::Store;
 use freeflow_web::AppState;
 use http_body_util::BodyExt;
 use tauri::http;
 use tower::ServiceExt;
 
-fn resolve_db_path() -> Result<PathBuf, String> {
-    std::env::var("FREEFLOW_DB")
-        .map(PathBuf::from)
-        .map_err(|_| "aucun coffre indiqué : définissez FREEFLOW_DB".to_string())
-}
-
-fn open_store(db_path: &std::path::Path) -> Result<Store, String> {
-    match Store::open_cached(db_path) {
-        Ok(store) => return Ok(store),
-        Err(StoreError::Locked) => {}
-        Err(e) => return Err(e.to_string()),
+fn resolve_db_path() -> PathBuf {
+    if let Ok(from_env) = std::env::var("FREEFLOW_DB") {
+        return PathBuf::from(from_env);
     }
-    let passphrase = std::env::var("FREEFLOW_PASSPHRASE")
-        .map_err(|_| "coffre verrouillé : définissez FREEFLOW_PASSPHRASE".to_string())?;
-    Store::open_with_passphrase(db_path, &passphrase).map_err(|e| e.to_string())
+    Store::default_vault_path().unwrap_or_else(|e| {
+        // Chemin extrêmement rare (pas de répertoire de données utilisateur du tout) : un
+        // chemin invalide dans le répertoire courant fera échouer l'écran de création avec un
+        // message clair plutôt que de faire disparaître la fenêtre avant même de s'afficher.
+        eprintln!("⚠ {e} — utilisation d'un chemin relatif au répertoire courant");
+        PathBuf::from("freeflow-vault.db")
+    })
 }
 
 fn error_response(status: http::StatusCode, message: String) -> http::Response<Vec<u8>> {
@@ -40,21 +42,10 @@ fn error_response(status: http::StatusCode, message: String) -> http::Response<V
 }
 
 fn main() {
-    let db_path = match resolve_db_path() {
-        Ok(path) => path,
-        Err(e) => {
-            eprintln!("✗ {e}");
-            std::process::exit(1);
-        }
-    };
-    let store = match open_store(&db_path) {
-        Ok(store) => store,
-        Err(e) => {
-            eprintln!("✗ {e}");
-            std::process::exit(1);
-        }
-    };
-    let state = AppState::new(store);
+    let db_path = resolve_db_path();
+    let state = AppState::new(db_path);
+
+    tauri::async_runtime::block_on(state.try_open_cached());
 
     tauri::Builder::default()
         .register_asynchronous_uri_scheme_protocol("freeflow", move |_ctx, request, responder| {

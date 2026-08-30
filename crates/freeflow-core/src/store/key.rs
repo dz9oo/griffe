@@ -1,80 +1,152 @@
-//! Dérivation de clé (Argon2id) et mise en cache dans le trousseau OS (Keychain macOS /
-//! Secret Service Linux via `keyring`). La clé dérivée n'est jamais écrite en clair sur disque.
+//! Cache de la clé dérivée dans le trousseau du système d'exploitation (Keychain macOS / Secret
+//! Service Linux) — **opt-in** (jamais automatique) et **borné dans le temps** (une entrée porte
+//! sa propre expiration, vérifiée à chaque lecture ; une entrée expirée est purgée, pas
+//! seulement ignorée).
+//!
+//! L'accès au trousseau est derrière le trait [`KeyCache`] plutôt qu'appelé en dur : le
+//! trousseau est un service externe absent du bac à sable Nix et de tout runner CI (aucun
+//! Secret Service/D-Bus n'y tourne), et les tests d'aujourd'hui écrivent réellement dans le
+//! trousseau de la machine de développement sans jamais nettoyer. Ce n'est pas la doctrine « pas
+//! de mock » du dépôt qui est en jeu ici — elle vise le SGBD, où un double masquerait les bugs
+//! de migration/concurrence qu'on cherche justement à attraper — mais un service tiers dont
+//! l'absence est la norme, pas l'exception. `InMemoryKeyCache` (derrière la feature
+//! `test-support`) est une implémentation triviale du même trait, pas une simulation du SGBD.
 
-use argon2::{Algorithm, Argon2, Params, Version};
-use rand::Rng;
+#[cfg(any(test, feature = "test-support"))]
+use std::sync::Mutex;
+
+use time::OffsetDateTime;
+use zeroize::Zeroize;
+
+use super::secret::VaultKey;
 
 const SERVICE: &str = "dev.freeflow.vault";
 
-pub const KEY_LEN: usize = 32;
-pub const SALT_LEN: usize = 16;
-
-/// Paramètres Argon2id : volontairement coûteux (~19 Mio, 2 itérations, ~300-600 ms sur un
-/// poste récent). La clé n'est dérivée qu'à la première ouverture ou après un verrouillage
-/// explicite ; les ouvertures suivantes réutilisent la clé mise en cache dans le trousseau OS.
-fn argon2() -> Argon2<'static> {
-    let params = Params::new(19_456, 2, 1, Some(KEY_LEN))
-        .expect("paramètres Argon2id fixes toujours valides");
-    Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
+/// Clé en cache et l'instant auquel elle cesse d'être valide.
+#[derive(Clone)]
+pub struct CachedKey {
+    pub key: VaultKey,
+    pub expires_at: OffsetDateTime,
 }
 
-#[must_use]
-pub fn random_salt() -> [u8; SALT_LEN] {
-    let mut salt = [0u8; SALT_LEN];
-    rand::rng().fill_bytes(&mut salt);
-    salt
+pub trait KeyCache: Send + Sync {
+    /// Renvoie la clé en cache pour `account`, si elle existe et n'est pas expirée. Une entrée
+    /// expirée doit être purgée par l'implémentation avant de renvoyer `None`.
+    fn load(&self, account: &str) -> Option<CachedKey>;
+    /// Met `key` en cache pour `account` jusqu'à `expires_at`. Renvoie `false` — silencieusement
+    /// pour l'appelant, mais observable — si le trousseau est indisponible.
+    fn store(&self, account: &str, key: &VaultKey, expires_at: OffsetDateTime) -> bool;
+    /// Purge l'entrée de `account`, si elle existe. `true` si l'état résultant est bien
+    /// « aucune entrée », y compris quand il n'y en avait déjà pas.
+    fn forget(&self, account: &str) -> bool;
 }
 
-/// Dérive une clé de chiffrement de 32 octets à partir d'une passphrase et d'un sel.
-///
-/// # Errors
-///
-/// Retourne une erreur textuelle si la dérivation échoue (ne devrait jamais arriver avec les
-/// paramètres fixes de cette fonction, mais Argon2id peut en théorie rejeter une passphrase
-/// vide selon la configuration).
-pub fn derive_key(passphrase: &str, salt: &[u8; SALT_LEN]) -> Result<[u8; KEY_LEN], String> {
-    let mut key = [0u8; KEY_LEN];
-    argon2()
-        .hash_password_into(passphrase.as_bytes(), salt, &mut key)
-        .map_err(|e| e.to_string())?;
-    Ok(key)
+/// Implémentation par défaut : le trousseau réel de l'OS, via le crate `keyring`.
+pub struct OsKeyring;
+
+impl KeyCache for OsKeyring {
+    fn load(&self, account: &str) -> Option<CachedKey> {
+        let entry = keyring::Entry::new(SERVICE, account).ok()?;
+        let bytes = entry.get_secret().ok()?;
+        let cached = decode(&bytes)?;
+        if cached.expires_at <= OffsetDateTime::now_utc() {
+            let _ = self.forget(account);
+            return None;
+        }
+        Some(cached)
+    }
+
+    fn store(&self, account: &str, key: &VaultKey, expires_at: OffsetDateTime) -> bool {
+        let Ok(entry) = keyring::Entry::new(SERVICE, account) else {
+            return false;
+        };
+        let mut bytes = encode(key, expires_at);
+        let ok = entry.set_secret(&bytes).is_ok();
+        bytes.zeroize();
+        ok
+    }
+
+    fn forget(&self, account: &str) -> bool {
+        let Ok(entry) = keyring::Entry::new(SERVICE, account) else {
+            return true;
+        };
+        matches!(
+            entry.delete_credential(),
+            Ok(()) | Err(keyring::Error::NoEntry)
+        )
+    }
 }
 
-/// Clé mise en cache dans le trousseau OS pour ce coffre, si le trousseau est disponible et la
-/// contient. `None` dans tous les autres cas (absente, trousseau indisponible) : l'appelant
-/// retombe alors sur la dérivation depuis la passphrase — c'est le repli documenté pour les
-/// systèmes sans trousseau accessible.
-#[must_use]
-pub fn load_cached_key(vault_id: &str) -> Option<[u8; KEY_LEN]> {
-    let entry = keyring::Entry::new(SERVICE, vault_id).ok()?;
-    let bytes = entry.get_secret().ok()?;
-    if bytes.len() != KEY_LEN {
+/// `expires_at` (secondes Unix, `i64` little-endian) suivi de la clé (32 octets) — 40 octets.
+/// Toute autre longueur (y compris l'ancien format 32 octets sans expiration) est traitée comme
+/// une entrée absente : au pire, une passphrase est redemandée une fois.
+fn encode(key: &VaultKey, expires_at: OffsetDateTime) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(8 + VaultKey::LEN);
+    bytes.extend_from_slice(&expires_at.unix_timestamp().to_le_bytes());
+    bytes.extend_from_slice(key.as_bytes());
+    bytes
+}
+
+fn decode(bytes: &[u8]) -> Option<CachedKey> {
+    if bytes.len() != 8 + VaultKey::LEN {
         return None;
     }
-    let mut key = [0u8; KEY_LEN];
-    key.copy_from_slice(&bytes);
-    Some(key)
+    let timestamp = i64::from_le_bytes(bytes[0..8].try_into().ok()?);
+    let expires_at = OffsetDateTime::from_unix_timestamp(timestamp).ok()?;
+    let mut key_bytes = [0u8; VaultKey::LEN];
+    key_bytes.copy_from_slice(&bytes[8..]);
+    Some(CachedKey {
+        key: VaultKey::new(key_bytes),
+        expires_at,
+    })
 }
 
-/// Met la clé en cache dans le trousseau OS si un trousseau est accessible ; ne fait rien
-/// silencieusement sinon — l'ouverture du coffre reste possible dans tous les cas, seule la
-/// mise en cache pour les prochaines ouvertures est perdue.
-pub fn cache_key(vault_id: &str, key: &[u8; KEY_LEN]) {
-    if let Ok(entry) = keyring::Entry::new(SERVICE, vault_id) {
-        let _ = entry.set_secret(key);
+/// Magasin de clés en mémoire, pour les tests d'autres crates : jamais de trousseau OS réel
+/// touché, jamais de mutation de l'environnement du process.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Default)]
+pub struct InMemoryKeyCache {
+    entries: Mutex<std::collections::HashMap<String, CachedKey>>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl InMemoryKeyCache {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
     }
 }
 
-/// Purge la clé du trousseau OS, si elle y était.
-#[must_use]
-pub fn forget_key(vault_id: &str) -> bool {
-    let Ok(entry) = keyring::Entry::new(SERVICE, vault_id) else {
-        return true;
-    };
-    matches!(
-        entry.delete_credential(),
-        Ok(()) | Err(keyring::Error::NoEntry)
-    )
+#[cfg(any(test, feature = "test-support"))]
+impl KeyCache for InMemoryKeyCache {
+    fn load(&self, account: &str) -> Option<CachedKey> {
+        let mut entries = self.entries.lock().expect("mutex empoisonné");
+        let cached = entries.get(account)?.clone();
+        if cached.expires_at <= OffsetDateTime::now_utc() {
+            entries.remove(account);
+            return None;
+        }
+        Some(cached)
+    }
+
+    fn store(&self, account: &str, key: &VaultKey, expires_at: OffsetDateTime) -> bool {
+        self.entries.lock().expect("mutex empoisonné").insert(
+            account.to_string(),
+            CachedKey {
+                key: key.clone(),
+                expires_at,
+            },
+        );
+        true
+    }
+
+    fn forget(&self, account: &str) -> bool {
+        self.entries
+            .lock()
+            .expect("mutex empoisonné")
+            .remove(account);
+        true
+    }
 }
 
 #[cfg(test)]
@@ -82,18 +154,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn same_passphrase_and_salt_derive_the_same_key() {
-        let salt = random_salt();
-        let a = derive_key("correct horse battery staple", &salt).unwrap();
-        let b = derive_key("correct horse battery staple", &salt).unwrap();
-        assert_eq!(a, b);
+    fn a_stored_key_round_trips() {
+        let cache = InMemoryKeyCache::new();
+        let key = VaultKey::new([3u8; VaultKey::LEN]);
+        let expires_at = OffsetDateTime::now_utc() + time::Duration::hours(1);
+        assert!(cache.store("acct", &key, expires_at));
+        let loaded = cache.load("acct").unwrap();
+        assert_eq!(loaded.key.as_bytes(), key.as_bytes());
     }
 
     #[test]
-    fn different_passphrases_derive_different_keys() {
-        let salt = random_salt();
-        let a = derive_key("passphrase-a", &salt).unwrap();
-        let b = derive_key("passphrase-b", &salt).unwrap();
-        assert_ne!(a, b);
+    fn an_expired_entry_is_refused_and_purged() {
+        let cache = InMemoryKeyCache::new();
+        let key = VaultKey::new([3u8; VaultKey::LEN]);
+        let already_past = OffsetDateTime::now_utc() - time::Duration::seconds(1);
+        cache.store("acct", &key, already_past);
+        assert!(cache.load("acct").is_none());
+        // Purgée : une seconde lecture ne trouve toujours rien (et ne panique pas).
+        assert!(cache.load("acct").is_none());
+    }
+
+    #[test]
+    fn forget_is_idempotent_on_a_missing_entry() {
+        let cache = InMemoryKeyCache::new();
+        assert!(cache.forget("never-stored"));
+        assert!(cache.forget("never-stored"));
     }
 }

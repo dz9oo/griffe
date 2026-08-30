@@ -1,17 +1,20 @@
 //! Tests HTTP directs sur le `Router`, via `tower::ServiceExt::oneshot` — rapides, sans
-//! navigateur, exactement comme le prévoit le plan pour ce lot. Base SQLCipher réelle et
-//! temporaire à chaque test, pas de mock.
+//! navigateur. Base SQLCipher réelle et temporaire à chaque test, pas de mock. Le trousseau OS
+//! réel n'est jamais touché : tous les coffres sont ouverts avec `remember = false`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use freeflow_core::app::{Actor, ExecutionContext, Executor};
 use freeflow_core::clients::CreateClient;
-use freeflow_core::store::Store;
+use freeflow_core::store::{Passphrase, Store};
 use freeflow_web::AppState;
 use http_body_util::BodyExt;
 use tower::ServiceExt;
+
+const PASSPHRASE: &str = "s3cret";
 
 fn test_db_path(label: &str) -> PathBuf {
     std::env::temp_dir()
@@ -32,10 +35,45 @@ async fn body_text(response: axum::response::Response) -> String {
     String::from_utf8(bytes.to_vec()).unwrap()
 }
 
+/// Crée un coffre neuf et renvoie un `AppState` déjà déverrouillé dessus (`remember = false` :
+/// jamais de mise en cache dans le trousseau OS réel de la machine qui exécute les tests).
+async fn unlocked_state(db_path: &Path) -> AppState {
+    Store::create(db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    let state = AppState::new(db_path.to_path_buf());
+    state
+        .unlock(&Passphrase::from(PASSPHRASE), false)
+        .await
+        .unwrap();
+    state
+}
+
+async fn unlocked_state_with_client(db_path: &Path) -> AppState {
+    let mut store = Store::create(db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    Executor::new(&mut store)
+        .execute(
+            &CreateClient {
+                name: "Kappa Software".to_string(),
+                siren: None,
+                vat_number: None,
+                address: None,
+            },
+            &human_ctx(),
+        )
+        .unwrap();
+    drop(store);
+
+    let state = AppState::new(db_path.to_path_buf());
+    state
+        .unlock(&Passphrase::from(PASSPHRASE), false)
+        .await
+        .unwrap();
+    state
+}
+
 #[tokio::test]
 async fn a_direct_navigation_returns_the_full_shell_page() {
-    let store = Store::open_with_passphrase(&test_db_path("full-page"), "s3cret").unwrap();
-    let router = freeflow_web::router(AppState::new(store));
+    let state = unlocked_state(&test_db_path("full-page")).await;
+    let router = freeflow_web::router(state);
 
     let response = router
         .oneshot(
@@ -62,8 +100,8 @@ async fn a_direct_navigation_returns_the_full_shell_page() {
 
 #[tokio::test]
 async fn an_htmx_boosted_navigation_returns_only_the_view_fragment() {
-    let store = Store::open_with_passphrase(&test_db_path("fragment"), "s3cret").unwrap();
-    let router = freeflow_web::router(AppState::new(store));
+    let state = unlocked_state(&test_db_path("fragment")).await;
+    let router = freeflow_web::router(state);
 
     let response = router
         .oneshot(
@@ -87,23 +125,9 @@ async fn an_htmx_boosted_navigation_returns_only_the_view_fragment() {
 
 #[tokio::test]
 async fn every_screen_renders_successfully_against_a_freshly_seeded_vault() {
-    let mut store = Store::open_with_passphrase(&test_db_path("all-screens"), "s3cret").unwrap();
+    let state = unlocked_state_with_client(&test_db_path("all-screens")).await;
+    let router = freeflow_web::router(state);
 
-    // Un client réel, créé via la même couche applicative que la CLI et le serveur MCP —
-    // aucune des cinq écrans ne devrait planter sur une base non vide.
-    Executor::new(&mut store)
-        .execute(
-            &CreateClient {
-                name: "Kappa Software".to_string(),
-                siren: None,
-                vat_number: None,
-                address: None,
-            },
-            &human_ctx(),
-        )
-        .unwrap();
-
-    let router = freeflow_web::router(AppState::new(store));
     for path in [
         "/view/dashboard",
         "/view/prospection",
@@ -127,14 +151,11 @@ async fn every_screen_renders_successfully_against_a_freshly_seeded_vault() {
 #[tokio::test]
 async fn the_console_executes_real_cli_commands_against_the_same_vault() {
     let db_path = test_db_path("console");
-    let store = Store::open_with_passphrase(&db_path, "s3cret").unwrap();
-    let router = freeflow_web::router(AppState::new(store));
+    let state = unlocked_state(&db_path).await;
+    let router = freeflow_web::router(state);
 
-    // `--db` est un flag global clap (`global = true`) : le taper après la sous-commande
-    // fonctionne comme avant elle. Ça évite toute mutation de `std::env` dans le test (interdite
-    // par le lint `unsafe_code = "forbid"` du workspace depuis l'édition 2024) tout en exerçant
-    // le même chemin non interactif — la clé mise en cache par `open_with_passphrase` ci-dessus
-    // est ce que `run_capturing` retrouve via `Store::open_cached`.
+    // `--db` doit correspondre au coffre déjà ouvert par la fenêtre : la console l'exécute
+    // contre ce `Store` emprunté (`VaultAccess::Borrowed`), jamais une seconde connexion.
     let db_arg = db_path.to_string_lossy();
     let create_line = format!("client+create+--db+{db_arg}+--name+%22Kappa+Software%22");
     let create = router
@@ -180,9 +201,63 @@ async fn the_console_executes_real_cli_commands_against_the_same_vault() {
 }
 
 #[tokio::test]
+async fn the_console_refuses_a_db_flag_pointing_elsewhere() {
+    let db_path = test_db_path("console-elsewhere");
+    let state = unlocked_state(&db_path).await;
+    let router = freeflow_web::router(state);
+
+    let other = test_db_path("console-elsewhere-other");
+    let other_arg = other.to_string_lossy();
+    let line = format!("client+list+--db+{other_arg}+--json");
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/console/run")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(format!("line={line}")))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = body_text(response).await;
+    assert!(
+        body.contains("class=\"out err\""),
+        "un --db différent du coffre ouvert par la fenêtre doit être refusé : {body}"
+    );
+}
+
+#[tokio::test]
+async fn the_console_refuses_unlock_lock_init_and_backup_restore() {
+    let db_path = test_db_path("console-session-commands");
+    let state = unlocked_state(&db_path).await;
+    let router = freeflow_web::router(state);
+
+    for line in ["lock", "unlock", "init"] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/console/run")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(format!("line={line}")))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = body_text(response).await;
+        assert!(
+            body.contains("class=\"out err\""),
+            "`{line}` doit être refusée depuis la console : {body}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn static_assets_are_served_with_the_right_content_type() {
-    let store = Store::open_with_passphrase(&test_db_path("assets"), "s3cret").unwrap();
-    let router = freeflow_web::router(AppState::new(store));
+    let state = unlocked_state(&test_db_path("assets")).await;
+    let router = freeflow_web::router(state);
 
     for (path, content_type_prefix) in [
         ("/assets/app.css", "text/css"),
@@ -209,25 +284,27 @@ async fn static_assets_are_served_with_the_right_content_type() {
 }
 
 #[tokio::test]
+async fn assets_remain_reachable_while_locked() {
+    // /assets/* est explicitement exempté du middleware d'authentification : sans ça, l'écran
+    // de déverrouillage lui-même ne pourrait pas charger sa feuille de style.
+    let state = AppState::new(test_db_path("assets-locked"));
+    let router = freeflow_web::router(state);
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/assets/app.css")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
 async fn audit_recent_reflects_a_mutation_made_through_the_same_router() {
-    let store = Store::open_with_passphrase(&test_db_path("audit-recent"), "s3cret").unwrap();
-    let state = AppState::new(store);
-
-    {
-        let mut store = state.store.lock().await;
-        Executor::new(&mut store)
-            .execute(
-                &CreateClient {
-                    name: "Kappa Software".to_string(),
-                    siren: None,
-                    vat_number: None,
-                    address: None,
-                },
-                &human_ctx(),
-            )
-            .unwrap();
-    }
-
+    let state = unlocked_state_with_client(&test_db_path("audit-recent")).await;
     let router = freeflow_web::router(state);
     let response = router
         .oneshot(
@@ -242,4 +319,307 @@ async fn audit_recent_reflects_a_mutation_made_through_the_same_router() {
     let body = body_text(response).await;
     assert!(body.contains("clients.create_client"));
     assert!(body.contains("appliqué"));
+}
+
+#[tokio::test]
+async fn a_view_request_while_locked_renders_the_unlock_screen_directly() {
+    // Pas de `303 Location` pour une navigation de premier niveau : le protocole URI custom de
+    // la coque desktop (WebKitGTK) ne le suit pas de façon fiable (page blanche silencieuse,
+    // observé en pratique). Le middleware rend l'écran cible directement, en 200.
+    let db_path = test_db_path("locked-redirect");
+    Store::create(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    let state = AppState::new(db_path); // jamais déverrouillé
+
+    let router = freeflow_web::router(state);
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/view/dashboard")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(!response.headers().contains_key("location"));
+    let body = body_text(response).await;
+    assert!(body.contains("Coffre verrouillé"));
+}
+
+#[tokio::test]
+async fn an_htmx_request_while_locked_answers_204_with_hx_redirect() {
+    let db_path = test_db_path("locked-htmx-redirect");
+    Store::create(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    let state = AppState::new(db_path);
+
+    let router = freeflow_web::router(state);
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/audit/recent")
+                .header("HX-Request", "true")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(response.headers().get("HX-Redirect").unwrap(), "/unlock");
+}
+
+#[tokio::test]
+async fn no_vault_renders_the_setup_screen_directly_instead_of_unlock() {
+    let db_path = test_db_path("absent-vault");
+    let state = AppState::new(db_path); // ni .db ni .kdf n'existent
+
+    let router = freeflow_web::router(state);
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/view/dashboard")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_text(response).await;
+    assert!(body.contains("Créer le coffre"));
+}
+
+#[tokio::test]
+async fn posting_the_right_passphrase_unlocks_and_leaks_nothing_in_the_response() {
+    let db_path = test_db_path("unlock-success");
+    Store::create(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    let state = AppState::new(db_path);
+    let router = freeflow_web::router(state);
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/unlock")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(format!("passphrase={PASSPHRASE}")))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    // Le formulaire /unlock n'est pas boosté par htmx (bare_page ne charge même pas htmx.min.js) :
+    // sa soumission est une navigation de premier niveau ordinaire, donc son succès rend le
+    // tableau de bord directement plutôt que de rediriger vers `/`.
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(!response.headers().contains_key("location"));
+    let body = body_text(response).await;
+    assert!(body.contains("dashboard"));
+    assert!(!body.contains(PASSPHRASE));
+}
+
+#[tokio::test]
+async fn posting_a_wrong_passphrase_re_renders_the_form_and_stays_locked() {
+    let db_path = test_db_path("unlock-wrong");
+    Store::create(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    let state = AppState::new(db_path);
+    let router = freeflow_web::router(state.clone());
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/unlock")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from("passphrase=not-the-passphrase"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_text(response).await;
+    assert!(
+        !body.contains("not-the-passphrase"),
+        "la passphrase incorrecte ne doit jamais réapparaître dans la réponse"
+    );
+    assert!(
+        body.contains("passphrase incorrecte")
+            || body.contains("WrongPassphrase")
+            || body.contains("corrompu")
+    );
+}
+
+#[tokio::test]
+async fn the_creation_screen_appears_when_no_vault_exists() {
+    let db_path = test_db_path("setup-screen");
+    let state = AppState::new(db_path);
+    let router = freeflow_web::router(state);
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/setup")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_text(response).await;
+    assert!(body.contains("Créer le coffre"));
+    assert!(
+        body.contains("aucune"),
+        "l'avertissement d'irrécupérabilité doit être visible"
+    );
+}
+
+#[tokio::test]
+async fn setup_refuses_a_mismatched_confirmation() {
+    let db_path = test_db_path("setup-mismatch");
+    let state = AppState::new(db_path.clone());
+    let router = freeflow_web::router(state);
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/setup")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from("passphrase=abcdefgh&confirm=different"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_text(response).await;
+    assert!(body.contains("ne correspondent pas"));
+    assert!(!db_path.exists(), "aucun coffre ne doit avoir été créé");
+}
+
+#[tokio::test]
+async fn locking_redirects_the_next_request_to_unlock() {
+    let db_path = test_db_path("lock-button");
+    let state = unlocked_state(&db_path).await;
+    let router = freeflow_web::router(state);
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/lock")
+                .header("HX-Request", "true")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(response.headers().get("HX-Redirect").unwrap(), "/unlock");
+
+    let after = router
+        .oneshot(
+            Request::builder()
+                .uri("/view/dashboard")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(after.status(), StatusCode::OK);
+    let body = body_text(after).await;
+    assert!(body.contains("Coffre verrouillé"));
+}
+
+#[tokio::test]
+async fn an_idle_session_locks_itself_and_polling_audit_recent_does_not_keep_it_alive() {
+    let db_path = test_db_path("idle-timeout");
+    Store::create(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    let state = AppState::with_idle_timeout(db_path, Duration::from_millis(150));
+    state
+        .unlock(&Passphrase::from(PASSPHRASE), false)
+        .await
+        .unwrap();
+    let router = freeflow_web::router(state);
+
+    // Le polling du rail d'audit, plusieurs fois dans la fenêtre d'inactivité, ne doit jamais
+    // compter comme activité.
+    for _ in 0..3 {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/audit/recent")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "encore dans la fenêtre d'inactivité"
+        );
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/view/dashboard")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_text(response).await;
+    assert!(
+        body.contains("Coffre verrouillé"),
+        "au-delà du délai d'inactivité, malgré le polling continu de /audit/recent, la session \
+         doit avoir expiré : {body}"
+    );
+}
+
+#[tokio::test]
+async fn a_real_navigation_keeps_an_idle_session_alive() {
+    let db_path = test_db_path("idle-touch");
+    Store::create(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    let state = AppState::with_idle_timeout(db_path, Duration::from_millis(400));
+    state
+        .unlock(&Passphrase::from(PASSPHRASE), false)
+        .await
+        .unwrap();
+    let router = freeflow_web::router(state);
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let touched = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/view/dashboard")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        touched.status(),
+        StatusCode::OK,
+        "une vraie navigation doit prolonger la session"
+    );
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let still_alive = router
+        .oneshot(
+            Request::builder()
+                .uri("/view/dashboard")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        still_alive.status(),
+        StatusCode::OK,
+        "200ms + 200ms < 400ms depuis la dernière vraie navigation : la session doit être encore active"
+    );
 }

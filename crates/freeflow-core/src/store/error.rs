@@ -16,11 +16,23 @@ pub enum StoreError {
     #[error("dérivation de la clé impossible : {0}")]
     KeyDerivation(String),
 
-    #[error("aucune clé n'est en cache dans le trousseau du système : le coffre est verrouillé")]
+    #[error("aucune session valide dans le trousseau du système : le coffre est verrouillé")]
     Locked,
 
     #[error("passphrase incorrecte, ou fichier de coffre corrompu")]
     WrongPassphrase,
+
+    #[error("aucun coffre à {0} — lancez `freeflow init` pour en créer un")]
+    VaultNotFound(PathBuf),
+
+    #[error("un coffre existe déjà à {0}")]
+    VaultAlreadyExists(PathBuf),
+
+    #[error("trousseau du système indisponible : la session ne sera pas conservée")]
+    KeychainUnavailable,
+
+    #[error("impossible de déterminer un emplacement de coffre par défaut sur ce système")]
+    NoDefaultVaultPath,
 
     #[error("erreur SQLite : {0}")]
     Sqlite(#[from] rusqlite::Error),
