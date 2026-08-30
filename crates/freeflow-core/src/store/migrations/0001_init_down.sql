@@ -1,0 +1,12 @@
+DROP TABLE expenses;
+DROP TABLE payments;
+DROP TABLE invoice_lines;
+DROP TABLE invoices;
+DROP TABLE time_entries;
+DROP TABLE milestones;
+DROP TABLE missions;
+DROP TABLE quote_lines;
+DROP TABLE quotes;
+DROP TABLE opportunities;
+DROP TABLE contacts;
+DROP TABLE clients;

@@ -1,0 +1,29 @@
+---
+source: crates/freeflow-cli/tests/cli_integration.rs
+expression: json_result(&output.stdout)
+---
+{
+  "by_stage": [
+    {
+      "count": 0,
+      "stage": "qualification",
+      "weighted_amount_cents": 0
+    },
+    {
+      "count": 0,
+      "stage": "discovery",
+      "weighted_amount_cents": 0
+    },
+    {
+      "count": 0,
+      "stage": "proposal",
+      "weighted_amount_cents": 0
+    },
+    {
+      "count": 0,
+      "stage": "negotiation",
+      "weighted_amount_cents": 0
+    }
+  ],
+  "weighted_total_cents": 0
+}

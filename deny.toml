@@ -1,0 +1,58 @@
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = [
+    # Toutes des annonces "unmaintained" (aucune faille connue, aucun correctif disponible —
+    # chaque annonce RUSTSEC le dit explicitement), pas des vulnérabilités. Toutes tirées
+    # transitivement par `tauri`/`tauri-utils` (lot 9), hors de notre contrôle direct tant que
+    # Tauri ne migre pas ces dépendances lui-même. À réévaluer à chaque mise à jour de `tauri`.
+    #
+    # gtk-rs GTK3 (bindings du backend Linux de Tauri, remplacés en amont par des bindings GTK4
+    # que Tauri v2 n'utilise pas encore) :
+    "RUSTSEC-2024-0411",
+    "RUSTSEC-2024-0412",
+    "RUSTSEC-2024-0413",
+    "RUSTSEC-2024-0414",
+    "RUSTSEC-2024-0415",
+    "RUSTSEC-2024-0416",
+    "RUSTSEC-2024-0417",
+    "RUSTSEC-2024-0418",
+    "RUSTSEC-2024-0419",
+    "RUSTSEC-2024-0420",
+    # proc-macro-error, tiré par une dépendance de compilation de Tauri :
+    "RUSTSEC-2024-0370",
+    # unic-* (urlpattern → tauri-utils) :
+    "RUSTSEC-2025-0075",
+    "RUSTSEC-2025-0080",
+    "RUSTSEC-2025-0081",
+    "RUSTSEC-2025-0098",
+    "RUSTSEC-2025-0100",
+]
+
+[licenses]
+version = 2
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    # Copyleft faible, à granularité fichier : compatible avec un lien statique dans une
+    # application propriétaire ou open-source, tant que les fichiers MPL modifiés restent
+    # publiés sous MPL. Tiré par `cssparser`/`dom_query` (moteur CSS embarqué par Tauri, lot 9).
+    "MPL-2.0",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

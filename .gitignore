@@ -1,0 +1,11 @@
+/target
+/.direnv
+/result
+/result-*
+*.db
+*.db-wal
+*.db-shm
+*.kdf
+.DS_Store
+/.claude
+/crates/freeflow-desktop/gen

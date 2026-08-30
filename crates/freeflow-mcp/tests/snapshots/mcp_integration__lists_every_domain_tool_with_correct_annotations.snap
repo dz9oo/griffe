@@ -1,0 +1,74 @@
+---
+source: crates/freeflow-mcp/tests/mcp_integration.rs
+expression: "json!({\n    \"tool_names\": names, \"invoice_emit_input_schema\":\n    by_name(\"invoice.emit\").input_schema,\n})"
+---
+{
+  "invoice_emit_input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "client_id": {
+        "type": "string"
+      },
+      "issued_on": {
+        "type": "string"
+      },
+      "lines_json": {
+        "description": "Lignes de facture, au format JSON. Ex. :\n`[{\"description\":\"Sept.\",\"quantity\":9.5,\"unit_price\":65000,\"vat_rate\":\"Standard\"}]`",
+        "type": "string"
+      },
+      "mission_id": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "payment_terms_days": {
+        "description": "Délai de paiement en jours (défaut : 30).",
+        "format": "uint32",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "client_id",
+      "lines_json",
+      "issued_on"
+    ],
+    "type": "object"
+  },
+  "tool_names": [
+    "audit.verify_chain",
+    "bank.import",
+    "bank.reconcile",
+    "clients.create",
+    "clients.list",
+    "clients.show",
+    "invoice.aged_balance",
+    "invoice.credit_note",
+    "invoice.emit",
+    "invoice.verify_chain",
+    "mission.capacity",
+    "mission.create",
+    "mission.log_time",
+    "mission.rate",
+    "payment.record",
+    "pending.confirm",
+    "pending.list",
+    "prospect.advance",
+    "prospect.create",
+    "prospect.late",
+    "prospect.log_interaction",
+    "prospect.lose",
+    "prospect.orphans",
+    "prospect.pipeline",
+    "prospect.win",
+    "quote.accept",
+    "quote.create",
+    "quote.decline",
+    "quote.revise",
+    "quote.send"
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "FreeFlow",
+  "version": "0.1.0",
+  "identifier": "dev.freeflow.desktop",
+  "build": {
+    "frontendDist": "dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "FreeFlow",
+        "url": "freeflow://localhost/",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 960,
+        "minHeight": 600
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' freeflow:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' freeflow:; script-src 'self'"
+    }
+  },
+  "bundle": {
+    "icon": ["icons/icon.png"]
+  }
+}

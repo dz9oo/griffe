@@ -1,0 +1,8 @@
+---
+source: crates/freeflow-cli/tests/cli_integration.rs
+expression: value
+---
+{
+  "result": "[client_id]",
+  "status": "applied"
+}

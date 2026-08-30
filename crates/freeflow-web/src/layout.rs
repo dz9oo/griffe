@@ -1,0 +1,157 @@
+//! La coque commune à tous les écrans : barre de commandes (navigation), grille à deux
+//! colonnes (contenu + rail d'audit persistant), palette ⌘K. Chaque écran ne fournit que le
+//! contenu de `.content` — cette fonction assemble le reste, à l'identique de la maquette
+//! Studio retenue.
+
+use maud::{DOCTYPE, Markup, html};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewId {
+    Dashboard,
+    Prospection,
+    Missions,
+    Facturation,
+    Console,
+}
+
+impl ViewId {
+    #[must_use]
+    pub const fn path(self) -> &'static str {
+        match self {
+            Self::Dashboard => "/view/dashboard",
+            Self::Prospection => "/view/prospection",
+            Self::Missions => "/view/missions",
+            Self::Facturation => "/view/facturation",
+            Self::Console => "/view/console",
+        }
+    }
+
+    #[must_use]
+    pub const fn slug(self) -> &'static str {
+        match self {
+            Self::Dashboard => "dashboard",
+            Self::Prospection => "prospection",
+            Self::Missions => "missions",
+            Self::Facturation => "facturation",
+            Self::Console => "console",
+        }
+    }
+
+    #[must_use]
+    pub const fn title(self) -> &'static str {
+        self.slug()
+    }
+
+    const ALL: [Self; 5] = [
+        Self::Dashboard,
+        Self::Prospection,
+        Self::Missions,
+        Self::Facturation,
+        Self::Console,
+    ];
+}
+
+fn tabs(active: ViewId) -> Markup {
+    html! {
+        div class="tabs" id="tabs" {
+            @for view in ViewId::ALL {
+                a class={ "tab" @if view == active { " active" } }
+                  data-view=(view.slug())
+                  href=(view.path())
+                  hx-get=(view.path())
+                  hx-target="#content"
+                  hx-push-url="true"
+                  hx-swap="innerHTML" {
+                    (view.slug())
+                }
+            }
+        }
+    }
+}
+
+fn palette() -> Markup {
+    html! {
+        div class="palette-overlay" id="palette-overlay" {
+            div class="palette" {
+                input id="palette-input" type="text" placeholder="aller à… (client, mission, facture)" autocomplete="off";
+                div class="palette-results" {
+                    @for view in ViewId::ALL {
+                        a class="palette-item" data-label=(view.slug())
+                          href=(view.path())
+                          hx-get=(view.path())
+                          hx-target="#content"
+                          hx-push-url="true"
+                          hx-swap="innerHTML" {
+                            "→ " (view.slug())
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Le rail d'audit est vide de contenu initial ici : `GET /audit/recent` le peuple au
+/// chargement puis toutes les 2 secondes (`hx-trigger="load, every 2s"`), remplacement complet
+/// à chaque fois — voir [`crate::audit`] pour le choix du polling plutôt que SSE.
+fn audit_rail() -> Markup {
+    html! {
+        div class="audit" {
+            h3 { "journal d'audit" span { "live" } }
+            div id="audit-items"
+                hx-get="/audit/recent"
+                hx-trigger="load, every 2s"
+                hx-swap="innerHTML" {
+                div class="audit-empty" { "chargement…" }
+            }
+        }
+    }
+}
+
+/// Page complète : utilisée pour un chargement direct (navigation, rechargement). Les
+/// navigations suivantes, boostées par htmx, ne redemandent que [`view_fragment`].
+pub fn page(active: ViewId, vault_label: &str, content: Markup) -> Markup {
+    html! {
+        (DOCTYPE)
+        html lang="fr" {
+            head {
+                meta charset="UTF-8";
+                title { "FreeFlow — " (active.title()) }
+                meta name="viewport" content="width=device-width, initial-scale=1.0";
+                link rel="stylesheet" href="/assets/app.css";
+                script src="/assets/htmx.min.js" {}
+            }
+            body {
+                div class="shell" {
+                    div class="cmdbar" {
+                        a class="brand" href="/view/dashboard" hx-get="/view/dashboard" hx-target="#content" hx-push-url="true" {
+                            span class="dot" {} "freeflow"
+                        }
+                        (tabs(active))
+                        div class="cmdbar-right" {
+                            div class="lock" { span class="dot" {} (vault_label) }
+                            div class="palette-hint" onclick="document.getElementById('palette-overlay').classList.add('open'); document.getElementById('palette-input').focus();" { "⌘K palette de commandes" }
+                        }
+                    }
+                    div class="body-grid" {
+                        div class="content" id="content" { (content) }
+                        (audit_rail())
+                    }
+                }
+                (palette())
+                script src="/assets/app.js" {}
+            }
+        }
+    }
+}
+
+pub fn view_head(active: ViewId, subtitle: &str) -> Markup {
+    html! {
+        div class="view-head" {
+            div {
+                div class="view-title" { span class="prefix" { "~/" } (active.slug()) }
+                div class="view-sub" { (subtitle) }
+            }
+        }
+    }
+}
