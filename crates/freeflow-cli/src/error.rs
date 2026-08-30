@@ -17,6 +17,12 @@ pub enum CliError {
     #[error("aucun coffre à {0} — lancez `freeflow init` pour en créer un")]
     NoVault(PathBuf),
 
+    #[error(
+        "le coffre est occupé par un autre process : fermez la fenêtre FreeFlow et les autres \
+         commandes en cours, puis réessayez"
+    )]
+    VaultBusy,
+
     #[error("erreur de coffre : {0}")]
     Store(#[from] StoreError),
 
@@ -43,6 +49,7 @@ impl From<AppError> for CliError {
         match e {
             AppError::Store(StoreError::Locked) => Self::Locked,
             AppError::Store(StoreError::VaultNotFound(path)) => Self::NoVault(path),
+            AppError::Store(StoreError::VaultBusy) => Self::VaultBusy,
             AppError::Store(store_err) => Self::Store(store_err),
             AppError::Domain(msg) => Self::Domain(msg),
             AppError::PendingActionNotFound(id) | AppError::PendingActionAlreadyResolved(id) => {
@@ -71,6 +78,7 @@ impl CliError {
             Self::PendingAction(_) => 5,
             Self::UnknownConfirmableCommand(_) | Self::InvalidLinesJson(_) => 6,
             Self::NoVault(_) => 7,
+            Self::VaultBusy => 8,
             Self::Unexpected(_) => 1,
         }
     }

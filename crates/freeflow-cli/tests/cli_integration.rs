@@ -17,12 +17,18 @@ use predicates::prelude::*;
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
+/// Un répertoire propre à ce test, pas directement `<tmp>/vault.db` : entre autres,
+/// `db_path.with_file_name("backups")` (utilisé aussi bien par la sauvegarde automatique que par
+/// `passphrase change`) doit rester propre à un seul test, jamais un `<tmp>/backups` partagé par
+/// tous les tests tournant en parallèle dans le même process.
 fn temp_db(label: &str) -> PathBuf {
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    std::env::temp_dir().join(format!(
-        "freeflow-cli-test-{label}-{}-{n}",
-        std::process::id()
-    ))
+    std::env::temp_dir()
+        .join(format!(
+            "freeflow-cli-test-{label}-{}-{n}",
+            std::process::id()
+        ))
+        .join("vault.db")
 }
 
 fn freeflow() -> Command {
@@ -32,6 +38,7 @@ fn freeflow() -> Command {
 /// Écrit une passphrase dans un fichier temporaire en 0600 (Unix) et renvoie son chemin.
 fn passphrase_file(db: &Path, passphrase: &str) -> PathBuf {
     let path = db.with_extension("passphrase");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, passphrase).unwrap();
     #[cfg(unix)]
     {
@@ -434,6 +441,223 @@ fn vault_status_reports_absence_then_presence() {
     assert!(present_value["session_expires_at"].is_string());
 }
 
+/// Écrit une NOUVELLE passphrase dans un fichier temporaire distinct de celui de `provision()`,
+/// en 0600 (Unix) — même idiome que [`passphrase_file`].
+fn new_passphrase_file(db: &Path, passphrase: &str) -> PathBuf {
+    let path = db.with_extension("new-passphrase");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, passphrase).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    path
+}
+
+#[test]
+fn passphrase_change_rotates_the_passphrase_end_to_end() {
+    let db = temp_db("passphrase-change-rotates");
+    provision(&db);
+    let old_file = passphrase_file(&db, "s3cret");
+    let new_file = new_passphrase_file(&db, "new-s3cret");
+
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--passphrase-file"])
+        .arg(&old_file)
+        .arg("passphrase")
+        .arg("change")
+        .arg("--new-passphrase-file")
+        .arg(&new_file)
+        .assert()
+        .success();
+
+    // L'ancienne passphrase n'ouvre plus le coffre.
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--passphrase-file"])
+        .arg(&old_file)
+        .args(["--non-interactive", "client", "list", "--json"])
+        .assert()
+        .failure()
+        .code(3); // StoreError::WrongPassphrase, via CliError::Store
+
+    // La nouvelle passphrase, si.
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--passphrase-file"])
+        .arg(&new_file)
+        .args(["client", "list", "--json"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn passphrase_change_refuses_a_cached_session_as_proof_of_the_old_passphrase() {
+    let db = temp_db("passphrase-change-needs-old");
+    provision(&db); // laisse une session active dans le trousseau OS
+    let new_file = new_passphrase_file(&db, "new-s3cret");
+
+    // Aucune source pour l'ANCIENNE passphrase, et non-interactif : la session en cache ne
+    // peut pas en tenir lieu, même si elle prouve la possession de la clé.
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "--non-interactive",
+            "passphrase",
+            "change",
+            "--new-passphrase-file",
+        ])
+        .arg(&new_file)
+        .assert()
+        .failure()
+        .code(2); // CliError::Locked
+
+    // Rien n'a changé : la passphrase d'origine ouvre toujours le coffre.
+    let old_file = passphrase_file(&db, "s3cret");
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--passphrase-file"])
+        .arg(&old_file)
+        .args(["client", "list", "--json"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn passphrase_change_dry_run_writes_nothing() {
+    let db = temp_db("passphrase-change-dry-run");
+    provision(&db);
+    let old_file = passphrase_file(&db, "s3cret");
+    let new_file = new_passphrase_file(&db, "new-s3cret");
+
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--passphrase-file"])
+        .arg(&old_file)
+        .args(["--dry-run", "passphrase", "change", "--new-passphrase-file"])
+        .arg(&new_file)
+        .assert()
+        .success();
+
+    // L'ancienne passphrase ouvre toujours le coffre.
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--passphrase-file"])
+        .arg(&old_file)
+        .args(["client", "list", "--json"])
+        .assert()
+        .success();
+
+    let staged = db.with_file_name(format!(
+        "{}.kdf.new",
+        db.file_name().unwrap().to_string_lossy()
+    ));
+    assert!(
+        !staged.exists(),
+        "--dry-run ne doit jamais écrire de sidecar en attente"
+    );
+    let backups_dir = db.with_file_name("backups");
+    let has_prechange_backup = std::fs::read_dir(&backups_dir)
+        .map(|entries| {
+            entries.filter_map(Result::ok).any(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("pre-passphrase-change-")
+            })
+        })
+        .unwrap_or(false);
+    assert!(
+        !has_prechange_backup,
+        "--dry-run ne doit écrire aucune sauvegarde préalable"
+    );
+}
+
+#[test]
+fn passphrase_change_writes_a_backup_and_names_it_in_its_json_output() {
+    let db = temp_db("passphrase-change-json");
+    provision(&db);
+    let old_file = passphrase_file(&db, "s3cret");
+    let new_file = new_passphrase_file(&db, "new-s3cret");
+
+    let output = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--json", "--passphrase-file"])
+        .arg(&old_file)
+        .arg("passphrase")
+        .arg("change")
+        .arg("--new-passphrase-file")
+        .arg(&new_file)
+        .output()
+        .unwrap();
+    let value = json_result(&output.stdout);
+    assert_eq!(value["changed"], true);
+    assert_eq!(value["dry_run"], false);
+    assert_eq!(value["argon2"]["m_cost"], 65536);
+    let backup_path = value["backup"].as_str().unwrap();
+    assert!(
+        Path::new(backup_path).exists(),
+        "le chemin de sauvegarde renvoyé doit exister : {backup_path}"
+    );
+    assert!(backup_path.contains("pre-passphrase-change-"));
+}
+
+#[test]
+fn the_audit_chain_stays_intact_across_a_passphrase_change() {
+    let db = temp_db("passphrase-change-audit");
+    provision(&db);
+    let old_file = passphrase_file(&db, "s3cret");
+    let new_file = new_passphrase_file(&db, "new-s3cret");
+
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--passphrase-file"])
+        .arg(&old_file)
+        .arg("passphrase")
+        .arg("change")
+        .arg("--new-passphrase-file")
+        .arg(&new_file)
+        .assert()
+        .success();
+
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--passphrase-file"])
+        .arg(&new_file)
+        .args(["audit", "verify-chain"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn a_new_passphrase_file_readable_by_others_is_refused() {
+    let db = temp_db("passphrase-change-insecure-new-file");
+    provision(&db);
+    let old_file = passphrase_file(&db, "s3cret");
+    let new_file = new_passphrase_file(&db, "new-s3cret");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&new_file, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+    let assertion = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--passphrase-file"])
+        .arg(&old_file)
+        .arg("passphrase")
+        .arg("change")
+        .arg("--new-passphrase-file")
+        .arg(&new_file)
+        .assert();
+    #[cfg(unix)]
+    assertion
+        .failure()
+        .stderr(predicate::str::contains("chmod 600"));
+    #[cfg(not(unix))]
+    let _ = assertion;
+}
+
 #[test]
 fn top_level_help_is_a_stable_interface_contract() {
     let output = freeflow().arg("--help").output().unwrap();
@@ -443,6 +667,15 @@ fn top_level_help_is_a_stable_interface_contract() {
 #[test]
 fn invoice_help_is_a_stable_interface_contract() {
     let output = freeflow().args(["invoice", "--help"]).output().unwrap();
+    insta::assert_snapshot!(String::from_utf8(output.stdout).unwrap());
+}
+
+#[test]
+fn passphrase_change_help_is_a_stable_interface_contract() {
+    let output = freeflow()
+        .args(["passphrase", "change", "--help"])
+        .output()
+        .unwrap();
     insta::assert_snapshot!(String::from_utf8(output.stdout).unwrap());
 }
 

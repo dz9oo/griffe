@@ -7,6 +7,16 @@
 //! entrée expirée est purgée, pas seulement ignorée. Cette ouverture cœur ne fait jamais d'IO
 //! interactive (pas de prompt, pas d'exécution de commande externe) : c'est la responsabilité de
 //! l'adaptateur appelant (CLI, GUI) d'acquérir la passphrase, puis de la remettre ici.
+//!
+//! [`Store::change_passphrase`] ré-chiffre l'intégralité du coffre sous une clé neuve. Elle
+//! n'émet jamais `PRAGMA rekey` : dans `SQLCipher` 4.14, `sqlite3_rekey_v2` renvoie
+//! inconditionnellement `SQLITE_OK` même quand la transaction interne échoue (busy, page
+//! illisible, commit raté) — un rekey raté serait donc indiscernable d'un rekey réussi. À la
+//! place, une copie ré-chiffrée est écrite dans un fichier temporaire (même mécanisme que
+//! [`Store::backup_to`], déjà éprouvé), puis deux `rename()` la basculent en place : d'abord la
+//! base, puis son sidecar. Un sidecar en attente (`<db>.kdf.new`) rend la fenêtre entre les deux
+//! renames récupérable après une interruption, sans intervention de l'utilisateur — voir
+//! [`Store::open_with_passphrase_with`].
 
 mod error;
 mod kdf;
@@ -21,6 +31,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use rusqlite::Connection;
+use rusqlite::backup::StepResult;
+use subtle::ConstantTimeEq;
 use time::OffsetDateTime;
 use zeroize::Zeroize;
 
@@ -41,7 +53,22 @@ pub enum VaultStatus {
         sidecar_version: u8,
         /// `Some` si une session est en cache dans le trousseau et n'est pas expirée.
         session_expires_at: Option<OffsetDateTime>,
+        /// Un changement de passphrase a été commencé et interrompu avant sa bascule finale :
+        /// la prochaine ouverture avec la NOUVELLE passphrase le terminera d'elle-même, ou
+        /// l'ancienne redevient utilisable en le restaurant depuis la sauvegarde préalable.
+        passphrase_change_pending: bool,
     },
+}
+
+/// Résultat d'un [`Store::change_passphrase`] réussi : où trouver la sauvegarde préalable, et
+/// sous quels paramètres Argon2 la nouvelle clé a été dérivée (utile pour l'événement d'audit et
+/// l'affichage `--json`, sans avoir à exposer publiquement le type interne `kdf::Argon2Cost`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PassphraseChangeReport {
+    pub backup_path: PathBuf,
+    pub argon2_m_cost: u32,
+    pub argon2_t_cost: u32,
+    pub argon2_p_cost: u32,
 }
 
 /// Un coffre `FreeFlow` ouvert : une connexion `SQLCipher` déverrouillée.
@@ -78,14 +105,30 @@ impl Store {
         let sidecar =
             kdf::read(db_path)?.ok_or_else(|| StoreError::VaultNotFound(db_path.to_path_buf()))?;
         let account = sidecar.vault_id.as_account();
-        let cached = cache.load(&account).ok_or(StoreError::Locked)?;
+        let Some(cached) = cache.load(&account) else {
+            return Err(interrupted_or_locked(db_path)?);
+        };
         if !sidecar.verify(&cached.key) {
             // La session en cache ne correspond plus au sidecar (coffre recréé entre-temps,
             // par exemple) : la purger plutôt que d'ouvrir un coffre incohérent.
             let _ = cache.forget(&account);
-            return Err(StoreError::Locked);
+            return Err(interrupted_or_locked(db_path)?);
         }
-        Self::open_with_key(db_path, cached.key, sidecar.vault_id)
+        match Self::open_with_key(db_path, cached.key, sidecar.vault_id) {
+            Ok(store) => {
+                discard_rekey_orphans(db_path);
+                Ok(store)
+            }
+            // La clé en cache est valide pour le sidecar committé mais la base la refuse : la
+            // seule façon légitime dont ça arrive est une base déjà basculée sur une nouvelle
+            // clé pendant un changement de passphrase interrompu avant la bascule du sidecar
+            // (fenêtre F4). Une session en cache ne peut alors plus rien ouvrir — seule
+            // `open_with_passphrase_with`, qui a la passphrase en main, peut se rétablir seule.
+            Err(_) if kdf::read_staged(db_path)?.is_some() => Err(
+                StoreError::PassphraseChangeInterrupted(db_path.to_path_buf()),
+            ),
+            Err(e) => Err(e),
+        }
     }
 
     /// Crée un coffre neuf. Échoue si un `.db` ou un `.kdf` existe déjà à cet emplacement — une
@@ -110,10 +153,23 @@ impl Store {
     /// # Errors
     ///
     /// [`StoreError::VaultNotFound`] si `db_path` n'existe pas ; [`StoreError::WrongPassphrase`]
-    /// si la passphrase ne correspond pas au coffre.
+    /// si la passphrase ne correspond pas au coffre ;
+    /// [`StoreError::PassphraseChangeInterrupted`] si un changement de passphrase a été
+    /// interrompu et que `passphrase` ne correspond ni à l'ancienne ni à la nouvelle.
     pub fn open_with_passphrase(
         db_path: &Path,
         passphrase: &Passphrase,
+    ) -> Result<Self, StoreError> {
+        Self::open_with_passphrase_with(db_path, passphrase, &OsKeyring)
+    }
+
+    /// # Errors
+    ///
+    /// Voir [`Self::open_with_passphrase`].
+    pub fn open_with_passphrase_with(
+        db_path: &Path,
+        passphrase: &Passphrase,
+        cache: &dyn KeyCache,
     ) -> Result<Self, StoreError> {
         if !db_path.exists() {
             return Err(StoreError::VaultNotFound(db_path.to_path_buf()));
@@ -121,23 +177,69 @@ impl Store {
         let sidecar =
             kdf::read(db_path)?.ok_or_else(|| StoreError::VaultNotFound(db_path.to_path_buf()))?;
         let key = kdf::derive_key(passphrase, sidecar.salt(), sidecar.cost())?;
-        if !sidecar.verify(&key) {
-            return Err(StoreError::WrongPassphrase);
+
+        if sidecar.verify(&key) {
+            return match Self::finish_open_with_committed_sidecar(db_path, key, sidecar, cache) {
+                Ok(store) => Ok(store),
+                // Le sidecar committé accepte cette passphrase mais la base elle-même la
+                // refuse : la seule façon dont ça arrive légitimement est une base déjà
+                // basculée sur une nouvelle clé pendant un changement de passphrase interrompu
+                // *avant* la bascule du sidecar (fenêtre F4), où l'appelant vient justement de
+                // fournir l'ANCIENNE passphrase. Sans ce contrôle, ce cas ressortirait comme un
+                // trompeur `WrongPassphrase`.
+                Err(_) if kdf::read_staged(db_path)?.is_some() => Err(
+                    StoreError::PassphraseChangeInterrupted(db_path.to_path_buf()),
+                ),
+                Err(_) => Err(StoreError::WrongPassphrase),
+            };
         }
 
+        // La passphrase ne correspond pas au sidecar committé : avant de conclure qu'elle est
+        // fausse, essayer le sidecar en attente d'un changement interrompu — c'est l'autre moitié
+        // de la fenêtre F4, où l'appelant fournit cette fois la NOUVELLE passphrase.
+        if let Some(staged) = kdf::read_staged(db_path)? {
+            let staged_key = kdf::derive_key(passphrase, staged.salt(), staged.cost())?;
+            if staged.verify(&staged_key)
+                && let Ok(store) = Self::open_with_key(db_path, staged_key, staged.vault_id.clone())
+            {
+                // La base ouvre déjà sous la clé du sidecar en attente : le changement avait
+                // réellement abouti, seule la bascule du sidecar restait à faire. La terminer
+                // silencieusement — aucune action requise de l'utilisateur.
+                kdf::commit_staged(db_path)?;
+                return Ok(store);
+            }
+            return Err(StoreError::PassphraseChangeInterrupted(
+                db_path.to_path_buf(),
+            ));
+        }
+
+        Err(StoreError::WrongPassphrase)
+    }
+
+    /// Termine l'ouverture avec une passphrase déjà vérifiée contre le sidecar committé :
+    /// migration v1→v2 si nécessaire, ouverture effective, puis nettoyage d'un éventuel
+    /// orphelin de changement de passphrase (sidecar en attente ou copie temporaire) — sûr à
+    /// faire puisque le sidecar committé vient d'ouvrir la base avec succès.
+    fn finish_open_with_committed_sidecar(
+        db_path: &Path,
+        key: VaultKey,
+        sidecar: kdf::Sidecar,
+        cache: &dyn KeyCache,
+    ) -> Result<Self, StoreError> {
         let sidecar = if sidecar.is_legacy() {
             let legacy_account = sidecar.vault_id.as_account();
             let upgraded = kdf::upgrade_v1_to_v2(db_path, &sidecar, &key)?;
             // La session éventuellement en cache sous l'ancien compte (hash du chemin) ne
             // pourra plus jamais être retrouvée après la migration : autant la purger tout
             // de suite plutôt que de la laisser traîner indéfiniment.
-            let _ = OsKeyring.forget(&legacy_account);
+            let _ = cache.forget(&legacy_account);
             upgraded
         } else {
             sidecar
         };
-
-        Self::open_with_key(db_path, key, sidecar.vault_id)
+        let store = Self::open_with_key(db_path, key, sidecar.vault_id)?;
+        discard_rekey_orphans(db_path);
+        Ok(store)
     }
 
     fn open_with_key(
@@ -218,9 +320,11 @@ impl Store {
         let session_expires_at = cache
             .load(&sidecar.vault_id.as_account())
             .map(|c| c.expires_at);
+        let passphrase_change_pending = kdf::read_staged(db_path)?.is_some();
         Ok(VaultStatus::Exists {
             sidecar_version,
             session_expires_at,
+            passphrase_change_pending,
         })
     }
 
@@ -248,7 +352,11 @@ impl Store {
     /// Limite connue : la sauvegarde partage le `vault_id` — donc le compte trousseau — de
     /// l'original, puisque le sidecar est copié tel quel. Ce n'est pas un problème de
     /// confidentialité (la clé copiée est authentiquement valide pour cette copie), seulement
-    /// une curiosité si les deux fichiers sont ouverts et « mémorisés » en parallèle.
+    /// une curiosité si les deux fichiers sont ouverts et « mémorisés » en parallèle. Autre
+    /// conséquence à connaître : une sauvegarde écrite après un changement de passphrase
+    /// s'ouvre avec la NOUVELLE passphrase, mais toute sauvegarde plus ancienne — y compris
+    /// celle qu'écrit obligatoirement [`Self::change_passphrase`] juste avant de changer quoi
+    /// que ce soit — reste chiffrée avec l'ANCIENNE.
     ///
     /// # Errors
     ///
@@ -317,16 +425,197 @@ impl Store {
         if newest.is_some_and(|age| age < max_age) {
             return Ok(None);
         }
-        let format = time::format_description::parse_borrowed::<2>(
-            "[year][month][day]-[hour][minute][second]",
-        )
-        .expect("format de date littéral, toujours valide");
-        let stamp = time::OffsetDateTime::now_utc()
-            .format(&format)
-            .map_err(|e| StoreError::KeyDerivation(format!("horodatage de sauvegarde : {e}")))?;
+        let stamp = timestamp_now()?;
         let dest = backups_dir.join(format!("backup-{stamp}.db"));
         self.backup_to(&dest)?;
         Ok(Some(dest))
+    }
+
+    /// Change la passphrase du coffre : ré-chiffre l'intégralité des pages sous une clé neuve
+    /// (sel neuf, paramètres Argon2 courants — voir le doc de module pour le pourquoi de la
+    /// méthode). Écrit d'abord, dans `backups_dir`, une sauvegarde **obligatoire** dont le
+    /// chemin est renvoyé ; un échec de cette sauvegarde abandonne le changement sans rien
+    /// modifier au coffre. Cette sauvegarde, comme toute sauvegarde antérieure, reste chiffrée
+    /// avec l'ANCIENNE passphrase.
+    ///
+    /// `current` est exigée **même si ce `Store` est déjà déverrouillé** : ni une session en
+    /// cache dans le trousseau OS, ni une fenêtre déjà ouverte, ne peuvent tenir lieu de preuve
+    /// de possession de la passphrase — l'une comme l'autre pourraient être détenues par un
+    /// agent ou laissées actives sur une machine sans surveillance, et accepter l'une d'elles
+    /// permettrait d'enfermer l'utilisateur hors de son propre coffre.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::WrongPassphrase`] si `current` ne correspond pas au coffre ;
+    /// [`StoreError::VaultBusy`] si une autre connexion a une transaction d'écriture en cours au
+    /// moment du changement — une connexion simplement ouverte mais inactive ailleurs (fenêtre
+    /// GUI qui ne fait rien à cet instant précis, par exemple) ne tient aucun verrou en mode WAL
+    /// et n'est donc pas détectable : elle continuera de lire une vue figée jusqu'à sa prochaine
+    /// écriture, qui échouera alors normalement puisque le fichier a changé sous elle ;
+    /// [`StoreError::PassphraseChangeInterrupted`] si un changement précédent n'a pas été mené à
+    /// son terme (le terminer, ou restaurer la sauvegarde qu'il a écrite, avant d'en lancer un
+    /// autre) ; une erreur de dérivation si `new` est vide ou identique à `current`.
+    pub fn change_passphrase(
+        &mut self,
+        current: &Passphrase,
+        new: &Passphrase,
+        backups_dir: &Path,
+    ) -> Result<PassphraseChangeReport, StoreError> {
+        self.change_passphrase_with(current, new, backups_dir, &OsKeyring)
+    }
+
+    /// # Errors
+    ///
+    /// Voir [`Self::change_passphrase`].
+    pub fn change_passphrase_with(
+        &mut self,
+        current: &Passphrase,
+        new: &Passphrase,
+        backups_dir: &Path,
+        cache: &dyn KeyCache,
+    ) -> Result<PassphraseChangeReport, StoreError> {
+        let committed = kdf::read(&self.db_path)?
+            .ok_or_else(|| StoreError::VaultNotFound(self.db_path.clone()))?;
+        let current_key = kdf::derive_key(current, committed.salt(), committed.cost())?;
+        if !committed.verify(&current_key) {
+            return Err(StoreError::WrongPassphrase);
+        }
+
+        // Un changement précédent inachevé doit être terminé (en rouvrant avec la nouvelle
+        // passphrase) ou restauré depuis sa sauvegarde avant d'en commencer un autre : deux
+        // sidecars en attente à la fois ne pourraient plus être départagés à la reprise.
+        if kdf::read_staged(&self.db_path)?.is_some() {
+            return Err(StoreError::PassphraseChangeInterrupted(
+                self.db_path.clone(),
+            ));
+        }
+
+        if new.is_empty() {
+            return Err(StoreError::KeyDerivation(
+                "la nouvelle passphrase ne peut pas être vide".to_string(),
+            ));
+        }
+        let new_under_current_params = kdf::derive_key(new, committed.salt(), committed.cost())?;
+        if bool::from(
+            new_under_current_params
+                .as_bytes()
+                .ct_eq(current_key.as_bytes()),
+        ) {
+            return Err(StoreError::KeyDerivation(
+                "la nouvelle passphrase est identique à l'ancienne".to_string(),
+            ));
+        }
+
+        // Exclusivité : `journal_mode = DELETE` échoue (ou est ignorée, mode inchangé) tant
+        // qu'une autre connexion tient une transaction en cours — et son effet de bord
+        // (checkpoint + suppression du WAL) est de toute façon requis avant de renommer un
+        // nouveau fichier par-dessus celui-ci plus bas. Une contention réelle peut ressortir
+        // soit comme une erreur SQLite (`busy`/`locked`), soit comme un mode simplement resté
+        // inchangé : les deux sont traités comme `VaultBusy`.
+        let mode: String = self
+            .conn
+            .query_row("PRAGMA journal_mode = DELETE", [], |row| row.get(0))
+            .map_err(classify_busy)?;
+        if !mode.eq_ignore_ascii_case("delete") {
+            return Err(StoreError::VaultBusy);
+        }
+        self.conn
+            .execute_batch("PRAGMA locking_mode = EXCLUSIVE;")?;
+        self.conn
+            .execute_batch("BEGIN EXCLUSIVE; COMMIT;")
+            .map_err(|_| StoreError::VaultBusy)?;
+
+        // Sauvegarde obligatoire : point de non-retour si elle échoue, rien n'a encore été
+        // modifié sur le coffre lui-même.
+        let stamp = timestamp_now()?;
+        let backup_path = backups_dir.join(format!("pre-passphrase-change-{stamp}.db"));
+        self.backup_to(&backup_path)?;
+
+        let rekeyed_path = rekeyed_path(&self.db_path);
+        let result = self.rekey_in_place(&committed.vault_id, new, &rekeyed_path, cache);
+        if result.is_err() {
+            // Le coffre courant (encore sur l'ancienne clé tant que le sidecar n'a pas basculé)
+            // reste la source de vérité : ne laisser traîner ni copie ni sidecar en attente.
+            kdf::discard_staged(&self.db_path);
+            let _ = fs::remove_file(&rekeyed_path);
+        }
+        result.map(|(m_cost, t_cost, p_cost)| PassphraseChangeReport {
+            backup_path,
+            argon2_m_cost: m_cost,
+            argon2_t_cost: t_cost,
+            argon2_p_cost: p_cost,
+        })
+    }
+
+    /// Le cœur du changement de passphrase, une fois la sauvegarde obligatoire écrite : sidecar
+    /// en attente, copie ré-chiffrée, puis bascule en deux `rename()` (base, puis sidecar). Ne
+    /// touche `self` qu'au tout dernier moment, une fois le nouveau fichier de base réellement
+    /// en place et rouvert avec succès. Renvoie les paramètres Argon2 (m/t/p cost) sous lesquels
+    /// la nouvelle clé a été dérivée — de simples `u32`, pour ne pas avoir à exposer publiquement
+    /// le type interne `kdf::Argon2Cost`.
+    fn rekey_in_place(
+        &mut self,
+        vault_id: &kdf::VaultId,
+        new: &Passphrase,
+        rekeyed_path: &Path,
+        cache: &dyn KeyCache,
+    ) -> Result<(u32, u32, u32), StoreError> {
+        // Sidecar en attente : sel neuf, coût courant, même `vault_id`. Écrit et synchronisé sur
+        // disque avant de toucher la base — c'est ce qui rend la fenêtre suivante récupérable.
+        let (staged, new_key) = kdf::stage_rekey(&self.db_path, vault_id, new)?;
+        let cost = staged.cost();
+
+        // Copie ré-chiffrée page à page vers un fichier temporaire, sous la nouvelle clé.
+        let _ = fs::remove_file(rekeyed_path);
+        {
+            let mut dest = Connection::open(rekeyed_path)?;
+            apply_key(&dest, &new_key)?;
+            let backup = rusqlite::backup::Backup::new(&self.conn, &mut dest)?;
+            match backup.step(-1)? {
+                StepResult::Done => {}
+                // `More`/`Busy`/`Locked` : `step(-1)` demande explicitement toutes les pages
+                // restantes en un seul appel, donc n'importe quoi d'autre que `Done` signifie
+                // que la copie n'a pas pu aboutir d'un coup — traité comme « coffre occupé »,
+                // quelle que soit la variante exacte (l'énumération est `#[non_exhaustive]`).
+                _ => return Err(StoreError::VaultBusy),
+            }
+            drop(backup);
+            dest.execute_batch("PRAGMA foreign_keys = ON;")?;
+            tighten_permissions(rekeyed_path);
+            dest.close().map_err(|(_, e)| StoreError::from(e))?;
+        }
+        sync_dir(rekeyed_path.parent())?;
+
+        // Fermer la connexion actuelle (libère le verrou exclusif) avant de renommer son
+        // fichier par-dessus : POSIX autorise un rename sur un chemin dont un descripteur reste
+        // ouvert ailleurs, mais rien n'est gagné à le laisser ouvert ici. `Connection` ne peut
+        // pas être « vidée » sans valeur de remplacement : une connexion en mémoire jetable sert
+        // de valeur temporaire, remplacée pour de bon quelques lignes plus bas.
+        let old_conn = std::mem::replace(&mut self.conn, Connection::open_in_memory()?);
+        drop(old_conn);
+        remove_stale_wal_files(&self.db_path);
+
+        // Bascule de la base — entre en fenêtre F4 (base neuve, sidecar encore ancien).
+        fs::rename(rekeyed_path, &self.db_path)?;
+        sync_dir(self.db_path.parent())?;
+
+        // Bascule du sidecar — sort de la fenêtre F4, c'est LE point de commit.
+        kdf::commit_staged(&self.db_path)?;
+
+        // Réouverture sous la nouvelle clé.
+        let mut conn = Connection::open(&self.db_path)?;
+        apply_key(&conn, &new_key)?;
+        configure(&conn)?;
+        migrations::migrations().to_latest(&mut conn)?;
+        tighten_permissions(&self.db_path);
+
+        self.conn = conn;
+        self.key = new_key;
+        // `vault_id` est inchangé (c'est l'identité du coffre, pas de la clé) : le compte du
+        // trousseau reste le même, donc `forget` retrouve bien la session à purger.
+        let _ = cache.forget(&self.vault_id.as_account());
+
+        Ok((cost.m_cost, cost.t_cost, cost.p_cost))
     }
 
     /// Accès à la connexion sous-jacente, pour les dépôts des lots suivants.
@@ -358,9 +647,61 @@ impl Store {
     }
 }
 
+/// `StoreError::Locked`, sauf si un changement de passphrase est resté en attente — auquel cas
+/// c'est ce qui mérite d'être rapporté plutôt qu'un verrouillage ordinaire.
+fn interrupted_or_locked(db_path: &Path) -> Result<StoreError, StoreError> {
+    Ok(if kdf::read_staged(db_path)?.is_some() {
+        StoreError::PassphraseChangeInterrupted(db_path.to_path_buf())
+    } else {
+        StoreError::Locked
+    })
+}
+
+/// Supprime un sidecar en attente et une copie temporaire de ré-chiffrement orphelins — sûr à
+/// faire dès que le sidecar committé vient d'ouvrir la base avec succès, dans les deux cas où
+/// ça peut se produire : un changement jamais commencé (rien à faire), ou déjà mené à son terme
+/// (l'un ou l'autre a pu ne pas être nettoyé si le process a été interrompu juste après).
+fn discard_rekey_orphans(db_path: &Path) {
+    kdf::discard_staged(db_path);
+    let _ = fs::remove_file(rekeyed_path(db_path));
+}
+
+/// Chemin de la copie temporaire ré-chiffrée qu'utilise [`Store::change_passphrase`] avant de la
+/// renommer par-dessus le fichier de base.
+fn rekeyed_path(db_path: &Path) -> PathBuf {
+    let mut os_string = db_path.as_os_str().to_owned();
+    os_string.push(".rekeyed");
+    PathBuf::from(os_string)
+}
+
+/// Horodatage `YYYYMMDD-HHMMSS` pour un nom de fichier de sauvegarde.
+///
+/// # Panics
+///
+/// Ne panique jamais en pratique : le format de date est un littéral constant, toujours valide.
+fn timestamp_now() -> Result<String, StoreError> {
+    let format =
+        time::format_description::parse_borrowed::<2>("[year][month][day]-[hour][minute][second]")
+            .expect("format de date littéral, toujours valide");
+    OffsetDateTime::now_utc()
+        .format(&format)
+        .map_err(|e| StoreError::KeyDerivation(format!("horodatage de sauvegarde : {e}")))
+}
+
+/// Supprime les fichiers `-wal`/`-shm` résiduels d'un `.db` — après `PRAGMA journal_mode =
+/// DELETE` réussi, ils ne devraient déjà plus exister ; ce n'est qu'un filet de sécurité avant
+/// de renommer un nouveau fichier par-dessus.
+fn remove_stale_wal_files(db_path: &Path) {
+    for suffix in ["-wal", "-shm"] {
+        let mut os_string = db_path.as_os_str().to_owned();
+        os_string.push(suffix);
+        let _ = fs::remove_file(PathBuf::from(os_string));
+    }
+}
+
 /// Applique la clé `SQLCipher` à la connexion et valide qu'elle permet bien de lire le contenu
 /// déjà chiffré : `SQLCipher` ne vérifie rien avant une vraie lecture des pages.
-fn unlock(conn: &Connection, key: &VaultKey) -> Result<(), StoreError> {
+fn apply_key(conn: &Connection, key: &VaultKey) -> Result<(), StoreError> {
     // `PRAGMA key` seule ne touche jamais aux pages chiffrées : elle ne peut donc pas échouer.
     // On valide la clé explicitement avant de toucher journal_mode/foreign_keys, sans quoi une
     // mauvaise passphrase remonterait comme une `StoreError::Sqlite` générique plutôt que
@@ -373,10 +714,45 @@ fn unlock(conn: &Connection, key: &VaultKey) -> Result<(), StoreError> {
     conn.query_row("SELECT count(*) FROM sqlite_master", [], |row| {
         row.get::<_, i64>(0)
     })
-    .map_err(|_| StoreError::WrongPassphrase)?;
+    .map_err(|e| classify_key_check_failure(&e))?;
+    Ok(())
+}
+
+/// Distingue une vraie mauvaise passphrase d'un coffre simplement occupé par un autre process —
+/// sans ce contrôle, une commande concurrente pendant un changement de passphrase annoncerait
+/// à tort « passphrase incorrecte ».
+fn classify_key_check_failure(e: &rusqlite::Error) -> StoreError {
+    if is_busy_or_locked(e) {
+        return StoreError::VaultBusy;
+    }
+    StoreError::WrongPassphrase
+}
+
+/// `VaultBusy` si `e` est une erreur SQLite `busy`/`locked` (contention réelle avec une autre
+/// connexion), sinon l'erreur d'origine convertie normalement.
+fn classify_busy(e: rusqlite::Error) -> StoreError {
+    if is_busy_or_locked(&e) {
+        return StoreError::VaultBusy;
+    }
+    StoreError::from(e)
+}
+
+fn is_busy_or_locked(e: &rusqlite::Error) -> bool {
+    matches!(e, rusqlite::Error::SqliteFailure(err, _)
+        if matches!(err.code, rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked))
+}
+
+fn configure(conn: &Connection) -> Result<(), StoreError> {
     conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
     conn.busy_timeout(Duration::from_secs(5))?;
     Ok(())
+}
+
+/// Applique la clé puis configure la connexion — le chemin normal d'ouverture. Le changement de
+/// passphrase, lui, a besoin des deux étapes séparément (voir [`Store::rekey_in_place`]).
+fn unlock(conn: &Connection, key: &VaultKey) -> Result<(), StoreError> {
+    apply_key(conn, key)?;
+    configure(conn)
 }
 
 /// Resserre les permissions du `.db` et de son sidecar `.kdf` à 0600 (Unix uniquement) : les
@@ -394,6 +770,23 @@ fn tighten_permissions(db_path: &Path) {
     {
         let _ = db_path; // pas d'équivalent portable simple ; documenté comme limite Windows.
     }
+}
+
+/// Fsync d'un répertoire — pour rendre un `rename()` qui vient d'avoir lieu dedans réellement
+/// durable, pas seulement visible. Best-effort côté appelants qui ne peuvent pas se permettre
+/// d'échouer sur ce détail (`tighten_permissions`) ; propagé en erreur là où l'appelant construit
+/// justement une garantie de durabilité dessus (changement de passphrase).
+#[cfg(unix)]
+fn sync_dir(dir: Option<&Path>) -> Result<(), StoreError> {
+    if let Some(dir) = dir {
+        fs::File::open(dir)?.sync_all()?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn sync_dir(_dir: Option<&Path>) -> Result<(), StoreError> {
+    Ok(())
 }
 
 /// Âge du fichier `.db` le plus récemment modifié dans `backups_dir` — `None` si le dossier
@@ -771,5 +1164,348 @@ mod tests {
             })
             .unwrap();
         assert_eq!(name, "Argon Digital");
+    }
+
+    fn backups_dir_for(label: &str) -> PathBuf {
+        temp_db_path(label).parent().unwrap().join("backups")
+    }
+
+    #[test]
+    fn changing_the_passphrase_reencrypts_the_vault_and_only_the_new_one_opens_it() {
+        let db_path = temp_db_path("change-reencrypts");
+        let mut store = create(&db_path, "old-s3cret");
+        store
+            .connection()
+            .execute("INSERT INTO clients (id, name, created_at) VALUES ('c1', 'Argon Digital', '2026-08-29T00:00:00Z')", [])
+            .unwrap();
+
+        let backup_path = store
+            .change_passphrase(
+                &Passphrase::from("old-s3cret"),
+                &Passphrase::from("new-s3cret"),
+                &backups_dir_for("change-reencrypts"),
+            )
+            .unwrap()
+            .backup_path;
+        assert!(backup_path.exists());
+
+        let err = open(&db_path, "old-s3cret").unwrap_err();
+        assert!(matches!(err, StoreError::WrongPassphrase));
+
+        let reopened = open(&db_path, "new-s3cret").unwrap();
+        let name: String = reopened
+            .connection()
+            .query_row("SELECT name FROM clients WHERE id = 'c1'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(name, "Argon Digital");
+        assert_eq!(
+            crate::app::verify_chain(reopened.connection()).unwrap(),
+            crate::app::ChainStatus::Intact
+        );
+    }
+
+    #[test]
+    fn changing_the_passphrase_requires_the_current_one_even_on_an_already_open_store() {
+        let db_path = temp_db_path("change-requires-current");
+        let mut store = create(&db_path, "old-s3cret");
+        let sidecar_before = fs::read(kdf::sidecar_path(&db_path)).unwrap();
+
+        let err = store
+            .change_passphrase(
+                &Passphrase::from("totally-wrong"),
+                &Passphrase::from("new-s3cret"),
+                &backups_dir_for("change-requires-current"),
+            )
+            .unwrap_err();
+        assert!(matches!(err, StoreError::WrongPassphrase));
+
+        let sidecar_after = fs::read(kdf::sidecar_path(&db_path)).unwrap();
+        assert_eq!(sidecar_before, sidecar_after);
+        assert!(open(&db_path, "old-s3cret").is_ok());
+    }
+
+    #[test]
+    fn changing_the_passphrase_writes_a_mandatory_backup_that_still_opens_with_the_old_one() {
+        let db_path = temp_db_path("change-mandatory-backup");
+        let mut store = create(&db_path, "old-s3cret");
+
+        let backup_path = store
+            .change_passphrase(
+                &Passphrase::from("old-s3cret"),
+                &Passphrase::from("new-s3cret"),
+                &backups_dir_for("change-mandatory-backup"),
+            )
+            .unwrap()
+            .backup_path;
+
+        assert!(
+            backup_path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("pre-passphrase-change-")
+        );
+        Store::restore_from(
+            &backup_path,
+            &temp_db_path("change-mandatory-backup-restored"),
+            &Passphrase::from("old-s3cret"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn changing_the_passphrase_upgrades_legacy_argon2_parameters_and_draws_a_fresh_salt() {
+        let db_path = temp_db_path("change-upgrades-legacy");
+        // Sidecar v1 fabriqué à la main, comme les tests de `kdf` — jamais produit par
+        // `Store::create`, qui écrit v2 depuis toujours. Le coffre chiffré derrière est
+        // construit avec les mêmes primitives internes que `open_with_key`, pour obtenir un
+        // vrai coffre v1 authentique plutôt qu'un fichier vide qui ne prouverait rien.
+        let salt = [5u8; kdf::SALT_LEN];
+        let mut bytes = vec![1u8];
+        bytes.extend_from_slice(&salt);
+        fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+        fs::write(kdf::sidecar_path(&db_path), &bytes).unwrap();
+
+        let v1_sidecar = kdf::read(&db_path).unwrap().unwrap();
+        assert!(v1_sidecar.is_legacy());
+        let key = kdf::derive_key(
+            &Passphrase::from("old-s3cret"),
+            v1_sidecar.salt(),
+            v1_sidecar.cost(),
+        )
+        .unwrap();
+        Store::open_with_key(&db_path, key, v1_sidecar.vault_id.clone()).unwrap();
+
+        let mut store = open(&db_path, "old-s3cret").unwrap(); // migre v1 -> v2 au passage
+        let migrated = kdf::read(&db_path).unwrap().unwrap();
+        assert!(!migrated.is_legacy());
+        assert_eq!(
+            migrated.salt(),
+            &salt,
+            "la migration v1->v2 conserve le sel"
+        );
+
+        let backup_path = store
+            .change_passphrase(
+                &Passphrase::from("old-s3cret"),
+                &Passphrase::from("new-s3cret"),
+                &backups_dir_for("change-upgrades-legacy"),
+            )
+            .unwrap()
+            .backup_path;
+        assert!(backup_path.exists());
+
+        let after = kdf::read(&db_path).unwrap().unwrap();
+        assert!(!after.is_legacy());
+        assert_eq!(after.cost().m_cost, kdf::Argon2Cost::CURRENT.m_cost);
+        assert_ne!(after.salt(), &salt);
+    }
+
+    #[test]
+    fn changing_the_passphrase_keeps_the_vault_id_and_purges_the_cached_session() {
+        let db_path = temp_db_path("change-keeps-vault-id");
+        let cache = InMemoryKeyCache::new();
+        let mut store = create(&db_path, "old-s3cret");
+        let account_before = kdf::read(&db_path).unwrap().unwrap().vault_id.as_account();
+        store
+            .remember_with(Duration::from_secs(3600), &cache)
+            .unwrap();
+        assert!(Store::open_cached_with(&db_path, &cache).is_ok());
+
+        store
+            .change_passphrase_with(
+                &Passphrase::from("old-s3cret"),
+                &Passphrase::from("new-s3cret"),
+                &backups_dir_for("change-keeps-vault-id"),
+                &cache,
+            )
+            .unwrap();
+
+        let account_after = kdf::read(&db_path).unwrap().unwrap().vault_id.as_account();
+        assert_eq!(account_before, account_after);
+        let err = Store::open_cached_with(&db_path, &cache).unwrap_err();
+        assert!(matches!(err, StoreError::Locked));
+    }
+
+    #[test]
+    fn two_processes_cannot_rekey_a_vault_that_is_still_open_elsewhere() {
+        // Une connexion simplement ouverte mais inactive ne tient aucun verrou en mode WAL — ce
+        // n'est vrai que le temps d'une transaction en cours. La sonde `journal_mode = DELETE`
+        // ne peut donc détecter qu'une contention réelle, pas la seule présence d'un `Store`
+        // ouvert ailleurs : ce test simule la vraie contention (une transaction d'écriture en
+        // cours sur une seconde connexion), la seule que SQLite lui-même expose.
+        let db_path = temp_db_path("change-vault-busy");
+        let mut store = create(&db_path, "old-s3cret");
+        store
+            .connection()
+            .execute("INSERT INTO clients (id, name, created_at) VALUES ('c1', 'Argon Digital', '2026-08-29T00:00:00Z')", [])
+            .unwrap();
+        let second = open(&db_path, "old-s3cret").unwrap();
+        second
+            .connection()
+            .execute_batch("BEGIN IMMEDIATE;")
+            .unwrap();
+
+        let err = store
+            .change_passphrase(
+                &Passphrase::from("old-s3cret"),
+                &Passphrase::from("new-s3cret"),
+                &backups_dir_for("change-vault-busy"),
+            )
+            .unwrap_err();
+        assert!(matches!(err, StoreError::VaultBusy));
+
+        second.connection().execute_batch("ROLLBACK;").unwrap();
+        assert!(kdf::read_staged(&db_path).unwrap().is_none());
+        assert!(!rekeyed_path(&db_path).exists());
+        let reopened = open(&db_path, "old-s3cret").unwrap();
+        let count: i64 = reopened
+            .connection()
+            .query_row("SELECT count(*) FROM clients", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn an_interrupted_passphrase_change_is_finished_on_the_next_open_with_the_new_passphrase() {
+        let db_path = temp_db_path("interrupted-finishes");
+        let mut store = create(&db_path, "old-s3cret");
+        store
+            .connection()
+            .execute("INSERT INTO clients (id, name, created_at) VALUES ('c1', 'Argon Digital', '2026-08-29T00:00:00Z')", [])
+            .unwrap();
+        let backups_dir = backups_dir_for("interrupted-finishes");
+        let backup_path = store
+            .change_passphrase(
+                &Passphrase::from("old-s3cret"),
+                &Passphrase::from("new-s3cret"),
+                &backups_dir,
+            )
+            .unwrap()
+            .backup_path;
+
+        // Reconstruire l'état F4 (base neuve, sidecar encore ancien) à partir d'un changement
+        // déjà terminé : copier le sidecar désormais committé (nouveau) vers `.kdf.new`, puis
+        // restaurer l'ancien sidecar (celui de la sauvegarde préalable) comme committé.
+        fs::copy(
+            kdf::sidecar_path(&db_path),
+            kdf::staged_sidecar_path(&db_path),
+        )
+        .unwrap();
+        fs::copy(kdf::sidecar_path(&backup_path), kdf::sidecar_path(&db_path)).unwrap();
+        drop(store);
+
+        let reopened = open(&db_path, "new-s3cret").unwrap();
+        assert!(kdf::read_staged(&db_path).unwrap().is_none());
+        let name: String = reopened
+            .connection()
+            .query_row("SELECT name FROM clients WHERE id = 'c1'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(name, "Argon Digital");
+        let committed = kdf::read(&db_path).unwrap().unwrap();
+        assert!(
+            committed.verify(
+                &kdf::derive_key(
+                    &Passphrase::from("new-s3cret"),
+                    committed.salt(),
+                    committed.cost()
+                )
+                .unwrap()
+            )
+        );
+    }
+
+    #[test]
+    fn an_interrupted_passphrase_change_reports_itself_rather_than_a_wrong_passphrase() {
+        let db_path = temp_db_path("interrupted-reports-itself");
+        let mut store = create(&db_path, "old-s3cret");
+        let backups_dir = backups_dir_for("interrupted-reports-itself");
+        let backup_path = store
+            .change_passphrase(
+                &Passphrase::from("old-s3cret"),
+                &Passphrase::from("new-s3cret"),
+                &backups_dir,
+            )
+            .unwrap()
+            .backup_path;
+
+        fs::copy(
+            kdf::sidecar_path(&db_path),
+            kdf::staged_sidecar_path(&db_path),
+        )
+        .unwrap();
+        fs::copy(kdf::sidecar_path(&backup_path), kdf::sidecar_path(&db_path)).unwrap();
+        drop(store);
+
+        let err = open(&db_path, "old-s3cret").unwrap_err();
+        assert!(matches!(err, StoreError::PassphraseChangeInterrupted(_)));
+        assert!(
+            kdf::read_staged(&db_path).unwrap().is_some(),
+            "l'échec avec l'ancienne passphrase ne doit pas consommer le sidecar en attente"
+        );
+    }
+
+    #[test]
+    fn an_orphan_staged_sidecar_is_discarded_on_the_next_successful_open() {
+        let db_path = temp_db_path("orphan-staged-discarded");
+        let store = create(&db_path, "s3cret");
+        let sidecar = kdf::read(&db_path).unwrap().unwrap();
+        kdf::stage_rekey(&db_path, &sidecar.vault_id, &Passphrase::from("unused")).unwrap();
+        drop(store);
+
+        assert!(kdf::read_staged(&db_path).unwrap().is_some());
+        open(&db_path, "s3cret").unwrap();
+        assert!(kdf::read_staged(&db_path).unwrap().is_none());
+    }
+
+    #[test]
+    fn data_survives_a_passphrase_change_across_every_table() {
+        let db_path = temp_db_path("change-data-survives");
+        let mut store = create(&db_path, "old-s3cret");
+        store
+            .connection()
+            .execute("INSERT INTO clients (id, name, created_at) VALUES ('c1', 'Argon Digital', '2026-08-29T00:00:00Z')", [])
+            .unwrap();
+        let before_tables: i64 = store
+            .connection()
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'table'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        store
+            .change_passphrase(
+                &Passphrase::from("old-s3cret"),
+                &Passphrase::from("new-s3cret"),
+                &backups_dir_for("change-data-survives"),
+            )
+            .unwrap();
+
+        let after_tables: i64 = store
+            .connection()
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'table'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(before_tables, after_tables);
+        let name: String = store
+            .connection()
+            .query_row("SELECT name FROM clients WHERE id = 'c1'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(name, "Argon Digital");
+        assert_eq!(
+            crate::app::verify_chain(store.connection()).unwrap(),
+            crate::app::ChainStatus::Intact
+        );
     }
 }

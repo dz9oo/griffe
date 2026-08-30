@@ -67,6 +67,10 @@ enum TopCommand {
     /// État du coffre (existence, version du sidecar, session en cache), sans le déverrouiller.
     #[command(subcommand)]
     Vault(VaultCommand),
+    /// Passphrase du coffre : changement en place, ré-chiffrement complet, sauvegarde préalable
+    /// obligatoire.
+    #[command(subcommand)]
+    Passphrase(vault::PassphraseCommand),
     /// Clients.
     #[command(subcommand)]
     Client(client::ClientCommand),
@@ -243,6 +247,16 @@ fn dispatch(cli: Cli, access: VaultAccess<'_>) -> Result<String, CliError> {
                             .to_string(),
                     ));
                 }
+                TopCommand::Passphrase(_) => {
+                    return Err(CliError::Unexpected(
+                        "`passphrase change` ré-chiffre l'intégralité du coffre : lancez-la \
+                         depuis un terminal, fenêtre fermée"
+                            .to_string(),
+                    ));
+                }
+                // Lecture seule, sans effet sur la session de la fenêtre : contrairement aux
+                // trois commandes ci-dessus, rien n'empêche de la laisser passer.
+                TopCommand::Vault(VaultCommand::Status) => return vault::status(db_path, json),
                 TopCommand::Backup(backup::BackupCommand::Restore { .. }) => {
                     return Err(CliError::Unexpected(
                         "`backup restore` est un geste de reprise après sinistre : lancez-la depuis un terminal".to_string(),
@@ -260,6 +274,16 @@ fn dispatch(cli: Cli, access: VaultAccess<'_>) -> Result<String, CliError> {
                 TopCommand::Unlock => return vault::unlock(&db_path, &passphrase),
                 TopCommand::Lock => return vault::lock(&db_path),
                 TopCommand::Vault(VaultCommand::Status) => return vault::status(&db_path, json),
+                TopCommand::Passphrase(vault::PassphraseCommand::Change(args)) => {
+                    return vault::change_passphrase(
+                        &db_path,
+                        &passphrase,
+                        args,
+                        actor,
+                        dry_run,
+                        json,
+                    );
+                }
                 TopCommand::Backup(backup::BackupCommand::Restore { from, to }) => {
                     // Ne touche jamais le coffre par défaut : doit rester possible même si
                     // celui-là est justement celui qui est cassé, donc traité ici plutôt qu'après
@@ -288,7 +312,11 @@ fn run_command(
     json: bool,
 ) -> Result<String, CliError> {
     match command {
-        TopCommand::Init | TopCommand::Unlock | TopCommand::Lock | TopCommand::Vault(_) => {
+        TopCommand::Init
+        | TopCommand::Unlock
+        | TopCommand::Lock
+        | TopCommand::Vault(_)
+        | TopCommand::Passphrase(_) => {
             unreachable!("traitées avant l'ouverture du coffre, dans dispatch")
         }
         TopCommand::Backup(cmd) => backup::run(cmd, store),

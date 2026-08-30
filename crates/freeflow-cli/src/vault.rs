@@ -11,7 +11,10 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use clap::Subcommand;
+use freeflow_core::app::{Actor, ExecutionContext, Executor};
 use freeflow_core::store::{Passphrase, Store, StoreError, VaultStatus};
+use freeflow_core::vault::PassphraseChanged;
 
 use crate::error::CliError;
 use crate::parsers;
@@ -106,6 +109,7 @@ pub fn open_or_prompt(db_path: &Path, opts: &PassphraseOpts) -> Result<Store, Cl
 fn map_store_err(db_path: &Path, err: StoreError) -> CliError {
     match err {
         StoreError::VaultNotFound(_) => CliError::NoVault(db_path.to_path_buf()),
+        StoreError::VaultBusy => CliError::VaultBusy,
         other => other.into(),
     }
 }
@@ -327,12 +331,15 @@ pub fn status(db_path: &Path, json: bool) -> Result<String, CliError> {
         let value = match &status {
             VaultStatus::Absent => serde_json::json!({"path": db_path, "exists": false}),
             VaultStatus::Exists {
-                sidecar_version, ..
+                sidecar_version,
+                passphrase_change_pending,
+                ..
             } => serde_json::json!({
                 "path": db_path,
                 "exists": true,
                 "sidecar_version": sidecar_version,
                 "session_expires_at": expires_at_rfc3339(&status),
+                "passphrase_change_pending": passphrase_change_pending,
             }),
         };
         return Ok(serde_json::to_string_pretty(&value).expect("Value se sérialise toujours"));
@@ -344,16 +351,206 @@ pub fn status(db_path: &Path, json: bool) -> Result<String, CliError> {
             db_path.display()
         ),
         VaultStatus::Exists {
-            sidecar_version, ..
-        } => match expires_at_rfc3339(&status) {
-            Some(expires) => format!(
-                "coffre {} (sidecar v{sidecar_version}) — session active jusqu'à {expires}",
-                db_path.display()
-            ),
-            None => format!(
-                "coffre {} (sidecar v{sidecar_version}) — verrouillé",
-                db_path.display()
-            ),
-        },
+            sidecar_version,
+            passphrase_change_pending,
+            ..
+        } => {
+            let base = match expires_at_rfc3339(&status) {
+                Some(expires) => format!(
+                    "coffre {} (sidecar v{sidecar_version}) — session active jusqu'à {expires}",
+                    db_path.display()
+                ),
+                None => format!(
+                    "coffre {} (sidecar v{sidecar_version}) — verrouillé",
+                    db_path.display()
+                ),
+            };
+            if *passphrase_change_pending {
+                format!(
+                    "{base}\n⚠ un changement de passphrase a été interrompu : réessayez \
+                     `freeflow unlock`/toute commande avec la NOUVELLE passphrase, ou restaurez \
+                     la sauvegarde `pre-passphrase-change-*` écrite juste avant"
+                )
+            } else {
+                base
+            }
+        }
     })
+}
+
+/// `freeflow passphrase change`.
+#[derive(Debug, Subcommand)]
+pub enum PassphraseCommand {
+    /// Ré-chiffre l'intégralité du coffre sous une clé neuve. L'ancienne passphrase est exigée
+    /// même si une session est déjà active. Écrit d'abord une sauvegarde obligatoire — qui,
+    /// comme toute sauvegarde antérieure, reste chiffrée avec l'ANCIENNE passphrase.
+    Change(ChangeArgs),
+}
+
+#[derive(Debug, Clone, clap::Args)]
+pub struct ChangeArgs {
+    /// Lit la NOUVELLE passphrase dans ce fichier (refusé si son mode est plus ouvert que 0600).
+    #[arg(
+        long,
+        conflicts_with_all = ["new_passphrase_command", "new_passphrase_stdin"]
+    )]
+    pub new_passphrase_file: Option<PathBuf>,
+    /// Exécute cette commande et prend sa sortie standard comme NOUVELLE passphrase.
+    #[arg(
+        long,
+        conflicts_with_all = ["new_passphrase_file", "new_passphrase_stdin"]
+    )]
+    pub new_passphrase_command: Option<String>,
+    /// Lit la NOUVELLE passphrase sur l'entrée standard. Avec `--passphrase-stdin`, l'ancienne
+    /// est la première ligne lue et la nouvelle la seconde.
+    #[arg(
+        long,
+        conflicts_with_all = ["new_passphrase_file", "new_passphrase_command"]
+    )]
+    pub new_passphrase_stdin: bool,
+}
+
+/// Vue jetable de [`ChangeArgs`] sous la forme d'un [`PassphraseOpts`], pour réutiliser
+/// [`read_declared_source`] (permissions du fichier comprises) plutôt que de dupliquer sa
+/// logique pour une seconde passphrase.
+fn new_passphrase_opts(args: &ChangeArgs) -> PassphraseOpts {
+    PassphraseOpts {
+        passphrase_file: args.new_passphrase_file.clone(),
+        passphrase_command: args.new_passphrase_command.clone(),
+        passphrase_stdin: args.new_passphrase_stdin,
+        non_interactive: false,
+        remember: false,
+        ttl: None,
+    }
+}
+
+/// Acquiert la nouvelle passphrase : source déclarée en priorité (jamais confirmée par double
+/// saisie, comme pour `init`), sinon double saisie masquée au terminal — jamais interactive si
+/// `opts.non_interactive` ou si stderr n'est pas un terminal, exactement comme `init`.
+fn resolve_new_passphrase(
+    args: &ChangeArgs,
+    opts: &PassphraseOpts,
+) -> Result<Passphrase, CliError> {
+    if let Some(passphrase) = read_declared_source(&new_passphrase_opts(args))? {
+        return Ok(passphrase);
+    }
+    if opts.non_interactive || !std::io::stderr().is_terminal() {
+        return Err(CliError::Locked);
+    }
+    eprintln!(
+        "⚠ Le coffre entier va être ré-chiffré sous une clé neuve. Une sauvegarde est écrite \
+         avant toute modification, mais elle — comme toutes les sauvegardes existantes — \
+         restera chiffrée avec l'ANCIENNE passphrase : ne la détruisez pas."
+    );
+    let first = prompt_tty("Nouvelle passphrase : ")?;
+    let second = prompt_tty("Confirmez la nouvelle passphrase : ")?;
+    if first.expose() != second.expose() {
+        return Err(CliError::Unexpected(
+            "les deux saisies ne correspondent pas".to_string(),
+        ));
+    }
+    Ok(first)
+}
+
+/// `freeflow passphrase change` : voir [`PassphraseCommand::Change`]. `--dry-run` acquiert et
+/// valide les deux passphrases (l'ancienne vérifiée contre le coffre, la nouvelle non vide et
+/// différente de l'ancienne) et affiche ce qui serait fait, sans rien écrire — ni sauvegarde, ni
+/// sidecar en attente, ni entrée d'audit.
+///
+/// # Errors
+pub fn change_passphrase(
+    db_path: &Path,
+    opts: &PassphraseOpts,
+    args: &ChangeArgs,
+    actor: Actor,
+    dry_run: bool,
+    json: bool,
+) -> Result<String, CliError> {
+    let current = resolve_passphrase(opts, "Passphrase actuelle du coffre : ")?;
+    let new = resolve_new_passphrase(args, opts)?;
+    if new.is_empty() {
+        return Err(CliError::Unexpected(
+            "la passphrase ne peut pas être vide".to_string(),
+        ));
+    }
+
+    let mut store =
+        Store::open_with_passphrase(db_path, &current).map_err(|e| map_store_err(db_path, e))?;
+    let backups_dir = db_path.with_file_name("backups");
+
+    if dry_run {
+        let page_count: i64 = store
+            .connection()
+            .query_row("PRAGMA page_count", [], |row| row.get(0))
+            .map_err(|e| CliError::Unexpected(format!("lecture de PRAGMA page_count : {e}")))?;
+        // `SQLCipher` répond à `PRAGMA page_size` par une colonne TEXTE nommée
+        // `cipher_page_size` plutôt que l'entier habituel de SQLite (voir sa surcharge de la
+        // pragma `page_size`/`cipher_page_size` dans son propre `pragma.c`) : lire une chaîne
+        // puis la parser, pas un entier direct.
+        let page_size: i64 = store
+            .connection()
+            .query_row("PRAGMA page_size", [], |row| row.get::<_, String>(0))
+            .map_err(|e| CliError::Unexpected(format!("lecture de PRAGMA page_size : {e}")))?
+            .parse()
+            .map_err(|e| CliError::Unexpected(format!("PRAGMA page_size non numérique : {e}")))?;
+        let bytes_to_reencrypt = page_count * page_size;
+        if json {
+            let value = serde_json::json!({
+                "path": db_path,
+                "dry_run": true,
+                "changed": false,
+                "bytes_to_reencrypt": bytes_to_reencrypt,
+            });
+            return Ok(serde_json::to_string_pretty(&value).expect("Value se sérialise toujours"));
+        }
+        return Ok(format!(
+            "(dry-run) passphrase inchangée pour {} — {bytes_to_reencrypt} octets seraient \
+             ré-chiffrés, une sauvegarde préalable serait écrite dans {}",
+            db_path.display(),
+            backups_dir.display()
+        ));
+    }
+
+    let report = store
+        .change_passphrase(&current, &new, &backups_dir)
+        .map_err(|e| map_store_err(db_path, e))?;
+
+    if opts.wants_remember()
+        && let Err(e) = store.remember(opts.ttl.unwrap_or(DEFAULT_SESSION_TTL))
+    {
+        eprintln!("⚠ {e}");
+    }
+
+    let event = PassphraseChanged {
+        backup_path: report.backup_path.display().to_string(),
+        argon2_m_cost: report.argon2_m_cost,
+        argon2_t_cost: report.argon2_t_cost,
+        argon2_p_cost: report.argon2_p_cost,
+    };
+    let ctx = ExecutionContext::new(actor, false);
+    if let Err(e) = Executor::new(&mut store).execute(&event, &ctx) {
+        eprintln!("⚠ passphrase changée mais non consignée dans le journal d'audit : {e}");
+    }
+
+    if json {
+        let value = serde_json::json!({
+            "path": db_path,
+            "dry_run": false,
+            "changed": true,
+            "backup": report.backup_path,
+            "argon2": {
+                "m_cost": report.argon2_m_cost,
+                "t_cost": report.argon2_t_cost,
+                "p_cost": report.argon2_p_cost,
+            },
+        });
+        return Ok(serde_json::to_string_pretty(&value).expect("Value se sérialise toujours"));
+    }
+
+    Ok(format!(
+        "✓ passphrase changée : {}\n  sauvegarde préalable : {}\n  ⚠ cette sauvegarde et toutes \
+         les précédentes s'ouvrent avec l'ANCIENNE passphrase.",
+        db_path.display(),
+        report.backup_path.display()
+    ))
 }

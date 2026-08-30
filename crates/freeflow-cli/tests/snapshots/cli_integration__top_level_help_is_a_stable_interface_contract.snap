@@ -7,26 +7,27 @@ Gestion pour indépendant — pilotable en CLI et par un agent LLM (MCP).
 Usage: freeflow [OPTIONS] <COMMAND>
 
 Commands:
-  init      Crée le coffre. Échoue s'il existe déjà — double saisie masquée en mode interactif
-  unlock    Vérifie la passphrase et, avec `--remember`, met la clé en cache dans le trousseau OS. Ne crée jamais le coffre (utilisez `freeflow init`)
-  lock      Verrouille le coffre : purge la session du trousseau OS
-  vault     État du coffre (existence, version du sidecar, session en cache), sans le déverrouiller
-  client    Clients
-  company   Identité légale de l'émetteur (mentions obligatoires des factures)
-  prospect  Prospection : opportunités, pipeline, interactions
-  mission   Missions : création, saisie de temps, TJM effectif, capacité
-  quote     Devis : création, révision, envoi, acceptation
-  invoice   Facturation : émission, avoir, vérification de la chaîne, balance âgée
-  payment   Encaissements
-  bank      Relevés bancaires : import et rapprochement
-  pending   Actions en attente de confirmation humaine (proposées par un agent)
-  audit     Journal d'audit
-  confirm   Confirme une action en attente : retrouve son type de commande et l'applique
-  expense   Dépenses professionnelles et TVA déductible
-  fiscal    Échéances fiscales indicatives (CA3, IS, CFE)
-  forecast  Prévisionnel de trésorerie sur 12 mois
-  backup    Sauvegardes : une automatique et silencieuse tourne déjà à chaque commande ; ces sous-commandes ne servent qu'à en forcer une, ou à restaurer
-  help      Print this message or the help of the given subcommand(s)
+  init        Crée le coffre. Échoue s'il existe déjà — double saisie masquée en mode interactif
+  unlock      Vérifie la passphrase et, avec `--remember`, met la clé en cache dans le trousseau OS. Ne crée jamais le coffre (utilisez `freeflow init`)
+  lock        Verrouille le coffre : purge la session du trousseau OS
+  vault       État du coffre (existence, version du sidecar, session en cache), sans le déverrouiller
+  passphrase  Passphrase du coffre : changement en place, ré-chiffrement complet, sauvegarde préalable obligatoire
+  client      Clients
+  company     Identité légale de l'émetteur (mentions obligatoires des factures)
+  prospect    Prospection : opportunités, pipeline, interactions
+  mission     Missions : création, saisie de temps, TJM effectif, capacité
+  quote       Devis : création, révision, envoi, acceptation
+  invoice     Facturation : émission, avoir, vérification de la chaîne, balance âgée
+  payment     Encaissements
+  bank        Relevés bancaires : import et rapprochement
+  pending     Actions en attente de confirmation humaine (proposées par un agent)
+  audit       Journal d'audit
+  confirm     Confirme une action en attente : retrouve son type de commande et l'applique
+  expense     Dépenses professionnelles et TVA déductible
+  fiscal      Échéances fiscales indicatives (CA3, IS, CFE)
+  forecast    Prévisionnel de trésorerie sur 12 mois
+  backup      Sauvegardes : une automatique et silencieuse tourne déjà à chaque commande ; ces sous-commandes ne servent qu'à en forcer une, ou à restaurer
+  help        Print this message or the help of the given subcommand(s)
 
 Options:
       --db <DB>

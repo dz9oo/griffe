@@ -228,12 +228,22 @@ async fn the_console_refuses_a_db_flag_pointing_elsewhere() {
 }
 
 #[tokio::test]
-async fn the_console_refuses_unlock_lock_init_and_backup_restore() {
+async fn the_console_refuses_unlock_lock_init_passphrase_change_and_backup_restore() {
     let db_path = test_db_path("console-session-commands");
     let state = unlocked_state(&db_path).await;
     let router = freeflow_web::router(state);
 
-    for line in ["lock", "unlock", "init"] {
+    // `--db` doit correspondre au coffre déjà ouvert par la fenêtre — sans lui, ces commandes
+    // seraient refusées pour la mauvaise raison (le contrôle `--db`, qui s'exécute avant celui
+    // qui nous intéresse ici) et le test ne prouverait rien sur le refus qu'il prétend vérifier.
+    let db_arg = db_path.to_string_lossy();
+    for line in [
+        format!("lock --db {db_arg}"),
+        format!("unlock --db {db_arg}"),
+        format!("init --db {db_arg}"),
+        format!("passphrase change --db {db_arg}"),
+        format!("backup restore --db {db_arg} --from /nonexistent-a.db --to /nonexistent-b.db"),
+    ] {
         let response = router
             .clone()
             .oneshot(
@@ -251,7 +261,44 @@ async fn the_console_refuses_unlock_lock_init_and_backup_restore() {
             body.contains("class=\"out err\""),
             "`{line}` doit être refusée depuis la console : {body}"
         );
+        assert!(
+            !body.contains("ne peut pas pointer ailleurs"),
+            "`{line}` doit être refusée pour elle-même, pas pour un `--db` mal formé : {body}"
+        );
     }
+}
+
+#[tokio::test]
+async fn the_console_allows_vault_status_a_read_only_command() {
+    // `vault status` est en lecture seule et sans effet sur la session de la fenêtre,
+    // contrairement à `init`/`unlock`/`lock`/`passphrase change` : elle doit donc réussir
+    // plutôt que de heurter le `unreachable!` qui protège les autres commandes de session
+    // (régression : ce cas était auparavant absent de la liste de refus tout en n'étant pas
+    // non plus traité, ce qui faisait paniquer la console).
+    let db_path = test_db_path("console-vault-status");
+    let state = unlocked_state(&db_path).await;
+    let router = freeflow_web::router(state);
+
+    // `--db` doit correspondre au coffre déjà ouvert par la fenêtre, comme pour toute autre
+    // commande passée par la console (voir `the_console_executes_real_cli_commands_against_the_same_vault`).
+    let db_arg = db_path.to_string_lossy();
+    let line = format!("vault+status+--db+{db_arg}");
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/console/run")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(format!("line={line}")))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = body_text(response).await;
+    assert!(
+        !body.contains("class=\"out err\""),
+        "`vault status` est une lecture seule, elle ne doit pas être refusée : {body}"
+    );
 }
 
 #[tokio::test]
@@ -443,6 +490,69 @@ async fn posting_a_wrong_passphrase_re_renders_the_form_and_stays_locked() {
         body.contains("passphrase incorrecte")
             || body.contains("WrongPassphrase")
             || body.contains("corrompu")
+    );
+}
+
+fn sidecar_path_for(db_path: &Path) -> PathBuf {
+    let mut os_string = db_path.as_os_str().to_owned();
+    os_string.push(".kdf");
+    PathBuf::from(os_string)
+}
+
+fn staged_sidecar_path_for(db_path: &Path) -> PathBuf {
+    let mut os_string = db_path.as_os_str().to_owned();
+    os_string.push(".kdf.new");
+    PathBuf::from(os_string)
+}
+
+#[tokio::test]
+async fn the_unlock_screen_warns_about_an_interrupted_passphrase_change() {
+    // Fabrique la fenêtre F4 (voir `freeflow_core::store` : base déjà basculée sur la nouvelle
+    // clé, sidecar committé encore l'ancien) en repartant d'un changement réellement mené à son
+    // terme — même construction que les tests de reprise du cœur.
+    let db_path = test_db_path("unlock-passphrase-change-interrupted");
+    let mut store = Store::create(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    let backups_dir = db_path.with_file_name("backups");
+    let report = store
+        .change_passphrase(
+            &Passphrase::from(PASSPHRASE),
+            &Passphrase::from("new-s3cret"),
+            &backups_dir,
+        )
+        .unwrap();
+    drop(store);
+
+    std::fs::copy(
+        sidecar_path_for(&db_path),
+        staged_sidecar_path_for(&db_path),
+    )
+    .unwrap();
+    std::fs::copy(
+        sidecar_path_for(&report.backup_path),
+        sidecar_path_for(&db_path),
+    )
+    .unwrap();
+
+    // `AppState::new` sans `try_open_cached` : la session démarre verrouillée, comme au premier
+    // lancement de la fenêtre sur un coffre existant.
+    let state = AppState::new(db_path);
+    let router = freeflow_web::router(state);
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/unlock")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_text(response).await;
+    assert!(
+        body.contains("changement de passphrase a été interrompu"),
+        "l'écran de déverrouillage doit signaler le changement interrompu avant toute tentative \
+         de saisie : {body}"
     );
 }
 

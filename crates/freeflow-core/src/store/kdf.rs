@@ -16,9 +16,15 @@
 //! Un coffre v1 est migré vers v2 au premier déverrouillage réussi par passphrase, en conservant
 //! exactement le même sel et les mêmes paramètres : la clé dérivée ne change donc pas, aucun
 //! re-chiffrement `SQLCipher` n'est nécessaire.
+//!
+//! Un changement de passphrase ([`stage_rekey`]/[`commit_staged`]) passe par un sidecar en
+//! attente `<db>.kdf.new`, écrit et synchronisé sur disque *avant* que la base elle-même ne soit
+//! ré-chiffrée : si le process est interrompu entre la bascule de la base et celle du sidecar,
+//! les deux clés (ancienne et nouvelle) restent retrouvables sur disque, ce qui rend la reprise
+//! possible sans intervention (voir `Store::open_with_passphrase_with`).
 
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use argon2::{Algorithm, Argon2, Params, Version};
@@ -181,36 +187,48 @@ pub fn derive_key(
     Ok(VaultKey::new(bytes))
 }
 
-pub fn sidecar_path(db_path: &Path) -> PathBuf {
-    let mut os_string = db_path.as_os_str().to_owned();
-    os_string.push(".kdf");
+/// Ajoute `suffix` à l'`OsString` complète de `path`, plutôt que de remplacer son extension —
+/// c'est ce qui permet à `<db>.kdf` et `<db>.kdf.new` d'avoir chacun leur propre fichier
+/// temporaire (`<db>.kdf.tmp` / `<db>.kdf.new.tmp`) sans jamais se les disputer.
+fn append_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut os_string = path.as_os_str().to_owned();
+    os_string.push(suffix);
     PathBuf::from(os_string)
 }
 
-/// Lit le sidecar existant, s'il y en a un. `None` si le fichier n'existe pas — l'appelant en
-/// déduit que le coffre lui-même n'existe pas.
-///
-/// # Errors
-///
-/// [`StoreError::CorruptKdfParams`] si le fichier existe mais ne correspond à aucun format connu.
-pub fn read(db_path: &Path) -> Result<Option<Sidecar>, StoreError> {
-    let path = sidecar_path(db_path);
-    let bytes = match fs::read(&path) {
+#[must_use]
+pub fn sidecar_path(db_path: &Path) -> PathBuf {
+    append_suffix(db_path, ".kdf")
+}
+
+/// Sidecar en attente d'un changement de passphrase en cours : écrit par [`stage_rekey`],
+/// basculé sur [`sidecar_path`] par [`commit_staged`]. Sa seule présence signale un changement
+/// interrompu — voir `Store::open_with_passphrase_with`.
+#[must_use]
+pub fn staged_sidecar_path(db_path: &Path) -> PathBuf {
+    append_suffix(db_path, ".kdf.new")
+}
+
+fn read_sidecar_file(path: &Path, db_path: &Path) -> Result<Option<Sidecar>, StoreError> {
+    let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(StoreError::Io(e)),
     };
+    parse_sidecar(&bytes, db_path, path).map(Some)
+}
 
+fn parse_sidecar(bytes: &[u8], db_path: &Path, path: &Path) -> Result<Sidecar, StoreError> {
     match bytes.first() {
         Some(&V1_VERSION) if bytes.len() == V1_LEN => {
             let mut salt = [0u8; SALT_LEN];
             salt.copy_from_slice(&bytes[1..]);
-            Ok(Some(Sidecar {
+            Ok(Sidecar {
                 vault_id: VaultId::legacy_for(db_path),
                 salt,
                 cost: Argon2Cost::LEGACY,
                 verifier: None,
-            }))
+            })
         }
         Some(&V2_VERSION) if bytes.len() == V2_LEN => {
             let mut vault_id = [0u8; VAULT_ID_LEN];
@@ -227,7 +245,7 @@ pub fn read(db_path: &Path) -> Result<Option<Sidecar>, StoreError> {
             offset += 4;
             let mut verifier = [0u8; VERIFIER_LEN];
             verifier.copy_from_slice(&bytes[offset..offset + VERIFIER_LEN]);
-            Ok(Some(Sidecar {
+            Ok(Sidecar {
                 vault_id: VaultId::V2(vault_id),
                 salt,
                 cost: Argon2Cost {
@@ -236,10 +254,31 @@ pub fn read(db_path: &Path) -> Result<Option<Sidecar>, StoreError> {
                     p_cost,
                 },
                 verifier: Some(verifier),
-            }))
+            })
         }
-        _ => Err(StoreError::CorruptKdfParams(path)),
+        _ => Err(StoreError::CorruptKdfParams(path.to_path_buf())),
     }
+}
+
+/// Lit le sidecar existant, s'il y en a un. `None` si le fichier n'existe pas — l'appelant en
+/// déduit que le coffre lui-même n'existe pas.
+///
+/// # Errors
+///
+/// [`StoreError::CorruptKdfParams`] si le fichier existe mais ne correspond à aucun format connu.
+pub fn read(db_path: &Path) -> Result<Option<Sidecar>, StoreError> {
+    read_sidecar_file(&sidecar_path(db_path), db_path)
+}
+
+/// Lit le sidecar en attente d'un changement de passphrase, s'il y en a un. `None` si aucun
+/// changement n'est en cours.
+///
+/// # Errors
+///
+/// [`StoreError::CorruptKdfParams`] si le fichier existe mais ne correspond à aucun format connu
+/// — ne devrait jamais arriver en pratique, [`stage_rekey`] n'écrit que des sidecars v2 valides.
+pub fn read_staged(db_path: &Path) -> Result<Option<Sidecar>, StoreError> {
+    read_sidecar_file(&staged_sidecar_path(db_path), db_path)
 }
 
 /// Crée un sidecar v2 neuf pour un coffre en cours de création : sel et identifiant aléatoires,
@@ -302,6 +341,68 @@ pub fn upgrade_v1_to_v2(
     })
 }
 
+/// Prépare — sans committer — le sidecar de la nouvelle passphrase d'un changement en cours :
+/// même `vault_id` (c'est l'identité du coffre, pas de la clé), sel neuf, paramètres de coût
+/// courants. Écrit `<db>.kdf.new` de façon durable (fsync du fichier et du répertoire parent) :
+/// c'est ce qui rend la fenêtre entre les deux renames de `Store::change_passphrase` récupérable
+/// après une interruption, plutôt qu'un simple espoir.
+///
+/// # Errors
+///
+/// Une erreur d'IO si l'écriture échoue.
+pub fn stage_rekey(
+    db_path: &Path,
+    vault_id: &VaultId,
+    new: &Passphrase,
+) -> Result<(Sidecar, VaultKey), StoreError> {
+    let path = staged_sidecar_path(db_path);
+    let VaultId::V2(vault_id_bytes) = vault_id else {
+        // N'arrive jamais en pratique : `Store::open_with_passphrase` migre tout sidecar v1 en
+        // v2 avant de rendre un `Store` à l'appelant, donc `change_passphrase` ne voit jamais de
+        // `VaultId::LegacyV1`.
+        return Err(StoreError::CorruptKdfParams(path));
+    };
+    let mut salt = [0u8; SALT_LEN];
+    rand::rng().fill_bytes(&mut salt);
+    let cost = Argon2Cost::CURRENT;
+
+    let key = derive_key(new, &salt, cost)?;
+    let verifier = compute_verifier(vault_id_bytes, &key);
+    write_v2(&path, vault_id_bytes, &salt, cost, &verifier)?;
+
+    Ok((
+        Sidecar {
+            vault_id: VaultId::V2(*vault_id_bytes),
+            salt,
+            cost,
+            verifier: Some(verifier),
+        },
+        key,
+    ))
+}
+
+/// Bascule le sidecar en attente sur le sidecar committé : `rename(<db>.kdf.new, <db>.kdf)` +
+/// fsync du répertoire. C'est *le* point de commit d'un changement de passphrase — avant cet
+/// appel, l'ancienne passphrase reste celle qui fait autorité.
+///
+/// # Errors
+///
+/// Une erreur d'IO si le rename échoue (le sidecar en attente reste alors en place, inchangé).
+pub fn commit_staged(db_path: &Path) -> Result<(), StoreError> {
+    let staged = staged_sidecar_path(db_path);
+    let committed = sidecar_path(db_path);
+    fs::rename(&staged, &committed)?;
+    sync_dir(committed.parent())?;
+    Ok(())
+}
+
+/// Supprime un sidecar en attente orphelin (changement de passphrase interrompu avant la bascule
+/// de la base, ou déjà mené à son terme). Best-effort : un échec ici ne doit jamais faire
+/// échouer l'appelant, l'orphelin sera de toute façon réessayé au prochain succès d'ouverture.
+pub fn discard_staged(db_path: &Path) {
+    let _ = fs::remove_file(staged_sidecar_path(db_path));
+}
+
 fn write_v2(
     path: &Path,
     vault_id: &[u8; VAULT_ID_LEN],
@@ -320,18 +421,52 @@ fn write_v2(
     write_atomic(path, &bytes)
 }
 
+/// Écrit `bytes` dans `path` de façon atomique et durable : fichier temporaire créé 0600 dès sa
+/// création (jamais un umask plus permissif, même transitoirement), `fsync` du fichier puis
+/// `rename`, puis `fsync` du répertoire parent — sans ce dernier, un rename fraîchement fait
+/// peut ne pas survivre à une coupure d'alimentation, ce qui viderait de son sens la conception
+/// « sidecar en attente » du changement de passphrase.
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), StoreError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let tmp_path = path.with_extension("kdf.tmp");
-    fs::write(&tmp_path, bytes)?;
-    #[cfg(unix)]
+    let tmp_path = append_suffix(path, ".tmp");
     {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&tmp_path, fs::Permissions::from_mode(0o600))?;
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&tmp_path)?;
+        #[cfg(unix)]
+        {
+            // `mode()` ne s'applique qu'à la création : un `.tmp` résiduel d'un run précédent
+            // (process tué avant le rename) garderait sinon ses anciennes permissions.
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        }
+        file.write_all(bytes)?;
+        file.sync_all()?;
     }
     fs::rename(&tmp_path, path)?;
+    sync_dir(path.parent())?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn sync_dir(dir: Option<&Path>) -> io::Result<()> {
+    if let Some(dir) = dir {
+        fs::File::open(dir)?.sync_all()?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn sync_dir(_dir: Option<&Path>) -> io::Result<()> {
+    // Pas d'équivalent portable simple à l'ouverture d'un répertoire comme fichier ; documenté
+    // comme limite Windows, au même titre que `tighten_permissions` dans `store.rs`.
     Ok(())
 }
 
@@ -422,5 +557,52 @@ mod tests {
         fs::remove_file(sidecar_path(&db_path)).unwrap();
         let (second, _) = create(&db_path, &"other-passphrase".into()).unwrap();
         assert_ne!(first.vault_id.as_account(), second.vault_id.as_account());
+    }
+
+    #[test]
+    fn a_staged_sidecar_carries_the_same_vault_id_but_a_new_salt_and_current_cost() {
+        let db_path = temp_db_path("stage-rekey");
+        let (committed, _) = create(&db_path, &"s3cret".into()).unwrap();
+
+        let (staged, new_key) =
+            stage_rekey(&db_path, &committed.vault_id, &"new-s3cret".into()).unwrap();
+        assert_eq!(staged.vault_id, committed.vault_id);
+        assert_ne!(staged.salt(), committed.salt());
+        assert!(staged.verify(&new_key));
+        // Le sidecar committé n'a pas bougé : le sidecar en attente est un fichier à part.
+        let reread_committed = read(&db_path).unwrap().unwrap();
+        assert_eq!(reread_committed.salt(), committed.salt());
+    }
+
+    #[test]
+    fn committing_a_staged_sidecar_replaces_the_committed_one_atomically() {
+        let db_path = temp_db_path("commit-staged");
+        create(&db_path, &"s3cret".into()).unwrap();
+        let sidecar = read(&db_path).unwrap().unwrap();
+
+        let (staged, new_key) =
+            stage_rekey(&db_path, &sidecar.vault_id, &"new-s3cret".into()).unwrap();
+        commit_staged(&db_path).unwrap();
+
+        assert!(read_staged(&db_path).unwrap().is_none());
+        let committed = read(&db_path).unwrap().unwrap();
+        assert_eq!(committed.salt(), staged.salt());
+        assert!(committed.verify(&new_key));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_sidecar_is_never_left_world_readable_even_transiently() {
+        use std::os::unix::fs::PermissionsExt;
+        let db_path = temp_db_path("permissions");
+        create(&db_path, &"s3cret".into()).unwrap();
+
+        let mode = fs::metadata(sidecar_path(&db_path))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+        assert!(!append_suffix(&sidecar_path(&db_path), ".tmp").exists());
     }
 }

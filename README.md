@@ -66,6 +66,8 @@ implémentation.
   visible dans l'historique du shell ou `/proc/<pid>/environ`. La clé n'est mise en cache dans le
   trousseau OS (Keychain macOS / Secret Service Linux) que sur demande explicite
   (`--remember`/case « se souvenir »), toujours avec une expiration bornée (12 h par défaut).
+  `freeflow passphrase change` permet d'en changer sans perdre les données du coffre (voir
+  « Changer de passphrase » plus bas).
 - Aucun port réseau ouvert, aucune connexion sortante. Les relances/emails sont générés en
   brouillons `.eml` ouverts dans ton client mail par défaut — rien n'est jamais envoyé par l'app
   elle-même.
@@ -140,8 +142,8 @@ ta confirmation (`freeflow pending list`, `freeflow confirm <id>`).
 > ne la lit. Si tu l'avais exportée dans un fichier de shell (`.bashrc`, `.envrc`...), retire-la
 > et considère cette passphrase comme potentiellement compromise (elle est restée en clair dans
 > ton historique de shell et dans l'environnement de chaque process que tu as lancé) —
-> remplace-la par une nouvelle avec `freeflow init` sur un nouveau coffre, ou par la commande
-> `passphrase change` une fois disponible (voir feuille de route).
+> remplace-la avec `freeflow passphrase change` (voir ci-dessous), qui garde le même coffre et
+> toutes ses données.
 
 ### Usage quotidien
 
@@ -166,6 +168,24 @@ freeflow backup restore --from ~/Sauvegardes/freeflow-20260101.db --to ~/nouveau
 `backup restore` ne touche jamais ton coffre par défaut — il faut lui donner une destination
 explicite, restaurée puis vérifiée avant de la mettre en usage.
 
+### Changer de passphrase
+
+```bash
+freeflow passphrase change   # invite l'ancienne, puis deux fois la nouvelle (saisies masquées)
+```
+
+Ré-chiffre l'intégralité du coffre sous une clé neuve. L'ancienne passphrase est **toujours**
+exigée, même si une session est déjà active dans le trousseau OS ou si la fenêtre est déjà
+déverrouillée — ni l'une ni l'autre ne prouvent que c'est bien toi qui tapes la commande. Une
+sauvegarde est écrite automatiquement avant toute modification (`backups/pre-passphrase-change-
+*.db`) ; si l'opération échoue pour quelque raison que ce soit, rien n'a été touché. `--dry-run`
+affiche ce qui serait fait (volume à ré-chiffrer, emplacement de la sauvegarde) sans rien écrire.
+`--new-passphrase-file`/`--new-passphrase-command`/`--new-passphrase-stdin` existent en miroir des
+options `--passphrase-*` pour un usage non interactif. **Cette sauvegarde préalable — comme toute
+sauvegarde antérieure — reste chiffrée avec l'ANCIENNE passphrase** : ne t'en débarrasse pas sous
+prétexte que tu viens d'en changer. Ce n'est volontairement pas exposé dans la GUI ni dans la
+console de la fenêtre : lance-la depuis un terminal, fenêtre fermée (voir `CLAUDE.md`).
+
 ### Empaquetage natif
 
 `nix build` produit les binaires (`freeflow`, `freeflow-desktop`, `freeflow-mcp`) pour ta
@@ -187,10 +207,20 @@ distribués prêts à l'emploi — voir la checklist ci-dessous.
 
 ## Feuille de route / améliorations futures
 
-- [ ] `freeflow passphrase change` : re-dérivation de la clé et `PRAGMA rekey` en place. Volontairement
-      hors périmètre du chantier de déverrouillage initial — c'est l'opération la plus risquée du
-      dépôt (réécriture de toutes les pages chiffrées) et mérite son propre lot, avec sauvegarde
-      préalable obligatoire.
+- [x] `freeflow passphrase change` : ré-chiffrement complet du coffre, sauvegarde préalable
+      obligatoire (voir « Changer de passphrase » ci-dessus). N'émet pas `PRAGMA rekey` :
+      `sqlite3_rekey_v2` de SQLCipher renvoie inconditionnellement succès même quand la
+      transaction interne échoue (page illisible, coffre occupé, commit raté) — inutilisable pour
+      l'opération la plus risquée du dépôt. À la place, une copie ré-chiffrée est écrite dans un
+      fichier temporaire puis basculée en place par deux `rename()` (base, puis sidecar) ; un
+      sidecar en attente rend la fenêtre entre les deux renames récupérable automatiquement au
+      prochain déverrouillage, sans intervention.
+- [ ] Sidecar v3 à clé maître enveloppée (modèle LUKS) : le coffre serait chiffré par une clé
+      aléatoire, elle-même enveloppée dans le sidecar par la clé dérivée d'Argon2id. Un changement
+      de passphrase deviendrait la réécriture atomique d'un seul petit fichier — plus de
+      ré-chiffrement de la base, plus de fenêtre de bascule à gérer. Demande sa propre migration
+      des coffres v2 existants et un algorithme d'enveloppement (AEAD), hors périmètre du lot qui
+      a introduit `passphrase change`.
 - [ ] Bundle `.dmg` macOS signé et notarisé, construit et testé sur une vraie machine macOS.
 - [ ] Bundle `.AppImage` Linux fonctionnel (résoudre l'incompatibilité `linuxdeploy-plugin-gtk` /
       chemin `gdk-pixbuf` non-FHS, ou bundler depuis une distribution Linux FHS conventionnelle).

@@ -39,4 +39,16 @@ pub enum StoreError {
 
     #[error("échec de migration : {0}")]
     Migration(#[from] rusqlite_migration::Error),
+
+    #[error(
+        "le coffre est ouvert par un autre process : fermez la fenêtre FreeFlow et les autres \
+         commandes en cours, puis réessayez"
+    )]
+    VaultBusy,
+
+    #[error(
+        "un changement de passphrase a été interrompu sur {0} : réessayez avec la NOUVELLE \
+         passphrase, ou restaurez la sauvegarde écrite juste avant le changement"
+    )]
+    PassphraseChangeInterrupted(PathBuf),
 }

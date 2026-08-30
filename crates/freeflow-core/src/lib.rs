@@ -15,3 +15,4 @@ pub mod missions;
 pub mod prospection;
 pub mod quotes;
 pub mod store;
+pub mod vault;

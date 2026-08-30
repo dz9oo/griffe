@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use freeflow_core::app::{Actor, ExecutionContext};
-use freeflow_core::store::{Passphrase, Store, StoreError};
+use freeflow_core::store::{Passphrase, Store, StoreError, VaultStatus};
 use tokio::sync::Mutex;
 
 /// Durée par défaut d'une session mise en cache dans le trousseau OS quand l'utilisateur coche
@@ -50,7 +50,12 @@ pub struct AppState {
 pub enum VaultSnapshot {
     /// Aucun `.db`/`.kdf` à cet emplacement : rien à déverrouiller, seulement à créer.
     Absent,
-    Locked,
+    Locked {
+        /// Un changement de passphrase a été commencé et interrompu — l'écran de déverrouillage
+        /// le signale avant même une première tentative plutôt que de laisser l'utilisateur
+        /// découvrir la cause par un premier échec.
+        passphrase_change_pending: bool,
+    },
     Unlocked,
 }
 
@@ -156,7 +161,15 @@ impl AppState {
             *session = VaultSession::Locked;
         }
         match &*session {
-            VaultSession::Locked => VaultSnapshot::Locked,
+            VaultSession::Locked => VaultSnapshot::Locked {
+                passphrase_change_pending: matches!(
+                    Store::status(&self.db_path),
+                    Ok(VaultStatus::Exists {
+                        passphrase_change_pending: true,
+                        ..
+                    })
+                ),
+            },
             VaultSession::Unlocked { .. } => VaultSnapshot::Unlocked,
         }
     }

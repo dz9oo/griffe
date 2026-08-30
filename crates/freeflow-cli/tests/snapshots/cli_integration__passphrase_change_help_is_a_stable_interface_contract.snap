@@ -1,0 +1,39 @@
+---
+source: crates/freeflow-cli/tests/cli_integration.rs
+expression: "String::from_utf8(output.stdout).unwrap()"
+---
+Ré-chiffre l'intégralité du coffre sous une clé neuve. L'ancienne passphrase est exigée même si une session est déjà active. Écrit d'abord une sauvegarde obligatoire — qui, comme toute sauvegarde antérieure, reste chiffrée avec l'ANCIENNE passphrase
+
+Usage: freeflow passphrase change [OPTIONS]
+
+Options:
+      --db <DB>
+          Chemin du coffre chiffré. Sinon, lu depuis `FREEFLOW_DB`
+      --new-passphrase-file <NEW_PASSPHRASE_FILE>
+          Lit la NOUVELLE passphrase dans ce fichier (refusé si son mode est plus ouvert que 0600)
+      --json
+          Imprime le résultat en JSON plutôt qu'en texte lisible — le contrat que consomme un agent
+      --new-passphrase-command <NEW_PASSPHRASE_COMMAND>
+          Exécute cette commande et prend sa sortie standard comme NOUVELLE passphrase
+      --actor <ACTOR>
+          Qui déclenche la commande : `human` (défaut), `system`, ou `agent:<session>` [default: human]
+      --new-passphrase-stdin
+          Lit la NOUVELLE passphrase sur l'entrée standard. Avec `--passphrase-stdin`, l'ancienne est la première ligne lue et la nouvelle la seconde
+      --dry-run
+          N'écrit rien : montre ce qui serait fait
+      --no-color
+          Désactive la coloration (déjà minimale) de la sortie humaine
+      --passphrase-file <PASSPHRASE_FILE>
+          Lit la passphrase dans ce fichier (refusé si son mode est plus ouvert que 0600)
+      --passphrase-command <PASSPHRASE_COMMAND>
+          Exécute cette commande et prend sa sortie standard comme passphrase — ex. `pass show freeflow`, `op read op://Perso/freeflow/passphrase`
+      --passphrase-stdin
+          Lit la passphrase sur l'entrée standard (une ligne)
+      --non-interactive
+          N'invite jamais au terminal : échoue proprement si aucune source non interactive n'a fourni de passphrase, plutôt que de bloquer en attente d'une frappe
+      --remember
+          Met la clé en cache dans le trousseau OS pour les appels suivants (jamais automatique)
+      --ttl <TTL>
+          Durée de la session mise en cache (défaut 12h). Implique `--remember`
+  -h, --help
+          Print help

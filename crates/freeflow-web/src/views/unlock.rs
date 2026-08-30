@@ -3,12 +3,22 @@
 
 use maud::{Markup, html};
 
-pub fn unlock_form(error: Option<&str>) -> Markup {
+/// `pending` : un changement de passphrase a été commencé et interrompu (voir
+/// `StoreError::PassphraseChangeInterrupted`) — affiché avant même une première tentative,
+/// pour ne pas laisser l'utilisateur deviner pourquoi son ancienne passphrase ne suffit plus.
+pub fn unlock_form(error: Option<&str>, pending: bool) -> Markup {
     html! {
         div class="auth-card" {
             div class="auth-brand" { span class="dot" {} "freeflow" }
             div class="auth-title" { "Coffre verrouillé" }
             div class="auth-sub" { "Saisissez la passphrase pour le déverrouiller." }
+            @if pending {
+                div class="auth-warning" {
+                    "Un changement de passphrase a été interrompu. Réessayez avec la NOUVELLE "
+                    "passphrase — la bascule se terminera d'elle-même. À défaut, restaurez la "
+                    "sauvegarde `pre-passphrase-change-*` écrite juste avant le changement."
+                }
+            }
             @if let Some(err) = error {
                 div class="auth-error" { (err) }
             }

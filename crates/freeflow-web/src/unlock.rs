@@ -48,8 +48,11 @@ fn hx_redirect(location: &'static str) -> Response {
     response
 }
 
-fn unlock_page(error: Option<&str>) -> Html<String> {
-    Html(layout::bare_page("déverrouiller", views::unlock::unlock_form(error)).into_string())
+fn unlock_page(error: Option<&str>, pending: bool) -> Html<String> {
+    Html(
+        layout::bare_page("déverrouiller", views::unlock::unlock_form(error, pending))
+            .into_string(),
+    )
 }
 
 fn setup_page(error: Option<&str>) -> Html<String> {
@@ -73,7 +76,7 @@ pub async fn require_unlocked(
     }
 
     let snapshot = state.snapshot().await;
-    if snapshot != VaultSnapshot::Unlocked {
+    if let VaultSnapshot::Absent | VaultSnapshot::Locked { .. } = snapshot {
         if is_htmx_request(&request) {
             let target = if snapshot == VaultSnapshot::Absent {
                 "/setup"
@@ -82,10 +85,12 @@ pub async fn require_unlocked(
             };
             return hx_redirect(target);
         }
-        return if snapshot == VaultSnapshot::Absent {
-            setup_page(None).into_response()
-        } else {
-            unlock_page(None).into_response()
+        return match snapshot {
+            VaultSnapshot::Absent => setup_page(None).into_response(),
+            VaultSnapshot::Locked {
+                passphrase_change_pending,
+            } => unlock_page(None, passphrase_change_pending).into_response(),
+            VaultSnapshot::Unlocked => unreachable!("filtré par le `if let` ci-dessus"),
         };
     }
 
@@ -99,7 +104,9 @@ pub async fn show(State(state): State<AppState>) -> Response {
     match state.snapshot().await {
         VaultSnapshot::Unlocked => Html(dashboard_page(&state).await).into_response(),
         VaultSnapshot::Absent => setup_page(None).into_response(),
-        VaultSnapshot::Locked => unlock_page(None).into_response(),
+        VaultSnapshot::Locked {
+            passphrase_change_pending,
+        } => unlock_page(None, passphrase_change_pending).into_response(),
     }
 }
 
@@ -115,14 +122,18 @@ pub async fn submit(State(state): State<AppState>, Form(form): Form<UnlockForm>)
     let remember = form.remember.is_some();
     match state.unlock(&passphrase, remember).await {
         Ok(()) => Html(dashboard_page(&state).await).into_response(),
-        Err(e) => unlock_page(Some(&e.to_string())).into_response(),
+        // Le message de `StoreError::PassphraseChangeInterrupted` porte déjà toute la
+        // conduite à tenir : pas besoin du bandeau proactif en plus, qui ferait doublon.
+        Err(e) => unlock_page(Some(&e.to_string()), false).into_response(),
     }
 }
 
 pub async fn show_setup(State(state): State<AppState>) -> Response {
     match state.snapshot().await {
         VaultSnapshot::Unlocked => Html(dashboard_page(&state).await).into_response(),
-        VaultSnapshot::Locked => unlock_page(None).into_response(),
+        VaultSnapshot::Locked {
+            passphrase_change_pending,
+        } => unlock_page(None, passphrase_change_pending).into_response(),
         VaultSnapshot::Absent => setup_page(None).into_response(),
     }
 }

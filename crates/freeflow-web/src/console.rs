@@ -4,8 +4,9 @@
 //! console de continuer à fonctionner maintenant que la mise en cache dans le trousseau OS est
 //! opt-in : `Store::open_cached` n'a plus rien à retrouver par défaut. `Borrowed` interdit aussi
 //! structurellement tout prompt TTY sur ce chemin, et la CLI refuse elle-même `init`/`unlock`/
-//! `lock`/`backup restore` (la session de la fenêtre et celle du trousseau OS ne sont pas le
-//! même objet — voir `CLAUDE.md`).
+//! `lock`/`passphrase change`/`backup restore` (la session de la fenêtre et celle du trousseau OS
+//! ne sont pas le même objet, et un ré-chiffrement complet du coffre est un geste qui mérite un
+//! vrai terminal, fenêtre fermée — voir `CLAUDE.md`).
 
 use axum::Form;
 use axum::extract::State;
