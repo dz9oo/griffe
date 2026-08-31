@@ -8,6 +8,7 @@ use freeflow_core::app::AppError;
 use freeflow_core::billing::aged_balance;
 use freeflow_core::clients::list_clients;
 use freeflow_core::domain::{Money, format_date};
+use freeflow_core::fiscal::{FiscalDeadlineKind, fiscal_calendar};
 use freeflow_core::missions::{effective_daily_rate, list_active_missions, monthly_capacity};
 use freeflow_core::prospection::{late_actions, pipeline_by_stage, weighted_pipeline};
 use freeflow_core::store::Store;
@@ -15,6 +16,20 @@ use maud::{Markup, html};
 use time::OffsetDateTime;
 
 use crate::layout::{ViewId, view_head};
+
+/// Libellé humain d'une échéance fiscale (le calendrier du cœur, lui, reste en clés stables).
+fn deadline_label(kind: FiscalDeadlineKind) -> &'static str {
+    match kind {
+        FiscalDeadlineKind::Ca3 => "TVA (CA3)",
+        FiscalDeadlineKind::IsAcompte => "Acompte d'IS",
+        FiscalDeadlineKind::IsSolde => "Solde d'IS",
+        FiscalDeadlineKind::Cfe => "CFE",
+        FiscalDeadlineKind::Liasse => "Liasse fiscale",
+        FiscalDeadlineKind::ApprovalMeeting => "AG d'approbation",
+        FiscalDeadlineKind::AccountsFiling => "Dépôt des comptes",
+        FiscalDeadlineKind::Dsn => "DSN (dirigeant)",
+    }
+}
 
 fn today() -> time::Date {
     OffsetDateTime::now_utc().date()
@@ -64,6 +79,7 @@ pub fn render(store: &Store) -> Result<Markup, AppError> {
     let capacity = monthly_capacity(conn, current_month())?;
     let clients = list_clients(conn)?;
     let missions = list_active_missions(conn)?;
+    let calendar = fiscal_calendar(conn, today)?;
 
     let mut profitability = Vec::new();
     for mission in missions
@@ -146,6 +162,31 @@ pub fn render(store: &Store) -> Result<Markup, AppError> {
                         }
                     }
                 }
+            }
+        }
+
+        div class="panel bordered" {
+            div class="panel-title" { "calendrier_fiscal" }
+            @if calendar.is_empty() {
+                div class="empty-state" { "aucune échéance dans les 12 prochains mois" }
+            } @else {
+                table {
+                    tr { th { "échéance" } th { "date" } th { "montant estimé" } th { "note" } }
+                    @for d in calendar.iter().take(6) {
+                        tr {
+                            td { (deadline_label(d.kind)) }
+                            td { (format_date(d.due_on)) }
+                            td class="num" {
+                                @match d.amount {
+                                    Some(amount) => (amount),
+                                    None => "—",
+                                }
+                            }
+                            td class="kpi-note" { (d.note.as_deref().unwrap_or("")) }
+                        }
+                    }
+                }
+                div class="kpi-note" { "montants et dates indicatifs — à vérifier sur impots.gouv.fr" }
             }
         }
 

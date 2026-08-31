@@ -140,6 +140,7 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "bank.reconcile",
         "pending.list",
         "audit.verify_chain",
+        "fiscal.calendar",
     ] {
         assert!(names.contains(expected), "outil manquant : {expected}");
     }
@@ -161,6 +162,7 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "prospect.pipeline",
         "invoice.aged_balance",
         "pending.list",
+        "fiscal.calendar",
     ] {
         assert_eq!(
             by_name(read_only)
@@ -595,6 +597,32 @@ async fn contact_lifecycle_over_mcp() {
     )
     .await;
     assert!(json_of(&empty).as_array().unwrap().is_empty());
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn the_fiscal_calendar_tool_returns_dated_deadlines() {
+    let store = Store::create(
+        &test_db_path("fiscal-calendar"),
+        &Passphrase::from("s3cret"),
+    )
+    .unwrap();
+    let client = spawn_client(store).await;
+
+    let calendar = call(&client, "fiscal.calendar", json!({"today": "2026-04-01"})).await;
+    assert_eq!(calendar.is_error, Some(false));
+    let rows = json_of(&calendar);
+    let rows = rows.as_array().unwrap();
+    assert!(
+        !rows.is_empty(),
+        "même sans profil, le calendrier retombe sur l'année civile et liste des échéances"
+    );
+    // Chaque échéance porte au moins un type et une date.
+    for row in rows {
+        assert!(row["kind"].is_string());
+        assert!(row["due_on"].is_string());
+    }
 
     client.cancel().await.unwrap();
 }
