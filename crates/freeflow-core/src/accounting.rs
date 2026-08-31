@@ -125,6 +125,49 @@ pub fn compute_result(
     })
 }
 
+/// Déclaration de TVA d'une période (CA3) : TVA collectée sur les factures émises, TVA déductible
+/// sur les dépenses, et le solde à reverser (positif) ou le crédit de TVA (négatif).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct VatReturn {
+    pub period_start: time::Date,
+    pub period_end: time::Date,
+    pub collected: Money,
+    pub deductible: Money,
+    /// `collected − deductible` : à reverser si positif, crédit de TVA reportable si négatif.
+    pub due: Money,
+}
+
+/// TVA due sur une période `[start, end]` (bornes inclusives) — premier calcul de montant de la
+/// déclaration CA3 du projet, depuis les factures émises et les dépenses de la période.
+///
+/// # Errors
+///
+/// Erreur de lecture SQLite.
+pub fn vat_due_for_period(
+    conn: &Connection,
+    start: time::Date,
+    end: time::Date,
+) -> Result<VatReturn, AppError> {
+    let collected: Money = list_invoices(conn)?
+        .iter()
+        .filter(|inv| inv.issued_on >= start && inv.issued_on <= end)
+        .map(|inv| compute_totals(&inv.lines).total_vat)
+        .sum();
+
+    let deductible: Money = expenses_between(conn, start, end)?
+        .iter()
+        .map(|e| e.vat_deductible)
+        .sum();
+
+    Ok(VatReturn {
+        period_start: start,
+        period_end: end,
+        collected,
+        deductible,
+        due: collected - deductible,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -294,5 +337,11 @@ mod tests {
         // 15 % de 5 375 € = 806,25 €.
         assert_eq!(result.corporate_tax, Money::from_cents(80_625));
         assert_eq!(result.net_result, Money::from_cents(456_875));
+
+        // TVA de l'exercice : 20 % de 6 175 € collectés (1 235 €) − 200 € déductibles = 1 035 €.
+        let vat = vat_due_for_period(store.connection(), period.start(), period.end()).unwrap();
+        assert_eq!(vat.collected, Money::from_cents(123_500));
+        assert_eq!(vat.deductible, Money::from_cents(20_000));
+        assert_eq!(vat.due, Money::from_cents(103_500));
     }
 }

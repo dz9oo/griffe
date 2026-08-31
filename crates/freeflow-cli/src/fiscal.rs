@@ -1,7 +1,8 @@
 //! `freeflow fiscal ...`
 
 use clap::Subcommand;
-use freeflow_core::fiscal::{FiscalDeadlineKind, upcoming_deadlines};
+use freeflow_core::fiscal::{FiscalDeadline, fiscal_calendar, upcoming_deadlines};
+use freeflow_core::store::Store;
 use serde_json::json;
 use time::Date;
 
@@ -9,29 +10,40 @@ use crate::error::CliError;
 use crate::output::format_value;
 use crate::parsers::parse_date;
 
-fn kind_label(kind: FiscalDeadlineKind) -> &'static str {
-    match kind {
-        FiscalDeadlineKind::Ca3 => "ca3",
-        FiscalDeadlineKind::IsAcompte => "is_acompte",
-        FiscalDeadlineKind::Cfe => "cfe",
-    }
-}
-
 #[derive(Debug, Subcommand)]
 pub enum FiscalCommand {
-    /// Prochaines échéances CA3, acompte d'IS et CFE — dates indicatives, voir
-    /// `freeflow_core::fiscal`.
+    /// Prochaines échéances calendaires de base (CA3, acompte d'IS, CFE), sans montants — dates
+    /// indicatives (année civile), voir `freeflow_core::fiscal`.
     Deadlines {
+        #[arg(long, value_parser = parse_date)]
+        today: Date,
+    },
+    /// Calendrier fiscal et social complet **chiffré** sur 12 mois, dérivé de la date de clôture
+    /// d'exercice du profil : TVA à reverser, acomptes et solde d'IS, liasse, AG, dépôt, DSN.
+    Calendar {
         #[arg(long, value_parser = parse_date)]
         today: Date,
     },
 }
 
-pub fn run(cmd: FiscalCommand, json: bool) -> Result<String, CliError> {
-    let FiscalCommand::Deadlines { today } = cmd;
-    let payload: Vec<_> = upcoming_deadlines(today)
-        .iter()
-        .map(|d| json!({"kind": kind_label(d.kind), "due_on": d.due_on.to_string()}))
-        .collect();
-    Ok(format_value(&payload, json))
+fn to_json(d: &FiscalDeadline) -> serde_json::Value {
+    json!({
+        "kind": d.kind.as_str(),
+        "due_on": d.due_on.to_string(),
+        "amount_cents": d.amount.map(freeflow_core::domain::Money::cents),
+        "note": d.note,
+    })
+}
+
+pub fn run(cmd: FiscalCommand, store: &mut Store, json_out: bool) -> Result<String, CliError> {
+    let payload: Vec<_> = match cmd {
+        FiscalCommand::Deadlines { today } => {
+            upcoming_deadlines(today).iter().map(to_json).collect()
+        }
+        FiscalCommand::Calendar { today } => fiscal_calendar(store.connection(), today)?
+            .iter()
+            .map(to_json)
+            .collect(),
+    };
+    Ok(format_value(&payload, json_out))
 }

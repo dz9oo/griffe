@@ -334,7 +334,7 @@ fn run_command(
         TopCommand::Audit(cmd) => pending::run_audit(cmd, store, json),
         TopCommand::Confirm { id } => pending::confirm(store, id, json),
         TopCommand::Expense(cmd) => expense::run(cmd, store, ctx, json),
-        TopCommand::Fiscal(cmd) => fiscal::run(cmd, json),
+        TopCommand::Fiscal(cmd) => fiscal::run(cmd, store, json),
         TopCommand::Forecast(cmd) => forecast::run(cmd, store, json),
     }
 }
