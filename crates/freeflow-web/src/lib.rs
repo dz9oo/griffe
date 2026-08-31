@@ -7,6 +7,8 @@ mod clients;
 mod console;
 mod handlers;
 mod layout;
+mod missions;
+mod prospection;
 mod state;
 mod unlock;
 mod views;
@@ -59,6 +61,82 @@ pub fn router(state: AppState) -> Router {
         .route("/contacts/{id}/edit", get(clients::edit_contact_panel))
         .route("/contacts/{id}", post(clients::update_contact))
         .route("/contacts/{id}/delete", post(clients::delete_contact))
+        .route("/prospection/table", get(prospection::table))
+        .route("/prospection/new", get(prospection::new_panel))
+        .route("/prospection", post(prospection::create))
+        .route(
+            "/prospection/{id}",
+            get(prospection::show_panel).post(prospection::update),
+        )
+        .route("/prospection/{id}/edit", get(prospection::edit_panel))
+        .route(
+            "/prospection/{id}/advance",
+            get(prospection::advance_panel).post(prospection::advance),
+        )
+        .route(
+            "/prospection/{id}/win",
+            get(prospection::win_panel).post(prospection::win),
+        )
+        .route(
+            "/prospection/{id}/lose",
+            get(prospection::lose_panel).post(prospection::lose),
+        )
+        .route("/prospection/{id}/archive", post(prospection::archive))
+        .route("/prospection/{id}/unarchive", post(prospection::unarchive))
+        .route(
+            "/prospection/{id}/delete",
+            get(prospection::delete_confirm_panel).post(prospection::delete),
+        )
+        .route(
+            "/prospection/{id}/interactions/new",
+            get(prospection::new_interaction_panel),
+        )
+        .route(
+            "/prospection/{id}/interactions",
+            post(prospection::create_interaction),
+        )
+        .route(
+            "/interactions/{id}/edit",
+            get(prospection::edit_interaction_panel),
+        )
+        .route("/interactions/{id}", post(prospection::update_interaction))
+        .route(
+            "/interactions/{id}/delete",
+            post(prospection::delete_interaction),
+        )
+        .route("/missions/table", get(missions::table))
+        .route("/missions/new", get(missions::new_panel))
+        .route("/missions", post(missions::create))
+        .route(
+            "/missions/{id}",
+            get(missions::show_panel).post(missions::update),
+        )
+        .route("/missions/{id}/edit", get(missions::edit_panel))
+        .route(
+            "/missions/{id}/close",
+            get(missions::close_panel).post(missions::close),
+        )
+        .route("/missions/{id}/reopen", post(missions::reopen))
+        .route("/missions/{id}/archive", post(missions::archive))
+        .route("/missions/{id}/unarchive", post(missions::unarchive))
+        .route(
+            "/missions/{id}/delete",
+            get(missions::delete_confirm_panel).post(missions::delete),
+        )
+        .route(
+            "/missions/{id}/time/new",
+            get(missions::new_time_entry_panel),
+        )
+        .route("/missions/{id}/time", post(missions::create_time_entry))
+        .route(
+            "/time-entries/{id}/edit",
+            get(missions::edit_time_entry_panel),
+        )
+        .route("/time-entries/{id}", post(missions::update_time_entry))
+        .route(
+            "/time-entries/{id}/delete",
+            post(missions::delete_time_entry),
+        )
         .route("/session/touch", post(unlock::touch))
         .route("/lock", post(unlock::lock))
         .route("/unlock", get(unlock::show).post(unlock::submit))

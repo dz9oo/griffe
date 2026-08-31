@@ -7,7 +7,8 @@ use time::format_description::well_known::Rfc3339;
 
 use crate::app::AppError;
 use crate::domain::{
-    self, Interaction, LossReason, Money, Opportunity, OpportunityId, OpportunityStage, Probability,
+    self, Interaction, InteractionId, InteractionKind, LossReason, Money, Opportunity,
+    OpportunityId, OpportunityStage, Probability,
 };
 
 /// Convertit une erreur de (dé)sérialisation survenant *pendant* le mapping d'une ligne en
@@ -51,6 +52,12 @@ pub(super) fn opportunity_by_id(
     .map_err(AppError::from)
 }
 
+/// Met à jour l'étape (et le motif de perte le cas échéant) d'une opportunité, en bumpant
+/// systématiquement sa révision — voir le commentaire de [`crate::prospection::commands`] sur
+/// pourquoi `Advance`/`Win`/`Lose` ne portent pas de champ `revision` alors que cette écriture en
+/// bumpe une : sans ce bump, un panneau d'édition ouvert avant une transition garderait une
+/// révision qui *paraît* fraîche et écraserait silencieusement le `next_action_at` que la
+/// transition vient de poser.
 pub(super) fn update_stage(
     conn: &Connection,
     id: OpportunityId,
@@ -60,7 +67,9 @@ pub(super) fn update_stage(
 ) -> Result<(), AppError> {
     let loss_reason_json = loss_reason.map(serde_json::to_string).transpose()?;
     conn.execute(
-        "UPDATE opportunities SET stage = ?1, next_action_at = ?2, loss_reason = ?3 WHERE id = ?4",
+        "UPDATE opportunities
+            SET stage = ?1, next_action_at = ?2, loss_reason = ?3, revision = revision + 1
+          WHERE id = ?4",
         params![
             stage.as_str(),
             next_action_at.map(domain::format_date),
@@ -94,6 +103,12 @@ pub(super) fn row_to_opportunity(row: &Row) -> rusqlite::Result<Opportunity> {
     let created_at: String = row.get("created_at")?;
     let created_at = OffsetDateTime::parse(&created_at, &Rfc3339).map_err(conv_err)?;
 
+    let archived_at: Option<String> = row.get("archived_at")?;
+    let archived_at = archived_at
+        .map(|s| OffsetDateTime::parse(&s, &Rfc3339))
+        .transpose()
+        .map_err(conv_err)?;
+
     let id: String = row.get("id")?;
     let client_id: String = row.get("client_id")?;
 
@@ -108,6 +123,8 @@ pub(super) fn row_to_opportunity(row: &Row) -> rusqlite::Result<Opportunity> {
         source: row.get("source")?,
         loss_reason,
         created_at,
+        revision: row.get("revision")?,
+        archived_at,
     })
 }
 
@@ -126,4 +143,44 @@ pub(super) fn insert_interaction(
         ],
     )?;
     Ok(())
+}
+
+fn row_to_interaction(row: &Row) -> rusqlite::Result<Interaction> {
+    let id: String = row.get("id")?;
+    let opportunity_id: String = row.get("opportunity_id")?;
+    let kind_str: String = row.get("kind")?;
+    let kind = kind_str.parse::<InteractionKind>().map_err(conv_err)?;
+    let occurred_at: String = row.get("occurred_at")?;
+
+    Ok(Interaction {
+        id: id.parse().map_err(conv_err)?,
+        opportunity_id: opportunity_id.parse().map_err(conv_err)?,
+        kind,
+        note: row.get("note")?,
+        occurred_at: OffsetDateTime::parse(&occurred_at, &Rfc3339).map_err(conv_err)?,
+        revision: row.get("revision")?,
+    })
+}
+
+pub(super) fn interaction_by_id(
+    conn: &Connection,
+    id: InteractionId,
+) -> Result<Option<Interaction>, AppError> {
+    conn.query_row(
+        "SELECT * FROM interactions WHERE id = ?1",
+        [id.to_string()],
+        row_to_interaction,
+    )
+    .optional()
+    .map_err(AppError::from)
+}
+
+pub(super) fn list_interactions(
+    conn: &Connection,
+    opportunity_id: OpportunityId,
+) -> Result<Vec<Interaction>, AppError> {
+    let mut stmt = conn
+        .prepare("SELECT * FROM interactions WHERE opportunity_id = ?1 ORDER BY occurred_at ASC")?;
+    let rows = stmt.query_map([opportunity_id.to_string()], row_to_interaction)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
 }

@@ -9,18 +9,26 @@ mod schedule;
 
 pub(crate) mod row;
 
-pub use commands::{CreateMission, LogTime};
+pub use commands::{
+    ArchiveMission, CloseMission, CreateMission, DeleteMission, DeleteTimeEntry, LogTime,
+    ReopenMission, UnarchiveMission, UpdateMission, UpdateTimeEntry,
+};
 pub use error::MissionsError;
-pub use queries::{MonthlyCapacity, effective_daily_rate, list_active_missions, monthly_capacity};
+pub use queries::{
+    MissionFilter, MissionReferences, MonthlyCapacity, effective_daily_rate, list_active_missions,
+    list_missions, list_missions_with, list_time_entries, mission_by_id, mission_references,
+    monthly_capacity, time_entry_by_id,
+};
 pub use schedule::{BillingSchedule, billing_schedule};
 
 #[cfg(test)]
 mod tests {
+    use rusqlite::params;
     use time::{Date, Month as TimeMonth};
 
     use super::*;
     use crate::app::{Actor, AppError, ExecutionContext, Executor, Outcome};
-    use crate::domain::{ClientId, MissionKind, Money, Month, TimeCategory};
+    use crate::domain::{ClientId, Milestone, MissionId, MissionKind, Money, Month, TimeCategory};
     use crate::store::{Passphrase, Store};
 
     fn date(year: i32, month: TimeMonth, day: u8) -> Date {
@@ -323,15 +331,467 @@ mod tests {
 
         assert_eq!(list_active_missions(store.connection()).unwrap().len(), 1);
 
-        // Aucune commande ne clôt encore une mission (hors périmètre v1) : on simule l'état
-        // directement, pour verrouiller le comportement du filtre dès que ce jour arrivera.
-        store
-            .connection()
+        Executor::new(&mut store)
             .execute(
-                "UPDATE missions SET ended_on = '2026-12-31' WHERE id = ?1",
-                [mission_id.to_string()],
+                &CloseMission {
+                    id: mission_id,
+                    revision: 1,
+                    ended_on: date(2026, TimeMonth::December, 31),
+                },
+                &human_ctx(),
             )
             .unwrap();
         assert!(list_active_missions(store.connection()).unwrap().is_empty());
+    }
+
+    fn create_mission(store: &mut Store, client_id: ClientId) -> MissionId {
+        let create = CreateMission {
+            client_id,
+            quote_id: None,
+            name: "Refonte dashboard IoT".to_string(),
+            kind: MissionKind::Forfait {
+                budget: Money::from_cents(4_500_000),
+            },
+            milestones: vec![
+                Milestone {
+                    label: "Acompte".to_string(),
+                    share_bps: 3_000,
+                    due_on: Some(date(2026, TimeMonth::September, 15)),
+                },
+                Milestone {
+                    label: "Solde".to_string(),
+                    share_bps: 7_000,
+                    due_on: Some(date(2026, TimeMonth::November, 30)),
+                },
+            ],
+            started_on: date(2026, TimeMonth::September, 1),
+        };
+        let Outcome::Applied(id) = Executor::new(store).execute(&create, &human_ctx()).unwrap()
+        else {
+            panic!("expected Applied")
+        };
+        id
+    }
+
+    #[test]
+    fn updating_replaces_the_whole_milestone_collection_and_renumbers_positions() {
+        let (mut store, client_id) = test_store("update-milestones");
+        let id = create_mission(&mut store, client_id);
+        let current = row::mission_by_id(store.connection(), id).unwrap().unwrap();
+
+        let update = UpdateMission {
+            id,
+            revision: current.revision,
+            name: current.name.clone(),
+            kind: current.kind.clone(),
+            milestones: vec![Milestone {
+                label: "Livraison unique".to_string(),
+                share_bps: 10_000,
+                due_on: None,
+            }],
+            started_on: current.started_on,
+            quote_id: current.quote_id,
+        };
+        let Outcome::Applied(new_revision) = Executor::new(&mut store)
+            .execute(&update, &human_ctx())
+            .unwrap()
+        else {
+            panic!("expected Applied")
+        };
+        assert_eq!(new_revision, 2);
+
+        let updated = row::mission_by_id(store.connection(), id).unwrap().unwrap();
+        assert_eq!(updated.milestones.len(), 1);
+        assert_eq!(updated.milestones[0].label, "Livraison unique");
+    }
+
+    #[test]
+    fn updating_cannot_repoint_the_quote() {
+        let (mut store, client_id) = test_store("update-quote-immutable");
+        let id = create_mission(&mut store, client_id);
+        let current = row::mission_by_id(store.connection(), id).unwrap().unwrap();
+
+        let update = UpdateMission {
+            id,
+            revision: current.revision,
+            name: current.name.clone(),
+            kind: current.kind.clone(),
+            milestones: current.milestones.clone(),
+            started_on: current.started_on,
+            quote_id: Some(crate::domain::QuoteId::new()),
+        };
+        let err = Executor::new(&mut store)
+            .execute(&update, &human_ctx())
+            .unwrap_err();
+        assert!(matches!(err, AppError::Domain(msg) if msg.contains("devis")));
+    }
+
+    #[test]
+    fn milestones_over_100_percent_are_refused() {
+        let (mut store, client_id) = test_store("milestones-over-budget");
+        let id = create_mission(&mut store, client_id);
+        let current = row::mission_by_id(store.connection(), id).unwrap().unwrap();
+
+        let update = UpdateMission {
+            id,
+            revision: current.revision,
+            name: current.name.clone(),
+            kind: current.kind.clone(),
+            milestones: vec![
+                Milestone {
+                    label: "A".to_string(),
+                    share_bps: 6_000,
+                    due_on: None,
+                },
+                Milestone {
+                    label: "B".to_string(),
+                    share_bps: 6_000,
+                    due_on: None,
+                },
+            ],
+            started_on: current.started_on,
+            quote_id: current.quote_id,
+        };
+        let err = Executor::new(&mut store)
+            .execute(&update, &human_ctx())
+            .unwrap_err();
+        assert!(matches!(err, AppError::Domain(msg) if msg.contains("100")));
+    }
+
+    #[test]
+    fn closing_twice_is_refused() {
+        let (mut store, client_id) = test_store("close-twice");
+        let id = create_mission(&mut store, client_id);
+        Executor::new(&mut store)
+            .execute(
+                &CloseMission {
+                    id,
+                    revision: 1,
+                    ended_on: date(2026, TimeMonth::December, 31),
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+        let err = Executor::new(&mut store)
+            .execute(
+                &CloseMission {
+                    id,
+                    revision: 2,
+                    ended_on: date(2026, TimeMonth::December, 31),
+                },
+                &human_ctx(),
+            )
+            .unwrap_err();
+        assert!(matches!(err, AppError::Domain(msg) if msg.contains("déjà clôturée")));
+    }
+
+    #[test]
+    fn ending_before_starting_is_refused() {
+        let (mut store, client_id) = test_store("ends-before-start");
+        let id = create_mission(&mut store, client_id);
+        let err = Executor::new(&mut store)
+            .execute(
+                &CloseMission {
+                    id,
+                    revision: 1,
+                    ended_on: date(2026, TimeMonth::January, 1),
+                },
+                &human_ctx(),
+            )
+            .unwrap_err();
+        assert!(matches!(err, AppError::Domain(_)));
+    }
+
+    #[test]
+    fn reopening_round_trips() {
+        let (mut store, client_id) = test_store("reopen-round-trip");
+        let id = create_mission(&mut store, client_id);
+        Executor::new(&mut store)
+            .execute(
+                &CloseMission {
+                    id,
+                    revision: 1,
+                    ended_on: date(2026, TimeMonth::December, 31),
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+        Executor::new(&mut store)
+            .execute(&ReopenMission { id, revision: 2 }, &human_ctx())
+            .unwrap();
+
+        let mission = row::mission_by_id(store.connection(), id).unwrap().unwrap();
+        assert_eq!(mission.ended_on, None);
+        assert_eq!(mission.revision, 3);
+    }
+
+    #[test]
+    fn a_closed_mission_and_an_archived_mission_are_two_different_things() {
+        let (mut store, client_id) = test_store("close-vs-archive");
+        let closed = create_mission(&mut store, client_id);
+        Executor::new(&mut store)
+            .execute(
+                &CloseMission {
+                    id: closed,
+                    revision: 1,
+                    ended_on: date(2026, TimeMonth::December, 31),
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+        // Close sans archiver : sort de la liste active, mais n'est pas archivée.
+        let closed_mission = row::mission_by_id(store.connection(), closed)
+            .unwrap()
+            .unwrap();
+        assert!(closed_mission.ended_on.is_some());
+        assert!(closed_mission.archived_at.is_none());
+
+        let archived = create_mission(&mut store, client_id);
+        Executor::new(&mut store)
+            .execute(
+                &ArchiveMission {
+                    id: archived,
+                    revision: 1,
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+        // Archiver sans clore : sort aussi de la liste active, mais n'a pas de date de fin.
+        let archived_mission = row::mission_by_id(store.connection(), archived)
+            .unwrap()
+            .unwrap();
+        assert!(archived_mission.ended_on.is_none());
+        assert!(archived_mission.archived_at.is_some());
+
+        assert!(list_active_missions(store.connection()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn deleting_a_mission_with_time_entries_is_refused_and_names_them() {
+        let (mut store, client_id) = test_store("delete-with-time-entries");
+        let id = create_mission(&mut store, client_id);
+        Executor::new(&mut store)
+            .execute(
+                &LogTime {
+                    mission_id: id,
+                    worked_on: date(2026, TimeMonth::September, 10),
+                    days: 2.0,
+                    category: TimeCategory::Billable,
+                    note: None,
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+
+        let err = Executor::new(&mut store)
+            .execute(&DeleteMission { id, revision: 1 }, &human_ctx())
+            .unwrap_err();
+        assert!(matches!(err, AppError::Domain(msg) if msg.contains("saisie")));
+        assert!(
+            row::mission_by_id(store.connection(), id)
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn deleting_a_mission_referenced_by_an_invoice_is_refused() {
+        let (mut store, client_id) = test_store("delete-with-invoice");
+        let id = create_mission(&mut store, client_id);
+        store
+            .connection()
+            .execute(
+                "INSERT INTO invoices (id, number, client_id, mission_id, status, issued_on, due_on, hash)
+                 VALUES (?1, 'FA-2026-0001', ?2, ?3, 'issued', '2026-01-01', '2026-01-31', 'h')",
+                params![
+                    crate::domain::InvoiceId::new().to_string(),
+                    client_id.to_string(),
+                    id.to_string(),
+                ],
+            )
+            .unwrap();
+
+        let err = Executor::new(&mut store)
+            .execute(&DeleteMission { id, revision: 1 }, &human_ctx())
+            .unwrap_err();
+        assert!(matches!(err, AppError::Domain(msg) if msg.contains("facture")));
+    }
+
+    #[test]
+    fn deleting_a_bare_mission_removes_its_milestones() {
+        let (mut store, client_id) = test_store("delete-bare");
+        let id = create_mission(&mut store, client_id);
+        Executor::new(&mut store)
+            .execute(&DeleteMission { id, revision: 1 }, &human_ctx())
+            .unwrap();
+
+        assert_eq!(row::mission_by_id(store.connection(), id).unwrap(), None);
+        let milestone_count: i64 = store
+            .connection()
+            .query_row(
+                "SELECT count(*) FROM milestones WHERE mission_id = ?1",
+                [id.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(milestone_count, 0);
+    }
+
+    #[test]
+    fn emptying_the_time_entries_then_deleting_succeeds() {
+        let (mut store, client_id) = test_store("empty-then-delete");
+        let id = create_mission(&mut store, client_id);
+        let Outcome::Applied(entry_id) = Executor::new(&mut store)
+            .execute(
+                &LogTime {
+                    mission_id: id,
+                    worked_on: date(2026, TimeMonth::September, 10),
+                    days: 2.0,
+                    category: TimeCategory::Billable,
+                    note: None,
+                },
+                &human_ctx(),
+            )
+            .unwrap()
+        else {
+            panic!("expected Applied")
+        };
+
+        Executor::new(&mut store)
+            .execute(
+                &DeleteTimeEntry {
+                    id: entry_id,
+                    revision: 1,
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+        Executor::new(&mut store)
+            .execute(&DeleteMission { id, revision: 1 }, &human_ctx())
+            .unwrap();
+        assert_eq!(row::mission_by_id(store.connection(), id).unwrap(), None);
+    }
+
+    #[test]
+    fn nan_zero_and_negative_days_are_refused() {
+        let (mut store, client_id) = test_store("invalid-days");
+        let id = create_mission(&mut store, client_id);
+        for days in [f64::NAN, 0.0, -1.0] {
+            let err = Executor::new(&mut store)
+                .execute(
+                    &LogTime {
+                        mission_id: id,
+                        worked_on: date(2026, TimeMonth::September, 10),
+                        days,
+                        category: TimeCategory::Billable,
+                        note: None,
+                    },
+                    &human_ctx(),
+                )
+                .unwrap_err();
+            assert!(matches!(err, AppError::Domain(msg) if msg.contains("jours")));
+        }
+    }
+
+    #[test]
+    fn time_entry_lifecycle_with_revisions() {
+        let (mut store, client_id) = test_store("time-entry-lifecycle");
+        let id = create_mission(&mut store, client_id);
+        let Outcome::Applied(entry_id) = Executor::new(&mut store)
+            .execute(
+                &LogTime {
+                    mission_id: id,
+                    worked_on: date(2026, TimeMonth::September, 10),
+                    days: 2.0,
+                    category: TimeCategory::Billable,
+                    note: None,
+                },
+                &human_ctx(),
+            )
+            .unwrap()
+        else {
+            panic!("expected Applied")
+        };
+        let entry = time_entry_by_id(store.connection(), entry_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(entry.revision, 1);
+
+        let Outcome::Applied(new_revision) = Executor::new(&mut store)
+            .execute(
+                &UpdateTimeEntry {
+                    id: entry_id,
+                    revision: 1,
+                    worked_on: entry.worked_on,
+                    days: 3.5,
+                    category: TimeCategory::Admin,
+                    note: Some("corrigé".to_string()),
+                },
+                &human_ctx(),
+            )
+            .unwrap()
+        else {
+            panic!("expected Applied")
+        };
+        assert_eq!(new_revision, 2);
+        let updated = time_entry_by_id(store.connection(), entry_id)
+            .unwrap()
+            .unwrap();
+        assert!((updated.days - 3.5).abs() < f64::EPSILON);
+        assert_eq!(updated.category, TimeCategory::Admin);
+
+        Executor::new(&mut store)
+            .execute(
+                &DeleteTimeEntry {
+                    id: entry_id,
+                    revision: 2,
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+        assert_eq!(
+            time_entry_by_id(store.connection(), entry_id).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn archiving_a_mission_still_blocks_deleting_its_client() {
+        let (mut store, client_id) = test_store("archived-mission-blocks-client-delete");
+        let id = create_mission(&mut store, client_id);
+        Executor::new(&mut store)
+            .execute(&ArchiveMission { id, revision: 1 }, &human_ctx())
+            .unwrap();
+
+        let refs = crate::clients::client_references(store.connection(), client_id).unwrap();
+        assert_eq!(
+            refs.missions, 1,
+            "une mission archivée compte toujours comme référence"
+        );
+    }
+
+    #[test]
+    fn the_forecast_uses_the_real_milestone_due_dates_of_a_forfait_mission() {
+        // Preuve du correctif du bug (a) : avant ce lot, `list_active_missions` chargeait les
+        // missions sans leurs jalons, donc `forecast` calculait toujours une échéance implicite
+        // à `today + 90 jours` pour un forfait, quels que soient ses jalons réels.
+        let (mut store, client_id) = test_store("forecast-real-milestones");
+        create_mission(&mut store, client_id);
+
+        let today = date(2026, TimeMonth::August, 1);
+        let inputs =
+            crate::forecast::build_forecast_inputs(store.connection(), today, Money::from_cents(0))
+                .unwrap();
+        let due_on = inputs
+            .pending_mission_revenue
+            .iter()
+            .map(|(due, _)| *due)
+            .max()
+            .unwrap();
+        assert_eq!(
+            due_on,
+            date(2026, TimeMonth::November, 30),
+            "l'échéance doit venir du vrai jalon « Solde », pas d'un repli à J+90"
+        );
     }
 }

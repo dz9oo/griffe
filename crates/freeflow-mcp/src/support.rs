@@ -59,6 +59,59 @@ pub(crate) fn resolve_client(
     }
 }
 
+/// Enveloppe commune à `resolve_client`/`resolve_opportunity`/`resolve_mission` : traduit un
+/// `RefMatch` en `Result<T, String>`, avec l'accord grammatical (« aucun client »/« clients »,
+/// « aucune mission »/« missions ») passé explicitement plutôt que dérivé — pas assez régulier
+/// en français pour l'être.
+fn resolve_ref<T: std::fmt::Display>(
+    result: Result<freeflow_core::reference::RefMatch<T>, freeflow_core::app::AppError>,
+    no_match: &str,
+    plural: &str,
+) -> Result<T, String> {
+    use freeflow_core::reference::RefMatch;
+    match result {
+        Ok(RefMatch::Unique(id)) => Ok(id),
+        Ok(RefMatch::NotFound) => Err(format!("{no_match} : aucune correspondance")),
+        Ok(RefMatch::Ambiguous(candidates)) => {
+            let list = candidates
+                .iter()
+                .map(|(id, label)| format!("  {id} — {label}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            Err(format!(
+                "désigne plusieurs {plural}, précisez lequel :\n{list}"
+            ))
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Résout une référence texte (uuid, préfixe, nom — voir `freeflow_core::reference`) vers un
+/// identifiant d'opportunité, dupliqué depuis `freeflow_cli::refs` pour la même raison que
+/// [`resolve_client`] (format d'erreur MCP divergent).
+pub(crate) fn resolve_opportunity(
+    store: &freeflow_core::store::Store,
+    needle: &str,
+) -> Result<freeflow_core::domain::OpportunityId, String> {
+    resolve_ref(
+        freeflow_core::reference::resolve_opportunity(store.connection(), needle),
+        "aucune opportunité",
+        "opportunités",
+    )
+}
+
+/// Résout une référence texte vers un identifiant de mission — voir [`resolve_opportunity`].
+pub(crate) fn resolve_mission(
+    store: &freeflow_core::store::Store,
+    needle: &str,
+) -> Result<freeflow_core::domain::MissionId, String> {
+    resolve_ref(
+        freeflow_core::reference::resolve_mission(store.connection(), needle),
+        "aucune mission",
+        "missions",
+    )
+}
+
 pub(crate) fn parse_loss_reason(s: &str) -> Result<freeflow_core::domain::LossReason, String> {
     use freeflow_core::domain::LossReason;
     match s {

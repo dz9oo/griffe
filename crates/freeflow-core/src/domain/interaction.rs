@@ -43,11 +43,13 @@ impl std::str::FromStr for InteractionKind {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Interaction {
     pub id: InteractionId,
     pub opportunity_id: OpportunityId,
     pub kind: InteractionKind,
     pub note: String,
     pub occurred_at: OffsetDateTime,
+    /// Révision optimiste (lot 16) — voir `crate::app::revision`.
+    pub revision: i64,
 }

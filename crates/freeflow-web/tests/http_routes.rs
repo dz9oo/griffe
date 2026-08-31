@@ -9,7 +9,9 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use freeflow_core::app::{Actor, ExecutionContext, Executor};
 use freeflow_core::clients::{CreateClient, list_clients};
-use freeflow_core::domain::ClientId;
+use freeflow_core::domain::{ClientId, MissionId, Money, OpportunityId, Probability};
+use freeflow_core::missions::CreateMission;
+use freeflow_core::prospection::{CreateOpportunity, list_opportunities};
 use freeflow_core::store::{Passphrase, Store};
 use freeflow_web::AppState;
 use http_body_util::BodyExt;
@@ -60,6 +62,59 @@ fn client_id_by_name(db_path: &Path, name: &str) -> ClientId {
         .find(|c| c.name == name)
         .unwrap_or_else(|| panic!("aucun client nommé {name}"))
         .id
+}
+
+fn opportunity_id_by_name(db_path: &Path, name: &str) -> OpportunityId {
+    let store = Store::open_with_passphrase(db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    list_opportunities(store.connection())
+        .unwrap()
+        .into_iter()
+        .find(|o| o.name == name)
+        .unwrap_or_else(|| panic!("aucune opportunité nommée {name}"))
+        .id
+}
+
+/// Coffre avec un client et une opportunité ouverte le référençant — pour les tests
+/// prospection/missions qui ont besoin d'un point de départ réel.
+async fn unlocked_state_with_opportunity(db_path: &Path) -> (AppState, ClientId) {
+    let mut store = Store::create(db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    let client_id = match Executor::new(&mut store)
+        .execute(
+            &CreateClient {
+                name: "Kappa Software".to_string(),
+                siren: None,
+                vat_number: None,
+                address: None,
+            },
+            &human_ctx(),
+        )
+        .unwrap()
+    {
+        freeflow_core::app::Outcome::Applied(id) => id,
+        other => panic!("expected Applied, got {other:?}"),
+    };
+    Executor::new(&mut store)
+        .execute(
+            &CreateOpportunity {
+                client_id,
+                name: "Refonte plateforme".to_string(),
+                amount: Money::from_cents(7_800_000),
+                probability: Probability::new(40).unwrap(),
+                next_action_at: time::Date::from_calendar_date(2026, time::Month::September, 2)
+                    .unwrap(),
+                source: None,
+            },
+            &human_ctx(),
+        )
+        .unwrap();
+    drop(store);
+
+    let state = AppState::new(db_path.to_path_buf());
+    state
+        .unlock(&Passphrase::from(PASSPHRASE), false)
+        .await
+        .unwrap();
+    (state, client_id)
 }
 
 async fn unlocked_state_with_client(db_path: &Path) -> AppState {
@@ -140,7 +195,83 @@ async fn an_htmx_boosted_navigation_returns_only_the_view_fragment() {
 
 #[tokio::test]
 async fn every_screen_renders_successfully_against_a_freshly_seeded_vault() {
-    let state = unlocked_state_with_client(&test_db_path("all-screens")).await;
+    let db_path = test_db_path("all-screens");
+    let (state, client_id) = unlocked_state_with_opportunity(&db_path).await;
+
+    // Une opportunité archivée et une mission à la fois close et archivée : sans elles, les
+    // branches de rendu correspondantes (lot 16) ne seraient jamais exercées par ce test.
+    {
+        let mut store =
+            Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+        let opportunity_id = match Executor::new(&mut store)
+            .execute(
+                &CreateOpportunity {
+                    client_id,
+                    name: "Piste froide".to_string(),
+                    amount: Money::from_cents(500_000),
+                    probability: Probability::new(10).unwrap(),
+                    next_action_at: time::Date::from_calendar_date(2026, time::Month::September, 2)
+                        .unwrap(),
+                    source: None,
+                },
+                &human_ctx(),
+            )
+            .unwrap()
+        {
+            freeflow_core::app::Outcome::Applied(id) => id,
+            other => panic!("expected Applied, got {other:?}"),
+        };
+        Executor::new(&mut store)
+            .execute(
+                &freeflow_core::prospection::ArchiveOpportunity {
+                    id: opportunity_id,
+                    revision: 1,
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+
+        let mission_id = match Executor::new(&mut store)
+            .execute(
+                &CreateMission {
+                    client_id,
+                    quote_id: None,
+                    name: "Maintenance close et archivée".to_string(),
+                    kind: freeflow_core::domain::MissionKind::Recurrent {
+                        monthly_amount: Money::from_cents(200_000),
+                    },
+                    milestones: Vec::new(),
+                    started_on: time::Date::from_calendar_date(2026, time::Month::January, 1)
+                        .unwrap(),
+                },
+                &human_ctx(),
+            )
+            .unwrap()
+        {
+            freeflow_core::app::Outcome::Applied(id) => id,
+            other => panic!("expected Applied, got {other:?}"),
+        };
+        Executor::new(&mut store)
+            .execute(
+                &freeflow_core::missions::CloseMission {
+                    id: mission_id,
+                    revision: 1,
+                    ended_on: time::Date::from_calendar_date(2026, time::Month::June, 30).unwrap(),
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+        Executor::new(&mut store)
+            .execute(
+                &freeflow_core::missions::ArchiveMission {
+                    id: mission_id,
+                    revision: 2,
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+    }
+
     let router = freeflow_web::router(state);
 
     for path in [
@@ -149,6 +280,25 @@ async fn every_screen_renders_successfully_against_a_freshly_seeded_vault() {
         "/view/missions",
         "/view/facturation",
         "/view/clients",
+    ] {
+        let response = router
+            .clone()
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "échec sur {path}");
+        let body = body_text(response).await;
+        assert!(
+            !body.contains("erreur de lecture"),
+            "{path} a levé une erreur de rendu : {body}"
+        );
+    }
+
+    // Les tables filtrées (archivées/closes comprises) doivent aussi rendre sans erreur — c'est
+    // là que vivent les branches ajoutées au lot 16 (badges « archivée »/« clôturée »).
+    for path in [
+        "/prospection/table?closed=true&archived=true",
+        "/missions/table?ended=true&archived=true",
     ] {
         let response = router
             .clone()
@@ -1136,4 +1286,435 @@ async fn an_unknown_client_id_renders_a_friendly_message_not_a_crash() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert!(body_text(response).await.contains("introuvable"));
+}
+
+// -- Prospection (lot 16) --------------------------------------------------------------------
+
+#[tokio::test]
+async fn creating_an_opportunity_through_the_panel_appears_in_the_table_and_triggers_a_refresh() {
+    let db_path = test_db_path("prospection-create");
+    let state = unlocked_state_with_client(&db_path).await;
+    let router = freeflow_web::router(state);
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/prospection")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(
+                    "client=Kappa+Software&name=Nouvelle+piste&amount=1000&probability=50&next_action=2026-09-02",
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("HX-Trigger").unwrap(),
+        "freeflow:saved"
+    );
+
+    let table = router
+        .oneshot(
+            Request::builder()
+                .uri("/prospection/table")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(body_text(table).await.contains("Nouvelle piste"));
+}
+
+#[tokio::test]
+async fn editing_an_opportunity_with_a_stale_revision_shows_a_conflict_banner_and_writes_nothing() {
+    let db_path = test_db_path("prospection-edit-conflict");
+    let (state, _client_id) = unlocked_state_with_opportunity(&db_path).await;
+    let router = freeflow_web::router(state);
+    let id = opportunity_id_by_name(&db_path, "Refonte plateforme");
+
+    router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/prospection/{id}"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(
+                    "revision=1&name=Refonte+plateforme+v2&amount=7800&probability=40",
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/prospection/{id}"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(
+                    "revision=1&name=Ecrasement+tente&amount=1&probability=1",
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(!response.headers().contains_key("HX-Trigger"));
+    let body = body_text(response).await;
+    assert!(body.contains("form-conflict"));
+    assert!(body.contains("changé depuis sa lecture"));
+
+    let detail = router
+        .oneshot(
+            Request::builder()
+                .uri(format!("/prospection/{id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(body_text(detail).await.contains("Refonte plateforme v2"));
+}
+
+#[tokio::test]
+async fn winning_an_opportunity_through_the_panel_creates_a_mission_visible_on_the_missions_screen()
+{
+    let db_path = test_db_path("prospection-win");
+    let (state, _client_id) = unlocked_state_with_opportunity(&db_path).await;
+    let router = freeflow_web::router(state);
+    let id = opportunity_id_by_name(&db_path, "Refonte plateforme");
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/prospection/{id}/win"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from("started_on=2026-09-03"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("HX-Trigger").unwrap(),
+        "freeflow:saved"
+    );
+
+    let missions_table = router
+        .oneshot(
+            Request::builder()
+                .uri("/missions/table")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        body_text(missions_table)
+            .await
+            .contains("Refonte plateforme"),
+        "la mission créée par le gain doit apparaître sur l'écran missions"
+    );
+}
+
+#[tokio::test]
+async fn archiving_an_opportunity_removes_it_from_the_default_table_but_not_from_the_all_table() {
+    let db_path = test_db_path("prospection-archive");
+    let (state, _client_id) = unlocked_state_with_opportunity(&db_path).await;
+    let router = freeflow_web::router(state);
+    let id = opportunity_id_by_name(&db_path, "Refonte plateforme");
+
+    router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/prospection/{id}/archive"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let active = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/prospection/table")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(!body_text(active).await.contains("Refonte plateforme"));
+
+    let all = router
+        .oneshot(
+            Request::builder()
+                .uri("/prospection/table?closed=true&archived=true")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(body_text(all).await.contains("Refonte plateforme"));
+}
+
+#[tokio::test]
+async fn interaction_lifecycle_through_the_panel() {
+    let db_path = test_db_path("prospection-interactions");
+    let (state, _client_id) = unlocked_state_with_opportunity(&db_path).await;
+    let router = freeflow_web::router(state);
+    let id = opportunity_id_by_name(&db_path, "Refonte plateforme");
+
+    let create = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/prospection/{id}/interactions"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from("kind=call&note=Premier+contact"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+    let detail_body = body_text(create).await;
+    assert!(detail_body.contains("Premier contact"));
+
+    let interaction_id = {
+        let store = Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+        freeflow_core::prospection::list_interactions(store.connection(), id)
+            .unwrap()
+            .first()
+            .unwrap()
+            .id
+    };
+
+    let update = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/interactions/{interaction_id}"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from("revision=1&kind=meeting&note=Rendez-vous"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(body_text(update).await.contains("Rendez-vous"));
+
+    let deleted = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/interactions/{interaction_id}/delete"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(!body_text(deleted).await.contains("Rendez-vous"));
+}
+
+// -- Missions (lot 16) ------------------------------------------------------------------------
+
+async fn unlocked_state_with_mission(db_path: &Path) -> (AppState, ClientId, MissionId) {
+    let mut store = Store::create(db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    let client_id = match Executor::new(&mut store)
+        .execute(
+            &CreateClient {
+                name: "Kappa Software".to_string(),
+                siren: None,
+                vat_number: None,
+                address: None,
+            },
+            &human_ctx(),
+        )
+        .unwrap()
+    {
+        freeflow_core::app::Outcome::Applied(id) => id,
+        other => panic!("expected Applied, got {other:?}"),
+    };
+    let mission_id = match Executor::new(&mut store)
+        .execute(
+            &CreateMission {
+                client_id,
+                quote_id: None,
+                name: "Refonte dashboard".to_string(),
+                kind: freeflow_core::domain::MissionKind::Forfait {
+                    budget: Money::from_cents(4_500_000),
+                },
+                milestones: Vec::new(),
+                started_on: time::Date::from_calendar_date(2026, time::Month::September, 1)
+                    .unwrap(),
+            },
+            &human_ctx(),
+        )
+        .unwrap()
+    {
+        freeflow_core::app::Outcome::Applied(id) => id,
+        other => panic!("expected Applied, got {other:?}"),
+    };
+    drop(store);
+
+    let state = AppState::new(db_path.to_path_buf());
+    state
+        .unlock(&Passphrase::from(PASSPHRASE), false)
+        .await
+        .unwrap();
+    (state, client_id, mission_id)
+}
+
+#[tokio::test]
+async fn closing_a_mission_removes_it_from_the_active_table_but_not_from_the_all_table() {
+    let db_path = test_db_path("missions-close");
+    let (state, _client_id, id) = unlocked_state_with_mission(&db_path).await;
+    let router = freeflow_web::router(state);
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/missions/{id}/close"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from("ended_on=2026-12-31"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("HX-Trigger").unwrap(),
+        "freeflow:saved"
+    );
+
+    let active = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/missions/table")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(!body_text(active).await.contains("Refonte dashboard"));
+
+    let all = router
+        .oneshot(
+            Request::builder()
+                .uri("/missions/table?ended=true&archived=true")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(body_text(all).await.contains("Refonte dashboard"));
+}
+
+#[tokio::test]
+async fn deleting_a_mission_with_time_entries_shows_what_blocks_it() {
+    let db_path = test_db_path("missions-delete-blocked");
+    let (state, _client_id, id) = unlocked_state_with_mission(&db_path).await;
+    let router = freeflow_web::router(state);
+
+    router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/missions/{id}/time"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from("worked_on=2026-09-10&days=2&category=billable"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/missions/{id}/delete"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(!response.headers().contains_key("HX-Trigger"));
+    let body = body_text(response).await;
+    assert!(body.contains("saisie"));
+}
+
+#[tokio::test]
+async fn time_entry_lifecycle_through_the_panel() {
+    let db_path = test_db_path("missions-time-lifecycle");
+    let (state, _client_id, id) = unlocked_state_with_mission(&db_path).await;
+    let router = freeflow_web::router(state);
+
+    let create = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/missions/{id}/time"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(
+                    "worked_on=2026-09-10&days=2&category=billable&note=Premiere+saisie",
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(body_text(create).await.contains("Premiere saisie"));
+
+    let entry_id = {
+        let store = Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+        freeflow_core::missions::list_time_entries(store.connection(), id)
+            .unwrap()
+            .first()
+            .unwrap()
+            .id
+    };
+
+    let update = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/time-entries/{entry_id}"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(
+                    "revision=1&worked_on=2026-09-11&days=3.5&category=admin&note=Corrigee",
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(body_text(update).await.contains("Corrigee"));
+
+    let deleted = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/time-entries/{entry_id}/delete"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(!body_text(deleted).await.contains("Corrigee"));
 }

@@ -259,34 +259,18 @@ impl Command for DeleteClient {
     }
 }
 
-/// Lit la révision actuelle de `id` dans `table`, sans la vérifier ni l'écrire — le socle
-/// partagé de `require_client_revision`/`require_contact_revision`, qui restent typées côté
-/// appelant pour porter l'identifiant correct dans l'erreur.
-fn current_revision(conn: &Connection, table: &str, id: &str) -> Result<Option<i64>, AppError> {
-    let sql = format!("SELECT revision FROM {table} WHERE id = ?1");
-    conn.query_row(&sql, [id], |row| row.get(0))
-        .optional()
-        .map_err(AppError::from)
-}
-
-/// Vérifie que `id` existe avec la révision `expected`, et renvoie la révision suivante — sans
-/// l'écrire : c'est à l'appelant de le faire dans le même `UPDATE`/`DELETE` que sa propre
-/// mutation, pour que la vérification et l'écriture restent une seule opération atomique côté
-/// SQLite (la transaction `IMMEDIATE` de l'exécuteur fait le reste).
+/// Wrapper typé au-dessus du socle partagé `crate::app::revision` (extrait d'ici au lot 16, quand
+/// la prospection et les missions en ont eu besoin à leur tour) — porte l'erreur `NotFound` du
+/// bon type pour un client.
 fn require_client_revision(
     conn: &Connection,
     id: ClientId,
     expected: i64,
 ) -> Result<i64, AppError> {
-    let current =
-        current_revision(conn, "clients", &id.to_string())?.ok_or(ClientError::NotFound(id))?;
-    if current != expected {
-        return Err(AppError::Conflict {
-            entity: "client",
-            id: id.to_string(),
-        });
-    }
-    Ok(expected + 1)
+    let id_str = id.to_string();
+    let current = crate::app::revision::current_revision(conn, "clients", &id_str)?
+        .ok_or(ClientError::NotFound(id))?;
+    crate::app::revision::require_revision(current, expected, "client", &id_str)
 }
 
 fn require_contact_revision(
@@ -294,15 +278,10 @@ fn require_contact_revision(
     id: ContactId,
     expected: i64,
 ) -> Result<i64, AppError> {
-    let current = current_revision(conn, "contacts", &id.to_string())?
+    let id_str = id.to_string();
+    let current = crate::app::revision::current_revision(conn, "contacts", &id_str)?
         .ok_or(ClientError::ContactNotFound(id))?;
-    if current != expected {
-        return Err(AppError::Conflict {
-            entity: "contact",
-            id: id.to_string(),
-        });
-    }
-    Ok(expected + 1)
+    crate::app::revision::require_revision(current, expected, "contact", &id_str)
 }
 
 fn insert_client(conn: &Connection, client: &Client) -> Result<(), AppError> {

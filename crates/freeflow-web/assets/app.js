@@ -124,7 +124,11 @@ if (panel) {
 // `n` ouvre l'action de création de l'écran actif, quand un panneau de données existe pour cet
 // écran — étendu au fil des lots suivants (`NEW_ACTION_BY_VIEW` reste la seule chose à
 // compléter). Inactif pendant la saisie d'un champ, ou pendant que la palette est ouverte.
-const NEW_ACTION_BY_VIEW = { clients: "/clients/new" };
+const NEW_ACTION_BY_VIEW = {
+  clients: "/clients/new",
+  prospection: "/prospection/new",
+  missions: "/missions/new",
+};
 document.addEventListener("keydown", (event) => {
   if (event.key !== "n" || event.metaKey || event.ctrlKey || event.altKey) return;
   const target = event.target;

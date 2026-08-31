@@ -69,7 +69,7 @@ pub async fn dashboard(State(state): State<AppState>, headers: HeaderMap) -> Htm
 pub async fn prospection(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
     let content = state
         .with_store(|store| {
-            views::prospection::render(store)
+            views::prospection::render(store, freeflow_core::prospection::OpportunityFilter::OPEN)
                 .unwrap_or_else(|e| error_markup(ViewId::Prospection, e))
         })
         .await
@@ -80,7 +80,8 @@ pub async fn prospection(State(state): State<AppState>, headers: HeaderMap) -> H
 pub async fn missions(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
     let content = state
         .with_store(|store| {
-            views::missions::render(store).unwrap_or_else(|e| error_markup(ViewId::Missions, e))
+            views::missions::render(store, freeflow_core::missions::MissionFilter::ACTIVE)
+                .unwrap_or_else(|e| error_markup(ViewId::Missions, e))
         })
         .await
         .unwrap_or_else(|| locked_markup(ViewId::Missions));

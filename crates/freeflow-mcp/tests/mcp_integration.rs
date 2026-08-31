@@ -91,15 +91,38 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "clients.contacts.update",
         "clients.contacts.delete",
         "prospect.create",
+        "prospect.show",
+        "prospect.list",
+        "prospect.references",
+        "prospect.update",
+        "prospect.archive",
+        "prospect.unarchive",
+        "prospect.delete",
         "prospect.advance",
         "prospect.win",
         "prospect.lose",
         "prospect.log_interaction",
+        "prospect.interactions.list",
+        "prospect.interactions.update",
+        "prospect.interactions.delete",
         "prospect.late",
         "prospect.orphans",
         "prospect.pipeline",
         "mission.create",
+        "mission.show",
+        "mission.list",
+        "mission.references",
+        "mission.schedule",
+        "mission.update",
+        "mission.close",
+        "mission.reopen",
+        "mission.archive",
+        "mission.unarchive",
+        "mission.delete",
         "mission.log_time",
+        "mission.time.list",
+        "mission.time.update",
+        "mission.time.delete",
         "mission.rate",
         "mission.capacity",
         "quote.create",
@@ -150,7 +173,15 @@ async fn lists_every_domain_tool_with_correct_annotations() {
 
     // Les commandes qui déclarent `requires_confirmation()` côté core (lot 2/5/15) doivent être
     // annoncées comme destructives côté MCP — c'est ce qui doit alerter un agent avant appel.
-    for destructive in ["invoice.emit", "invoice.credit_note", "clients.delete"] {
+    for destructive in [
+        "invoice.emit",
+        "invoice.credit_note",
+        "clients.delete",
+        "prospect.delete",
+        "prospect.interactions.delete",
+        "mission.delete",
+        "mission.time.delete",
+    ] {
         let ann = by_name(destructive).annotations.as_ref().unwrap();
         assert_eq!(ann.read_only_hint, Some(false));
         assert_eq!(ann.destructive_hint, Some(true));
@@ -243,7 +274,7 @@ async fn golden_path_from_prospection_to_paid_invoice_over_mcp() {
         &client,
         "prospect.create",
         json!({
-            "client_id": client_id,
+            "client": client_id,
             "name": "Refonte plateforme",
             "amount_cents": 7_800_000,
             "probability_percent": 40,
@@ -260,7 +291,7 @@ async fn golden_path_from_prospection_to_paid_invoice_over_mcp() {
     let won = call(
         &client,
         "prospect.win",
-        json!({"id": opportunity_id, "started_on": "2026-09-01"}),
+        json!({"opportunity": opportunity_id, "started_on": "2026-09-01"}),
     )
     .await;
     assert_eq!(won.is_error, Some(false));
@@ -270,7 +301,7 @@ async fn golden_path_from_prospection_to_paid_invoice_over_mcp() {
         &client,
         "mission.log_time",
         json!({
-            "mission_id": mission_id,
+            "mission": mission_id,
             "worked_on": "2026-09-15",
             "days": 9.5,
             "category": "billable",
@@ -426,7 +457,7 @@ async fn deleting_a_client_still_referenced_by_an_opportunity_is_refused_at_conf
         &client,
         "prospect.create",
         json!({
-            "client_id": client_id,
+            "client": client_id,
             "name": "Refonte",
             "amount_cents": 10_000,
             "probability_percent": 50,
@@ -615,6 +646,206 @@ async fn reading_a_client_detail_resource_by_name_includes_contacts_and_referenc
     assert_eq!(payload["client"]["name"], "Kappa Software");
     assert_eq!(payload["contacts"].as_array().unwrap().len(), 1);
     assert_eq!(payload["references"]["opportunities"], 0);
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn mission_create_dry_run_writes_nothing() {
+    // Preuve que la dette remboursée par le lot 16 (`dry_run` sur les outils préexistants
+    // `mission.create`/`prospect.*`) fonctionne réellement, pas seulement déclarée dans le schéma.
+    let db_path = test_db_path("mission-dry-run");
+    let store = Store::create(&db_path, &Passphrase::from("s3cret")).unwrap();
+    let client = spawn_client(store).await;
+
+    let created = call(&client, "clients.create", json!({"name": "Kappa Software"})).await;
+    let client_id = json_of(&created)["result"].as_str().unwrap().to_string();
+
+    let result = call(
+        &client,
+        "mission.create",
+        json!({
+            "client": client_id,
+            "name": "Refonte",
+            "kind": "forfait",
+            "budget_cents": 100_000,
+            "started_on": "2026-09-01",
+            "dry_run": true,
+        }),
+    )
+    .await;
+    assert_eq!(result.is_error, Some(false));
+    assert_eq!(json_of(&result)["status"], "dry_run");
+
+    let check = Store::open_with_passphrase(&db_path, &Passphrase::from("s3cret")).unwrap();
+    let count: i64 = check
+        .connection()
+        .query_row("SELECT count(*) FROM missions", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(count, 0, "un dry-run ne doit rien écrire");
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn prospect_update_accepts_a_reference_instead_of_a_uuid() {
+    let db_path = test_db_path("prospect-update-by-name");
+    let store = Store::create(&db_path, &Passphrase::from("s3cret")).unwrap();
+    let client = spawn_client(store).await;
+
+    call(&client, "clients.create", json!({"name": "Kappa Software"})).await;
+    call(
+        &client,
+        "prospect.create",
+        json!({
+            "client": "Kappa Software",
+            "name": "Refonte",
+            "amount_cents": 100_000,
+            "probability_percent": 50,
+            "next_action": "2026-09-02",
+        }),
+    )
+    .await;
+
+    let updated = call(
+        &client,
+        "prospect.update",
+        json!({"opportunity": "Refonte", "name": "Refonte v2"}),
+    )
+    .await;
+    assert_eq!(updated.is_error, Some(false));
+
+    let shown = call(
+        &client,
+        "prospect.show",
+        json!({"opportunity": "Refonte v2"}),
+    )
+    .await;
+    assert_eq!(json_of(&shown)["name"], "Refonte v2");
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn prospect_delete_from_an_agent_creates_a_pending_action_instead_of_deleting() {
+    let db_path = test_db_path("prospect-delete-confirm");
+    let store = Store::create(&db_path, &Passphrase::from("s3cret")).unwrap();
+    let client = spawn_client(store).await;
+
+    call(&client, "clients.create", json!({"name": "Kappa Software"})).await;
+    call(
+        &client,
+        "prospect.create",
+        json!({
+            "client": "Kappa Software",
+            "name": "Refonte",
+            "amount_cents": 100_000,
+            "probability_percent": 50,
+            "next_action": "2026-09-02",
+        }),
+    )
+    .await;
+
+    let deleted = call(
+        &client,
+        "prospect.delete",
+        json!({"opportunity": "Refonte"}),
+    )
+    .await;
+    assert_eq!(deleted.is_error, Some(false));
+    assert_eq!(json_of(&deleted)["status"], "pending_confirmation");
+
+    let check = Store::open_with_passphrase(&db_path, &Passphrase::from("s3cret")).unwrap();
+    let count: i64 = check
+        .connection()
+        .query_row("SELECT count(*) FROM opportunities", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(
+        count, 1,
+        "l'opportunité doit toujours exister tant qu'aucun humain n'a confirmé"
+    );
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn reading_the_missions_resource_returns_the_active_missions() {
+    let db_path = test_db_path("missions-resource");
+    let store = Store::create(&db_path, &Passphrase::from("s3cret")).unwrap();
+    let client = spawn_client(store).await;
+
+    call(&client, "clients.create", json!({"name": "Kappa Software"})).await;
+    call(
+        &client,
+        "mission.create",
+        json!({
+            "client": "Kappa Software",
+            "name": "Refonte",
+            "kind": "forfait",
+            "budget_cents": 100_000,
+            "started_on": "2026-09-01",
+        }),
+    )
+    .await;
+
+    let resources = client.list_resources(None).await.unwrap().resources;
+    assert!(resources.iter().any(|r| r.uri == "freeflow://missions"));
+
+    let read = client
+        .read_resource(ReadResourceRequestParams::new("freeflow://missions"))
+        .await
+        .unwrap();
+    let text = match &read.contents[0] {
+        rmcp::model::ResourceContents::TextResourceContents { text, .. } => text.clone(),
+        other => panic!("expected text contents, got {other:?}"),
+    };
+    let missions: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(missions.as_array().unwrap().len(), 1);
+    assert_eq!(missions[0]["name"], "Refonte");
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn reading_an_opportunity_by_name_returns_its_interactions_and_references() {
+    let db_path = test_db_path("opportunity-resource");
+    let store = Store::create(&db_path, &Passphrase::from("s3cret")).unwrap();
+    let client = spawn_client(store).await;
+
+    call(&client, "clients.create", json!({"name": "Kappa Software"})).await;
+    call(
+        &client,
+        "prospect.create",
+        json!({
+            "client": "Kappa Software",
+            "name": "Refonte",
+            "amount_cents": 100_000,
+            "probability_percent": 50,
+            "next_action": "2026-09-02",
+        }),
+    )
+    .await;
+    call(
+        &client,
+        "prospect.log_interaction",
+        json!({"opportunity": "Refonte", "kind": "call", "note": "premier contact"}),
+    )
+    .await;
+
+    let read = client
+        .read_resource(ReadResourceRequestParams::new(
+            "freeflow://opportunities/Refonte",
+        ))
+        .await
+        .unwrap();
+    let text = match &read.contents[0] {
+        rmcp::model::ResourceContents::TextResourceContents { text, .. } => text.clone(),
+        other => panic!("expected text contents, got {other:?}"),
+    };
+    let payload: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(payload["opportunity"]["name"], "Refonte");
+    assert_eq!(payload["interactions"].as_array().unwrap().len(), 1);
+    assert_eq!(payload["references"]["quotes"], 0);
 
     client.cancel().await.unwrap();
 }

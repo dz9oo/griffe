@@ -4,10 +4,10 @@
 //! suivants au fil des lots), en réutilisant les variables CSS déjà posées par `app.css`
 //! (`.auth-field`, généralisé ici en `.field`).
 //!
-//! Volontairement limité aux composants qu'un vrai formulaire de ce lot utilise (`text`,
-//! `hidden`, `actions`, les deux bandeaux) — pas de `select`/`date`/`checkbox` posés par
-//! anticipation sans appelant réel : les prochains lots (missions, devis…) en auront besoin
-//! pour de vrais champs énumérés/datés, à ajouter alors en suivant exactement ce patron.
+//! Volontairement limité aux composants qui ont un appelant réel — pas de composant posé par
+//! anticipation sans utilisateur. Lot 16 (prospection, missions) a ajouté `date`/`select`/
+//! `number`/`textarea`/`field_help`, en suivant ce même patron ; les prochains lots (devis…) en
+//! ajouteront d'autres de la même façon.
 
 use maud::{Markup, html};
 
@@ -22,6 +22,82 @@ pub fn text(name: &str, label: &str, value: &str, error: Option<&str>) -> Markup
                 div class="field-error" { (e) }
             }
         }
+    }
+}
+
+/// Champ date (`<input type="date">`), valeur au format `AAAA-MM-JJ` — le même format que
+/// `freeflow_core::domain::format_date`/`parse_date`, jamais reformaté par ce composant.
+pub fn date(name: &str, label: &str, value: &str, error: Option<&str>) -> Markup {
+    html! {
+        div class="field" {
+            label for=(name) { (label) }
+            input id=(name) name=(name) type="date" value=(value) aria-invalid[error.is_some()];
+            @if let Some(e) = error {
+                div class="field-error" { (e) }
+            }
+        }
+    }
+}
+
+/// Champ numérique (`<input type="number">`) — `step` porte la granularité attendue (`"1"` pour
+/// un pourcentage, `"0.25"` pour un nombre de jours).
+pub fn number(name: &str, label: &str, value: &str, step: &str, error: Option<&str>) -> Markup {
+    html! {
+        div class="field" {
+            label for=(name) { (label) }
+            input id=(name) name=(name) type="number" step=(step) value=(value) aria-invalid[error.is_some()];
+            @if let Some(e) = error {
+                div class="field-error" { (e) }
+            }
+        }
+    }
+}
+
+/// Liste déroulante. `options` est `(valeur, libellé)` ; `selected` compare sur la valeur.
+pub fn select(
+    name: &str,
+    label: &str,
+    options: &[(&str, &str)],
+    selected: &str,
+    error: Option<&str>,
+) -> Markup {
+    html! {
+        div class="field" {
+            label for=(name) { (label) }
+            select id=(name) name=(name) aria-invalid[error.is_some()] {
+                @for (value, text) in options {
+                    option value=(value) selected[*value == selected] { (text) }
+                }
+            }
+            @if let Some(e) = error {
+                div class="field-error" { (e) }
+            }
+        }
+    }
+}
+
+/// Zone de texte multi-lignes — sert notamment à la collection de jalons d'une mission, un par
+/// ligne : `<textarea>` est le seul moyen simple d'accepter une collection de taille variable
+/// dans un formulaire `application/x-www-form-urlencoded` (une liste de champs répétés du même
+/// nom n'y survit pas, `serde_urlencoded` ne garde que la dernière valeur — voir le commentaire
+/// de `crate::missions` sur ce point).
+pub fn textarea(name: &str, label: &str, value: &str, rows: u8, error: Option<&str>) -> Markup {
+    html! {
+        div class="field" {
+            label for=(name) { (label) }
+            textarea id=(name) name=(name) rows=(rows.to_string()) aria-invalid[error.is_some()] { (value) }
+            @if let Some(e) = error {
+                div class="field-error" { (e) }
+            }
+        }
+    }
+}
+
+/// Rappel de syntaxe sous un champ (ex. le format `label:parts_bps[:AAAA-MM-JJ]` des jalons) —
+/// jamais une erreur, juste de l'aide.
+pub fn field_help(text: &str) -> Markup {
+    html! {
+        div class="field-help" { (text) }
     }
 }
 

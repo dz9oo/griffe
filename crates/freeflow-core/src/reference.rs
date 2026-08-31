@@ -3,12 +3,16 @@
 //! accents, exact puis par préfixe). C'est ce qui évite à chaque façade d'inventer sa propre
 //! notion de « désigner un client par son nom » : la CLI, le serveur MCP et la GUI appellent
 //! toutes ce module plutôt que d'exiger un UUID complet pour chaque référence.
+//!
+//! Lot 16 : `resolve_client` a été réécrit au-dessus d'un cœur générique ([`resolve_among`]),
+//! extrait quand la prospection et les missions en ont eu besoin à leur tour —
+//! `resolve_opportunity`/`resolve_mission` en sont deux enveloppes de quelques lignes.
 
 use rusqlite::Connection;
 
 use crate::app::AppError;
-use crate::clients;
-use crate::domain::ClientId;
+use crate::domain::{ClientId, MissionId, OpportunityId};
+use crate::{clients, missions, prospection};
 
 /// Résultat de la résolution d'une référence texte vers un identifiant typé. `label` (dans
 /// `Ambiguous`) est le libellé lisible du candidat — le nom d'un client, par exemple — pour que
@@ -21,8 +25,8 @@ pub enum RefMatch<T> {
 }
 
 /// Longueur minimale d'un préfixe d'UUID pour être tenté comme tel plutôt que comme un nom —
-/// en-dessous, un nom de client purement hexadécimal (peu probable, mais possible) resterait
-/// résolu par nom plutôt que pris pour un fragment d'UUID.
+/// en-dessous, un nom purement hexadécimal (peu probable, mais possible) resterait résolu par
+/// nom plutôt que pris pour un fragment d'UUID.
 const MIN_UUID_PREFIX_LEN: usize = 4;
 
 /// Replie les diacritiques latins les plus courants en français sur leur lettre de base — pas
@@ -45,60 +49,6 @@ fn normalize(s: &str) -> String {
     s.to_lowercase().chars().map(fold_accents).collect()
 }
 
-/// Résout `needle` en identifiant de client.
-///
-/// Ordre de résolution : UUID complet ; sinon, si `needle` est un fragment hexadécimal d'au
-/// moins [`MIN_UUID_PREFIX_LEN`] caractères, préfixe d'UUID (à la manière d'un hash git court) ;
-/// sinon nom exact, insensible à la casse et aux accents ; sinon préfixe de nom, avec la même
-/// tolérance.
-///
-/// # Errors
-///
-/// Retourne une erreur si la lecture en base échoue.
-pub fn resolve_client(conn: &Connection, needle: &str) -> Result<RefMatch<ClientId>, AppError> {
-    let trimmed = needle.trim();
-
-    if let Ok(id) = trimmed.parse::<ClientId>() {
-        let found = clients::client_by_id(conn, id)?.is_some();
-        return Ok(if found {
-            RefMatch::Unique(id)
-        } else {
-            RefMatch::NotFound
-        });
-    }
-
-    let all = clients::list_clients(conn)?;
-
-    if trimmed.len() >= MIN_UUID_PREFIX_LEN && trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
-        let prefix = trimmed.to_ascii_lowercase();
-        let by_id_prefix: Vec<(ClientId, String)> = all
-            .iter()
-            .filter(|c| c.id.to_string().starts_with(&prefix))
-            .map(|c| (c.id, c.name.clone()))
-            .collect();
-        if !by_id_prefix.is_empty() {
-            return Ok(as_ref_match(by_id_prefix));
-        }
-    }
-
-    let needle_norm = normalize(trimmed);
-    let by_exact_name: Vec<(ClientId, String)> = all
-        .iter()
-        .filter(|c| normalize(&c.name) == needle_norm)
-        .map(|c| (c.id, c.name.clone()))
-        .collect();
-    if !by_exact_name.is_empty() {
-        return Ok(as_ref_match(by_exact_name));
-    }
-
-    let by_name_prefix: Vec<(ClientId, String)> = all
-        .iter()
-        .filter(|c| normalize(&c.name).starts_with(&needle_norm))
-        .map(|c| (c.id, c.name.clone()))
-        .collect();
-    Ok(as_ref_match(by_name_prefix))
-}
-
 fn as_ref_match<T>(mut candidates: Vec<(T, String)>) -> RefMatch<T> {
     match candidates.len() {
         0 => RefMatch::NotFound,
@@ -108,6 +58,161 @@ fn as_ref_match<T>(mut candidates: Vec<(T, String)>) -> RefMatch<T> {
         }
         _ => RefMatch::Ambiguous(candidates),
     }
+}
+
+/// Résout `needle` contre une liste `(id, label)` déjà chargée — inclusive par construction :
+/// c'est à l'appelant de fournir la bonne liste (toutes entités confondues, closes/archivées
+/// comprises), ce module ne fait ici aucune requête.
+///
+/// Ordre de résolution : UUID complet (par appartenance à `candidates`) ; sinon, si `needle` est
+/// un fragment hexadécimal d'au moins [`MIN_UUID_PREFIX_LEN`] caractères, préfixe d'UUID (à la
+/// manière d'un hash git court) ; sinon libellé exact, insensible à la casse et aux accents ;
+/// sinon préfixe de libellé, avec la même tolérance.
+fn resolve_among<T>(needle: &str, candidates: &[(T, String)]) -> RefMatch<T>
+where
+    T: Copy + Eq + std::fmt::Display + std::str::FromStr,
+{
+    let trimmed = needle.trim();
+
+    if let Ok(id) = trimmed.parse::<T>() {
+        return if candidates.iter().any(|(cid, _)| *cid == id) {
+            RefMatch::Unique(id)
+        } else {
+            RefMatch::NotFound
+        };
+    }
+
+    if trimmed.len() >= MIN_UUID_PREFIX_LEN && trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
+        let prefix = trimmed.to_ascii_lowercase();
+        let by_id_prefix: Vec<(T, String)> = candidates
+            .iter()
+            .filter(|(id, _)| id.to_string().starts_with(&prefix))
+            .cloned()
+            .collect();
+        if !by_id_prefix.is_empty() {
+            return as_ref_match(by_id_prefix);
+        }
+    }
+
+    let needle_norm = normalize(trimmed);
+    let by_exact_label: Vec<(T, String)> = candidates
+        .iter()
+        .filter(|(_, label)| normalize(label) == needle_norm)
+        .cloned()
+        .collect();
+    if !by_exact_label.is_empty() {
+        return as_ref_match(by_exact_label);
+    }
+
+    let by_label_prefix: Vec<(T, String)> = candidates
+        .iter()
+        .filter(|(_, label)| normalize(label).starts_with(&needle_norm))
+        .cloned()
+        .collect();
+    as_ref_match(by_label_prefix)
+}
+
+/// Résout `needle` en identifiant de client.
+///
+/// # Errors
+///
+/// Retourne une erreur si la lecture en base échoue.
+pub fn resolve_client(conn: &Connection, needle: &str) -> Result<RefMatch<ClientId>, AppError> {
+    let candidates: Vec<(ClientId, String)> = clients::list_clients(conn)?
+        .into_iter()
+        .map(|c| (c.id, c.name))
+        .collect();
+    Ok(resolve_among(needle, &candidates))
+}
+
+/// Réécrit les libellés d'un résultat `Ambiguous` — laisse `Unique`/`NotFound` inchangés. Le
+/// matching se fait sur le libellé nu (le nom de l'entité) ; l'enrichissement (client, étape ou
+/// date) n'est calculé que pour les candidats effectivement retournés à l'utilisateur, jamais
+/// pour l'espace de recherche entier.
+fn qualify_ambiguous<T: Copy>(result: RefMatch<T>, qualify: impl Fn(T) -> String) -> RefMatch<T> {
+    match result {
+        RefMatch::Ambiguous(candidates) => RefMatch::Ambiguous(
+            candidates
+                .into_iter()
+                .map(|(id, _)| (id, qualify(id)))
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+/// Résout `needle` en identifiant d'opportunité, par nom (le matching se fait sur le nom nu de
+/// l'opportunité). En cas d'ambiguïté, le libellé de chaque candidat est enrichi du nom du
+/// client et de l'étape — les noms d'opportunités sont bien moins uniques qu'une raison sociale,
+/// et ce contexte n'est construit que dans le cas effectivement ambigu, où il coûte le moins et
+/// sert le plus (ex. distinguer deux « Refonte site » dont l'une est déjà `won`).
+///
+/// # Errors
+pub fn resolve_opportunity(
+    conn: &Connection,
+    needle: &str,
+) -> Result<RefMatch<OpportunityId>, AppError> {
+    let all_clients = clients::list_clients(conn)?;
+    let opportunities = prospection::list_opportunities(conn)?;
+    let client_name = |id: ClientId| {
+        all_clients
+            .iter()
+            .find(|c| c.id == id)
+            .map_or_else(|| "?".to_string(), |c| c.name.clone())
+    };
+
+    let candidates: Vec<(OpportunityId, String)> = opportunities
+        .iter()
+        .map(|o| (o.id, o.name.clone()))
+        .collect();
+    let result = resolve_among(needle, &candidates);
+    Ok(qualify_ambiguous(result, |id| {
+        opportunities
+            .iter()
+            .find(|o| o.id == id)
+            .map_or_else(String::new, |o| {
+                format!(
+                    "{} — {} ({})",
+                    client_name(o.client_id),
+                    o.name,
+                    o.stage.as_str()
+                )
+            })
+    }))
+}
+
+/// Résout `needle` en identifiant de mission — même doctrine que
+/// [`resolve_opportunity`], avec la date de démarrage plutôt que l'étape comme discriminant.
+///
+/// # Errors
+pub fn resolve_mission(conn: &Connection, needle: &str) -> Result<RefMatch<MissionId>, AppError> {
+    let all_clients = clients::list_clients(conn)?;
+    let all_missions = missions::list_missions(conn)?;
+    let client_name = |id: ClientId| {
+        all_clients
+            .iter()
+            .find(|c| c.id == id)
+            .map_or_else(|| "?".to_string(), |c| c.name.clone())
+    };
+
+    let candidates: Vec<(MissionId, String)> = all_missions
+        .iter()
+        .map(|m| (m.id, m.name.clone()))
+        .collect();
+    let result = resolve_among(needle, &candidates);
+    Ok(qualify_ambiguous(result, |id| {
+        all_missions
+            .iter()
+            .find(|m| m.id == id)
+            .map_or_else(String::new, |m| {
+                format!(
+                    "{} — {} (depuis {})",
+                    client_name(m.client_id),
+                    m.name,
+                    crate::domain::format_date(m.started_on)
+                )
+            })
+    }))
 }
 
 #[cfg(test)]
@@ -218,6 +323,86 @@ mod tests {
         assert_eq!(
             resolve_client(store.connection(), "totally-unknown").unwrap(),
             RefMatch::NotFound
+        );
+    }
+
+    fn create_opportunity(store: &mut Store, client_id: ClientId, name: &str) -> OpportunityId {
+        let cmd = crate::prospection::CreateOpportunity {
+            client_id,
+            name: name.to_string(),
+            amount: crate::domain::Money::from_cents(1_000_000),
+            probability: crate::domain::Probability::new(50).unwrap(),
+            next_action_at: time::Date::from_calendar_date(2026, time::Month::September, 1)
+                .unwrap(),
+            source: None,
+        };
+        let crate::app::Outcome::Applied(id) = Executor::new(store)
+            .execute(&cmd, &ExecutionContext::new(Actor::Human, false))
+            .unwrap()
+        else {
+            panic!("expected Applied")
+        };
+        id
+    }
+
+    #[test]
+    fn resolves_an_opportunity_by_name() {
+        let mut store = test_store("opportunity-by-name");
+        let client_id = create_client(&mut store, "Argon Digital");
+        let id = create_opportunity(&mut store, client_id, "Refonte plateforme");
+        assert_eq!(
+            resolve_opportunity(store.connection(), "refonte plateforme").unwrap(),
+            RefMatch::Unique(id)
+        );
+    }
+
+    #[test]
+    fn an_ambiguous_opportunity_name_lists_candidates_qualified_by_client_and_stage() {
+        let mut store = test_store("opportunity-ambiguous");
+        let client_id = create_client(&mut store, "Argon Digital");
+        let a = create_opportunity(&mut store, client_id, "Refonte");
+        let b = create_opportunity(&mut store, client_id, "Refonte");
+        let result = resolve_opportunity(store.connection(), "refonte").unwrap();
+        let RefMatch::Ambiguous(candidates) = result else {
+            panic!("expected Ambiguous")
+        };
+        let ids: Vec<OpportunityId> = candidates.iter().map(|(id, _)| *id).collect();
+        assert!(ids.contains(&a) && ids.contains(&b));
+        assert!(
+            candidates.iter().all(
+                |(_, label)| label.contains("Argon Digital") && label.contains("qualification")
+            )
+        );
+    }
+
+    fn create_mission(store: &mut Store, client_id: ClientId, name: &str) -> MissionId {
+        let cmd = crate::missions::CreateMission {
+            client_id,
+            quote_id: None,
+            name: name.to_string(),
+            kind: crate::domain::MissionKind::Forfait {
+                budget: crate::domain::Money::from_cents(1_000_000),
+            },
+            milestones: Vec::new(),
+            started_on: time::Date::from_calendar_date(2026, time::Month::September, 1).unwrap(),
+        };
+        let crate::app::Outcome::Applied(id) = Executor::new(store)
+            .execute(&cmd, &ExecutionContext::new(Actor::Human, false))
+            .unwrap()
+        else {
+            panic!("expected Applied")
+        };
+        id
+    }
+
+    #[test]
+    fn resolves_a_mission_by_name() {
+        let mut store = test_store("mission-by-name");
+        let client_id = create_client(&mut store, "Argon Digital");
+        let id = create_mission(&mut store, client_id, "Refonte dashboard");
+        assert_eq!(
+            resolve_mission(store.connection(), "refonte dashboard").unwrap(),
+            RefMatch::Unique(id)
         );
     }
 }

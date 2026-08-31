@@ -58,4 +58,6 @@ pub struct TimeEntry {
     pub days: f64,
     pub category: TimeCategory,
     pub note: Option<String>,
+    /// Révision optimiste (lot 16) — voir `crate::app::revision`.
+    pub revision: i64,
 }

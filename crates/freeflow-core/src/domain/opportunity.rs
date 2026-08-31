@@ -111,6 +111,12 @@ pub struct Opportunity {
     pub source: Option<String>,
     pub loss_reason: Option<LossReason>,
     pub created_at: OffsetDateTime,
+    /// Révision optimiste (lot 16) — voir `crate::app::revision`.
+    pub revision: i64,
+    /// Retirée des listes actives sans changer d'étape — un axe distinct de `stage = won|lost`
+    /// (lot 16) : une opportunité perdue reste dans l'historique de l'entonnoir, une opportunité
+    /// archivée en sort. `None` tant qu'elle est active.
+    pub archived_at: Option<OffsetDateTime>,
 }
 
 #[cfg(test)]

@@ -39,11 +39,21 @@ implémentation.
   une dans la nature.
 - Pipeline pondéré (montant × probabilité), détection des relances en retard.
 - Gain d'une opportunité → création automatique de la mission correspondante.
+- Créer, consulter, **modifier**, **archiver** et **supprimer** une opportunité (refusé si un devis
+  la référence), et journaliser/modifier/supprimer ses interactions (appels, emails, réunions,
+  notes) — en CLI, en MCP et depuis la fenêtre. L'archivage est un axe distinct de gagnée/perdue :
+  une opportunité archivée est simplement devenue sans objet. Même désignation par nom/UUID/préfixe
+  et même garde-fou d'écriture concurrente que les clients.
 
 ### Missions
 - Trois modes de facturation par mission : **régie** (TJM × jours saisis), **forfait** (jalons,
   facturable au fur et à mesure), **récurrent** (montant mensuel fixe).
 - Saisie de temps facturable / non facturable, TJM effectif calculé, taux d'occupation.
+- Créer, consulter, **modifier**, **clôturer**/**rouvrir**, **archiver** et **supprimer** une
+  mission, et modifier/supprimer une saisie de temps — en CLI, en MCP et depuis la fenêtre. Clore
+  (date de fin, réversible) et archiver (classement, pour une mission déjà facturée donc
+  indélébile) sont deux gestes distincts. Une mission ne se supprime que si aucune facture ni
+  saisie de temps ne la référence.
 
 ### Devis
 - Versionnés et immuables une fois émis. Acceptation → génère la mission et son échéancier de
@@ -235,13 +245,16 @@ distribués prêts à l'emploi — voir la checklist ci-dessous.
 - [x] Gestion des données (client + contact) : modifier, archiver, supprimer, en CLI, en MCP et
       depuis la fenêtre — voir « Clients » ci-dessus. Fondations posées pour les entités
       suivantes (révision optimiste, résolveur de référence par nom, panneau latéral de la GUI).
-- [ ] Étendre la gestion des données (modifier/supprimer) aux autres entités : opportunités,
-      missions (notamment les clore — `ended_on` n'est aujourd'hui jamais écrit), saisies de
-      temps, dépenses. Lire un devis reste aussi impossible une fois créé (aucune query dédiée).
+- [x] Gestion des données (opportunité + interaction, mission + saisie de temps) : modifier,
+      archiver/désarchiver, supprimer, clore/rouvrir une mission — en CLI, en MCP et depuis la
+      fenêtre. Voir « Prospection » et « Missions » ci-dessus.
+- [ ] Étendre la gestion des données aux dépenses (`UpdateExpense`/`DeleteExpense`). Lire un devis
+      reste impossible une fois créé (aucune query dédiée) ; `missions` n'a toujours pas de colonne
+      `opportunity_id` pour tracer le lien créé par un gain d'opportunité.
 - [ ] `VoidPayment`/`UnreconcileTransaction` : un encaissement ou un rapprochement saisi à tort
       n'est aujourd'hui ni corrigible ni annulable.
 - [ ] Parité MCP sur `company`/`expense`/`fiscal`/`forecast`/`invoice render` — le serveur MCP
-      reste un sous-ensemble strict de la CLI en dehors des clients.
+      reste un sous-ensemble strict de la CLI en dehors des clients/opportunités/missions.
 - [ ] Sidecar v3 à clé maître enveloppée (modèle LUKS) : le coffre serait chiffré par une clé
       aléatoire, elle-même enveloppée dans le sidecar par la clé dérivée d'Argon2id. Un changement
       de passphrase deviendrait la réécriture atomique d'un seul petit fichier — plus de

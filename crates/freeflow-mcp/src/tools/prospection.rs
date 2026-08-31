@@ -1,11 +1,17 @@
-//! Outils `prospect.*` — miroir de `freeflow prospect ...` (CLI, lot 7).
+//! Outils `prospect.*` — miroir de `freeflow prospect ...` (CLI, lot 7). Lot 16 : ajout de
+//! `show`/`list`/`update`/`archive`/`unarchive`/`delete`/`references` et de
+//! `interactions.list`/`interactions.update`/`interactions.delete` — `log_interaction` reste tel
+//! quel (asymétrie assumée avec les nouveaux verbes au pluriel `interactions.*`, cohérente avec
+//! la décision de ne pas renommer les verbes de transition existants).
 
 use freeflow_core::app::Executor;
 use freeflow_core::domain::{
-    ClientId, InteractionKind, OpportunityId, OpportunityStage, Probability,
+    ClientId, InteractionId, InteractionKind, OpportunityId, OpportunityStage, Probability,
 };
 use freeflow_core::prospection::{
-    self, late_actions, pipeline_by_stage, weighted_pipeline, without_next_action,
+    self, OpportunityFilter, interaction_by_id, late_actions, list_interactions,
+    list_opportunities_with, opportunity_by_id, opportunity_references, pipeline_by_stage,
+    weighted_pipeline, without_next_action,
 };
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
@@ -15,12 +21,14 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::server::FreeflowServer;
-use crate::support::{err_text, ok_json, ok_or_return, outcome_json, parse_loss_reason};
+use crate::support::{
+    err_text, ok_json, ok_or_return, outcome_json, parse_loss_reason, resolve_opportunity,
+};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct CreateOpportunityArgs {
-    /// Identifiant du client (UUID).
-    client_id: String,
+    /// Référence du client : UUID, préfixe d'UUID, ou nom.
+    client: String,
     name: String,
     /// Montant estimé, en centimes d'euro.
     amount_cents: i64,
@@ -29,11 +37,49 @@ pub(crate) struct CreateOpportunityArgs {
     /// Date de prochaine action, au format `AAAA-MM-JJ`.
     next_action: String,
     source: Option<String>,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct OpportunityRefArgs {
+    /// Référence de l'opportunité : UUID, préfixe d'UUID, ou nom.
+    opportunity: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct OpportunityRefMutationArgs {
+    opportunity: String,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct ListOpportunitiesArgs {
+    /// Inclut les opportunités closes (gagnées/perdues) si vrai (défaut : faux).
+    #[serde(default)]
+    closed: bool,
+    /// Inclut les opportunités archivées si vrai (défaut : faux).
+    #[serde(default)]
+    archived: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct UpdateOpportunityArgs {
+    opportunity: String,
+    /// Chaque champ fourni remplace la valeur actuelle ; un champ omis est conservé tel quel.
+    name: Option<String>,
+    amount_cents: Option<i64>,
+    probability_percent: Option<u8>,
+    next_action: Option<String>,
+    source: Option<String>,
+    #[serde(default)]
+    dry_run: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct AdvanceOpportunityArgs {
-    id: String,
+    opportunity: String,
     /// Étape cible : `qualification`, `discovery`, `proposal`, `negotiation`, `won`, ou `lost`.
     to: String,
     next_action: String,
@@ -41,30 +87,68 @@ pub(crate) struct AdvanceOpportunityArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct WinOpportunityArgs {
-    id: String,
+    opportunity: String,
     /// Date de début de la mission créée, au format `AAAA-MM-JJ`.
     started_on: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct LoseOpportunityArgs {
-    id: String,
+    opportunity: String,
     /// `budget`, `timing`, `competitor`, `no-response`, `scope-mismatch`, ou `other:<détail>`.
     reason: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct LogInteractionArgs {
-    id: String,
+    opportunity: String,
     /// `call`, `email`, `meeting`, ou `note`.
     kind: String,
     note: String,
+    /// Par défaut, l'instant présent — au format `AAAA-MM-JJ` pour journaliser un échange
+    /// survenu plus tôt.
+    occurred_on: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct UpdateInteractionArgs {
+    /// Identifiant de l'interaction (UUID) — voir `prospect.interactions.list`.
+    id: String,
+    kind: Option<String>,
+    note: Option<String>,
+    occurred_on: Option<String>,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct InteractionIdArgs {
+    id: String,
+    #[serde(default)]
+    dry_run: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct LateArgs {
     /// Date du jour, au format `AAAA-MM-JJ` — sert de référence pour détecter le retard.
     today: String,
+}
+
+fn midnight_utc(date: time::Date) -> time::OffsetDateTime {
+    date.with_hms(0, 0, 0)
+        .expect("minuit est toujours une heure valide")
+        .assume_utc()
+}
+
+fn opportunity_or_not_found(
+    store: &freeflow_core::store::Store,
+    id: OpportunityId,
+) -> Result<freeflow_core::domain::Opportunity, CallToolResult> {
+    match opportunity_by_id(store.connection(), id) {
+        Ok(Some(o)) => Ok(o),
+        Ok(None) => Err(err_text(format!("opportunité introuvable : {id}"))),
+        Err(e) => Err(err_text(e.to_string())),
+    }
 }
 
 #[tool_router(router = prospection_router, vis = "pub(crate)")]
@@ -82,7 +166,11 @@ impl FreeflowServer {
         &self,
         Parameters(args): Parameters<CreateOpportunityArgs>,
     ) -> CallToolResult {
-        let client_id: ClientId = ok_or_return!("client_id", args.client_id.parse());
+        let mut store = self.store.lock().await;
+        let client_id: ClientId = ok_or_return!(
+            "client",
+            crate::support::resolve_client(&store, &args.client)
+        );
         let probability = ok_or_return!(
             "probability_percent",
             Probability::new(args.probability_percent)
@@ -99,8 +187,217 @@ impl FreeflowServer {
             next_action_at,
             source: args.source,
         };
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
+            Ok(outcome) => ok_json(outcome_json(&outcome)),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
+    /// Affiche une opportunité.
+    #[tool(
+        name = "prospect.show",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    async fn prospect_show(
+        &self,
+        Parameters(args): Parameters<OpportunityRefArgs>,
+    ) -> CallToolResult {
+        let store = self.store.lock().await;
+        let id = ok_or_return!(
+            "opportunity",
+            resolve_opportunity(&store, &args.opportunity)
+        );
+        match opportunity_or_not_found(&store, id) {
+            Ok(o) => ok_json(o),
+            Err(result) => result,
+        }
+    }
+
+    /// Liste les opportunités ouvertes et non archivées (`closed`/`archived: true` pour élargir).
+    #[tool(
+        name = "prospect.list",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    async fn prospect_list(
+        &self,
+        Parameters(args): Parameters<ListOpportunitiesArgs>,
+    ) -> CallToolResult {
+        let store = self.store.lock().await;
+        let filter = OpportunityFilter {
+            include_closed: args.closed,
+            include_archived: args.archived,
+        };
+        match list_opportunities_with(store.connection(), filter) {
+            Ok(opportunities) => ok_json(opportunities),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
+    /// Ce qui référence encore une opportunité (des devis) — à consulter avant `prospect.delete`.
+    #[tool(
+        name = "prospect.references",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    async fn prospect_references(
+        &self,
+        Parameters(args): Parameters<OpportunityRefArgs>,
+    ) -> CallToolResult {
+        let store = self.store.lock().await;
+        let id = ok_or_return!(
+            "opportunity",
+            resolve_opportunity(&store, &args.opportunity)
+        );
+        match opportunity_references(store.connection(), id) {
+            Ok(refs) => ok_json(refs),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
+    /// Modifie une opportunité ouverte — seuls les champs fournis changent. Ne peut pas changer
+    /// l'étape (`prospect.advance`/`win`/`lose`) ni le motif de perte.
+    #[tool(
+        name = "prospect.update",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false
+        )
+    )]
+    async fn prospect_update(
+        &self,
+        Parameters(args): Parameters<UpdateOpportunityArgs>,
+    ) -> CallToolResult {
         let mut store = self.store.lock().await;
-        match Executor::new(&mut store).execute(&cmd, &self.ctx(false)) {
+        let id = ok_or_return!(
+            "opportunity",
+            resolve_opportunity(&store, &args.opportunity)
+        );
+        let current = match opportunity_or_not_found(&store, id) {
+            Ok(o) => o,
+            Err(result) => return result,
+        };
+        let next_action_at = match args.next_action {
+            Some(s) => Some(ok_or_return!(
+                "next_action",
+                freeflow_core::domain::parse_date(&s)
+            )),
+            None => current.next_action_at,
+        };
+        let probability = match args.probability_percent {
+            Some(p) => ok_or_return!("probability_percent", Probability::new(p)),
+            None => current.probability,
+        };
+        let cmd = prospection::UpdateOpportunity {
+            id,
+            revision: current.revision,
+            name: args.name.unwrap_or(current.name),
+            amount: args
+                .amount_cents
+                .map_or(current.amount, freeflow_core::domain::Money::from_cents),
+            probability,
+            next_action_at,
+            source: args.source.or(current.source),
+        };
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
+            Ok(outcome) => ok_json(outcome_json(&outcome)),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
+    /// Retire une opportunité des listes actives sans la supprimer — un axe distinct de
+    /// gagnée/perdue.
+    #[tool(
+        name = "prospect.archive",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false
+        )
+    )]
+    async fn prospect_archive(
+        &self,
+        Parameters(args): Parameters<OpportunityRefMutationArgs>,
+    ) -> CallToolResult {
+        let mut store = self.store.lock().await;
+        let id = ok_or_return!(
+            "opportunity",
+            resolve_opportunity(&store, &args.opportunity)
+        );
+        let current = match opportunity_or_not_found(&store, id) {
+            Ok(o) => o,
+            Err(result) => return result,
+        };
+        let cmd = prospection::ArchiveOpportunity {
+            id,
+            revision: current.revision,
+        };
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
+            Ok(outcome) => ok_json(outcome_json(&outcome)),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
+    /// Réintègre une opportunité archivée dans les listes actives.
+    #[tool(
+        name = "prospect.unarchive",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false
+        )
+    )]
+    async fn prospect_unarchive(
+        &self,
+        Parameters(args): Parameters<OpportunityRefMutationArgs>,
+    ) -> CallToolResult {
+        let mut store = self.store.lock().await;
+        let id = ok_or_return!(
+            "opportunity",
+            resolve_opportunity(&store, &args.opportunity)
+        );
+        let current = match opportunity_or_not_found(&store, id) {
+            Ok(o) => o,
+            Err(result) => return result,
+        };
+        let cmd = prospection::UnarchiveOpportunity {
+            id,
+            revision: current.revision,
+        };
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
+            Ok(outcome) => ok_json(outcome_json(&outcome)),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
+    /// Supprime une opportunité pour de bon — refusée si un devis la référence (voir
+    /// `prospect.references`, ou archivez-la à la place). Effet destructeur : déclenché par un
+    /// agent, attend toujours une confirmation humaine.
+    #[tool(
+        name = "prospect.delete",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false
+        )
+    )]
+    async fn prospect_delete(
+        &self,
+        Parameters(args): Parameters<OpportunityRefMutationArgs>,
+    ) -> CallToolResult {
+        let mut store = self.store.lock().await;
+        let id = ok_or_return!(
+            "opportunity",
+            resolve_opportunity(&store, &args.opportunity)
+        );
+        let current = match opportunity_or_not_found(&store, id) {
+            Ok(o) => o,
+            Err(result) => return result,
+        };
+        let cmd = prospection::DeleteOpportunity {
+            id,
+            revision: current.revision,
+        };
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
             Err(e) => err_text(e.to_string()),
         }
@@ -119,7 +416,11 @@ impl FreeflowServer {
         &self,
         Parameters(args): Parameters<AdvanceOpportunityArgs>,
     ) -> CallToolResult {
-        let opportunity_id: OpportunityId = ok_or_return!("id", args.id.parse());
+        let mut store = self.store.lock().await;
+        let opportunity_id = ok_or_return!(
+            "opportunity",
+            resolve_opportunity(&store, &args.opportunity)
+        );
         let to: OpportunityStage = ok_or_return!("to", args.to.parse());
         let next_action_at = ok_or_return!(
             "next_action",
@@ -130,7 +431,6 @@ impl FreeflowServer {
             to,
             next_action_at,
         };
-        let mut store = self.store.lock().await;
         match Executor::new(&mut store).execute(&cmd, &self.ctx(false)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
             Err(e) => err_text(e.to_string()),
@@ -150,7 +450,11 @@ impl FreeflowServer {
         &self,
         Parameters(args): Parameters<WinOpportunityArgs>,
     ) -> CallToolResult {
-        let opportunity_id: OpportunityId = ok_or_return!("id", args.id.parse());
+        let mut store = self.store.lock().await;
+        let opportunity_id = ok_or_return!(
+            "opportunity",
+            resolve_opportunity(&store, &args.opportunity)
+        );
         let started_on = ok_or_return!(
             "started_on",
             freeflow_core::domain::parse_date(&args.started_on)
@@ -159,7 +463,6 @@ impl FreeflowServer {
             opportunity_id,
             started_on,
         };
-        let mut store = self.store.lock().await;
         match Executor::new(&mut store).execute(&cmd, &self.ctx(false)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
             Err(e) => err_text(e.to_string()),
@@ -179,13 +482,16 @@ impl FreeflowServer {
         &self,
         Parameters(args): Parameters<LoseOpportunityArgs>,
     ) -> CallToolResult {
-        let opportunity_id: OpportunityId = ok_or_return!("id", args.id.parse());
+        let mut store = self.store.lock().await;
+        let opportunity_id = ok_or_return!(
+            "opportunity",
+            resolve_opportunity(&store, &args.opportunity)
+        );
         let reason = ok_or_return!("reason", parse_loss_reason(&args.reason));
         let cmd = prospection::LoseOpportunity {
             opportunity_id,
             reason,
         };
-        let mut store = self.store.lock().await;
         match Executor::new(&mut store).execute(&cmd, &self.ctx(false)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
             Err(e) => err_text(e.to_string()),
@@ -205,15 +511,120 @@ impl FreeflowServer {
         &self,
         Parameters(args): Parameters<LogInteractionArgs>,
     ) -> CallToolResult {
-        let opportunity_id: OpportunityId = ok_or_return!("id", args.id.parse());
+        let mut store = self.store.lock().await;
+        let opportunity_id = ok_or_return!(
+            "opportunity",
+            resolve_opportunity(&store, &args.opportunity)
+        );
         let kind: InteractionKind = ok_or_return!("kind", args.kind.parse());
+        let occurred_at = match &args.occurred_on {
+            Some(s) => Some(midnight_utc(ok_or_return!(
+                "occurred_on",
+                freeflow_core::domain::parse_date(s)
+            ))),
+            None => None,
+        };
         let cmd = prospection::LogInteraction {
             opportunity_id,
             kind,
             note: args.note,
+            occurred_at,
         };
-        let mut store = self.store.lock().await;
         match Executor::new(&mut store).execute(&cmd, &self.ctx(false)) {
+            Ok(outcome) => ok_json(outcome_json(&outcome)),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
+    /// Liste les interactions d'une opportunité.
+    #[tool(
+        name = "prospect.interactions.list",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    async fn prospect_interactions_list(
+        &self,
+        Parameters(args): Parameters<OpportunityRefArgs>,
+    ) -> CallToolResult {
+        let store = self.store.lock().await;
+        let id = ok_or_return!(
+            "opportunity",
+            resolve_opportunity(&store, &args.opportunity)
+        );
+        match list_interactions(store.connection(), id) {
+            Ok(interactions) => ok_json(interactions),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
+    /// Modifie une interaction existante.
+    #[tool(
+        name = "prospect.interactions.update",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false
+        )
+    )]
+    async fn prospect_interactions_update(
+        &self,
+        Parameters(args): Parameters<UpdateInteractionArgs>,
+    ) -> CallToolResult {
+        let mut store = self.store.lock().await;
+        let id: InteractionId = ok_or_return!("id", args.id.parse());
+        let current = match interaction_by_id(store.connection(), id) {
+            Ok(Some(i)) => i,
+            Ok(None) => return err_text(format!("interaction introuvable : {id}")),
+            Err(e) => return err_text(e.to_string()),
+        };
+        let kind = match &args.kind {
+            Some(s) => ok_or_return!("kind", s.parse()),
+            None => current.kind,
+        };
+        let occurred_at = match &args.occurred_on {
+            Some(s) => midnight_utc(ok_or_return!(
+                "occurred_on",
+                freeflow_core::domain::parse_date(s)
+            )),
+            None => current.occurred_at,
+        };
+        let cmd = prospection::UpdateInteraction {
+            id,
+            revision: current.revision,
+            kind,
+            note: args.note.unwrap_or(current.note),
+            occurred_at,
+        };
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
+            Ok(outcome) => ok_json(outcome_json(&outcome)),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
+    /// Supprime une interaction.
+    #[tool(
+        name = "prospect.interactions.delete",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false
+        )
+    )]
+    async fn prospect_interactions_delete(
+        &self,
+        Parameters(args): Parameters<InteractionIdArgs>,
+    ) -> CallToolResult {
+        let mut store = self.store.lock().await;
+        let id: InteractionId = ok_or_return!("id", args.id.parse());
+        let current = match interaction_by_id(store.connection(), id) {
+            Ok(Some(i)) => i,
+            Ok(None) => return err_text(format!("interaction introuvable : {id}")),
+            Err(e) => return err_text(e.to_string()),
+        };
+        let cmd = prospection::DeleteInteraction {
+            id,
+            revision: current.revision,
+        };
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
             Err(e) => err_text(e.to_string()),
         }

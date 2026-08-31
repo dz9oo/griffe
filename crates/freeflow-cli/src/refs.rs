@@ -3,28 +3,68 @@
 //! [`CliError::Domain`] listant les candidats, pour qu'un script ou un humain sache quoi taper
 //! ensuite plutôt que de recevoir un simple « introuvable ».
 
-use freeflow_core::domain::ClientId;
+use std::fmt::Display;
+
+use freeflow_core::domain::{ClientId, MissionId, OpportunityId};
 use freeflow_core::reference::{self, RefMatch};
 use freeflow_core::store::Store;
 
 use crate::error::CliError;
 
-/// # Errors
-pub fn resolve_client(store: &Store, needle: &str) -> Result<ClientId, CliError> {
-    match reference::resolve_client(store.connection(), needle)? {
+/// Traduit un `RefMatch` en résultat CLI — factorisé une fois, chaque résolveur concret n'est
+/// plus qu'un appel à `freeflow_core::reference` suivi de cet appel. `no_match` et `plural`
+/// portent l'accord grammatical correct (« aucun client »/« clients », « aucune mission »/
+/// « missions ») — pas assez régulier en français pour être dérivé d'une seule chaîne.
+fn translate<T: Display>(
+    needle: &str,
+    no_match: &str,
+    plural: &str,
+    result: RefMatch<T>,
+) -> Result<T, CliError> {
+    match result {
         RefMatch::Unique(id) => Ok(id),
         RefMatch::NotFound => Err(CliError::Domain(format!(
-            "aucun client ne correspond à « {needle} »"
+            "{no_match} ne correspond à « {needle} »"
         ))),
         RefMatch::Ambiguous(candidates) => {
             let list = candidates
                 .iter()
-                .map(|(id, name)| format!("  {id} — {name}"))
+                .map(|(id, label)| format!("  {id} — {label}"))
                 .collect::<Vec<_>>()
                 .join("\n");
             Err(CliError::Domain(format!(
-                "« {needle} » désigne plusieurs clients, précisez lequel :\n{list}"
+                "« {needle} » désigne plusieurs {plural}, précisez lequel :\n{list}"
             )))
         }
     }
+}
+
+/// # Errors
+pub fn resolve_client(store: &Store, needle: &str) -> Result<ClientId, CliError> {
+    translate(
+        needle,
+        "aucun client",
+        "clients",
+        reference::resolve_client(store.connection(), needle)?,
+    )
+}
+
+/// # Errors
+pub fn resolve_opportunity(store: &Store, needle: &str) -> Result<OpportunityId, CliError> {
+    translate(
+        needle,
+        "aucune opportunité",
+        "opportunités",
+        reference::resolve_opportunity(store.connection(), needle)?,
+    )
+}
+
+/// # Errors
+pub fn resolve_mission(store: &Store, needle: &str) -> Result<MissionId, CliError> {
+    translate(
+        needle,
+        "aucune mission",
+        "missions",
+        reference::resolve_mission(store.connection(), needle)?,
+    )
 }

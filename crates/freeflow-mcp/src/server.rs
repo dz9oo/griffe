@@ -70,13 +70,17 @@ impl ServerHandler for FreeflowServer {
         info.instructions = Some(
             "FreeFlow — gestion pour indépendant. Les outils exposent les mêmes commandes et \
              requêtes que la CLI `freeflow`. Les actions à effet légal, financier ou \
-             destructeur significatif (émission de facture, avoir, suppression d'un client) ne \
-             s'appliquent pas directement : elles renvoient une action en attente \
-             (`pending_action_id`, consultable via `pending.list`) qu'un humain doit confirmer \
-             lui-même, au terminal (`freeflow confirm <id>`) ou dans la fenêtre — il n'existe \
-             volontairement aucun outil MCP `pending.confirm` : un agent ne peut pas confirmer \
-             sa propre proposition. Les références à un client (`client`, `clients.show`…) \
-             acceptent un UUID, un préfixe d'UUID, ou un nom — voir `clients.list`."
+             destructeur significatif (émission de facture, avoir, suppression d'un client, \
+             d'une opportunité ou d'une mission) ne s'appliquent pas directement : elles \
+             renvoient une action en attente (`pending_action_id`, consultable via \
+             `pending.list`) qu'un humain doit confirmer lui-même, au terminal (`freeflow \
+             confirm <id>`) ou dans la fenêtre — il n'existe volontairement aucun outil MCP \
+             `pending.confirm` : un agent ne peut pas confirmer sa propre proposition. Les \
+             références à un client, une opportunité ou une mission (`client`, `opportunity`, \
+             `mission`, `clients.show`/`prospect.show`/`mission.show`…) acceptent un UUID, un \
+             préfixe d'UUID, ou un nom — voir `clients.list`/`prospect.list`/`mission.list`, ou \
+             les ressources `freeflow://clients`, `freeflow://opportunities`, \
+             `freeflow://missions`."
                 .to_string(),
         );
         info

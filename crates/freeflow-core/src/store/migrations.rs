@@ -21,5 +21,11 @@ pub fn migrations() -> Migrations<'static> {
             .down(include_str!("migrations/0007_expenses_down.sql")),
         M::up(include_str!("migrations/0008_mutability_up.sql"))
             .down(include_str!("migrations/0008_mutability_down.sql")),
+        M::up(include_str!(
+            "migrations/0009_prospection_mutability_up.sql"
+        ))
+        .down(include_str!(
+            "migrations/0009_prospection_mutability_down.sql"
+        )),
     ])
 }

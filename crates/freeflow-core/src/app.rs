@@ -9,6 +9,7 @@ mod error;
 mod executor;
 mod pending;
 mod queries;
+pub(crate) mod revision;
 
 pub use actor::Actor;
 pub use audit::{AuditEntry, AuditOutcome, ChainStatus, verify_chain};

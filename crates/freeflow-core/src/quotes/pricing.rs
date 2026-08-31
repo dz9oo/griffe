@@ -117,6 +117,8 @@ pub fn derive_mission(quote: &Quote, started_on: Date) -> Result<Mission, QuoteE
         milestones,
         started_on,
         ended_on: None,
+        revision: 1,
+        archived_at: None,
     })
 }
 

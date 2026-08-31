@@ -117,7 +117,6 @@ fn golden_path_from_prospection_to_paid_invoice() {
             "--json",
             "prospect",
             "win",
-            "--id",
             &opportunity_id,
             "--started-on",
             "2026-09-03",
@@ -137,7 +136,6 @@ fn golden_path_from_prospection_to_paid_invoice() {
         .args([
             "mission",
             "log-time",
-            "--mission",
             &mission_id,
             "--worked-on",
             "2026-09-10",
@@ -707,6 +705,18 @@ fn empty_pipeline_json_output_matches_the_documented_shape() {
 #[test]
 fn client_help_is_a_stable_interface_contract() {
     let output = freeflow().args(["client", "--help"]).output().unwrap();
+    insta::assert_snapshot!(String::from_utf8(output.stdout).unwrap());
+}
+
+#[test]
+fn prospect_help_is_a_stable_interface_contract() {
+    let output = freeflow().args(["prospect", "--help"]).output().unwrap();
+    insta::assert_snapshot!(String::from_utf8(output.stdout).unwrap());
+}
+
+#[test]
+fn mission_help_is_a_stable_interface_contract() {
+    let output = freeflow().args(["mission", "--help"]).output().unwrap();
     insta::assert_snapshot!(String::from_utf8(output.stdout).unwrap());
 }
 

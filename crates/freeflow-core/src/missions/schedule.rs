@@ -67,6 +67,8 @@ mod tests {
             milestones,
             started_on: Date::from_calendar_date(2026, Month::September, 1).unwrap(),
             ended_on: None,
+            revision: 1,
+            archived_at: None,
         }
     }
 

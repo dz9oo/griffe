@@ -27,7 +27,7 @@ pub use ids::{
 };
 pub use interaction::{Interaction, InteractionKind, UnknownInteractionKind};
 pub use invoice::{Invoice, InvoiceLine, InvoiceStatus};
-pub use mission::{Milestone, Mission, MissionKind};
+pub use mission::{Milestone, MilestoneParseError, Mission, MissionKind};
 pub use money::{Money, MoneyParseError};
 pub use opportunity::{
     LossReason, Opportunity, OpportunityStage, Probability, ProbabilityError, UnknownStage,
