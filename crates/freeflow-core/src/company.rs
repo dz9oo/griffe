@@ -9,7 +9,7 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
 use crate::app::{AppError, Command};
-use crate::domain::{Address, Money, Siren, VatNumber};
+use crate::domain::{Address, FiscalYearEnd, Money, Siren, VatNumber, VatRegime};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CompanyProfile {
@@ -23,6 +23,17 @@ pub struct CompanyProfile {
     /// Ville du greffe d'immatriculation (ex. `"Paris"`), pour la mention RCS.
     pub rcs_city: Option<String>,
     pub iban: Option<String>,
+    /// Date de clôture d'exercice récurrente (lot 17) — dont dérive tout le calendrier fiscal.
+    /// `None` tant qu'elle n'est pas configurée : le calendrier retombe alors sur l'année civile.
+    pub fiscal_year_end: Option<FiscalYearEnd>,
+    /// Régime de TVA déclaré (pilote la périodicité CA3).
+    pub vat_regime: Option<VatRegime>,
+    /// Rémunération mensuelle brute du président (assimilé salarié). `None` = non rémunéré, donc
+    /// aucune DSN ni cotisation sociale.
+    pub director_monthly_gross: Option<Money>,
+    /// Ratio charges/net paramétrable (dix-millièmes, ex. `8000` = 80 %) pour estimer, à titre
+    /// indicatif, les cotisations sociales sur la rémunération du président.
+    pub director_charge_ratio_bps: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,6 +46,10 @@ pub struct SetCompanyProfile {
     pub share_capital: Option<Money>,
     pub rcs_city: Option<String>,
     pub iban: Option<String>,
+    pub fiscal_year_end: Option<FiscalYearEnd>,
+    pub vat_regime: Option<VatRegime>,
+    pub director_monthly_gross: Option<Money>,
+    pub director_charge_ratio_bps: Option<u32>,
 }
 
 impl Command for SetCompanyProfile {
@@ -45,8 +60,10 @@ impl Command for SetCompanyProfile {
         conn.execute(
             "INSERT INTO company_profile
                 (id, name, legal_form, siren, vat_number, address_street, address_postal_code,
-                 address_city, address_country, share_capital_cents, rcs_city, iban, updated_at)
-             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                 address_city, address_country, share_capital_cents, rcs_city, iban,
+                 fiscal_year_end_month, fiscal_year_end_day, vat_regime,
+                 director_monthly_gross_cents, director_charge_ratio_bps, updated_at)
+             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
              ON CONFLICT (id) DO UPDATE SET
                 name = excluded.name,
                 legal_form = excluded.legal_form,
@@ -59,6 +76,11 @@ impl Command for SetCompanyProfile {
                 share_capital_cents = excluded.share_capital_cents,
                 rcs_city = excluded.rcs_city,
                 iban = excluded.iban,
+                fiscal_year_end_month = excluded.fiscal_year_end_month,
+                fiscal_year_end_day = excluded.fiscal_year_end_day,
+                vat_regime = excluded.vat_regime,
+                director_monthly_gross_cents = excluded.director_monthly_gross_cents,
+                director_charge_ratio_bps = excluded.director_charge_ratio_bps,
                 updated_at = excluded.updated_at",
             params![
                 self.name,
@@ -74,6 +96,11 @@ impl Command for SetCompanyProfile {
                 self.share_capital.map(Money::cents),
                 self.rcs_city,
                 self.iban,
+                self.fiscal_year_end.map(|f| i64::from(f.month())),
+                self.fiscal_year_end.map(|f| i64::from(f.day())),
+                self.vat_regime.map(VatRegime::as_str),
+                self.director_monthly_gross.map(Money::cents),
+                self.director_charge_ratio_bps.map(i64::from),
                 OffsetDateTime::now_utc().format(&Rfc3339)?,
             ],
         )?;
@@ -89,6 +116,24 @@ fn row_to_profile(row: &Row) -> rusqlite::Result<CompanyProfile> {
     let siren: String = row.get("siren")?;
     let vat_number: Option<String> = row.get("vat_number")?;
     let share_capital_cents: Option<i64> = row.get("share_capital_cents")?;
+    let fy_month: Option<i64> = row.get("fiscal_year_end_month")?;
+    let fy_day: Option<i64> = row.get("fiscal_year_end_day")?;
+    let vat_regime: Option<String> = row.get("vat_regime")?;
+    let director_monthly_gross_cents: Option<i64> = row.get("director_monthly_gross_cents")?;
+    let director_charge_ratio_bps: Option<i64> = row.get("director_charge_ratio_bps")?;
+    // Mois et jour ne portent une clôture que présents tous les deux ; la migration les pose
+    // ensemble, donc un seul renseigné signalerait une base incohérente — on le traite comme
+    // « non configuré » plutôt que de deviner.
+    let fiscal_year_end = match (fy_month, fy_day) {
+        (Some(m), Some(d)) => Some(
+            FiscalYearEnd::new(
+                u8::try_from(m).map_err(conv_err)?,
+                u8::try_from(d).map_err(conv_err)?,
+            )
+            .map_err(conv_err)?,
+        ),
+        _ => None,
+    };
     Ok(CompanyProfile {
         name: row.get("name")?,
         legal_form: row.get("legal_form")?,
@@ -106,6 +151,16 @@ fn row_to_profile(row: &Row) -> rusqlite::Result<CompanyProfile> {
         share_capital: share_capital_cents.map(Money::from_cents),
         rcs_city: row.get("rcs_city")?,
         iban: row.get("iban")?,
+        fiscal_year_end,
+        vat_regime: vat_regime
+            .map(|s| s.parse::<VatRegime>())
+            .transpose()
+            .map_err(conv_err)?,
+        director_monthly_gross: director_monthly_gross_cents.map(Money::from_cents),
+        director_charge_ratio_bps: director_charge_ratio_bps
+            .map(u32::try_from)
+            .transpose()
+            .map_err(conv_err)?,
     })
 }
 
@@ -150,6 +205,10 @@ mod tests {
             share_capital: Some(Money::from_cents(100_000)),
             rcs_city: Some("Paris".to_string()),
             iban: Some("FR7630006000011234567890189".to_string()),
+            fiscal_year_end: Some(crate::domain::FiscalYearEnd::CALENDAR),
+            vat_regime: Some(crate::domain::VatRegime::RealNormalMonthly),
+            director_monthly_gross: Some(Money::from_cents(300_000)),
+            director_charge_ratio_bps: Some(8_000),
         }
     }
 
@@ -168,6 +227,20 @@ mod tests {
         assert_eq!(profile.name, "Argon Digital");
         assert_eq!(profile.legal_form, "SASU");
         assert_eq!(profile.share_capital, Some(Money::from_cents(100_000)));
+        // Les champs du socle fiscal (lot 17) font l'aller-retour en base.
+        assert_eq!(
+            profile.fiscal_year_end,
+            Some(crate::domain::FiscalYearEnd::CALENDAR)
+        );
+        assert_eq!(
+            profile.vat_regime,
+            Some(crate::domain::VatRegime::RealNormalMonthly)
+        );
+        assert_eq!(
+            profile.director_monthly_gross,
+            Some(Money::from_cents(300_000))
+        );
+        assert_eq!(profile.director_charge_ratio_bps, Some(8_000));
     }
 
     #[test]

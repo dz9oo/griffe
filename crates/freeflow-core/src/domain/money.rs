@@ -234,7 +234,15 @@ impl Money {
                 .parse()
                 .map_err(|_| MoneyParseError(s.to_string()))?,
         };
-        Ok(Self(sign * (integer * 100 + fractional_cents)))
+        // Arithmétique vérifiée : un entier à 17+ chiffres déborde `integer * 100` — sans
+        // `checked_*`, ce serait une panique en debug et un enroulement silencieux en release
+        // (un montant absurde entrant alors en base depuis un import CSV/OFX hostile).
+        let cents = integer
+            .checked_mul(100)
+            .and_then(|c| c.checked_add(fractional_cents))
+            .and_then(|c| c.checked_mul(sign))
+            .ok_or_else(|| MoneyParseError(s.to_string()))?;
+        Ok(Self(cents))
     }
 }
 
@@ -393,6 +401,28 @@ mod tests {
     }
 
     #[test]
+    fn parse_decimal_rejects_amounts_that_overflow_i64_cents() {
+        // 92233720368547758,07 € == i64::MAX centimes pile : la dernière valeur acceptable.
+        assert_eq!(
+            Money::parse_decimal("92233720368547758.07"),
+            Ok(Money::from_cents(i64::MAX))
+        );
+        // Un centime de plus déborde : refus explicite plutôt que panique/enroulement.
+        assert!(
+            Money::parse_decimal("92233720368547758.08").is_err(),
+            "un montant hors des bornes de i64 doit être rejeté, pas enroulé"
+        );
+        assert!(
+            Money::parse_decimal("92233720368547759").is_err(),
+            "partie entière seule au-delà des bornes"
+        );
+        assert!(
+            Money::parse_decimal("99999999999999999999.99").is_err(),
+            "très grand nombre de chiffres"
+        );
+    }
+
+    #[test]
     fn divide_by_days_is_the_inverse_of_multiply_by_days_on_exact_cases() {
         let daily_rate = Money::from_cents(65_000);
         let revenue = daily_rate.multiply_by_days(9.5);
@@ -460,6 +490,16 @@ mod tests {
         #[test]
         fn apply_rate_bps_of_full_rate_is_identity(cents in -1_000_000_000i64..1_000_000_000) {
             prop_assert_eq!(Money::from_cents(cents).apply_rate_bps(10_000), Money::from_cents(cents));
+        }
+
+        /// Robustesse : `parse_decimal` ne panique jamais, quelle que soit l'entrée — y compris
+        /// des chaînes de chiffres arbitrairement longues qui débordent `i64` (elles renvoient
+        /// une erreur, jamais un enroulement ni un abort).
+        #[test]
+        fn parse_decimal_never_panics_on_arbitrary_digit_strings(
+            s in r"-?[0-9]{1,30}([.,][0-9]{0,3})?"
+        ) {
+            let _ = Money::parse_decimal(&s);
         }
     }
 }

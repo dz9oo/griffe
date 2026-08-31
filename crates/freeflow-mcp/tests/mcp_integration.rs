@@ -6,7 +6,8 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use freeflow_core::app::{Executor, Outcome};
-use freeflow_core::billing::EmitInvoice;
+use freeflow_core::billing::{EmitInvoice, RecordPayment};
+use freeflow_core::clients::DeleteContact;
 use freeflow_core::store::{Passphrase, Store};
 use freeflow_mcp::FreeflowServer;
 use rmcp::RoleClient;
@@ -358,6 +359,9 @@ async fn golden_path_from_prospection_to_paid_invoice_over_mcp() {
     let chain = call(&client, "invoice.verify_chain", json!(null)).await;
     assert_eq!(json_of(&chain)["status"], "intact");
 
+    // `payment.record` a un effet comptable sensible : proposé par l'agent, il ne s'applique pas
+    // directement mais dépose une action en attente qu'un humain confirme — même rail que
+    // `invoice.emit` ci-dessus.
     let paid = call(
         &client,
         "payment.record",
@@ -370,6 +374,17 @@ async fn golden_path_from_prospection_to_paid_invoice_over_mcp() {
     )
     .await;
     assert_eq!(paid.is_error, Some(false));
+    let payment_pending_id = json_of(&paid)["pending_action_id"]
+        .as_str()
+        .expect("payment.record proposé par un agent dépose une action en attente")
+        .to_string();
+    let confirm_payment = Executor::new(&mut confirming_store)
+        .confirm::<RecordPayment>(payment_pending_id.parse().unwrap())
+        .unwrap();
+    assert!(
+        matches!(confirm_payment, Outcome::Applied(_)),
+        "la confirmation humaine applique l'encaissement"
+    );
 
     let aged = call(
         &client,
@@ -508,11 +523,8 @@ async fn an_ambiguous_client_reference_is_a_tool_level_error_listing_the_candida
 
 #[tokio::test]
 async fn contact_lifecycle_over_mcp() {
-    let store = Store::create(
-        &test_db_path("contact-lifecycle"),
-        &Passphrase::from("s3cret"),
-    )
-    .unwrap();
+    let db_path = test_db_path("contact-lifecycle");
+    let store = Store::create(&db_path, &Passphrase::from("s3cret")).unwrap();
     let client = spawn_client(store).await;
 
     call(&client, "clients.create", json!({"name": "Kappa Software"})).await;
@@ -542,6 +554,9 @@ async fn contact_lifecycle_over_mcp() {
     .await;
     assert_eq!(updated.is_error, Some(false));
 
+    // Suppression définitive proposée par l'agent : elle dépose une action en attente plutôt que
+    // de s'appliquer, comme toute suppression (cohérent avec `clients.delete`). Un humain la
+    // confirme par une seconde connexion — le geste `freeflow confirm <id>`.
     let deleted = call(
         &client,
         "clients.contacts.delete",
@@ -549,6 +564,29 @@ async fn contact_lifecycle_over_mcp() {
     )
     .await;
     assert_eq!(deleted.is_error, Some(false));
+    let delete_pending_id = json_of(&deleted)["pending_action_id"]
+        .as_str()
+        .expect("une suppression de contact proposée par un agent dépose une action en attente")
+        .to_string();
+
+    let not_yet_empty = call(
+        &client,
+        "clients.contacts.list",
+        json!({"client": "Kappa Software"}),
+    )
+    .await;
+    assert_eq!(
+        json_of(&not_yet_empty).as_array().unwrap().len(),
+        1,
+        "tant que l'humain n'a pas confirmé, le contact existe toujours"
+    );
+
+    let mut confirming_store =
+        Store::open_with_passphrase(&db_path, &Passphrase::from("s3cret")).unwrap();
+    let confirmed = Executor::new(&mut confirming_store)
+        .confirm::<DeleteContact>(delete_pending_id.parse().unwrap())
+        .unwrap();
+    assert!(matches!(confirmed, Outcome::Applied(())));
 
     let empty = call(
         &client,

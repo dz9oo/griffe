@@ -65,9 +65,22 @@ fn validate_milestones(milestones: &[Milestone]) -> Result<(), MissionsError> {
     Ok(())
 }
 
+/// Borne haute d'une saisie de temps unique. Une journée de travail réelle ne dépasse pas
+/// quelques jours-homme par saisie ; ce plafond très généreux (un an) n'est là que pour fermer
+/// le vecteur de déni de service par lequel un `days` gigantesque faisait déborder le calcul de
+/// revenu (`Money::multiply_by_days`) et figeait le rendu du tableau de bord — voir le test
+/// `logging_an_absurd_number_of_days_is_rejected`.
+const MAX_DAYS_PER_ENTRY: f64 = 366.0;
+
 fn validate_days(days: f64) -> Result<(), MissionsError> {
     if !days.is_finite() || days <= 0.0 {
         return Err(MissionsError::InvalidDays(days));
+    }
+    if days > MAX_DAYS_PER_ENTRY {
+        return Err(MissionsError::DaysOutOfRange {
+            days,
+            max: MAX_DAYS_PER_ENTRY,
+        });
     }
     Ok(())
 }
@@ -363,6 +376,12 @@ pub struct DeleteTimeEntry {
 impl Command for DeleteTimeEntry {
     type Output = ();
     const NAME: &'static str = "missions.delete_time_entry";
+
+    // Suppression définitive d'une saisie qui alimente une métrique transversale (taux
+    // d'occupation) : un agent la propose, un humain la confirme.
+    fn requires_confirmation(&self) -> bool {
+        true
+    }
 
     fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
         require_time_entry_revision(conn, self.id, self.revision)?;

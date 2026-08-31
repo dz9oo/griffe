@@ -3,6 +3,7 @@
 //! `domain` ne fait aucune IO. `store` porte la persistance `SQLCipher`. `app` expose les
 //! `Command`/`Query` : c'est l'unique surface que consomment la CLI, le serveur MCP et la GUI.
 
+pub mod accounting;
 pub mod app;
 pub mod billing;
 pub mod clients;

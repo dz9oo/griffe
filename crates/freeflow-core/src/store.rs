@@ -362,19 +362,31 @@ impl Store {
     ///
     /// Retourne une erreur si l'écriture du fichier de sauvegarde ou son chiffrement échoue.
     pub fn backup_to(&self, dest_db_path: &Path) -> Result<(), StoreError> {
+        // Refuse d'écraser un fichier existant : sans ce garde-fou, la copie du sidecar écrasait
+        // d'abord le `.kdf` d'un éventuel coffre à cette destination (détruisant son sel et son
+        // vérificateur, donc le rendant illisible) avant même que la copie de la base n'échoue.
+        // Une destination de sauvegarde est toujours un fichier neuf.
+        if dest_db_path.exists() || kdf::sidecar_path(dest_db_path).exists() {
+            return Err(StoreError::BackupDestinationExists(
+                dest_db_path.to_path_buf(),
+            ));
+        }
         if let Some(parent) = dest_db_path.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::copy(
-            kdf::sidecar_path(&self.db_path),
-            kdf::sidecar_path(dest_db_path),
-        )?;
 
         let mut dest = Connection::open(dest_db_path)?;
         unlock(&dest, &self.key)?;
 
         let backup = rusqlite::backup::Backup::new(&self.conn, &mut dest)?;
         backup.run_to_completion(16, Duration::from_millis(250), None)?;
+        // Le sidecar n'est copié qu'après le succès de la copie de la base : une base sauvegardée
+        // sans son `.kdf` serait inutilisable, mais on préfère ne rien laisser d'incohérent à la
+        // destination si le backup lui-même échoue.
+        fs::copy(
+            kdf::sidecar_path(&self.db_path),
+            kdf::sidecar_path(dest_db_path),
+        )?;
         tighten_permissions(dest_db_path);
         Ok(())
     }
@@ -392,6 +404,14 @@ impl Store {
         dest_db_path: &Path,
         passphrase: &Passphrase,
     ) -> Result<Self, StoreError> {
+        // Ne jamais écraser un coffre existant à la destination : restaurer se fait vers un
+        // chemin neuf, explicite (cf. `freeflow backup restore --to`). Sans ce contrôle, un
+        // `fs::copy` inconditionnel remplaçait silencieusement le coffre visé.
+        if dest_db_path.exists() || kdf::sidecar_path(dest_db_path).exists() {
+            return Err(StoreError::BackupDestinationExists(
+                dest_db_path.to_path_buf(),
+            ));
+        }
         if let Some(parent) = dest_db_path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -427,6 +447,14 @@ impl Store {
         }
         let stamp = timestamp_now()?;
         let dest = backups_dir.join(format!("backup-{stamp}.db"));
+        // `backup_to` refuse d'écraser une destination existante (garde-fou contre l'écrasement
+        // d'un coffre tiers par un `backup create --out` maladroit). Ici, une collision ne peut
+        // provenir que d'une auto-sauvegarde de la *même seconde* dans notre propre répertoire :
+        // c'est notre fichier, on le remplace délibérément avant de réécrire.
+        if dest.exists() || kdf::sidecar_path(&dest).exists() {
+            let _ = fs::remove_file(&dest);
+            let _ = fs::remove_file(kdf::sidecar_path(&dest));
+        }
         self.backup_to(&dest)?;
         Ok(Some(dest))
     }
@@ -918,6 +946,7 @@ mod tests {
             "payments",
             "expenses",
             "company_profile",
+            "fiscal_years",
         ] {
             assert!(
                 tables.iter().any(|t| t == expected),
@@ -1006,6 +1035,31 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, StoreError::WrongPassphrase));
+    }
+
+    #[test]
+    fn backup_and_restore_refuse_to_overwrite_an_existing_destination() {
+        let source_path = temp_db_path("overwrite-source");
+        let victim_path = temp_db_path("overwrite-victim");
+        let source = create(&source_path, "s3cret");
+        // Un second coffre légitime à la destination : il ne doit jamais être écrasé.
+        let _victim = create(&victim_path, "other-secret");
+
+        let backup_err = source.backup_to(&victim_path).unwrap_err();
+        assert!(matches!(backup_err, StoreError::BackupDestinationExists(_)));
+        let restore_err = Store::restore_from(
+            &source_path,
+            &victim_path,
+            &Passphrase::from("other-secret"),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            restore_err,
+            StoreError::BackupDestinationExists(_)
+        ));
+
+        // Le coffre visé reste intact et ouvrable avec SA passphrase.
+        Store::open_with_passphrase(&victim_path, &Passphrase::from("other-secret")).unwrap();
     }
 
     #[test]

@@ -76,14 +76,38 @@ impl Argon2Cost {
 
     /// # Panics
     ///
-    /// Ne panique jamais en pratique : `m_cost`/`t_cost`/`p_cost` proviennent soit des
-    /// constantes ci-dessus, soit d'un sidecar déjà accepté par `SQLCipher` par le passé —
-    /// les deux sont toujours des paramètres Argon2id valides.
+    /// Ne panique jamais : `m_cost`/`t_cost`/`p_cost` proviennent soit des constantes ci-dessus,
+    /// soit d'un sidecar dont [`parse_sidecar`] a déjà validé les bornes via
+    /// [`validate_argon2_params`] avant de construire ce `Argon2Cost` — les deux sont donc
+    /// toujours des paramètres Argon2id valides et bornés.
     fn build(self) -> Argon2<'static> {
         let params = Params::new(self.m_cost, self.t_cost, self.p_cost, Some(VaultKey::LEN))
-            .expect("paramètres Argon2id du sidecar toujours valides");
+            .expect("paramètres Argon2id déjà validés par validate_argon2_params");
         Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
     }
+}
+
+/// Plafond mémoire accepté pour un sidecar (en Kio) : 1 Gio. Très au-dessus du profil courant
+/// (64 Mio) — un utilisateur peut légitimement relever ses paramètres — mais loin de l'allocation
+/// délirante qui provoquerait un OOM.
+const MAX_M_COST_KIB: u32 = 1024 * 1024;
+
+/// Valide les paramètres Argon2id lus depuis un sidecar non fiable. Reproduit les invariants de
+/// `argon2::Params::new` (`t_cost >= 1`, `p_cost >= 1`, `m_cost >= 8 * p_cost`) et ajoute un
+/// plafond mémoire pour empêcher un déni de service par épuisement. `Err(())` = paramètre à
+/// rejeter comme corrompu.
+fn validate_argon2_params(m_cost: u32, t_cost: u32, p_cost: u32) -> Result<(), ()> {
+    if t_cost < 1 || p_cost < 1 {
+        return Err(());
+    }
+    // `saturating_mul` : `p_cost` vient d'un fichier non fiable, `8 * p_cost` pourrait déborder
+    // u32 (et paniquer sous `overflow-checks`) — la saturation le plafonne proprement à u32::MAX,
+    // ce qui fait échouer la comparaison suivante comme voulu.
+    let min_m_cost = p_cost.saturating_mul(8);
+    if m_cost < min_m_cost || m_cost > MAX_M_COST_KIB {
+        return Err(());
+    }
+    Ok(())
 }
 
 /// Sidecar chargé : sel, coût, identifiant de coffre, et vérificateur si le format le porte
@@ -245,6 +269,14 @@ fn parse_sidecar(bytes: &[u8], db_path: &Path, path: &Path) -> Result<Sidecar, S
             offset += 4;
             let mut verifier = [0u8; VERIFIER_LEN];
             verifier.copy_from_slice(&bytes[offset..offset + VERIFIER_LEN]);
+            // Un `.kdf` est un fichier de 77 octets qu'un autre process local peut écrire : ses
+            // paramètres de coût ne sont pas fiables. Sans ce contrôle, `t_cost = 0` faisait
+            // paniquer `Params::new` au déverrouillage, et `m_cost = 0xFFFF_FFFF` (4 Tio) tentait
+            // une allocation géante (OOM, potentiellement OOM-killer sur d'autres process). On
+            // rejette tout paramètre hors des bornes acceptées par Argon2, avec un plafond mémoire
+            // très au-dessus du profil courant (64 Mio) mais loin de l'épuisement.
+            validate_argon2_params(m_cost, t_cost, p_cost)
+                .map_err(|()| StoreError::CorruptKdfParams(path.to_path_buf()))?;
             Ok(Sidecar {
                 vault_id: VaultId::V2(vault_id),
                 salt,
@@ -511,6 +543,42 @@ mod tests {
     fn reading_a_corrupt_sidecar_is_reported_not_silently_recreated() {
         let db_path = temp_db_path("corrupt");
         fs::write(sidecar_path(&db_path), b"not a valid sidecar at all").unwrap();
+        let err = read(&db_path).unwrap_err();
+        assert!(matches!(err, StoreError::CorruptKdfParams(_)));
+    }
+
+    #[test]
+    fn argon2_params_out_of_bounds_are_rejected() {
+        // Bornes légitimes (profils réels).
+        assert!(validate_argon2_params(65_536, 3, 1).is_ok());
+        assert!(validate_argon2_params(19_456, 2, 1).is_ok());
+        // Invalides : feraient paniquer `Params::new` ou provoqueraient un OOM.
+        assert!(validate_argon2_params(65_536, 0, 1).is_err(), "t_cost = 0");
+        assert!(validate_argon2_params(65_536, 3, 0).is_err(), "p_cost = 0");
+        assert!(validate_argon2_params(4, 3, 1).is_err(), "m_cost < 8*p");
+        assert!(
+            validate_argon2_params(u32::MAX, 3, 1).is_err(),
+            "m_cost délirant (OOM)"
+        );
+        // Ne panique pas malgré un p_cost qui ferait déborder 8*p_cost.
+        assert!(validate_argon2_params(65_536, 3, u32::MAX).is_err());
+    }
+
+    #[test]
+    fn a_v2_sidecar_with_forged_argon2_params_is_rejected_not_panicked() {
+        let db_path = temp_db_path("forged-params");
+        // Reconstruit la disposition V2 avec t_cost = 0 (paramètre illégal qu'un attaquant
+        // local pourrait écrire pour faire paniquer le déverrouillage).
+        let mut bytes = vec![V2_VERSION];
+        bytes.extend_from_slice(&[9u8; VAULT_ID_LEN]);
+        bytes.extend_from_slice(&[7u8; SALT_LEN]);
+        bytes.extend_from_slice(&65_536u32.to_le_bytes()); // m_cost
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // t_cost = 0 (illégal)
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // p_cost
+        bytes.extend_from_slice(&[0u8; VERIFIER_LEN]);
+        assert_eq!(bytes.len(), V2_LEN, "disposition V2 attendue");
+        fs::write(sidecar_path(&db_path), &bytes).unwrap();
+
         let err = read(&db_path).unwrap_err();
         assert!(matches!(err, StoreError::CorruptKdfParams(_)));
     }

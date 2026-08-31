@@ -6,10 +6,10 @@
 
 use clap::Subcommand;
 use freeflow_core::app::{self, Command, Executor, PendingActionId};
-use freeflow_core::billing::{EmitInvoice, IssueCreditNote};
-use freeflow_core::clients::DeleteClient;
-use freeflow_core::missions::DeleteMission;
-use freeflow_core::prospection::DeleteOpportunity;
+use freeflow_core::billing::{EmitInvoice, IssueCreditNote, ReconcileTransaction, RecordPayment};
+use freeflow_core::clients::{DeleteClient, DeleteContact};
+use freeflow_core::missions::{DeleteMission, DeleteTimeEntry};
+use freeflow_core::prospection::{DeleteInteraction, DeleteOpportunity};
 use freeflow_core::store::Store;
 
 use crate::error::CliError;
@@ -72,6 +72,21 @@ pub fn confirm(store: &mut Store, id: PendingActionId, json: bool) -> Result<Str
         Ok(format_outcome(&outcome, json))
     } else if action.command_name == DeleteMission::NAME {
         let outcome = Executor::new(store).confirm::<DeleteMission>(id)?;
+        Ok(format_outcome(&outcome, json))
+    } else if action.command_name == RecordPayment::NAME {
+        let outcome = Executor::new(store).confirm::<RecordPayment>(id)?;
+        Ok(format_outcome(&outcome, json))
+    } else if action.command_name == ReconcileTransaction::NAME {
+        let outcome = Executor::new(store).confirm::<ReconcileTransaction>(id)?;
+        Ok(format_outcome(&outcome, json))
+    } else if action.command_name == DeleteContact::NAME {
+        let outcome = Executor::new(store).confirm::<DeleteContact>(id)?;
+        Ok(format_outcome(&outcome, json))
+    } else if action.command_name == DeleteTimeEntry::NAME {
+        let outcome = Executor::new(store).confirm::<DeleteTimeEntry>(id)?;
+        Ok(format_outcome(&outcome, json))
+    } else if action.command_name == DeleteInteraction::NAME {
+        let outcome = Executor::new(store).confirm::<DeleteInteraction>(id)?;
         Ok(format_outcome(&outcome, json))
     } else {
         Err(CliError::UnknownConfirmableCommand(action.command_name))

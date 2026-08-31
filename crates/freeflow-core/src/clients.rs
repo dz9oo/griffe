@@ -469,6 +469,12 @@ impl Command for DeleteContact {
     type Output = ();
     const NAME: &'static str = "clients.delete_contact";
 
+    // Suppression définitive, cohérente avec `DeleteClient` : un agent la propose, un humain la
+    // confirme.
+    fn requires_confirmation(&self) -> bool {
+        true
+    }
+
     fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
         require_contact_revision(conn, self.id, self.revision)?;
         conn.execute(

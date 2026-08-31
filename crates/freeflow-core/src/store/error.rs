@@ -28,6 +28,12 @@ pub enum StoreError {
     #[error("un coffre existe déjà à {0}")]
     VaultAlreadyExists(PathBuf),
 
+    #[error(
+        "un fichier existe déjà à la destination {0} : refus de l'écraser (choisissez une \
+         destination neuve)"
+    )]
+    BackupDestinationExists(PathBuf),
+
     #[error("trousseau du système indisponible : la session ne sera pas conservée")]
     KeychainUnavailable,
 

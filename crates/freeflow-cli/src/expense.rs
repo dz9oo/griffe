@@ -68,11 +68,36 @@ fn archive_receipt(
             receipts_dir.display()
         ))
     })?;
-    std::fs::write(receipts_dir.join(&archived_name), &content)
+    // Le justificatif (facture fournisseur, note de frais…) vit à côté du coffre chiffré mais
+    // n'est pas lui-même chiffré : au minimum, on le rend illisible aux autres utilisateurs de la
+    // machine — le répertoire en 0700 et le fichier en 0600 — pour ne pas laisser en clair, en
+    // 0644 (umask par défaut), des données que tout le reste du produit protège.
+    tighten_dir_permissions(&receipts_dir);
+    let archived_path = receipts_dir.join(&archived_name);
+    std::fs::write(&archived_path, &content)
         .map_err(|e| CliError::Unexpected(format!("écriture du justificatif impossible : {e}")))?;
+    tighten_file_permissions(&archived_path);
 
     Ok((hash, archived_name))
 }
+
+#[cfg(unix)]
+fn tighten_dir_permissions(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700));
+}
+
+#[cfg(unix)]
+fn tighten_file_permissions(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+}
+
+#[cfg(not(unix))]
+fn tighten_dir_permissions(_path: &std::path::Path) {}
+
+#[cfg(not(unix))]
+fn tighten_file_permissions(_path: &std::path::Path) {}
 
 pub fn run(
     cmd: ExpenseCommand,
@@ -82,7 +107,19 @@ pub fn run(
 ) -> Result<String, CliError> {
     let output = match cmd {
         ExpenseCommand::Record(args) => {
+            // En dry-run, aucune écriture ne doit avoir lieu — pas même la copie du justificatif
+            // sur disque. On calcule quand même le hash (lecture seule) pour que la prévisualisation
+            // reste fidèle, mais sans rien archiver.
             let (receipt_hash, receipt_filename) = match &args.receipt {
+                Some(path) if ctx.dry_run => {
+                    let content = std::fs::read(path).map_err(|e| {
+                        CliError::Unexpected(format!(
+                            "lecture de {} impossible : {e}",
+                            path.display()
+                        ))
+                    })?;
+                    (Some(hash_receipt(&content)), None)
+                }
                 Some(path) => {
                     let (hash, filename) = archive_receipt(store.db_path(), path)?;
                     (Some(hash), Some(filename))

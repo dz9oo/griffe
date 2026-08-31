@@ -415,6 +415,10 @@ mod tests {
             share_capital: Some(Money::from_cents(100_000)),
             rcs_city: Some("Paris".to_string()),
             iban: None,
+            fiscal_year_end: None,
+            vat_regime: None,
+            director_monthly_gross: None,
+            director_charge_ratio_bps: None,
         }
     }
 

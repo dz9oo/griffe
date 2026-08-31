@@ -35,6 +35,9 @@ pub enum MissionsError {
     #[error("nombre de jours invalide : {0} (doit être fini et strictement positif)")]
     InvalidDays(f64),
 
+    #[error("nombre de jours hors bornes : {days} (une saisie ne peut pas dépasser {max} jours)")]
+    DaysOutOfRange { days: f64, max: f64 },
+
     #[error("la somme des parts des jalons dépasse 100 % ({total_bps} dix-millièmes)")]
     MilestonesOverBudget { total_bps: u32 },
 

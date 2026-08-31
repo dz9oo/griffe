@@ -694,6 +694,30 @@ mod tests {
     }
 
     #[test]
+    fn logging_an_absurd_number_of_days_is_rejected() {
+        // Vecteur de déni de service : un `days` gigantesque faisait déborder le calcul de
+        // revenu (`Money::multiply_by_days`) et figeait le rendu du tableau de bord. La borne
+        // haute le referme avant que la valeur n'atteigne la base.
+        let (mut store, client_id) = test_store("absurd-days");
+        let id = create_mission(&mut store, client_id);
+        for days in [1.0e15, 1.0e300, 367.0] {
+            let err = Executor::new(&mut store)
+                .execute(
+                    &LogTime {
+                        mission_id: id,
+                        worked_on: date(2026, TimeMonth::September, 10),
+                        days,
+                        category: TimeCategory::Billable,
+                        note: None,
+                    },
+                    &human_ctx(),
+                )
+                .unwrap_err();
+            assert!(matches!(err, AppError::Domain(msg) if msg.contains("hors bornes")));
+        }
+    }
+
+    #[test]
     fn time_entry_lifecycle_with_revisions() {
         let (mut store, client_id) = test_store("time-entry-lifecycle");
         let id = create_mission(&mut store, client_id);

@@ -25,3 +25,9 @@ all = { level = "warn", priority = -1 }
 lto = true
 codegen-units = 1
 strip = true
+# Sur une application locale mono-utilisateur qui tient une comptabilité, un débordement
+# arithmétique silencieusement enroulé serait pire qu'un crash : il ferait entrer un montant
+# absurde dans les totaux. On préfère un abort bruyant et diagnosticable. Les entrées sont déjà
+# bornées en amont (validation des quantités/jours), donc ce filet ne se déclenche qu'en cas de
+# bug, jamais sur une donnée métier légitime.
+overflow-checks = true

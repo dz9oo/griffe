@@ -163,7 +163,19 @@ impl Command for RecordPayment {
     type Output = PaymentId;
     const NAME: &'static str = "billing.record_payment";
 
+    // Effet comptable sensible : un encaissement marque une facture (partiellement) payée, fausse
+    // la balance âgée, le prévisionnel et la CA3. Déclenché par un agent, il attend une
+    // confirmation humaine — au même titre qu'une suppression de client.
+    fn requires_confirmation(&self) -> bool {
+        true
+    }
+
     fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        // Montant strictement positif : un montant nul, négatif ou absurde n'est pas un
+        // encaissement — il empoisonnerait les sommes (jusqu'au débordement de `aged_balance`).
+        if self.amount.cents() <= 0 {
+            return Err(BillingError::InvalidPaymentAmount.into());
+        }
         row::invoice_by_id(conn, self.invoice_id)?
             .ok_or(BillingError::NotFound(self.invoice_id))?;
         let payment = Payment {
@@ -213,11 +225,23 @@ impl Command for ReconcileTransaction {
     type Output = PaymentId;
     const NAME: &'static str = "billing.reconcile_transaction";
 
+    // Même effet qu'un encaissement manuel (il en crée un) : confirmation humaine requise pour un
+    // agent.
+    fn requires_confirmation(&self) -> bool {
+        true
+    }
+
     fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
         row::invoice_by_id(conn, self.invoice_id)?
             .ok_or(BillingError::NotFound(self.invoice_id))?;
         let tx = row::bank_transaction_by_id(conn, self.transaction_id)?
             .ok_or(BillingError::TransactionNotFound)?;
+
+        // Un débit (montant négatif) rapproché comme un encaissement fausserait le solde de la
+        // facture : seul un crédit (montant positif) est un règlement.
+        if tx.amount_cents <= 0 {
+            return Err(BillingError::InvalidPaymentAmount.into());
+        }
 
         let payment = Payment {
             id: PaymentId::new(),

@@ -21,6 +21,9 @@ pub enum BillingError {
 
     #[error("transaction bancaire introuvable")]
     TransactionNotFound,
+
+    #[error("montant d'encaissement invalide : doit être strictement positif")]
+    InvalidPaymentAmount,
 }
 
 impl From<BillingError> for AppError {

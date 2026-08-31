@@ -148,5 +148,10 @@ pub fn router(state: AppState) -> Router {
             state.clone(),
             unlock::require_unlocked,
         ))
+        // Filet le plus externe : une panique dans un handler (p. ex. un débordement
+        // arithmétique résiduel au rendu d'un montant) devient une réponse 500 au lieu de tuer la
+        // tâche du protocole `freeflow://` sans jamais répondre — ce qui figeait la webview
+        // indéfiniment, sans message. Couvre aussi `freeflow-web-dev`.
+        .layer(tower_http::catch_panic::CatchPanicLayer::new())
         .with_state(state)
 }
