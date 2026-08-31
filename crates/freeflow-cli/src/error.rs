@@ -40,6 +40,9 @@ pub enum CliError {
     #[error("JSON invalide pour --lines : {0}")]
     InvalidLinesJson(String),
 
+    #[error("{0}")]
+    Conflict(String),
+
     #[error("erreur inattendue : {0}")]
     Unexpected(String),
 }
@@ -61,6 +64,7 @@ impl From<AppError> for CliError {
                 actual,
             } => Self::PendingAction(format!("{id} attend {expected}, pas {actual}")),
             AppError::Command(msg) => Self::Domain(msg),
+            conflict @ AppError::Conflict { .. } => Self::Conflict(conflict.to_string()),
             other => Self::Unexpected(other.to_string()),
         }
     }
@@ -79,7 +83,30 @@ impl CliError {
             Self::UnknownConfirmableCommand(_) | Self::InvalidLinesJson(_) => 6,
             Self::NoVault(_) => 7,
             Self::VaultBusy => 8,
+            Self::Conflict(_) => 9,
             Self::Unexpected(_) => 1,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// La CLI n'expose jamais de moyen direct de provoquer un conflit d'écriture (voir
+    /// `cli_integration.rs::editing_twice_in_a_row_reads_the_fresh_revision_each_time` : `edit`
+    /// relit toujours la révision fraîche dans la même invocation) — ce test vérifie donc
+    /// seulement la traduction `AppError::Conflict -> CliError::Conflict -> code 9`, dont le
+    /// déclenchement réel (deux écritures concurrentes sur la même révision) est couvert côté
+    /// cœur par `freeflow_core::clients::tests::updating_with_a_stale_revision_is_a_conflict…`.
+    #[test]
+    fn a_conflict_maps_to_its_own_exit_code() {
+        let app_err = AppError::Conflict {
+            entity: "client",
+            id: "some-id".to_string(),
+        };
+        let cli_err: CliError = app_err.into();
+        assert!(matches!(cli_err, CliError::Conflict(_)));
+        assert_eq!(cli_err.exit_code(), 9);
     }
 }

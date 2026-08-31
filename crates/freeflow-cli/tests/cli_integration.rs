@@ -703,3 +703,278 @@ fn empty_pipeline_json_output_matches_the_documented_shape() {
         .unwrap();
     insta::assert_json_snapshot!(json_result(&output.stdout));
 }
+
+#[test]
+fn client_help_is_a_stable_interface_contract() {
+    let output = freeflow().args(["client", "--help"]).output().unwrap();
+    insta::assert_snapshot!(String::from_utf8(output.stdout).unwrap());
+}
+
+fn create_client(db: &Path, name: &str) -> String {
+    let output = freeflow()
+        .env("FREEFLOW_DB", db)
+        .args(["--json", "client", "create", "--name", name])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    json_result(&output)["result"].as_str().unwrap().to_string()
+}
+
+#[test]
+fn client_edit_changes_only_the_fields_provided_and_bumps_the_revision() {
+    let db = temp_db("client-edit");
+    provision(&db);
+    let id = create_client(&db, "Kappa Software");
+
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["client", "edit", &id, "--siren", "552100554"])
+        .assert()
+        .success();
+
+    let show_out = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--json", "client", "show", &id])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let client = json_result(&show_out);
+    assert_eq!(
+        client["name"], "Kappa Software",
+        "nom conservé, non fourni à `edit`"
+    );
+    assert_eq!(client["siren"], "552100554");
+    assert_eq!(client["revision"], 2);
+}
+
+#[test]
+fn editing_twice_in_a_row_reads_the_fresh_revision_each_time() {
+    // `client edit` fait un lire-modifier-écrire dans la même invocation (jamais de révision
+    // exposée comme argument nu — voir `CLAUDE.md`) : deux éditions successives voient chacune
+    // la révision la plus fraîche et réussissent toutes les deux. Le chemin de conflit lui-même
+    // (deux écritures concurrentes construites sur la même révision) est couvert au niveau du
+    // cœur, avec un vrai accès concurrent — voir
+    // `freeflow-core/src/clients.rs::tests::updating_with_a_stale_revision_is_a_conflict…` — et
+    // la traduction en code de sortie 9 est couverte par
+    // `error::tests::a_conflict_maps_to_its_own_exit_code`.
+    let db = temp_db("client-edit-twice");
+    provision(&db);
+    let id = create_client(&db, "Kappa Software");
+
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["client", "edit", &id, "--name", "Kappa Software SASU"])
+        .assert()
+        .success();
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["client", "edit", &id, "--name", "Kappa Software (bis)"])
+        .assert()
+        .success();
+
+    let show_out = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--json", "client", "show", &id])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let client = json_result(&show_out);
+    assert_eq!(client["name"], "Kappa Software (bis)");
+    assert_eq!(client["revision"], 3);
+}
+
+#[test]
+fn rm_refuses_a_client_still_referenced_by_an_open_opportunity() {
+    let db = temp_db("client-rm-referenced");
+    provision(&db);
+    let id = create_client(&db, "Kappa Software");
+
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "prospect",
+            "create",
+            "--client",
+            &id,
+            "--name",
+            "Mission régie",
+            "--amount",
+            "10000",
+            "--probability",
+            "50",
+            "--next-action",
+            "2026-09-02",
+        ])
+        .assert()
+        .success();
+
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["client", "rm", &id])
+        .assert()
+        .failure()
+        .code(4)
+        .stderr(predicate::str::contains("1 opportunité"));
+
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["client", "show", &id])
+        .assert()
+        .success();
+}
+
+#[test]
+fn archiving_then_unarchiving_a_client_round_trips_through_the_active_list() {
+    let db = temp_db("client-archive-roundtrip");
+    provision(&db);
+    let id = create_client(&db, "Kappa Software");
+
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["client", "archive", &id])
+        .assert()
+        .success();
+
+    let active_out = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--json", "client", "list"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(json_result(&active_out).as_array().unwrap().len(), 0);
+
+    let all_out = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--json", "client", "list", "--archived"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(json_result(&all_out).as_array().unwrap().len(), 1);
+
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["client", "unarchive", &id])
+        .assert()
+        .success();
+
+    let active_again = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--json", "client", "list"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(json_result(&active_again).as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn showing_an_ambiguous_name_prefix_lists_every_candidate() {
+    let db = temp_db("client-ambiguous");
+    provision(&db);
+    create_client(&db, "Argon Digital");
+    create_client(&db, "Argon Studio");
+
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["client", "show", "argon"])
+        .assert()
+        .failure()
+        .code(4)
+        .stderr(predicate::str::contains("Argon Digital"))
+        .stderr(predicate::str::contains("Argon Studio"));
+}
+
+#[test]
+fn resolving_a_client_by_accented_name_ignores_case_and_diacritics() {
+    let db = temp_db("client-accents");
+    provision(&db);
+    let id = create_client(&db, "Société Générale");
+
+    let show_out = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--json", "client", "show", "societe generale"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(json_result(&show_out)["id"], id);
+}
+
+#[test]
+fn contact_lifecycle_add_list_edit_rm() {
+    let db = temp_db("contact-lifecycle");
+    provision(&db);
+    let client_id = create_client(&db, "Kappa Software");
+
+    let add_out = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "--json",
+            "client",
+            "contact",
+            "add",
+            "--client",
+            &client_id,
+            "--name",
+            "Alex Martin",
+            "--email",
+            "alex@kappa.example",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let contact_id = json_result(&add_out)["result"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let list_out = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "--json", "client", "contact", "list", "--client", &client_id,
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(json_result(&list_out).as_array().unwrap().len(), 1);
+
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["client", "contact", "edit", &contact_id, "--role", "DAF"])
+        .assert()
+        .success();
+
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["client", "contact", "rm", &contact_id])
+        .assert()
+        .success();
+
+    let empty_out = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "--json", "client", "contact", "list", "--client", &client_id,
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(json_result(&empty_out).as_array().unwrap().len(), 0);
+}

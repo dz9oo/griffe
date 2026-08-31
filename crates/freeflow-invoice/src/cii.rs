@@ -426,6 +426,8 @@ mod tests {
             vat_number: None,
             address: None,
             created_at: time::OffsetDateTime::now_utc(),
+            revision: 1,
+            archived_at: None,
         }
     }
 

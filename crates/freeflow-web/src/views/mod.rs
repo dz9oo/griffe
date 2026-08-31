@@ -1,6 +1,9 @@
+pub mod clients;
 pub mod console;
 pub mod dashboard;
 pub mod facturation;
+pub mod form;
 pub mod missions;
+pub mod panel;
 pub mod prospection;
 pub mod unlock;

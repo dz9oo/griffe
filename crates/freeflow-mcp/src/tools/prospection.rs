@@ -100,7 +100,7 @@ impl FreeflowServer {
             source: args.source,
         };
         let mut store = self.store.lock().await;
-        match Executor::new(&mut store).execute(&cmd, &self.ctx()) {
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(false)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
             Err(e) => err_text(e.to_string()),
         }
@@ -131,7 +131,7 @@ impl FreeflowServer {
             next_action_at,
         };
         let mut store = self.store.lock().await;
-        match Executor::new(&mut store).execute(&cmd, &self.ctx()) {
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(false)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
             Err(e) => err_text(e.to_string()),
         }
@@ -160,7 +160,7 @@ impl FreeflowServer {
             started_on,
         };
         let mut store = self.store.lock().await;
-        match Executor::new(&mut store).execute(&cmd, &self.ctx()) {
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(false)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
             Err(e) => err_text(e.to_string()),
         }
@@ -186,7 +186,7 @@ impl FreeflowServer {
             reason,
         };
         let mut store = self.store.lock().await;
-        match Executor::new(&mut store).execute(&cmd, &self.ctx()) {
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(false)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
             Err(e) => err_text(e.to_string()),
         }
@@ -213,7 +213,7 @@ impl FreeflowServer {
             note: args.note,
         };
         let mut store = self.store.lock().await;
-        match Executor::new(&mut store).execute(&cmd, &self.ctx()) {
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(false)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
             Err(e) => err_text(e.to_string()),
         }

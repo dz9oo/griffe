@@ -144,3 +144,65 @@ td.num{ text-align:right; }
 .auth-submit{ width:100%; padding:10px; background:var(--accent-dim); border:none; border-radius:var(--radius); color:var(--bg-0); font-weight:600; font-size:13px; cursor:pointer; }
 .auth-submit:hover{ background:var(--accent); }
 .auth-hint{ font-size:11px; color:var(--text-3); margin-top:16px; text-align:center; }
+
+/* boutons génériques (lot 15) — .lock-btn couvrait déjà ce style pour un seul cas, généralisé
+   ici pour tous les panneaux de saisie */
+.btn{ font-family:var(--font-mono); font-size:12px; color:var(--text-1); background:var(--bg-2); border:1px solid var(--border); padding:7px 14px; border-radius:var(--radius); cursor:pointer; }
+.btn:hover{ background:var(--bg-3); color:var(--text-0); }
+.btn.small{ font-size:11px; padding:4px 10px; }
+.btn.primary{ background:var(--accent-dim); border-color:var(--accent-dim); color:var(--bg-0); font-weight:600; }
+.btn.primary:hover{ background:var(--accent); border-color:var(--accent); }
+.btn.danger{ color:var(--red); border-color:var(--red-soft); }
+.btn.danger:hover{ background:var(--red-soft); border-color:var(--red); }
+
+/* champs de formulaire génériques (`views/form.rs`) — étendent `.auth-field` (mot pour mot le
+   même patron label + champ) à `type=text`/`date`/`select`, avec un état d'erreur par champ */
+.field{ margin-bottom:14px; }
+.field label{ display:block; font-size:11px; color:var(--text-2); margin-bottom:6px; }
+.field input[type="text"], .field input[type="date"], .field select{
+  width:100%; padding:8px 10px; background:var(--bg-2); border:1px solid var(--border);
+  border-radius:var(--radius); color:var(--text-0); font-family:var(--font-ui); font-size:13px; outline:none;
+}
+.field input:focus, .field select:focus{ border-color:var(--accent-dim); }
+.field input[aria-invalid="true"], .field select[aria-invalid="true"]{ border-color:var(--red); }
+.field-error{ font-size:11px; color:var(--red); margin-top:5px; }
+.field-checkbox{ display:flex; align-items:center; gap:8px; font-size:12px; color:var(--text-2); margin-bottom:14px; }
+.field-group{ border:1px solid var(--border-soft); border-radius:var(--radius); padding:12px; margin-bottom:14px; }
+.field-group .field:last-child{ margin-bottom:0; }
+.form-actions{ margin-top:18px; }
+.form-error{ font-size:12px; color:var(--red); background:var(--red-soft); border:1px solid var(--red); border-radius:var(--radius); padding:10px 12px; margin-bottom:16px; }
+.form-conflict{ font-size:12px; color:var(--amber); background:var(--amber-soft); border:1px solid var(--amber); border-radius:var(--radius); padding:10px 12px; margin-bottom:16px; }
+.form-conflict div{ margin-bottom:10px; line-height:1.5; }
+
+/* panneau latéral (`#panel`, `views/panel.rs`) — un tiroir docké à droite, vide par défaut ;
+   fermeture entièrement côté client (`app.js`), voir le commentaire de `layout::page` */
+#panel:not(:empty){
+  position:fixed; top:0; right:0; bottom:0; width:420px; max-width:92vw; z-index:150;
+  background:var(--bg-1); border-left:1px solid var(--border); box-shadow:-20px 0 60px rgba(0,0,0,.45);
+  overflow-y:auto; animation:fade .16s ease;
+}
+.panel-sheet{ display:flex; flex-direction:column; height:100%; }
+.panel-head{ display:flex; align-items:center; justify-content:space-between; padding:16px 18px; border-bottom:1px solid var(--border-soft); font-size:13px; font-weight:600; }
+.panel-close{ background:transparent; border:none; color:var(--text-2); font-size:18px; line-height:1; cursor:pointer; padding:2px 6px; border-radius:4px; }
+.panel-close:hover{ background:var(--bg-3); color:var(--text-0); }
+.panel-body{ padding:18px; overflow-y:auto; }
+
+/* fiche de détail (`views/clients.rs::detail_panel`) */
+.detail-head{ display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; }
+.detail-title{ font-size:15px; font-weight:700; }
+.detail-fields{ margin-bottom:16px; }
+.detail-fields dt{ font-family:var(--font-mono); font-size:10px; text-transform:uppercase; color:var(--text-3); margin-top:10px; }
+.detail-fields dd{ font-size:13px; color:var(--text-1); margin-top:2px; }
+.detail-actions{ display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px; }
+.detail-note{ font-size:11.5px; color:var(--amber); background:var(--amber-soft); border:1px solid var(--amber); border-radius:var(--radius); padding:10px 12px; margin-bottom:16px; line-height:1.5; }
+.detail-section{ border-top:1px solid var(--border-soft); padding-top:16px; }
+.detail-section-head{ display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; font-size:12px; font-weight:600; color:var(--text-1); }
+.contact-row{ display:flex; align-items:center; justify-content:space-between; padding:10px 0; border-bottom:1px solid var(--border-soft); gap:10px; }
+.contact-row:last-child{ border-bottom:none; }
+.contact-name{ font-size:12.5px; color:var(--text-0); }
+.contact-meta{ font-size:11px; color:var(--text-3); margin-top:2px; }
+.contact-actions{ display:flex; gap:6px; flex-shrink:0; }
+
+/* liste cliquable (`views/clients.rs::list_fragment`) */
+tr.row-clickable{ cursor:pointer; }
+tr.row-clickable:hover td{ background:var(--bg-2); }

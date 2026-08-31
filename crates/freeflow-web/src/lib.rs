@@ -3,6 +3,7 @@
 
 mod assets;
 mod audit;
+mod clients;
 mod console;
 mod handlers;
 mod layout;
@@ -29,9 +30,35 @@ pub fn router(state: AppState) -> Router {
         .route("/view/prospection", get(handlers::prospection))
         .route("/view/missions", get(handlers::missions))
         .route("/view/facturation", get(handlers::facturation))
+        .route("/view/clients", get(handlers::clients))
         .route("/view/console", get(handlers::console))
         .route("/console/run", post(console::run))
         .route("/audit/recent", get(audit::recent))
+        .route("/clients/table", get(clients::table))
+        .route("/clients/new", get(clients::new_panel))
+        .route("/clients", post(clients::create))
+        .route(
+            "/clients/{id}",
+            get(clients::show_panel).post(clients::update),
+        )
+        .route("/clients/{id}/edit", get(clients::edit_panel))
+        .route("/clients/{id}/archive", post(clients::archive))
+        .route("/clients/{id}/unarchive", post(clients::unarchive))
+        .route(
+            "/clients/{id}/delete",
+            get(clients::delete_confirm_panel).post(clients::delete),
+        )
+        .route(
+            "/clients/{client_id}/contacts/new",
+            get(clients::new_contact_panel),
+        )
+        .route(
+            "/clients/{client_id}/contacts",
+            post(clients::create_contact),
+        )
+        .route("/contacts/{id}/edit", get(clients::edit_contact_panel))
+        .route("/contacts/{id}", post(clients::update_contact))
+        .route("/contacts/{id}/delete", post(clients::delete_contact))
         .route("/session/touch", post(unlock::touch))
         .route("/lock", post(unlock::lock))
         .route("/unlock", get(unlock::show).post(unlock::submit))

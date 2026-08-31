@@ -98,6 +98,17 @@ pub async fn facturation(State(state): State<AppState>, headers: HeaderMap) -> H
     respond(headers, ViewId::Facturation, content).await
 }
 
+pub async fn clients(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
+    let content = state
+        .with_store(|store| {
+            views::clients::render(store, freeflow_core::clients::ClientFilter::ActiveOnly)
+                .unwrap_or_else(|e| error_markup(ViewId::Clients, e))
+        })
+        .await
+        .unwrap_or_else(|| locked_markup(ViewId::Clients));
+    respond(headers, ViewId::Clients, content).await
+}
+
 pub async fn console(headers: HeaderMap) -> Html<String> {
     respond(headers, ViewId::Console, views::console::render()).await
 }

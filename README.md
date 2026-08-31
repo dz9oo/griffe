@@ -21,6 +21,18 @@ implémentation.
 
 ## Fonctionnalités actuelles
 
+### Clients
+- Créer, consulter, **modifier**, **archiver** et **supprimer** un client, et gérer ses contacts
+  (ajout, modification, suppression) — en CLI (`freeflow client …`), en MCP (`clients.*`) et
+  depuis la fenêtre (écran `clients`, panneau latéral).
+- Un client ne se supprime pour de bon que s'il n'est référencé par aucune opportunité, devis,
+  mission ou facture ; sinon il s'**archive** (retiré des listes actives, ses références passées
+  restent valides).
+- Désignation par UUID, préfixe d'UUID, ou **nom** (insensible à la casse et aux accents) en CLI
+  et en MCP — pas besoin de copier un identifiant complet pour agir sur un client.
+- Garde-fou contre l'écriture concurrente : chaque modification porte la révision lue au
+  préalable ; une modification concurrente est détectée plutôt qu'écrasée silencieusement.
+
 ### Prospection
 - Opportunités avec étape, montant, probabilité, source d'acquisition, motif de perte structuré.
 - Date de prochaine action **obligatoire** sur chaque opportunité ouverte — impossible d'en perdre
@@ -80,12 +92,17 @@ implémentation.
 - **CLI** (`freeflow`) — pensée pour un humain *et* pour un agent : `--json`, `--dry-run`,
   `--actor`, codes de sortie normalisés par famille d'erreur.
 - **Serveur MCP** (`freeflow-mcp`) — expose les mêmes commandes/requêtes comme outils MCP en
-  stdio, pour piloter l'app depuis Claude Code ou un autre client MCP. Toute action sensible
-  déclenchée par un agent crée une action en attente (`PendingAction`) : rien ne s'applique sans
-  confirmation humaine explicite (`freeflow confirm <id>`).
+  stdio, pour piloter l'app depuis Claude Code ou un autre client MCP, plus des **ressources**
+  (`freeflow://clients`, `freeflow://clients/{référence}`) pour lire l'état sans appeler d'outil.
+  Toute action sensible déclenchée par un agent (émission de facture, avoir, suppression d'un
+  client) crée une action en attente (`PendingAction`) : rien ne s'applique sans confirmation
+  humaine explicite, au terminal (`freeflow confirm <id>`) ou dans la fenêtre — il n'existe
+  volontairement **aucun outil MCP pour confirmer** : un agent ne peut jamais valider sa propre
+  proposition.
 - **Desktop** (`freeflow-desktop`) — coque Tauri v2, dashboard/prospection/missions/facturation/
-  console avec journal d'audit en temps réel dans le rail latéral. La console intégrée exécute
-  *littéralement* le même parseur que le terminal.
+  clients/console avec journal d'audit en temps réel dans le rail latéral. Créer, modifier,
+  archiver et supprimer des clients se fait depuis un panneau latéral, sans jamais passer par la
+  console. La console intégrée exécute *littéralement* le même parseur que le terminal.
 
 ## Utilisation en production
 
@@ -215,6 +232,16 @@ distribués prêts à l'emploi — voir la checklist ci-dessous.
       fichier temporaire puis basculée en place par deux `rename()` (base, puis sidecar) ; un
       sidecar en attente rend la fenêtre entre les deux renames récupérable automatiquement au
       prochain déverrouillage, sans intervention.
+- [x] Gestion des données (client + contact) : modifier, archiver, supprimer, en CLI, en MCP et
+      depuis la fenêtre — voir « Clients » ci-dessus. Fondations posées pour les entités
+      suivantes (révision optimiste, résolveur de référence par nom, panneau latéral de la GUI).
+- [ ] Étendre la gestion des données (modifier/supprimer) aux autres entités : opportunités,
+      missions (notamment les clore — `ended_on` n'est aujourd'hui jamais écrit), saisies de
+      temps, dépenses. Lire un devis reste aussi impossible une fois créé (aucune query dédiée).
+- [ ] `VoidPayment`/`UnreconcileTransaction` : un encaissement ou un rapprochement saisi à tort
+      n'est aujourd'hui ni corrigible ni annulable.
+- [ ] Parité MCP sur `company`/`expense`/`fiscal`/`forecast`/`invoice render` — le serveur MCP
+      reste un sous-ensemble strict de la CLI en dehors des clients.
 - [ ] Sidecar v3 à clé maître enveloppée (modèle LUKS) : le coffre serait chiffré par une clé
       aléatoire, elle-même enveloppée dans le sidecar par la clé dérivée d'Argon2id. Un changement
       de passphrase deviendrait la réécriture atomique d'un seul petit fichier — plus de

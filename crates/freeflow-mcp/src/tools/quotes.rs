@@ -103,7 +103,7 @@ impl FreeflowServer {
             valid_until,
         };
         let mut store = self.store.lock().await;
-        match Executor::new(&mut store).execute(&cmd, &self.ctx()) {
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(false)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
             Err(e) => err_text(e.to_string()),
         }
@@ -138,7 +138,7 @@ impl FreeflowServer {
             valid_until,
         };
         let mut store = self.store.lock().await;
-        match Executor::new(&mut store).execute(&cmd, &self.ctx()) {
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(false)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
             Err(e) => err_text(e.to_string()),
         }
@@ -156,7 +156,7 @@ impl FreeflowServer {
     async fn quote_send(&self, Parameters(args): Parameters<QuoteIdArgs>) -> CallToolResult {
         let quote_id: QuoteId = ok_or_return!("id", args.id.parse());
         let mut store = self.store.lock().await;
-        match Executor::new(&mut store).execute(&quotes::SendQuote { quote_id }, &self.ctx()) {
+        match Executor::new(&mut store).execute(&quotes::SendQuote { quote_id }, &self.ctx(false)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
             Err(e) => err_text(e.to_string()),
         }
@@ -174,7 +174,9 @@ impl FreeflowServer {
     async fn quote_decline(&self, Parameters(args): Parameters<QuoteIdArgs>) -> CallToolResult {
         let quote_id: QuoteId = ok_or_return!("id", args.id.parse());
         let mut store = self.store.lock().await;
-        match Executor::new(&mut store).execute(&quotes::DeclineQuote { quote_id }, &self.ctx()) {
+        match Executor::new(&mut store)
+            .execute(&quotes::DeclineQuote { quote_id }, &self.ctx(false))
+        {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
             Err(e) => err_text(e.to_string()),
         }
@@ -201,7 +203,7 @@ impl FreeflowServer {
                 quote_id,
                 started_on,
             },
-            &self.ctx(),
+            &self.ctx(false),
         ) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
             Err(e) => err_text(e.to_string()),

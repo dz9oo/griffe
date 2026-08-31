@@ -11,6 +11,7 @@ pub enum ViewId {
     Prospection,
     Missions,
     Facturation,
+    Clients,
     Console,
 }
 
@@ -22,6 +23,7 @@ impl ViewId {
             Self::Prospection => "/view/prospection",
             Self::Missions => "/view/missions",
             Self::Facturation => "/view/facturation",
+            Self::Clients => "/view/clients",
             Self::Console => "/view/console",
         }
     }
@@ -33,6 +35,7 @@ impl ViewId {
             Self::Prospection => "prospection",
             Self::Missions => "missions",
             Self::Facturation => "facturation",
+            Self::Clients => "clients",
             Self::Console => "console",
         }
     }
@@ -42,11 +45,12 @@ impl ViewId {
         self.slug()
     }
 
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::Dashboard,
         Self::Prospection,
         Self::Missions,
         Self::Facturation,
+        Self::Clients,
         Self::Console,
     ];
 }
@@ -84,6 +88,13 @@ fn palette() -> Markup {
                           hx-swap="innerHTML" {
                             "→ " (view.slug())
                         }
+                    }
+                    // Actions, distinctes des écrans ci-dessus : ciblent `#panel`, jamais
+                    // `#content`, et n'ont pas d'URL propre (pas de `hx-push-url`). À compléter
+                    // au fil des lots suivants, un item par action de création.
+                    button class="palette-item" type="button" data-label="nouveau client"
+                      hx-get="/clients/new" hx-target="#panel" hx-swap="innerHTML" {
+                        "+ nouveau client"
                     }
                 }
             }
@@ -140,6 +151,7 @@ pub fn page(active: ViewId, vault_label: &str, content: Markup) -> Markup {
                     }
                 }
                 (palette())
+                div id="panel" {}
                 script src="/assets/app.js" {}
             }
         }

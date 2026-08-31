@@ -16,6 +16,8 @@ mod parsers;
 mod pending;
 mod prospect;
 mod quote;
+mod refs;
+mod table;
 mod vault;
 
 use std::path::{Path, PathBuf};

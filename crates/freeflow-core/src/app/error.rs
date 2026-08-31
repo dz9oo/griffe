@@ -36,4 +36,11 @@ pub enum AppError {
 
     #[error("règle métier violée : {0}")]
     Domain(String),
+
+    /// Écriture concurrente : la révision fournie ne correspond plus à l'état en base (un autre
+    /// process — GUI, CLI ou serveur MCP — a modifié cette entité entre-temps). Distincte de
+    /// [`Self::Domain`] pour que chaque façade puisse proposer un rechargement plutôt qu'un
+    /// simple message d'erreur.
+    #[error("{entity} {id} a changé depuis sa lecture — rechargez la fiche avant de réessayer")]
+    Conflict { entity: &'static str, id: String },
 }

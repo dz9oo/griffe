@@ -14,5 +14,6 @@ pub mod forecast;
 pub mod missions;
 pub mod prospection;
 pub mod quotes;
+pub mod reference;
 pub mod store;
 pub mod vault;

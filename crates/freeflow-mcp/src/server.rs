@@ -7,11 +7,19 @@ use std::sync::Arc;
 
 use freeflow_core::app::{Actor, ExecutionContext};
 use freeflow_core::store::Store;
+use rmcp::RoleServer;
 use rmcp::ServerHandler;
 use rmcp::handler::server::router::tool::ToolRouter;
-use rmcp::model::{Implementation, ServerCapabilities, ServerInfo};
+use rmcp::model::{
+    ErrorData as McpError, Implementation, ListResourceTemplatesResult, ListResourcesResult,
+    PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResponse, ServerCapabilities,
+    ServerInfo,
+};
+use rmcp::service::RequestContext;
 use rmcp::tool_handler;
 use tokio::sync::Mutex;
+
+use crate::resources;
 
 #[derive(Clone)]
 pub struct FreeflowServer {
@@ -28,12 +36,15 @@ impl FreeflowServer {
         }
     }
 
-    pub(crate) fn ctx(&self) -> ExecutionContext {
+    /// `dry_run` : les outils `clients.*` l'exposent comme argument (`dry_run: bool`, défaut
+    /// `false`) — l'équivalent du `--dry-run` de la CLI, absent des autres modules d'outils
+    /// pour l'instant (voir la feuille de route du lot 15 dans `CLAUDE.md`).
+    pub(crate) fn ctx(&self, dry_run: bool) -> ExecutionContext {
         ExecutionContext::new(
             Actor::Agent {
                 session: self.session.clone(),
             },
-            false,
+            dry_run,
         )
     }
 
@@ -51,16 +62,48 @@ impl FreeflowServer {
 impl ServerHandler for FreeflowServer {
     fn get_info(&self) -> ServerInfo {
         let mut info = ServerInfo::default();
-        info.capabilities = ServerCapabilities::builder().enable_tools().build();
+        info.capabilities = ServerCapabilities::builder()
+            .enable_tools()
+            .enable_resources()
+            .build();
         info.server_info = Implementation::from_build_env();
         info.instructions = Some(
-            "FreeFlow — gestion pour indépendant. Les outils exposent exactement les mêmes \
-             commandes et requêtes que la CLI `freeflow`. Les actions à effet légal ou \
-             financier significatif (émission de facture, avoir) ne s'appliquent pas \
-             directement : elles renvoient une action en attente (`pending_action_id`) que \
-             seul un humain peut confirmer via `pending.confirm`."
+            "FreeFlow — gestion pour indépendant. Les outils exposent les mêmes commandes et \
+             requêtes que la CLI `freeflow`. Les actions à effet légal, financier ou \
+             destructeur significatif (émission de facture, avoir, suppression d'un client) ne \
+             s'appliquent pas directement : elles renvoient une action en attente \
+             (`pending_action_id`, consultable via `pending.list`) qu'un humain doit confirmer \
+             lui-même, au terminal (`freeflow confirm <id>`) ou dans la fenêtre — il n'existe \
+             volontairement aucun outil MCP `pending.confirm` : un agent ne peut pas confirmer \
+             sa propre proposition. Les références à un client (`client`, `clients.show`…) \
+             acceptent un UUID, un préfixe d'UUID, ou un nom — voir `clients.list`."
                 .to_string(),
         );
         info
+    }
+
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, McpError> {
+        Ok(resources::list())
+    }
+
+    async fn list_resource_templates(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourceTemplatesResult, McpError> {
+        Ok(resources::list_templates())
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResponse, McpError> {
+        let store = self.store.lock().await;
+        resources::read(&store, &request.uri).map(Into::into)
     }
 }

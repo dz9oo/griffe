@@ -8,7 +8,8 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use freeflow_core::app::{Actor, ExecutionContext, Executor};
-use freeflow_core::clients::CreateClient;
+use freeflow_core::clients::{CreateClient, list_clients};
+use freeflow_core::domain::ClientId;
 use freeflow_core::store::{Passphrase, Store};
 use freeflow_web::AppState;
 use http_body_util::BodyExt;
@@ -45,6 +46,20 @@ async fn unlocked_state(db_path: &Path) -> AppState {
         .await
         .unwrap();
     state
+}
+
+/// Retrouve un client par son nom via une connexion directe au coffre — la réponse d'une
+/// mutation réussie côté GUI est volontairement vide (voir `crate::clients` dans le crate
+/// `freeflow-web` : elle ne porte que l'en-tête `HX-Trigger`), donc les tests qui ont besoin de
+/// l'identifiant créé le retrouvent ainsi plutôt que de le parser depuis une réponse HTML.
+fn client_id_by_name(db_path: &Path, name: &str) -> ClientId {
+    let store = Store::open_with_passphrase(db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    list_clients(store.connection())
+        .unwrap()
+        .into_iter()
+        .find(|c| c.name == name)
+        .unwrap_or_else(|| panic!("aucun client nommé {name}"))
+        .id
 }
 
 async fn unlocked_state_with_client(db_path: &Path) -> AppState {
@@ -133,6 +148,7 @@ async fn every_screen_renders_successfully_against_a_freshly_seeded_vault() {
         "/view/prospection",
         "/view/missions",
         "/view/facturation",
+        "/view/clients",
     ] {
         let response = router
             .clone()
@@ -732,4 +748,392 @@ async fn a_real_navigation_keeps_an_idle_session_alive() {
         StatusCode::OK,
         "200ms + 200ms < 400ms depuis la dernière vraie navigation : la session doit être encore active"
     );
+}
+
+#[tokio::test]
+async fn creating_a_client_through_the_panel_appears_in_the_table_and_triggers_a_refresh() {
+    let db_path = test_db_path("clients-create");
+    let state = unlocked_state(&db_path).await;
+    let router = freeflow_web::router(state);
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/clients")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from("name=Kappa+Software"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("HX-Trigger").unwrap(),
+        "freeflow:saved",
+        "le conteneur de liste écoute cet événement pour se rafraîchir tout seul"
+    );
+    assert!(
+        body_text(response).await.is_empty(),
+        "un corps vide vide le panneau par le swap lui-même (htmx ne swap jamais un 204)"
+    );
+
+    let table = router
+        .oneshot(
+            Request::builder()
+                .uri("/clients/table")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = body_text(table).await;
+    assert!(body.contains("Kappa Software"));
+}
+
+#[tokio::test]
+async fn creating_a_client_with_an_empty_name_re_renders_the_form_with_a_field_error() {
+    let db_path = test_db_path("clients-create-invalid");
+    let state = unlocked_state(&db_path).await;
+    let router = freeflow_web::router(state);
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/clients")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from("name="))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        !response.headers().contains_key("HX-Trigger"),
+        "une erreur de validation ne doit pas déclencher de rafraîchissement de la liste"
+    );
+    let body = body_text(response).await;
+    assert!(body.contains("field-error"));
+    assert!(body.contains("obligatoire"));
+}
+
+#[tokio::test]
+async fn editing_a_client_changes_only_the_provided_fields_and_bumps_the_revision() {
+    let db_path = test_db_path("clients-edit");
+    let state = unlocked_state_with_client(&db_path).await;
+    let router = freeflow_web::router(state);
+    let id = client_id_by_name(&db_path, "Kappa Software");
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/clients/{id}"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from("revision=1&name=Kappa+Software&siren=552100554"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("HX-Trigger").unwrap(),
+        "freeflow:saved"
+    );
+
+    let detail = router
+        .oneshot(
+            Request::builder()
+                .uri(format!("/clients/{id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = body_text(detail).await;
+    assert!(body.contains("Kappa Software"), "nom conservé : {body}");
+    assert!(body.contains("552100554"), "siren appliqué : {body}");
+}
+
+#[tokio::test]
+async fn editing_with_a_stale_revision_shows_a_conflict_banner_and_writes_nothing() {
+    let db_path = test_db_path("clients-edit-conflict");
+    let state = unlocked_state_with_client(&db_path).await;
+    let router = freeflow_web::router(state);
+    let id = client_id_by_name(&db_path, "Kappa Software");
+
+    // Une première édition fait passer la révision en base à 2.
+    router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/clients/{id}"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from("revision=1&name=Kappa+Software+SASU"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Rejouer une édition construite sur la révision 1 (déjà périmée) doit être un conflit.
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/clients/{id}"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from("revision=1&name=Ecrasement+tente"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        !response.headers().contains_key("HX-Trigger"),
+        "un conflit n'est pas un succès"
+    );
+    let body = body_text(response).await;
+    assert!(body.contains("form-conflict"));
+    assert!(body.contains("changé depuis sa lecture"));
+
+    let detail = router
+        .oneshot(
+            Request::builder()
+                .uri(format!("/clients/{id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = body_text(detail).await;
+    assert!(
+        body.contains("Kappa Software SASU"),
+        "la première édition doit rester en place, la seconde n'a rien écrasé : {body}"
+    );
+}
+
+#[tokio::test]
+async fn archiving_removes_a_client_from_the_default_table_but_not_from_the_all_table() {
+    let db_path = test_db_path("clients-archive");
+    let state = unlocked_state_with_client(&db_path).await;
+    let router = freeflow_web::router(state);
+    let id = client_id_by_name(&db_path, "Kappa Software");
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/clients/{id}/archive"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("HX-Trigger").unwrap(),
+        "freeflow:saved"
+    );
+
+    let active = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/clients/table")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(!body_text(active).await.contains("Kappa Software"));
+
+    let all = router
+        .oneshot(
+            Request::builder()
+                .uri("/clients/table?archived=true")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(body_text(all).await.contains("Kappa Software"));
+}
+
+#[tokio::test]
+async fn deleting_a_client_still_referenced_by_an_opportunity_shows_what_blocks_it() {
+    let db_path = test_db_path("clients-delete-referenced");
+    let mut store = Store::create(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    let ctx = human_ctx();
+    let client_id = {
+        let freeflow_core::app::Outcome::Applied(id) = Executor::new(&mut store)
+            .execute(
+                &CreateClient {
+                    name: "Kappa Software".to_string(),
+                    siren: None,
+                    vat_number: None,
+                    address: None,
+                },
+                &ctx,
+            )
+            .unwrap()
+        else {
+            panic!("expected Applied")
+        };
+        id
+    };
+    Executor::new(&mut store)
+        .execute(
+            &freeflow_core::prospection::CreateOpportunity {
+                client_id,
+                name: "Refonte".to_string(),
+                amount: freeflow_core::domain::Money::from_cents(10_000),
+                probability: freeflow_core::domain::Probability::new(50).unwrap(),
+                next_action_at: time::Date::from_calendar_date(2026, time::Month::September, 2)
+                    .unwrap(),
+                source: None,
+            },
+            &ctx,
+        )
+        .unwrap();
+    drop(store);
+
+    let state = AppState::new(db_path);
+    state
+        .unlock(&Passphrase::from(PASSPHRASE), false)
+        .await
+        .unwrap();
+    let router = freeflow_web::router(state);
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/clients/{client_id}/delete"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(!response.headers().contains_key("HX-Trigger"));
+    let body = body_text(response).await;
+    assert!(body.contains("1 opportunité"), "{body}");
+
+    let still_there = router
+        .oneshot(
+            Request::builder()
+                .uri(format!("/clients/{client_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(still_there.status(), StatusCode::OK);
+    assert!(body_text(still_there).await.contains("Kappa Software"));
+}
+
+#[tokio::test]
+async fn contact_lifecycle_through_the_panel() {
+    let db_path = test_db_path("clients-contacts");
+    let state = unlocked_state_with_client(&db_path).await;
+    let router = freeflow_web::router(state);
+    let client_id = client_id_by_name(&db_path, "Kappa Software");
+
+    router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/clients/{client_id}/contacts"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from("name=Alex+Martin&email=alex%40kappa.example"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let detail = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/clients/{client_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = body_text(detail).await;
+    assert!(body.contains("Alex Martin"), "{body}");
+
+    let store = Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    let contact_id = freeflow_core::clients::list_contacts(store.connection(), client_id)
+        .unwrap()
+        .into_iter()
+        .find(|c| c.name == "Alex Martin")
+        .unwrap()
+        .id;
+    drop(store);
+
+    router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/contacts/{contact_id}"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from("revision=1&name=Alex+Martin&role=DAF"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/contacts/{contact_id}/delete"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let after = router
+        .oneshot(
+            Request::builder()
+                .uri(format!("/clients/{client_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(!body_text(after).await.contains("Alex Martin"));
+}
+
+#[tokio::test]
+async fn an_unknown_client_id_renders_a_friendly_message_not_a_crash() {
+    let db_path = test_db_path("clients-unknown");
+    let state = unlocked_state(&db_path).await;
+    let router = freeflow_web::router(state);
+    let unknown = ClientId::new();
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri(format!("/clients/{unknown}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(body_text(response).await.contains("introuvable"));
 }

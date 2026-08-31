@@ -2,6 +2,7 @@
 //! `rmcp`, en transport stdio. Aucune logique métier ici — uniquement le mapping arguments JSON
 //! ⇄ `Command`/`Query` du domaine, et la mise en forme de la réponse.
 
+mod resources;
 mod server;
 mod support;
 mod tools;

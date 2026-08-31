@@ -32,6 +32,33 @@ pub(crate) fn outcome_json<T: Serialize>(outcome: &Outcome<T>) -> serde_json::Va
     }
 }
 
+/// Résout une référence texte (uuid, préfixe, nom — voir `freeflow_core::reference`) vers un
+/// identifiant de client, en un message d'erreur listant les candidats en cas d'ambiguïté :
+/// même comportement que `freeflow_cli::refs::resolve_client`, dupliqué ici plutôt que partagé
+/// entre les deux crates (le format d'erreur — texte pour un humain vs `CallToolResult` pour un
+/// agent — diverge assez pour ne pas valoir une dépendance croisée CLI -> MCP).
+pub(crate) fn resolve_client(
+    store: &freeflow_core::store::Store,
+    needle: &str,
+) -> Result<freeflow_core::domain::ClientId, String> {
+    use freeflow_core::reference::{self, RefMatch};
+    match reference::resolve_client(store.connection(), needle) {
+        Ok(RefMatch::Unique(id)) => Ok(id),
+        Ok(RefMatch::NotFound) => Err(format!("aucun client ne correspond à « {needle} »")),
+        Ok(RefMatch::Ambiguous(candidates)) => {
+            let list = candidates
+                .iter()
+                .map(|(id, name)| format!("  {id} — {name}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            Err(format!(
+                "« {needle} » désigne plusieurs clients, précisez lequel :\n{list}"
+            ))
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 pub(crate) fn parse_loss_reason(s: &str) -> Result<freeflow_core::domain::LossReason, String> {
     use freeflow_core::domain::LossReason;
     match s {

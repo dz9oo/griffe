@@ -7,6 +7,7 @@
 use clap::Subcommand;
 use freeflow_core::app::{self, Command, Executor, PendingActionId};
 use freeflow_core::billing::{EmitInvoice, IssueCreditNote};
+use freeflow_core::clients::DeleteClient;
 use freeflow_core::store::Store;
 
 use crate::error::CliError;
@@ -60,6 +61,9 @@ pub fn confirm(store: &mut Store, id: PendingActionId, json: bool) -> Result<Str
         Ok(format_outcome(&outcome, json))
     } else if action.command_name == IssueCreditNote::NAME {
         let outcome = Executor::new(store).confirm::<IssueCreditNote>(id)?;
+        Ok(format_outcome(&outcome, json))
+    } else if action.command_name == DeleteClient::NAME {
+        let outcome = Executor::new(store).confirm::<DeleteClient>(id)?;
         Ok(format_outcome(&outcome, json))
     } else {
         Err(CliError::UnknownConfirmableCommand(action.command_name))

@@ -1,25 +1,20 @@
-//! Outils `pending.*`, `audit.*` — miroir de `freeflow pending/audit/confirm` (CLI, lot 7).
+//! Outils `pending.*`, `audit.*` — miroir de `freeflow pending/audit` (CLI, lot 7).
 //!
-//! `pending.confirm` ne connaît que les commandes qui déclarent
-//! `requires_confirmation() == true` — à étendre au fil des lots suivants s'il y en a d'autres.
+//! **Pas d'outil `pending.confirm` ici, volontairement** (lot 15) : rien côté MCP ne distingue
+//! un appel d'outil émis par l'agent lui-même d'une confirmation humaine réelle — un agent
+//! pouvait donc proposer une action sensible (`invoice.emit`…) *et* la confirmer dans le même
+//! tour, ce qui annulait entièrement le rail de confirmation que `requires_confirmation()` est
+//! censé garantir (voir `CLAUDE.md`). `pending.list` reste : l'agent peut voir ce qu'il attend,
+//! mais la confirmation elle-même se fait au terminal (`freeflow confirm <id>`) ou dans la
+//! fenêtre — un vrai geste humain, hors du canal que l'agent contrôle.
 
-use freeflow_core::app::{self, Command, Executor, PendingActionId};
-use freeflow_core::billing::{EmitInvoice, IssueCreditNote};
-use rmcp::handler::server::wrapper::Parameters;
+use freeflow_core::app;
 use rmcp::model::CallToolResult;
 use rmcp::{tool, tool_router};
-use schemars::JsonSchema;
-use serde::Deserialize;
 use serde_json::json;
 
 use crate::server::FreeflowServer;
-use crate::support::{err_text, ok_json, ok_or_return, outcome_json};
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub(crate) struct PendingActionIdArgs {
-    /// Identifiant de l'action en attente.
-    id: String,
-}
+use crate::support::{err_text, ok_json};
 
 #[tool_router(router = pending_router, vis = "pub(crate)")]
 impl FreeflowServer {
@@ -49,47 +44,6 @@ impl FreeflowServer {
                 ok_json(json!({"status": "broken", "broken_at_sequence": sequence}))
             }
             Err(e) => err_text(e.to_string()),
-        }
-    }
-
-    /// Confirme une action en attente : retrouve son type de commande d'origine par son nom
-    /// stocké, puis l'applique. C'est le seul moyen d'appliquer une commande à confirmation
-    /// (`invoice.emit`, `invoice.credit_note`) déposée par un agent.
-    #[tool(
-        name = "pending.confirm",
-        annotations(
-            read_only_hint = false,
-            destructive_hint = true,
-            idempotent_hint = false
-        )
-    )]
-    async fn pending_confirm(
-        &self,
-        Parameters(args): Parameters<PendingActionIdArgs>,
-    ) -> CallToolResult {
-        let id: PendingActionId = ok_or_return!("id", args.id.parse());
-        let mut store = self.store.lock().await;
-        let action = match app::pending_action_by_id(store.connection(), id) {
-            Ok(Some(action)) => action,
-            Ok(None) => return err_text(format!("action en attente introuvable : {id}")),
-            Err(e) => return err_text(e.to_string()),
-        };
-
-        if action.command_name == EmitInvoice::NAME {
-            match Executor::new(&mut store).confirm::<EmitInvoice>(id) {
-                Ok(outcome) => ok_json(outcome_json(&outcome)),
-                Err(e) => err_text(e.to_string()),
-            }
-        } else if action.command_name == IssueCreditNote::NAME {
-            match Executor::new(&mut store).confirm::<IssueCreditNote>(id) {
-                Ok(outcome) => ok_json(outcome_json(&outcome)),
-                Err(e) => err_text(e.to_string()),
-            }
-        } else {
-            err_text(format!(
-                "commande de confirmation inconnue : {} (aucun type de commande enregistré sous ce nom)",
-                action.command_name
-            ))
         }
     }
 }

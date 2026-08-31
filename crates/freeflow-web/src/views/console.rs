@@ -12,7 +12,12 @@ pub fn render() -> Markup {
 
         div class="console" {
             div class="console-log" id="console-log" {}
-            form class="input-row" hx-post="/console/run" hx-target="#console-log" hx-swap="beforeend" hx-on--after-request="this.reset(); this.querySelector('input').focus();" {
+            // Le reset du champ et le refocus après soumission se font dans `app.js`, via un
+            // écouteur `htmx:afterRequest` délégué sur `#console-form` : `hx-on--after-request`
+            // (l'attribut htmx idiomatique pour ce cas) s'appuie sur `new Function`, que la CSP
+            // de la fenêtre packagée bloque (`script-src 'self'`, sans `'unsafe-eval'`) — voir
+            // `CLAUDE.md`.
+            form class="input-row" id="console-form" hx-post="/console/run" hx-target="#console-log" hx-swap="beforeend" {
                 span class="prompt" { "❯" }
                 input type="text" name="line" placeholder="prospect pipeline --json" autocomplete="off" autofocus;
             }

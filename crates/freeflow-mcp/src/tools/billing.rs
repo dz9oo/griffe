@@ -100,7 +100,7 @@ impl FreeflowServer {
             payment_terms_days: args.payment_terms_days.unwrap_or(30),
         };
         let mut store = self.store.lock().await;
-        match Executor::new(&mut store).execute(&cmd, &self.ctx()) {
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(false)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
             Err(e) => err_text(e.to_string()),
         }
@@ -130,7 +130,7 @@ impl FreeflowServer {
             issued_on,
         };
         let mut store = self.store.lock().await;
-        match Executor::new(&mut store).execute(&cmd, &self.ctx()) {
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(false)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
             Err(e) => err_text(e.to_string()),
         }
@@ -207,7 +207,7 @@ impl FreeflowServer {
             method,
         };
         let mut store = self.store.lock().await;
-        match Executor::new(&mut store).execute(&cmd, &self.ctx()) {
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(false)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
             Err(e) => err_text(e.to_string()),
         }
@@ -233,7 +233,7 @@ impl FreeflowServer {
         let transactions = ok_or_return!("content", transactions);
         let cmd = billing::ImportBankTransactions { transactions };
         let mut store = self.store.lock().await;
-        match Executor::new(&mut store).execute(&cmd, &self.ctx()) {
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(false)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
             Err(e) => err_text(e.to_string()),
         }
@@ -261,7 +261,7 @@ impl FreeflowServer {
             invoice_id,
         };
         let mut store = self.store.lock().await;
-        match Executor::new(&mut store).execute(&cmd, &self.ctx()) {
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(false)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
             Err(e) => err_text(e.to_string()),
         }

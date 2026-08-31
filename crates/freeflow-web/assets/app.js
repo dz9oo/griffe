@@ -86,6 +86,57 @@ if (consoleLog) {
   });
 }
 
+// Reset + refocus le champ de la console après chaque soumission — remplace l'attribut htmx
+// `hx-on--after-request`, qui s'appuie sur `new Function` et est donc bloqué par la CSP de la
+// fenêtre packagée (`script-src 'self'`, sans `'unsafe-eval'` — voir `views/console.rs`).
+document.body.addEventListener("htmx:afterRequest", (event) => {
+  if (event.target.id === "console-form") {
+    event.target.reset();
+    event.target.querySelector("input")?.focus();
+  }
+});
+
+// Panneau latéral (`#panel`) : ouvert par un `hx-get`/`hx-post` ciblé dessus depuis un écran de
+// données (voir `views/clients.rs`), fermé côté client uniquement — aucune de ces trois actions
+// ne fait de round-trip serveur.
+const panel = document.getElementById("panel");
+function closePanel() {
+  panel?.replaceChildren();
+}
+if (panel) {
+  document.addEventListener("click", (event) => {
+    if (panel.childElementCount === 0) return;
+    if (event.target.closest("#panel")) {
+      if (event.target.closest(".panel-close")) closePanel();
+      return;
+    }
+    closePanel();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && panel.childElementCount > 0) closePanel();
+  });
+  // Après une mutation réussie (`HX-Trigger: freeflow:saved`, voir `crate::clients`), le corps
+  // de la réponse est vide : htmx vide déjà #panel par le swap lui-même. Cet écouteur reste un
+  // filet pour toute réponse qui déclencherait l'événement sans passer par ce swap.
+  document.body.addEventListener("freeflow:saved", closePanel);
+}
+
+// `n` ouvre l'action de création de l'écran actif, quand un panneau de données existe pour cet
+// écran — étendu au fil des lots suivants (`NEW_ACTION_BY_VIEW` reste la seule chose à
+// compléter). Inactif pendant la saisie d'un champ, ou pendant que la palette est ouverte.
+const NEW_ACTION_BY_VIEW = { clients: "/clients/new" };
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "n" || event.metaKey || event.ctrlKey || event.altKey) return;
+  const target = event.target;
+  if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT") return;
+  if (paletteOverlay?.classList.contains("open")) return;
+  const activeView = document.querySelector(".tab.active")?.dataset.view;
+  const action = activeView && NEW_ACTION_BY_VIEW[activeView];
+  if (!action || !panel) return;
+  event.preventDefault();
+  htmx.ajax("GET", action, { target: "#panel", swap: "innerHTML" });
+});
+
 // Auto-verrouillage sans démon : le rail d'audit poll `/audit/recent` toutes les 2s mais est
 // explicitement exclu du calcul d'activité côté serveur (voir state.rs) — sans quoi la session
 // n'expirerait jamais. Une vraie frappe ou un vrai clic prolonge la session, au plus une fois

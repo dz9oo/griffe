@@ -55,6 +55,8 @@ fn client() -> Client {
             country: "FR".to_string(),
         }),
         created_at: time::OffsetDateTime::now_utc(),
+        revision: 1,
+        archived_at: None,
     }
 }
 
