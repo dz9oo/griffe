@@ -1,9 +1,12 @@
 //! `freeflow quote ...`
 //!
-//! Les lignes (`QuoteLine`, polymorphes régie/forfait/récurrent) sont passées en JSON via
-//! `--lines` : une mini-syntaxe de flags pour un tableau d'objets hétérogènes serait plus
-//! complexe à utiliser, en CLI comme pour un agent, qu'un objet JSON qu'il sait déjà produire.
-//! Exemple : `--lines '[{"description":"Acompte","kind":{"Forfait":{"amount":1350000}},"vat_rate":"Standard"}]'`
+//! Les lignes (`QuoteLine`, polymorphes régie/forfait/récurrent) se passent de deux façons
+//! exclusives :
+//! - `--lines <JSON>` : un tableau d'objets qu'un agent sait déjà produire. Exemple :
+//!   `--lines '[{"description":"Acompte","kind":{"Forfait":{"amount":1350000}},"vat_rate":"Standard"}]'`
+//! - `--line <SPEC>`, répétable (lot 23) : la syntaxe texte `description:type:montant[:taux]`
+//!   de `QuoteLine: FromStr` — le même parseur que le textarea de la fenêtre, jamais
+//!   réimplémenté par façade (voir `freeflow_core::domain::quote`).
 //!
 //! Lot 21 : `send`/`decline`/`accept`/`revise` prennent une `RÉFÉRENCE` positionnelle (UUID,
 //! préfixe d'UUID, ou nom du client porteur — voir `freeflow_core::reference::resolve_quote`) au
@@ -50,6 +53,25 @@ fn parse_lines(json: &str) -> Result<Vec<QuoteLine>, CliError> {
     serde_json::from_str(json).map_err(|e| CliError::InvalidLinesJson(e.to_string()))
 }
 
+/// `--lines` (JSON) et `--line` (texte, répétable) sont exclusifs et l'un des deux est requis —
+/// l'exclusivité et la présence sont déjà garanties par clap (`conflicts_with`/
+/// `required_unless_present`), il ne reste qu'à parser la forme fournie.
+fn resolve_lines(
+    lines_json: Option<&str>,
+    line_specs: &[String],
+) -> Result<Vec<QuoteLine>, CliError> {
+    match lines_json {
+        Some(json) => parse_lines(json),
+        None => line_specs
+            .iter()
+            .map(|spec| {
+                spec.parse::<QuoteLine>()
+                    .map_err(|e| CliError::Domain(e.to_string()))
+            })
+            .collect(),
+    }
+}
+
 #[derive(Debug, Subcommand)]
 pub enum QuoteCommand {
     /// Crée un devis (version 1).
@@ -60,9 +82,20 @@ pub enum QuoteCommand {
         /// Opportunité liée (référence : UUID, préfixe, ou nom).
         #[arg(long, value_name = "RÉFÉRENCE")]
         opportunity: Option<String>,
-        /// Lignes au format JSON — voir l'aide du module pour un exemple.
-        #[arg(long)]
-        lines: String,
+        /// Lignes au format JSON — voir l'aide du module pour un exemple. Exclusif avec `--line`.
+        #[arg(
+            long,
+            value_name = "JSON",
+            conflicts_with = "line",
+            required_unless_present = "line"
+        )]
+        lines: Option<String>,
+        /// Une ligne au format « description:type:montant[:taux] » — répétable, une par ligne du
+        /// devis. Ex. « Dév:forfait:1350.00 », « Conseil:regie:650.00x10 » (TJM×jours),
+        /// « TMA:recurrent:2000.00x12 » (mensuel×mois) ; taux : standard (défaut), intermediate,
+        /// reduced, super_reduced, zero.
+        #[arg(long, value_name = "SPEC")]
+        line: Vec<String>,
         #[command(flatten)]
         discount: DiscountArgs,
         #[arg(long)]
@@ -82,8 +115,18 @@ pub enum QuoteCommand {
     Revise {
         #[arg(value_name = "RÉFÉRENCE")]
         reference: String,
-        #[arg(long)]
-        lines: String,
+        /// Lignes au format JSON — voir l'aide du module pour un exemple. Exclusif avec `--line`.
+        #[arg(
+            long,
+            value_name = "JSON",
+            conflicts_with = "line",
+            required_unless_present = "line"
+        )]
+        lines: Option<String>,
+        /// Une ligne au format « description:type:montant[:taux] » — répétable, une par ligne du
+        /// devis (même syntaxe que `create`).
+        #[arg(long, value_name = "SPEC")]
+        line: Vec<String>,
         #[command(flatten)]
         discount: DiscountArgs,
         #[arg(long)]
@@ -121,6 +164,7 @@ pub fn run(
             client,
             opportunity,
             lines,
+            line,
             discount,
             terms,
             valid_until,
@@ -129,7 +173,7 @@ pub fn run(
             let opportunity_id = opportunity
                 .map(|reference| refs::resolve_opportunity(store, &reference))
                 .transpose()?;
-            let lines = parse_lines(&lines)?;
+            let lines = resolve_lines(lines.as_deref(), &line)?;
             let discount = discount.resolve()?;
             let command = quotes::CreateQuote {
                 client_id,
@@ -174,6 +218,7 @@ pub fn run(
         QuoteCommand::Revise {
             reference,
             lines,
+            line,
             discount,
             terms,
             valid_until,
@@ -182,7 +227,7 @@ pub fn run(
             // N'importe quelle version de la lignée peut servir de référence : la révision
             // repart toujours de la racine partagée.
             let root_id = quote_or_not_found(store, id)?.root_id;
-            let lines = parse_lines(&lines)?;
+            let lines = resolve_lines(lines.as_deref(), &line)?;
             let discount = discount.resolve()?;
             let command = quotes::ReviseQuote {
                 root_id,

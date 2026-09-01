@@ -2212,6 +2212,179 @@ async fn a_quote_can_be_sent_and_accepted_through_the_panel() {
 }
 
 #[tokio::test]
+async fn a_quote_can_be_created_and_revised_through_the_panel() {
+    let db_path = test_db_path("devis-editor");
+    let state = unlocked_state_with_client(&db_path).await;
+    let router = freeflow_web::router(state);
+
+    // Le panneau de création est servi, pré-rempli d'une date de validité par défaut.
+    let panel = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/devis/new")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = body_text(panel).await;
+    assert!(body.contains("Nouveau devis"), "{body}");
+    assert!(body.contains("description:type:montant"), "{body}");
+
+    // Une ligne invalide re-rend le panneau avec l'erreur du parseur du domaine, sans
+    // déclencher de rafraîchissement.
+    let invalid = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/devis")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(
+                    "client=Kappa%20Software&lines=Dev%3Ainconnu%3A100&valid_until=2026-10-31",
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(invalid.status(), StatusCode::OK);
+    assert!(invalid.headers().get("HX-Trigger").is_none());
+    let body = body_text(invalid).await;
+    assert!(body.contains("ligne de devis invalide"), "{body}");
+
+    // Les deux remises à la fois sont refusées avec une erreur de champ.
+    let both_discounts = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/devis")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(
+                    "client=Kappa%20Software&lines=Dev%3Aforfait%3A100&discount_percent=1000&discount_amount=50.00&valid_until=2026-10-31",
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = body_text(both_discounts).await;
+    assert!(body.contains("exclusives"), "{body}");
+
+    // Création réelle : deux lignes de types différents (une par ligne du textarea, %0A), des
+    // conditions, pas de remise.
+    let created = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/devis")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(
+                    "client=Kappa%20Software&opportunity=&lines=Dev%3Aforfait%3A1350.00%0AConseil%3Aregie%3A650.00x10%3Areduced&discount_percent=&discount_amount=&terms=Paiement%2030j&valid_until=2026-10-31",
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::OK);
+    assert_eq!(
+        created.headers().get("HX-Trigger").unwrap(),
+        "freeflow:saved"
+    );
+
+    let quote = {
+        let store = Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+        let quotes = freeflow_core::quotes::list_quotes(store.connection()).unwrap();
+        assert_eq!(quotes.len(), 1);
+        quotes.into_iter().next().unwrap()
+    };
+    assert_eq!(quote.lines.len(), 2);
+    assert_eq!(quote.lines[0].description, "Dev");
+    assert_eq!(
+        quote.lines[0].kind,
+        freeflow_core::domain::LineKind::Forfait {
+            amount: Money::from_cents(135_000),
+        }
+    );
+    assert_eq!(
+        quote.lines[1].vat_rate,
+        freeflow_core::domain::VatRate::Reduced
+    );
+    assert_eq!(quote.terms.as_deref(), Some("Paiement 30j"));
+    assert_eq!(quote.discount, None);
+
+    // Deux types de facturation mélangés : créable, mais inacceptable en l'état — la fiche
+    // l'annonce avant que l'acceptation n'échoue.
+    let detail = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/devis/{}", quote.id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = body_text(detail).await;
+    assert!(body.contains("l'acceptation échouera"), "{body}");
+    assert!(body.contains("réviser…"), "{body}");
+
+    // Le panneau de révision est pré-rempli avec la représentation texte re-parsable des
+    // lignes existantes — le round-trip `Display`/`FromStr` du domaine, visible à l'écran.
+    let revise_panel = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/devis/{}/revise", quote.id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = body_text(revise_panel).await;
+    assert!(body.contains("Réviser le devis"), "{body}");
+    assert!(body.contains("Dev:forfait:1350.00:standard"), "{body}");
+    assert!(body.contains("Conseil:regie:650.00x10:reduced"), "{body}");
+    assert!(body.contains("Paiement 30j"), "{body}");
+
+    // Révision : une seule ligne forfait, remise de 10 % — crée la v2 en brouillon.
+    let revised = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/devis/{}/revise", quote.id))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(
+                    "lines=Dev%20complet%3Aforfait%3A2000.00&discount_percent=1000&discount_amount=&terms=&valid_until=2026-11-30",
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(revised.status(), StatusCode::OK);
+    assert_eq!(
+        revised.headers().get("HX-Trigger").unwrap(),
+        "freeflow:saved"
+    );
+
+    let store = Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    let quotes = freeflow_core::quotes::list_quotes(store.connection()).unwrap();
+    assert_eq!(quotes.len(), 2);
+    let v2 = quotes.iter().find(|q| q.version == 2).unwrap();
+    assert_eq!(v2.root_id, quote.root_id);
+    assert_eq!(v2.status, freeflow_core::domain::QuoteStatus::Draft);
+    assert_eq!(
+        v2.discount,
+        Some(freeflow_core::domain::Discount::Percentage(1000))
+    );
+    assert_eq!(v2.lines.len(), 1);
+    assert_eq!(v2.lines[0].description, "Dev complet");
+    assert_eq!(v2.terms, None);
+}
+
+#[tokio::test]
 async fn voiding_a_payment_through_the_invoice_panel_restores_the_unpaid_status() {
     let db_path = test_db_path("facturation-void");
     let state = unlocked_state_with_client(&db_path).await;

@@ -1352,6 +1352,83 @@ fn quote_lifecycle_by_reference_from_creation_to_acceptance() {
 }
 
 #[test]
+fn quote_lines_are_expressible_in_the_shared_text_syntax() {
+    let db = temp_db("quote-line-syntax");
+    provision(&db);
+    create_client(&db, "Kappa Software");
+
+    // `--line`, répétable (lot 23) : la même syntaxe `description:type:montant[:taux]` que le
+    // textarea de la fenêtre — clap conserve chaque occurrence, dans l'ordre.
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "quote",
+            "create",
+            "--client",
+            "kappa",
+            "--line",
+            "Cadrage:forfait:1350.00",
+            "--line",
+            "Conseil:regie:650.00x10:reduced",
+            "--valid-until",
+            "2026-10-31",
+        ])
+        .assert()
+        .success();
+
+    let show_out = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--json", "quote", "show", "kappa"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let quote = json_result(&show_out);
+    let lines = quote["lines"].as_array().unwrap();
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0]["description"], "Cadrage");
+    assert_eq!(lines[0]["kind"]["Forfait"]["amount"], 135_000);
+    assert_eq!(lines[1]["kind"]["Regie"]["daily_rate"], 65_000);
+    assert_eq!(lines[1]["vat_rate"], "Reduced");
+    assert_eq!(quote["total_net_ht"], 135_000 + 650_000);
+
+    // Une spec invalide échoue avec le rappel de syntaxe du parseur du domaine.
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "quote",
+            "revise",
+            "kappa",
+            "--line",
+            "Cadrage:inconnu:100",
+            "--valid-until",
+            "2026-11-30",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("ligne de devis invalide"));
+
+    // `--lines` (JSON) et `--line` (texte) sont exclusifs — refusé par clap avant tout accès
+    // au coffre.
+    freeflow()
+        .args([
+            "quote",
+            "create",
+            "--client",
+            "kappa",
+            "--lines",
+            "[]",
+            "--line",
+            "Cadrage:forfait:100",
+            "--valid-until",
+            "2026-10-31",
+        ])
+        .assert()
+        .failure();
+}
+
+#[test]
 fn payment_help_is_a_stable_interface_contract() {
     let output = freeflow().args(["payment", "--help"]).output().unwrap();
     insta::assert_snapshot!(String::from_utf8(output.stdout).unwrap());

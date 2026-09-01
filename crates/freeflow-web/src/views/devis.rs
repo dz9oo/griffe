@@ -1,16 +1,21 @@
-//! Écran `devis` (lot 21) — lecture et transitions. Un devis créé était jusqu'ici invisible
-//! depuis la fenêtre (aucune query de lecture dans le cœur avant ce lot) ; cet écran le rend
-//! lisible (liste, fiche avec lignes et totaux, lignée) et fait passer les transitions de son
-//! cycle de vie (envoyer, décliner, accepter — cette dernière avec sa date de démarrage).
+//! Écran `devis` — lecture et transitions (lot 21), puis création et révision (lot 23).
 //!
-//! Volontairement **pas** de création/révision ici : les lignes d'un devis sont polymorphes
-//! (régie/forfait/récurrent, avec remise), et la CLI comme le serveur MCP les prennent déjà en
-//! JSON — un vrai éditeur de lignes dans le panneau est un chantier d'UI à part entière, en
-//! feuille de route, pas un formulaire de plus sur ce patron.
+//! L'éditeur de lignes polymorphes (régie/forfait/récurrent) est un `<textarea>`, une ligne de
+//! devis par ligne de texte, parsée par `QuoteLine: FromStr` — le même parseur que `freeflow
+//! quote create --line`, jamais réimplémenté par façade (thèse « Studio »). C'est la leçon du
+//! lot 16 (jalons de mission) appliquée telle quelle : `serde_urlencoded` ne conserve que la
+//! dernière valeur d'une clé répétée, et la CSP `script-src 'self'` de la fenêtre packagée
+//! interdit tout « + ajouter une ligne » en JS inline — le textarea est la forme qui reste.
+//!
+//! Un devis n'a **pas** de révision optimiste : son contenu est immuable par trigger dès la
+//! création (réviser = nouvelle version portant le même `root_id`), il n'y a donc pas d'édition
+//! en place à protéger — pas de champ caché `revision` dans ces formulaires.
 
 use freeflow_core::app::AppError;
-use freeflow_core::domain::{LineKind, Money, Quote, QuoteId, QuoteStatus};
-use freeflow_core::quotes::{QuoteReferences, list_quotes, priced_lines, quote_references};
+use freeflow_core::domain::{Discount, LineKind, Money, Quote, QuoteId, QuoteLine, QuoteStatus};
+use freeflow_core::quotes::{
+    QuoteReferences, derive_mission, list_quotes, priced_lines, quote_references,
+};
 use freeflow_core::store::Store;
 use maud::{Markup, html};
 
@@ -62,6 +67,120 @@ fn client_name(store: &Store, id: freeflow_core::domain::ClientId) -> String {
         .ok()
         .and_then(|clients| clients.into_iter().find(|c| c.id == id))
         .map_or_else(|| "?".to_string(), |c| c.name)
+}
+
+fn lines_to_text(lines: &[QuoteLine]) -> String {
+    lines
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[derive(Default, Clone)]
+pub struct QuoteFormValues {
+    pub client: String,
+    pub opportunity: String,
+    pub lines: String,
+    pub discount_percent: String,
+    pub discount_amount: String,
+    pub terms: String,
+    pub valid_until: String,
+}
+
+impl QuoteFormValues {
+    /// Pré-remplit une révision depuis une version existante — client et opportunité n'y
+    /// figurent pas : `ReviseQuote` les hérite de la racine, ils ne sont pas rééditables.
+    pub fn from_quote(quote: &Quote) -> Self {
+        let (discount_percent, discount_amount) = match quote.discount {
+            Some(Discount::Percentage(bps)) => (bps.to_string(), String::new()),
+            Some(Discount::FixedAmount(m)) => (String::new(), m.to_decimal_string()),
+            None => (String::new(), String::new()),
+        };
+        Self {
+            client: String::new(),
+            opportunity: String::new(),
+            lines: lines_to_text(&quote.lines),
+            discount_percent,
+            discount_amount,
+            terms: quote.terms.clone().unwrap_or_default(),
+            valid_until: freeflow_core::domain::format_date(quote.valid_until),
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct QuoteFormErrors {
+    pub client: Option<String>,
+    pub opportunity: Option<String>,
+    pub lines: Option<String>,
+    pub discount: Option<String>,
+    pub valid_until: Option<String>,
+    pub banner: Option<String>,
+}
+
+fn quote_form(
+    action: &str,
+    show_client: bool,
+    submit_label: &str,
+    values: &QuoteFormValues,
+    errors: &QuoteFormErrors,
+) -> Markup {
+    html! {
+        form hx-post=(action) hx-target="#panel" hx-swap="innerHTML" {
+            @if let Some(msg) = &errors.banner {
+                (form::error_banner(msg))
+            }
+            @if show_client {
+                (form::text("client", "Client (nom ou référence)", &values.client, errors.client.as_deref()))
+                (form::text("opportunity", "Opportunité liée (optionnel — nom ou référence)", &values.opportunity, errors.opportunity.as_deref()))
+            }
+            (form::textarea("lines", "Lignes (une par ligne)", &values.lines, 6, errors.lines.as_deref()))
+            (form::field_help(
+                "Syntaxe : description:type:montant[:taux] — ex. Développement:forfait:1350.00, \
+                 Conseil:regie:650.00x10 (TJM×jours), TMA:recurrent:2000.00x12 (mensuel×mois). \
+                 Taux : standard (défaut), intermediate, reduced, super_reduced, zero."
+            ))
+            (form::number("discount_percent", "Remise en % (dix-millièmes, 1000 = 10 %)", &values.discount_percent, "1", errors.discount.as_deref()))
+            (form::number("discount_amount", "Remise en montant fixe (€ HT)", &values.discount_amount, "0.01", None))
+            (form::field_help("Les deux remises sont exclusives — laisser les deux champs vides pour aucune remise."))
+            (form::textarea("terms", "Conditions (optionnel)", &values.terms, 3, None))
+            (form::date("valid_until", "Valide jusqu'au", &values.valid_until, errors.valid_until.as_deref()))
+            (form::actions(submit_label))
+        }
+    }
+}
+
+pub fn new_panel(values: &QuoteFormValues, errors: &QuoteFormErrors) -> Markup {
+    panel::sheet(
+        "Nouveau devis",
+        quote_form("/devis", true, "Créer le devis (v1)", values, errors),
+    )
+}
+
+pub fn revise_panel(
+    quote: &Quote,
+    client: &str,
+    values: &QuoteFormValues,
+    errors: &QuoteFormErrors,
+) -> Markup {
+    let body = html! {
+        div class="detail-note" {
+            "La révision crée une nouvelle version en brouillon à partir de ces valeurs — les "
+            "versions existantes de la lignée restent telles quelles (un devis est immuable)."
+        }
+        (quote_form(
+            &format!("/devis/{}/revise", quote.id),
+            false,
+            "Créer la nouvelle version",
+            values,
+            errors,
+        ))
+    };
+    panel::sheet(
+        &format!("Réviser le devis — {client} (v{})", quote.version),
+        body,
+    )
 }
 
 pub fn detail_panel(
@@ -117,6 +236,14 @@ pub fn detail_panel(
                 @if refs.versions > 1 { (refs.versions) " versions partagent la même racine." }
             }
         }
+        // La contrainte de `derive_mission` (un seul type de facturation, régie/récurrent sur
+        // une seule ligne) ne bloque pas la création d'un devis — mais son acceptation, si. La
+        // surfacer dès la fiche évite de la découvrir au moment de conclure.
+        @if matches!(quote.status, QuoteStatus::Draft | QuoteStatus::Sent) {
+            @if let Err(e) = derive_mission(quote, quote.valid_until) {
+                div class="form-error" { (e.to_string()) " — l'acceptation échouera en l'état, révisez d'abord les lignes." }
+            }
+        }
         div class="detail-actions" {
             @match quote.status {
                 QuoteStatus::Draft => {
@@ -128,10 +255,9 @@ pub fn detail_panel(
                 }
                 _ => {}
             }
-        }
-        div class="detail-note" {
-            "Créer ou réviser un devis se fait en CLI (" code { "freeflow quote create/revise" }
-            ") ou via un agent MCP — les lignes polymorphes n'ont pas encore d'éditeur dans la fenêtre."
+            // Réviser reste possible quel que soit le statut : la révision repart de la racine
+            // de la lignée et crée une version neuve en brouillon, elle ne touche pas celle-ci.
+            button class="btn" hx-get=(format!("/devis/{}/revise", quote.id)) hx-target="#panel" hx-swap="innerHTML" { "réviser…" }
         }
     };
     panel::sheet(&format!("Devis — {client}"), body)
@@ -168,10 +294,11 @@ pub fn list_fragment(store: &Store) -> Result<Markup, AppError> {
             hx-trigger="freeflow:saved from:body"
             hx-target="this"
             hx-swap="outerHTML" {
+            div class="pipe-toolbar" {
+                button class="btn primary" hx-get="/devis/new" hx-target="#panel" hx-swap="innerHTML" { "+ nouveau devis" }
+            }
             @if quotes.is_empty() {
-                div class="empty-state" {
-                    "aucun devis — créez-en un depuis la CLI : " code { "freeflow quote create" }
-                }
+                div class="empty-state" { "aucun devis — cliquez sur « nouveau devis »" }
             } @else {
                 div class="panel bordered" style="padding:0" {
                     table {

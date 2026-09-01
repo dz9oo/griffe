@@ -37,7 +37,9 @@ pub use period::{
     FiscalYear, FiscalYearEnd, FiscalYearEndError, Month, MonthError, UnknownVatRegime, VatRegime,
     format_date, parse_date,
 };
-pub use quote::{Discount, LineKind, Quote, QuoteLine, QuoteStatus, UnknownQuoteStatus};
+pub use quote::{
+    Discount, LineKind, Quote, QuoteLine, QuoteLineParseError, QuoteStatus, UnknownQuoteStatus,
+};
 pub use siren::{Siren, SirenError, VatNumber, VatNumberError};
 pub use time_entry::{TimeCategory, TimeEntry, UnknownTimeCategory};
 pub use vat::{UnknownVatRate, VatRate};

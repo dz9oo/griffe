@@ -163,7 +163,13 @@ pub fn router(state: AppState) -> Router {
             get(depenses::delete_confirm_panel).post(depenses::delete),
         )
         .route("/devis/table", get(devis::table))
+        .route("/devis/new", get(devis::new_panel))
+        .route("/devis", post(devis::create))
         .route("/devis/{id}", get(devis::show_panel))
+        .route(
+            "/devis/{id}/revise",
+            get(devis::revise_panel).post(devis::revise),
+        )
         .route("/devis/{id}/send", post(devis::send))
         .route("/devis/{id}/decline", post(devis::decline))
         .route(

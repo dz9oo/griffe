@@ -62,8 +62,15 @@ implémentation.
 - **Lisibles** (`quote list`/`quote show` : contenu, total HT net de remise, mission issue,
   nombre de versions) et désignables par **référence** (UUID, préfixe, ou nom du client porteur)
   dans tous les verbes — en CLI, en MCP (`quote.*`, ressources `freeflow://quotes`) et depuis la
-  fenêtre (écran `devis` : liste, fiche avec lignes, envoyer/décliner/accepter). La création et
-  la révision restent CLI/MCP (lignes polymorphes en JSON, pas encore d'éditeur graphique).
+  fenêtre (écran `devis` : liste, fiche avec lignes, envoyer/décliner/accepter).
+- **Création et révision depuis la fenêtre** (panneaux « nouveau devis » / « réviser », palette
+  ⌘K, raccourci `n`) comme en CLI : les lignes polymorphes s'écrivent dans une syntaxe texte
+  partagée, une ligne par ligne — `description:type:montant[:taux]`, ex.
+  `Développement:forfait:1350.00`, `Conseil:regie:650.00x10` (TJM×jours),
+  `TMA:recurrent:2000.00x12` (mensuel×mois) — parsée par le domaine lui-même
+  (`QuoteLine: FromStr`), jamais réimplémentée par façade. En CLI : `--line <SPEC>` répétable, à
+  côté du `--lines <JSON>` historique (exclusifs). La fiche d'un devis avertit dès la saisie si
+  ses lignes mélangent des types de facturation qui rendront l'acceptation impossible.
 
 ### Facturation & TVA
 - Numérotation séquentielle **sans trou**, garantie même sous écriture concurrente entre
@@ -278,8 +285,9 @@ distribués prêts à l'emploi — voir la checklist ci-dessous.
       `WinOpportunity`, héritée du devis par `AcceptQuote` ; une opportunité gagnée dont la
       mission existe encore n'est plus supprimable, seulement archivable) — voir « Devis » et
       « Dépenses » ci-dessus.
-- [ ] Éditeur graphique de devis (création/révision des lignes polymorphes depuis la fenêtre) —
-      aujourd'hui CLI/MCP seulement.
+- [x] Éditeur de devis dans la fenêtre (création/révision) : lignes polymorphes en syntaxe texte
+      partagée avec la CLI (`QuoteLine: FromStr`, `--line` répétable), remise, conditions,
+      avertissement d'acceptabilité — voir « Devis » ci-dessus.
 - [x] `VoidPayment`/`UnreconcileTransaction` : annulation d'encaissement (contre-écriture,
       motif journalisé) et rapprochement défaisable, avec lignée transaction → encaissement
       persistée (migration 0013) et garde contre le double rapprochement — voir « Facturation &

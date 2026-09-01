@@ -41,11 +41,6 @@ fn category_label(category: ExpenseCategory) -> &'static str {
         .map_or("autre", |(_, label)| label)
 }
 
-/// Montant en euros décimaux pour un `<input>` — le format que `Money::parse_decimal` relit.
-fn money_input_value(m: Money) -> String {
-    format!("{}.{:02}", m.cents() / 100, m.cents().rem_euclid(100))
-}
-
 #[derive(Default, Clone)]
 pub struct ExpenseFormValues {
     pub label: String,
@@ -61,9 +56,9 @@ impl From<&Expense> for ExpenseFormValues {
         Self {
             label: e.label.clone(),
             category: e.category.as_str().to_string(),
-            amount: money_input_value(e.amount),
+            amount: e.amount.to_decimal_string(),
             vat_rate: e.vat_rate.as_str().to_string(),
-            vat_deductible: money_input_value(e.vat_deductible),
+            vat_deductible: e.vat_deductible.to_decimal_string(),
             incurred_on: freeflow_core::domain::format_date(e.incurred_on),
         }
     }

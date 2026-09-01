@@ -1,5 +1,8 @@
 //! Devis. La conversion en mission (lot 6) dérive l'échéancier de facturation de ces lignes.
 
+use std::fmt;
+use std::str::FromStr;
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use time::{Date, OffsetDateTime};
@@ -67,6 +70,99 @@ pub struct QuoteLine {
     pub vat_rate: VatRate,
 }
 
+#[derive(Debug, Error, PartialEq, Eq)]
+#[error(
+    "ligne de devis invalide : {0} (attendu « description:type:montant[:taux] » — \
+     « Développement:forfait:1350.00 », « Conseil:regie:650.00x10 » (TJM×jours), \
+     « TMA:recurrent:2000.00x12 » (mensuel×mois) ; taux optionnel : standard, intermediate, \
+     reduced, super_reduced, zero — standard si omis)"
+)]
+pub struct QuoteLineParseError(pub String);
+
+/// Représentation texte partagée entre la CLI (`--line`, répétable) et la GUI (une ligne de
+/// devis par ligne d'un textarea) — un seul parseur pour les deux façades, comme la thèse
+/// « Studio » l'exige, sur le modèle de [`super::Milestone`] :
+/// `description:type:montant[:taux]`. `description` peut contenir des `:` sans ambiguïté :
+/// l'analyse part de la droite, et `type` est un mot-clé exact (`forfait`/`regie`/`recurrent`).
+impl FromStr for QuoteLine {
+    type Err = QuoteLineParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let err = || QuoteLineParseError(s.to_string());
+        // Le taux est optionnel : le dernier segment n'en est un que s'il en parse un — même
+        // astuce que la date optionnelle des jalons (`Milestone::from_str`).
+        let (rest, vat_rate) = match s.rsplit_once(':') {
+            Some((rest, last)) => match last.trim().parse::<VatRate>() {
+                Ok(rate) => (rest, rate),
+                Err(_) => (s, VatRate::Standard),
+            },
+            None => (s, VatRate::Standard),
+        };
+        let (rest, spec) = rest.rsplit_once(':').ok_or_else(err)?;
+        let (description, kind_word) = rest.rsplit_once(':').ok_or_else(err)?;
+        let description = description.trim();
+        if description.is_empty() {
+            return Err(err());
+        }
+        let spec = spec.trim();
+        let kind = match kind_word.trim() {
+            "forfait" => LineKind::Forfait {
+                amount: Money::parse_decimal(spec).map_err(|_| err())?,
+            },
+            "regie" => {
+                let (rate, days) = spec.split_once('x').ok_or_else(err)?;
+                let daily_rate = Money::parse_decimal(rate.trim()).map_err(|_| err())?;
+                let days: f64 = days.trim().parse().map_err(|_| err())?;
+                if !days.is_finite() || days <= 0.0 {
+                    return Err(err());
+                }
+                LineKind::Regie { daily_rate, days }
+            }
+            "recurrent" => {
+                let (amount, months) = spec.split_once('x').ok_or_else(err)?;
+                let monthly_amount = Money::parse_decimal(amount.trim()).map_err(|_| err())?;
+                let months: u32 = months.trim().parse().map_err(|_| err())?;
+                if months == 0 {
+                    return Err(err());
+                }
+                LineKind::Recurrent {
+                    monthly_amount,
+                    months,
+                }
+            }
+            _ => return Err(err()),
+        };
+        Ok(Self {
+            description: description.to_string(),
+            kind,
+            vat_rate,
+        })
+    }
+}
+
+impl fmt::Display for QuoteLine {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:", self.description)?;
+        match &self.kind {
+            LineKind::Forfait { amount } => write!(f, "forfait:{}", amount.to_decimal_string())?,
+            LineKind::Regie { daily_rate, days } => {
+                write!(f, "regie:{}x{days}", daily_rate.to_decimal_string())?;
+            }
+            LineKind::Recurrent {
+                monthly_amount,
+                months,
+            } => write!(
+                f,
+                "recurrent:{}x{months}",
+                monthly_amount.to_decimal_string()
+            )?,
+        }
+        // Le taux est toujours émis, même `standard` : la représentation sert aussi à pré-remplir
+        // un formulaire d'édition, où l'implicite serait une information perdue pour le lecteur.
+        write!(f, ":{}", self.vat_rate.as_str())
+    }
+}
+
 /// Une remise globale sur un devis, allouée proportionnellement sur les lignes (méthode du
 /// plus fort reste via [`super::Money::allocate_proportionally`]) — jamais appliquée ligne par
 /// ligne, pour ne jamais perdre ni créer un centime.
@@ -96,4 +192,116 @@ pub struct Quote {
     pub terms: Option<String>,
     pub valid_until: Date,
     pub created_at: OffsetDateTime,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line(description: &str, kind: LineKind, vat_rate: VatRate) -> QuoteLine {
+        QuoteLine {
+            description: description.to_string(),
+            kind,
+            vat_rate,
+        }
+    }
+
+    #[test]
+    fn quote_line_display_and_from_str_round_trip_for_every_kind() {
+        let lines = [
+            line(
+                "Développement",
+                LineKind::Forfait {
+                    amount: Money::from_cents(1_350_000),
+                },
+                VatRate::Standard,
+            ),
+            line(
+                "Conseil",
+                LineKind::Regie {
+                    daily_rate: Money::from_cents(65_000),
+                    days: 10.5,
+                },
+                VatRate::Reduced,
+            ),
+            line(
+                "TMA",
+                LineKind::Recurrent {
+                    monthly_amount: Money::from_cents(200_000),
+                    months: 12,
+                },
+                VatRate::Zero,
+            ),
+        ];
+        for l in lines {
+            assert_eq!(l.to_string().parse::<QuoteLine>(), Ok(l));
+        }
+    }
+
+    #[test]
+    fn quote_line_description_may_contain_colons() {
+        let l = line(
+            "Phase 1 : cadrage",
+            LineKind::Forfait {
+                amount: Money::from_cents(100_000),
+            },
+            VatRate::Standard,
+        );
+        assert_eq!(l.to_string(), "Phase 1 : cadrage:forfait:1000.00:standard");
+        assert_eq!(l.to_string().parse::<QuoteLine>(), Ok(l));
+    }
+
+    #[test]
+    fn quote_line_vat_rate_defaults_to_standard_when_omitted() {
+        assert_eq!(
+            "Audit:forfait:500".parse::<QuoteLine>(),
+            Ok(line(
+                "Audit",
+                LineKind::Forfait {
+                    amount: Money::from_cents(50_000),
+                },
+                VatRate::Standard,
+            ))
+        );
+    }
+
+    #[test]
+    fn quote_line_accepts_a_comma_as_decimal_separator_and_surrounding_spaces() {
+        assert_eq!(
+            "Conseil : regie : 650,50 x 3 : reduced".parse::<QuoteLine>(),
+            Ok(line(
+                "Conseil",
+                LineKind::Regie {
+                    daily_rate: Money::from_cents(65_050),
+                    days: 3.0,
+                },
+                VatRate::Reduced,
+            ))
+        );
+    }
+
+    #[test]
+    fn quote_line_rejects_malformed_input() {
+        for bad in [
+            "",
+            "sans-separateur",
+            "desc:forfait",              // pas de montant
+            "desc:inconnu:100",          // type inexistant
+            ":forfait:100",              // description vide
+            "desc:forfait:100x2",        // quantité sur un forfait
+            "desc:regie:650",            // régie sans jours
+            "desc:regie:650x0",          // zéro jour
+            "desc:regie:650x-1",         // jours négatifs
+            "desc:regie:650xNaN",        // jours non numériques
+            "desc:recurrent:2000",       // récurrent sans mois
+            "desc:recurrent:2000x0",     // zéro mois
+            "desc:recurrent:2000x1.5",   // mois fractionnaires
+            "desc:forfait:100:exotique", // ni un taux ni un montant en dernier segment
+        ] {
+            assert!(
+                bad.parse::<QuoteLine>().is_err(),
+                "aurait dû échouer : {bad}"
+            );
+        }
+    }
 }

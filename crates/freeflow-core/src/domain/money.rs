@@ -195,6 +195,17 @@ impl Money {
             .collect()
     }
 
+    /// Rend ce montant sous la forme décimale que [`Self::parse_decimal`] relit (`"1234.56"`,
+    /// `"-0.50"`) — le format d'échange pour un champ de saisie ou une syntaxe texte, par
+    /// opposition à [`fmt::Display`] qui produit un rendu humain (espaces de groupement, `€`)
+    /// que `parse_decimal` refuse.
+    #[must_use]
+    pub fn to_decimal_string(self) -> String {
+        let sign = if self.0 < 0 { "-" } else { "" };
+        let magnitude = self.0.unsigned_abs();
+        format!("{sign}{}.{:02}", magnitude / 100, magnitude % 100)
+    }
+
     /// Analyse un montant décimal saisi par un humain (`.` ou `,` comme séparateur, deux
     /// décimales maximum) en centimes exacts — le format attendu pour toute entrée en euros,
     /// que ce soit en ligne de commande ou dans un import CSV/OFX.
@@ -500,6 +511,16 @@ mod tests {
             s in r"-?[0-9]{1,30}([.,][0-9]{0,3})?"
         ) {
             let _ = Money::parse_decimal(&s);
+        }
+
+        /// `to_decimal_string` est l'inverse exact de `parse_decimal` — le contrat sur lequel
+        /// reposent les champs de formulaire et la syntaxe texte des lignes de devis (lot 23).
+        #[test]
+        fn to_decimal_string_round_trips_through_parse_decimal(
+            cents in -1_000_000_000i64..1_000_000_000
+        ) {
+            let m = Money::from_cents(cents);
+            prop_assert_eq!(Money::parse_decimal(&m.to_decimal_string()), Ok(m));
         }
     }
 }

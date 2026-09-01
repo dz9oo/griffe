@@ -128,6 +128,9 @@ const NEW_ACTION_BY_VIEW = {
   clients: "/clients/new",
   prospection: "/prospection/new",
   missions: "/missions/new",
+  devis: "/devis/new",
+  depenses: "/depenses/new",
+  cloture: "/cloture/new",
 };
 document.addEventListener("keydown", (event) => {
   if (event.key !== "n" || event.metaKey || event.ctrlKey || event.altKey) return;

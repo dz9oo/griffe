@@ -56,10 +56,13 @@ pub struct MissionFormValues {
 
 impl MissionFormValues {
     pub fn from_mission(store: &Store, m: &Mission) -> Self {
+        // `to_decimal_string`, jamais `to_string` : le `Display` humain de `Money` (espaces de
+        // groupement, `€`) n'est pas relu par `Money::parse_decimal` — l'utiliser ici faisait
+        // rejeter par le formulaire d'édition le montant qu'il venait lui-même de pré-remplir.
         let amount = match &m.kind {
-            MissionKind::Regie { daily_rate } => daily_rate.to_string(),
-            MissionKind::Forfait { budget } => budget.to_string(),
-            MissionKind::Recurrent { monthly_amount } => monthly_amount.to_string(),
+            MissionKind::Regie { daily_rate } => daily_rate.to_decimal_string(),
+            MissionKind::Forfait { budget } => budget.to_decimal_string(),
+            MissionKind::Recurrent { monthly_amount } => monthly_amount.to_decimal_string(),
         };
         Self {
             client: client_name(store, m.client_id),
