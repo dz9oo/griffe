@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use time::Date;
+use time::{Date, OffsetDateTime};
 
 use super::ids::{BankTransactionId, InvoiceId, PaymentId};
 use super::money::Money;
@@ -51,6 +51,22 @@ pub struct Payment {
     pub amount: Money,
     pub received_on: Date,
     pub method: PaymentMethod,
+    /// Lignée du rapprochement bancaire dont cet encaissement est issu (lot 22, migration
+    /// `0013`) — `None` pour un encaissement manuel ou antérieur à la migration. Comme
+    /// `missions.opportunity_id` : une lignée, jamais un lien éditable.
+    pub bank_transaction_id: Option<BankTransactionId>,
+    /// Contre-écriture (lot 22) : un encaissement saisi à tort ne se supprime pas, il s'annule —
+    /// il reste visible dans l'historique mais sort de tous les calculs (balance âgée,
+    /// prévisionnel, statut payé). La colonne existait depuis `0008`, posée par anticipation.
+    pub voided_at: Option<OffsetDateTime>,
+}
+
+impl Payment {
+    /// Un encaissement annulé ne compte plus dans aucun solde.
+    #[must_use]
+    pub const fn is_voided(&self) -> bool {
+        self.voided_at.is_some()
+    }
 }
 
 /// Une ligne de relevé bancaire importée (CSV/OFX), avant ou après rapprochement.

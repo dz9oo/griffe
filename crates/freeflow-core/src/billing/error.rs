@@ -3,7 +3,7 @@
 use thiserror::Error;
 
 use crate::app::AppError;
-use crate::domain::InvoiceId;
+use crate::domain::{BankTransactionId, InvoiceId, PaymentId};
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum BillingError {
@@ -24,6 +24,21 @@ pub enum BillingError {
 
     #[error("montant d'encaissement invalide : doit être strictement positif")]
     InvalidPaymentAmount,
+
+    #[error("encaissement introuvable : {0}")]
+    PaymentNotFound(PaymentId),
+
+    #[error("l'encaissement {0} est déjà annulé")]
+    PaymentAlreadyVoided(PaymentId),
+
+    #[error(
+        "la transaction {0} est déjà rapprochée — défaites d'abord ce rapprochement \
+         (bank unreconcile) si elle visait la mauvaise facture"
+    )]
+    AlreadyReconciled(BankTransactionId),
+
+    #[error("la transaction {0} n'est pas rapprochée : rien à défaire")]
+    TransactionNotReconciled(BankTransactionId),
 }
 
 impl From<BillingError> for AppError {

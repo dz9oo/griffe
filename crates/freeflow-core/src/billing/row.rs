@@ -157,16 +157,61 @@ pub(super) fn has_credit_note(conn: &Connection, invoice_id: InvoiceId) -> Resul
 
 pub(super) fn insert_payment(conn: &Connection, payment: &Payment) -> Result<(), AppError> {
     conn.execute(
-        "INSERT INTO payments (id, invoice_id, amount_cents, received_on, method) VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![payment.id.to_string(), payment.invoice_id.to_string(), payment.amount.cents(), domain::format_date(payment.received_on), payment.method.as_str()],
+        "INSERT INTO payments (id, invoice_id, amount_cents, received_on, method, bank_transaction_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            payment.id.to_string(),
+            payment.invoice_id.to_string(),
+            payment.amount.cents(),
+            domain::format_date(payment.received_on),
+            payment.method.as_str(),
+            payment.bank_transaction_id.map(|id| id.to_string()),
+        ],
     )?;
     Ok(())
 }
 
+/// Tous les paiements, annulés compris — le filtre `voided_at IS NULL` appartient aux calculs
+/// (`aged_balance`), jamais à la lecture brute : l'historique doit rester affichable.
 pub(super) fn all_payments(conn: &Connection) -> Result<Vec<Payment>, AppError> {
-    let mut stmt = conn.prepare("SELECT * FROM payments")?;
+    let mut stmt = conn.prepare("SELECT * FROM payments ORDER BY received_on DESC, id DESC")?;
     let rows = stmt.query_map([], row_to_payment)?;
     rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+}
+
+pub(super) fn payment_by_id(
+    conn: &Connection,
+    id: crate::domain::PaymentId,
+) -> Result<Option<Payment>, AppError> {
+    conn.query_row(
+        "SELECT * FROM payments WHERE id = ?1",
+        [id.to_string()],
+        row_to_payment,
+    )
+    .optional()
+    .map_err(AppError::from)
+}
+
+pub(super) fn payments_for_invoice(
+    conn: &Connection,
+    invoice_id: InvoiceId,
+) -> Result<Vec<Payment>, AppError> {
+    let mut stmt = conn
+        .prepare("SELECT * FROM payments WHERE invoice_id = ?1 ORDER BY received_on ASC, id ASC")?;
+    let rows = stmt.query_map([invoice_id.to_string()], row_to_payment)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+}
+
+pub(super) fn mark_payment_voided(
+    conn: &Connection,
+    id: crate::domain::PaymentId,
+    voided_at: &str,
+) -> Result<(), AppError> {
+    conn.execute(
+        "UPDATE payments SET voided_at = ?1 WHERE id = ?2 AND voided_at IS NULL",
+        params![voided_at, id.to_string()],
+    )?;
+    Ok(())
 }
 
 fn row_to_payment(row: &Row) -> rusqlite::Result<Payment> {
@@ -174,12 +219,24 @@ fn row_to_payment(row: &Row) -> rusqlite::Result<Payment> {
     let invoice_id: String = row.get("invoice_id")?;
     let received_on: String = row.get("received_on")?;
     let method: String = row.get("method")?;
+    let bank_transaction_id: Option<String> = row.get("bank_transaction_id")?;
+    let voided_at: Option<String> = row.get("voided_at")?;
     Ok(Payment {
         id: id.parse().map_err(conv_err)?,
         invoice_id: invoice_id.parse().map_err(conv_err)?,
         amount: Money::from_cents(row.get("amount_cents")?),
         received_on: domain::parse_date(&received_on).map_err(conv_err)?,
         method: method.parse::<PaymentMethod>().map_err(conv_err)?,
+        bank_transaction_id: bank_transaction_id
+            .map(|s| s.parse())
+            .transpose()
+            .map_err(conv_err)?,
+        voided_at: voided_at
+            .map(|s| {
+                time::OffsetDateTime::parse(&s, &time::format_description::well_known::Rfc3339)
+            })
+            .transpose()
+            .map_err(conv_err)?,
     })
 }
 
@@ -236,6 +293,27 @@ pub(super) fn mark_transaction_matched(
         params![invoice_id.to_string(), id.to_string()],
     )?;
     Ok(())
+}
+
+pub(super) fn clear_transaction_match(
+    conn: &Connection,
+    id: BankTransactionId,
+) -> Result<(), AppError> {
+    conn.execute(
+        "UPDATE bank_transactions SET matched_invoice_id = NULL WHERE id = ?1",
+        [id.to_string()],
+    )?;
+    Ok(())
+}
+
+/// Toutes les transactions importées, les plus récentes d'abord — jusqu'au lot 22, rien ne
+/// savait les lister : après un `bank import`, obtenir l'id d'une transaction à rapprocher
+/// exigeait une requête SQL manuelle.
+pub(super) fn all_bank_transactions(conn: &Connection) -> Result<Vec<BankTransaction>, AppError> {
+    let mut stmt =
+        conn.prepare("SELECT * FROM bank_transactions ORDER BY occurred_on DESC, id DESC")?;
+    let rows = stmt.query_map([], row_to_bank_transaction)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
 }
 
 #[cfg(test)]

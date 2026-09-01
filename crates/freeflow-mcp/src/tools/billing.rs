@@ -2,13 +2,18 @@
 //! (CLI, lot 7). `invoice.emit` et `invoice.credit_note` sont marqués `destructive_hint` : la
 //! politique de confirmation (lot 2) dépose une `PendingAction` plutôt que d'appliquer l'effet
 //! quand l'acteur est un agent — ce que ces outils sont, systématiquement.
+//!
+//! Lot 22 : `payment.list`/`payment.void` et `bank.list`/`bank.unreconcile` (corrections
+//! d'encaissement, contre-écriture), et remboursement de la dette `dry_run` des cinq outils
+//! mutants qui appelaient encore `self.ctx(false)` en dur.
 
 use freeflow_core::app::Executor;
 use freeflow_core::billing::{
-    self, aged_balance, parse_csv_bank_statement, parse_ofx_bank_statement, verify_chain,
+    self, aged_balance, list_bank_transactions, list_payments, parse_csv_bank_statement,
+    parse_ofx_bank_statement, verify_chain,
 };
 use freeflow_core::domain::{
-    BankTransactionId, ClientId, InvoiceId, InvoiceLine, MissionId, Money, PaymentMethod,
+    BankTransactionId, ClientId, InvoiceId, InvoiceLine, MissionId, Money, PaymentId, PaymentMethod,
 };
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
@@ -30,6 +35,8 @@ pub(crate) struct EmitInvoiceArgs {
     issued_on: String,
     /// Délai de paiement en jours (défaut : 30).
     payment_terms_days: Option<u32>,
+    #[serde(default)]
+    dry_run: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -37,6 +44,8 @@ pub(crate) struct CreditNoteArgs {
     /// Identifiant de la facture annulée.
     id: String,
     issued_on: String,
+    #[serde(default)]
+    dry_run: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -52,6 +61,8 @@ pub(crate) struct RecordPaymentArgs {
     received_on: String,
     /// `bank_transfer`, `check`, `card`, ou `other`.
     method: String,
+    #[serde(default)]
+    dry_run: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -60,12 +71,39 @@ pub(crate) struct BankImportArgs {
     format: String,
     /// Contenu brut du relevé bancaire.
     content: String,
+    #[serde(default)]
+    dry_run: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct BankReconcileArgs {
     transaction_id: String,
     invoice_id: String,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct VoidPaymentArgs {
+    payment_id: String,
+    /// Motif de la correction, journalisé dans l'audit chaîné.
+    reason: Option<String>,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct BankUnreconcileArgs {
+    transaction_id: String,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct BankListArgs {
+    /// Ne renvoie que les transactions restant à rapprocher si vrai (défaut : faux).
+    #[serde(default)]
+    unmatched: bool,
 }
 
 #[tool_router(router = billing_router, vis = "pub(crate)")]
@@ -100,7 +138,7 @@ impl FreeflowServer {
             payment_terms_days: args.payment_terms_days.unwrap_or(30),
         };
         let mut store = self.store.lock().await;
-        match Executor::new(&mut store).execute(&cmd, &self.ctx(false)) {
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
             Err(e) => err_text(e.to_string()),
         }
@@ -130,7 +168,7 @@ impl FreeflowServer {
             issued_on,
         };
         let mut store = self.store.lock().await;
-        match Executor::new(&mut store).execute(&cmd, &self.ctx(false)) {
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
             Err(e) => err_text(e.to_string()),
         }
@@ -207,7 +245,7 @@ impl FreeflowServer {
             method,
         };
         let mut store = self.store.lock().await;
-        match Executor::new(&mut store).execute(&cmd, &self.ctx(false)) {
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
             Err(e) => err_text(e.to_string()),
         }
@@ -233,7 +271,7 @@ impl FreeflowServer {
         let transactions = ok_or_return!("content", transactions);
         let cmd = billing::ImportBankTransactions { transactions };
         let mut store = self.store.lock().await;
-        match Executor::new(&mut store).execute(&cmd, &self.ctx(false)) {
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
             Err(e) => err_text(e.to_string()),
         }
@@ -261,7 +299,88 @@ impl FreeflowServer {
             invoice_id,
         };
         let mut store = self.store.lock().await;
-        match Executor::new(&mut store).execute(&cmd, &self.ctx(false)) {
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
+            Ok(outcome) => ok_json(outcome_json(&outcome)),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
+    /// Liste les encaissements, annulés compris, les plus récents d'abord.
+    #[tool(
+        name = "payment.list",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    async fn payment_list(&self) -> CallToolResult {
+        let store = self.store.lock().await;
+        match list_payments(store.connection()) {
+            Ok(payments) => ok_json(payments),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
+    /// Annule un encaissement saisi à tort — contre-écriture, jamais une suppression : il reste
+    /// dans l'historique mais sort de tous les calculs, et la transaction bancaire liée est
+    /// libérée s'il était issu d'un rapprochement. Action sensible : un agent la propose, seul
+    /// un humain (`freeflow confirm`) peut l'appliquer.
+    #[tool(
+        name = "payment.void",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false
+        )
+    )]
+    async fn payment_void(&self, Parameters(args): Parameters<VoidPaymentArgs>) -> CallToolResult {
+        let payment_id: PaymentId = ok_or_return!("payment_id", args.payment_id.parse());
+        let cmd = billing::VoidPayment {
+            payment_id,
+            reason: args.reason,
+        };
+        let mut store = self.store.lock().await;
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
+            Ok(outcome) => ok_json(outcome_json(&outcome)),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
+    /// Liste les transactions bancaires importées, les plus récentes d'abord.
+    #[tool(
+        name = "bank.list",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    async fn bank_list(&self, Parameters(args): Parameters<BankListArgs>) -> CallToolResult {
+        let store = self.store.lock().await;
+        match list_bank_transactions(store.connection()) {
+            Ok(mut transactions) => {
+                if args.unmatched {
+                    transactions.retain(|t| t.matched_invoice_id.is_none());
+                }
+                ok_json(transactions)
+            }
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
+    /// Défait un rapprochement : libère la transaction et annule l'encaissement qui en était
+    /// issu (rapprochement historique sans lignée : seule la transaction est libérée, le
+    /// paiement s'annule via `payment.void`). Même exigence de confirmation que `payment.void`.
+    #[tool(
+        name = "bank.unreconcile",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false
+        )
+    )]
+    async fn bank_unreconcile(
+        &self,
+        Parameters(args): Parameters<BankUnreconcileArgs>,
+    ) -> CallToolResult {
+        let transaction_id: BankTransactionId =
+            ok_or_return!("transaction_id", args.transaction_id.parse());
+        let cmd = billing::UnreconcileTransaction { transaction_id };
+        let mut store = self.store.lock().await;
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
             Err(e) => err_text(e.to_string()),
         }

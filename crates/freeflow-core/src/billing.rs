@@ -13,14 +13,15 @@ mod totals;
 
 pub use commands::{
     EmitInvoice, EmittedInvoice, ImportBankTransactions, IssueCreditNote, ReconcileTransaction,
-    RecordPayment,
+    RecordPayment, UnreconcileTransaction, VoidPayment,
 };
 pub use error::BillingError;
 pub use import::{
     ImportError, ParsedTransaction, parse_csv_bank_statement, parse_ofx_bank_statement,
 };
 pub use queries::{
-    AgedInvoice, AgingBucket, ChainStatus, aged_balance, invoice_by_id, list_invoices, verify_chain,
+    AgedInvoice, AgingBucket, ChainStatus, aged_balance, invoice_by_id, list_bank_transactions,
+    list_invoices, list_payments, paid_amount, payment_by_id, payments_for_invoice, verify_chain,
 };
 pub use totals::{InvoiceTotals, VatBreakdownLine, compute_totals};
 
@@ -440,5 +441,306 @@ mod tests {
         assert_eq!(listed.len(), 2);
         assert_eq!(listed[0].id, second.id);
         assert_eq!(listed[1].id, first.id);
+    }
+
+    fn record_full_payment(
+        store: &mut Store,
+        invoice_id: crate::domain::InvoiceId,
+    ) -> crate::domain::PaymentId {
+        let totals = compute_totals(&sample_lines());
+        let Outcome::Applied(payment_id) = Executor::new(store)
+            .execute(
+                &RecordPayment {
+                    invoice_id,
+                    amount: totals.total_ttc,
+                    received_on: date(2026, Month::September, 10),
+                    method: PaymentMethod::BankTransfer,
+                },
+                &human_ctx(),
+            )
+            .unwrap()
+        else {
+            panic!("expected Applied")
+        };
+        payment_id
+    }
+
+    /// Importe une transaction créditrice du montant TTC de la facture d'échantillon et renvoie
+    /// son id — via la query publique, plus de SQL manuel (comblé au lot 22).
+    fn import_matching_transaction(store: &mut Store) -> crate::domain::BankTransactionId {
+        let totals = compute_totals(&sample_lines());
+        let csv = format!(
+            "date;description;montant\n2026-09-05;Virement client;{:.2}\n",
+            totals.total_ttc.euros()
+        );
+        let parsed = parse_csv_bank_statement(&csv).unwrap();
+        Executor::new(store)
+            .execute(
+                &ImportBankTransactions {
+                    transactions: parsed,
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+        list_bank_transactions(store.connection()).unwrap()[0].id
+    }
+
+    #[test]
+    fn voiding_a_payment_restores_the_invoice_to_the_aged_balance() {
+        let (mut store, client_id) = test_store("void-payment");
+        let invoice = emit(&mut store, client_id, date(2026, Month::September, 1));
+        let payment_id = record_full_payment(&mut store, invoice.id);
+        assert!(
+            aged_balance(store.connection(), date(2026, Month::October, 15))
+                .unwrap()
+                .is_empty()
+        );
+
+        Executor::new(&mut store)
+            .execute(
+                &VoidPayment {
+                    payment_id,
+                    reason: Some("saisi en double".to_string()),
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+
+        let aged = aged_balance(store.connection(), date(2026, Month::October, 15)).unwrap();
+        assert_eq!(
+            aged.len(),
+            1,
+            "un encaissement annulé ne solde plus la facture"
+        );
+
+        // Contre-écriture, pas suppression : le paiement reste dans l'historique, marqué annulé.
+        let listed = list_payments(store.connection()).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert!(listed[0].is_voided());
+        assert_eq!(
+            paid_amount(store.connection(), invoice.id).unwrap(),
+            Money::ZERO
+        );
+    }
+
+    #[test]
+    fn voiding_a_payment_twice_is_rejected() {
+        let (mut store, client_id) = test_store("void-twice");
+        let invoice = emit(&mut store, client_id, date(2026, Month::September, 1));
+        let payment_id = record_full_payment(&mut store, invoice.id);
+        let void = VoidPayment {
+            payment_id,
+            reason: None,
+        };
+        Executor::new(&mut store)
+            .execute(&void, &human_ctx())
+            .unwrap();
+        let err = Executor::new(&mut store)
+            .execute(&void, &human_ctx())
+            .unwrap_err();
+        assert!(matches!(err, AppError::Domain(msg) if msg.contains("déjà annulé")));
+    }
+
+    #[test]
+    fn an_agent_voiding_a_payment_only_files_a_pending_action() {
+        let (mut store, client_id) = test_store("void-agent");
+        let invoice = emit(&mut store, client_id, date(2026, Month::September, 1));
+        let payment_id = record_full_payment(&mut store, invoice.id);
+        let outcome = Executor::new(&mut store)
+            .execute(
+                &VoidPayment {
+                    payment_id,
+                    reason: None,
+                },
+                &ExecutionContext::new(
+                    Actor::Agent {
+                        session: "sess-1".into(),
+                    },
+                    false,
+                ),
+            )
+            .unwrap();
+        assert!(matches!(outcome, Outcome::PendingConfirmation(_)));
+        assert!(
+            !list_payments(store.connection()).unwrap()[0].is_voided(),
+            "rien ne doit être annulé tant qu'un humain n'a pas confirmé"
+        );
+    }
+
+    #[test]
+    fn reconciling_an_already_reconciled_transaction_is_rejected() {
+        let (mut store, client_id) = test_store("reconcile-twice");
+        let invoice = emit(&mut store, client_id, date(2026, Month::September, 1));
+        let tx_id = import_matching_transaction(&mut store);
+        let reconcile = ReconcileTransaction {
+            transaction_id: tx_id,
+            invoice_id: invoice.id,
+        };
+        Executor::new(&mut store)
+            .execute(&reconcile, &human_ctx())
+            .unwrap();
+
+        // Avant le lot 22, ce second rapprochement créait silencieusement un doublon
+        // d'encaissement pour la même ligne de relevé.
+        let err = Executor::new(&mut store)
+            .execute(&reconcile, &human_ctx())
+            .unwrap_err();
+        assert!(matches!(err, AppError::Domain(msg) if msg.contains("déjà rapprochée")));
+        assert_eq!(
+            list_payments(store.connection()).unwrap().len(),
+            1,
+            "pas de second encaissement créé"
+        );
+    }
+
+    #[test]
+    fn unreconciling_frees_the_transaction_and_voids_the_payment_it_created() {
+        let (mut store, client_id) = test_store("unreconcile");
+        let invoice = emit(&mut store, client_id, date(2026, Month::September, 1));
+        let tx_id = import_matching_transaction(&mut store);
+        Executor::new(&mut store)
+            .execute(
+                &ReconcileTransaction {
+                    transaction_id: tx_id,
+                    invoice_id: invoice.id,
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+
+        let Outcome::Applied(voided) = Executor::new(&mut store)
+            .execute(
+                &UnreconcileTransaction {
+                    transaction_id: tx_id,
+                },
+                &human_ctx(),
+            )
+            .unwrap()
+        else {
+            panic!("expected Applied")
+        };
+        assert!(
+            voided.is_some(),
+            "l'encaissement issu du rapprochement doit être retrouvé par sa lignée et annulé"
+        );
+
+        let tx = &list_bank_transactions(store.connection()).unwrap()[0];
+        assert_eq!(tx.matched_invoice_id, None, "la transaction est libérée");
+        assert!(list_payments(store.connection()).unwrap()[0].is_voided());
+        assert_eq!(
+            aged_balance(store.connection(), date(2026, Month::October, 15))
+                .unwrap()
+                .len(),
+            1,
+            "la facture redevient impayée"
+        );
+
+        // Et la transaction libérée peut être rapprochée à nouveau (vers la bonne facture).
+        Executor::new(&mut store)
+            .execute(
+                &ReconcileTransaction {
+                    transaction_id: tx_id,
+                    invoice_id: invoice.id,
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+        assert!(
+            aged_balance(store.connection(), date(2026, Month::October, 15))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn unreconciling_an_unmatched_transaction_is_rejected() {
+        let (mut store, _client_id) = test_store("unreconcile-unmatched");
+        let tx_id = import_matching_transaction(&mut store);
+        let err = Executor::new(&mut store)
+            .execute(
+                &UnreconcileTransaction {
+                    transaction_id: tx_id,
+                },
+                &human_ctx(),
+            )
+            .unwrap_err();
+        assert!(matches!(err, AppError::Domain(msg) if msg.contains("pas rapprochée")));
+    }
+
+    #[test]
+    fn voiding_a_reconciled_payment_also_frees_its_transaction() {
+        let (mut store, client_id) = test_store("void-reconciled");
+        let invoice = emit(&mut store, client_id, date(2026, Month::September, 1));
+        let tx_id = import_matching_transaction(&mut store);
+        let Outcome::Applied(payment_id) = Executor::new(&mut store)
+            .execute(
+                &ReconcileTransaction {
+                    transaction_id: tx_id,
+                    invoice_id: invoice.id,
+                },
+                &human_ctx(),
+            )
+            .unwrap()
+        else {
+            panic!("expected Applied")
+        };
+
+        Executor::new(&mut store)
+            .execute(
+                &VoidPayment {
+                    payment_id,
+                    reason: None,
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+        let tx = &list_bank_transactions(store.connection()).unwrap()[0];
+        assert_eq!(
+            tx.matched_invoice_id, None,
+            "laisser la transaction « rapprochée » vers une facture sans encaissement mentirait"
+        );
+    }
+
+    #[test]
+    fn unreconciling_a_pre_0013_reconciliation_frees_the_transaction_without_guessing() {
+        let (mut store, client_id) = test_store("unreconcile-legacy");
+        let invoice = emit(&mut store, client_id, date(2026, Month::September, 1));
+        let tx_id = import_matching_transaction(&mut store);
+        Executor::new(&mut store)
+            .execute(
+                &ReconcileTransaction {
+                    transaction_id: tx_id,
+                    invoice_id: invoice.id,
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+        // Simule un rapprochement antérieur à la migration 0013 : la lignée n'existe pas.
+        store
+            .connection()
+            .execute("UPDATE payments SET bank_transaction_id = NULL", [])
+            .unwrap();
+
+        let Outcome::Applied(voided) = Executor::new(&mut store)
+            .execute(
+                &UnreconcileTransaction {
+                    transaction_id: tx_id,
+                },
+                &human_ctx(),
+            )
+            .unwrap()
+        else {
+            panic!("expected Applied")
+        };
+        assert_eq!(
+            voided, None,
+            "sans lignée, aucun paiement n'est annulé par heuristique — jamais deviner"
+        );
+        let tx = &list_bank_transactions(store.connection()).unwrap()[0];
+        assert_eq!(tx.matched_invoice_id, None);
+        assert!(
+            !list_payments(store.connection()).unwrap()[0].is_voided(),
+            "le paiement orphelin reste intact, à annuler explicitement via VoidPayment"
+        );
     }
 }

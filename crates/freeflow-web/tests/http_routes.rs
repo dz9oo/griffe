@@ -2210,3 +2210,136 @@ async fn a_quote_can_be_sent_and_accepted_through_the_panel() {
     assert!(body.contains("accepté"), "{body}");
     assert!(body.contains("1 mission(s)"), "{body}");
 }
+
+#[tokio::test]
+async fn voiding_a_payment_through_the_invoice_panel_restores_the_unpaid_status() {
+    let db_path = test_db_path("facturation-void");
+    let state = unlocked_state_with_client(&db_path).await;
+    let router = freeflow_web::router(state);
+    let client_id = client_id_by_name(&db_path, "Kappa Software");
+
+    // Fixture : une facture payée intégralement (6 500 € HT → 7 800 € TTC).
+    let (invoice_id, payment_id) = {
+        let mut store =
+            Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+        let emitted = match Executor::new(&mut store)
+            .execute(
+                &freeflow_core::billing::EmitInvoice {
+                    client_id,
+                    mission_id: None,
+                    lines: vec![freeflow_core::domain::InvoiceLine {
+                        description: "Prestation".to_string(),
+                        quantity: 10.0,
+                        unit_price: Money::from_cents(65_000),
+                        vat_rate: freeflow_core::domain::VatRate::Standard,
+                    }],
+                    issued_on: time::Date::from_calendar_date(2026, time::Month::September, 1)
+                        .unwrap(),
+                    payment_terms_days: 30,
+                },
+                &human_ctx(),
+            )
+            .unwrap()
+        {
+            freeflow_core::app::Outcome::Applied(e) => e,
+            other => panic!("expected Applied, got {other:?}"),
+        };
+        let payment_id = match Executor::new(&mut store)
+            .execute(
+                &freeflow_core::billing::RecordPayment {
+                    invoice_id: emitted.id,
+                    amount: Money::from_cents(780_000),
+                    received_on: time::Date::from_calendar_date(2026, time::Month::September, 10)
+                        .unwrap(),
+                    method: freeflow_core::domain::PaymentMethod::BankTransfer,
+                },
+                &human_ctx(),
+            )
+            .unwrap()
+        {
+            freeflow_core::app::Outcome::Applied(id) => id,
+            other => panic!("expected Applied, got {other:?}"),
+        };
+        (emitted.id, payment_id)
+    };
+
+    // La liste calcule enfin un statut réel : « payée », plus la branche morte « émise ».
+    let table = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/facturation/table")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(body_text(table).await.contains("payée"));
+
+    // La fiche montre l'encaissement et son bouton d'annulation.
+    let detail = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/facturation/{invoice_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = body_text(detail).await;
+    assert!(body.contains("Encaissements"), "{body}");
+    assert!(body.contains("annuler"), "{body}");
+
+    // Annulation avec motif : la fiche revient à jour (solde restant dû plein) et la liste est
+    // invitée à se rafraîchir.
+    let voided = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/payments/{payment_id}/void"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from("reason=saisi+en+double"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        voided.headers().get("HX-Trigger").unwrap(),
+        "freeflow:saved"
+    );
+    let body = body_text(voided).await;
+    assert!(body.contains("annulé"), "{body}");
+
+    let table = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/facturation/table")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = body_text(table).await;
+    assert!(
+        !body.contains("payée"),
+        "l'encaissement annulé ne solde plus la facture : {body}"
+    );
+
+    // Annuler deux fois : la fiche re-rend avec un bandeau, sans rafraîchir la liste.
+    let again = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/payments/{payment_id}/void"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from("reason="))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(!again.headers().contains_key("HX-Trigger"));
+    assert!(body_text(again).await.contains("déjà annulé"));
+}

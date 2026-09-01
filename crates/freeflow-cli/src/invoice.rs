@@ -8,10 +8,11 @@ use std::path::PathBuf;
 use clap::{Subcommand, ValueEnum};
 use freeflow_core::app::{ExecutionContext, Executor};
 use freeflow_core::billing::{
-    self, aged_balance, parse_csv_bank_statement, parse_ofx_bank_statement, verify_chain,
+    self, aged_balance, list_bank_transactions, list_invoices, list_payments,
+    parse_csv_bank_statement, parse_ofx_bank_statement, verify_chain,
 };
 use freeflow_core::domain::{
-    BankTransactionId, ClientId, InvoiceId, InvoiceLine, MissionId, Money, PaymentMethod,
+    BankTransactionId, ClientId, InvoiceId, InvoiceLine, MissionId, Money, PaymentId, PaymentMethod,
 };
 use freeflow_core::store::Store;
 use time::Date;
@@ -82,6 +83,18 @@ pub enum PaymentCommand {
         #[arg(long, value_parser = clap::value_parser!(PaymentMethod))]
         method: PaymentMethod,
     },
+    /// Liste les encaissements, annulés compris, les plus récents d'abord.
+    List,
+    /// Annule un encaissement saisi à tort — contre-écriture, jamais une suppression : il reste
+    /// dans l'historique mais sort de tous les calculs. Libère la transaction bancaire liée s'il
+    /// était issu d'un rapprochement.
+    Void {
+        #[arg(long, value_parser = clap::value_parser!(PaymentId))]
+        id: PaymentId,
+        /// Motif de la correction, journalisé dans l'audit chaîné.
+        #[arg(long)]
+        reason: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -92,12 +105,25 @@ pub enum BankCommand {
         format: ImportFormat,
         file: PathBuf,
     },
+    /// Liste les transactions importées, les plus récentes d'abord (`--unmatched` pour ne voir
+    /// que celles restant à rapprocher).
+    List {
+        #[arg(long)]
+        unmatched: bool,
+    },
     /// Rapproche une transaction importée avec une facture (crée l'encaissement correspondant).
     Reconcile {
         #[arg(long, value_parser = clap::value_parser!(BankTransactionId))]
         transaction: BankTransactionId,
         #[arg(long, value_parser = clap::value_parser!(InvoiceId))]
         invoice: InvoiceId,
+    },
+    /// Défait un rapprochement : libère la transaction et annule l'encaissement qui en était
+    /// issu (pour un rapprochement historique sans lignée, seule la transaction est libérée —
+    /// annulez le paiement via `payment void`).
+    Unreconcile {
+        #[arg(long, value_parser = clap::value_parser!(BankTransactionId))]
+        transaction: BankTransactionId,
     },
 }
 
@@ -199,20 +225,98 @@ pub fn run_payment(
     ctx: &ExecutionContext,
     json: bool,
 ) -> Result<String, CliError> {
-    let PaymentCommand::Record {
-        invoice,
-        amount,
-        received_on,
-        method,
-    } = cmd;
-    let command = billing::RecordPayment {
-        invoice_id: invoice,
-        amount,
-        received_on,
-        method,
+    let output = match cmd {
+        PaymentCommand::Record {
+            invoice,
+            amount,
+            received_on,
+            method,
+        } => {
+            let command = billing::RecordPayment {
+                invoice_id: invoice,
+                amount,
+                received_on,
+                method,
+            };
+            let outcome = Executor::new(store).execute(&command, ctx)?;
+            format_outcome(&outcome, json)
+        }
+        PaymentCommand::List => {
+            let payments = list_payments(store.connection())?;
+            if json {
+                format_value(&payments, json)
+            } else {
+                payment_table(store, &payments)?
+            }
+        }
+        PaymentCommand::Void { id, reason } => {
+            let command = billing::VoidPayment {
+                payment_id: id,
+                reason,
+            };
+            let outcome = Executor::new(store).execute(&command, ctx)?;
+            format_outcome(&outcome, json)
+        }
     };
-    let outcome = Executor::new(store).execute(&command, ctx)?;
-    Ok(format_outcome(&outcome, json))
+    Ok(output)
+}
+
+/// Numéro de facture plutôt qu'UUID dans la colonne facture — c'est lui que l'utilisateur
+/// connaît (il figure sur le PDF envoyé au client).
+fn payment_table(
+    store: &Store,
+    payments: &[freeflow_core::domain::Payment],
+) -> Result<String, CliError> {
+    let invoices = list_invoices(store.connection())?;
+    let number_of = |id: InvoiceId| {
+        invoices
+            .iter()
+            .find(|i| i.id == id)
+            .map_or_else(|| "?".to_string(), |i| i.number.clone())
+    };
+    let rows = payments
+        .iter()
+        .map(|p| {
+            vec![
+                p.id.to_string(),
+                number_of(p.invoice_id),
+                freeflow_core::domain::format_date(p.received_on),
+                p.amount.to_string(),
+                p.method.as_str().to_string(),
+                if p.is_voided() {
+                    "annulé".to_string()
+                } else if p.bank_transaction_id.is_some() {
+                    "rapproché".to_string()
+                } else {
+                    "—".to_string()
+                },
+            ]
+        })
+        .collect::<Vec<_>>();
+    Ok(crate::table::render(
+        &["id", "facture", "reçu le", "montant", "méthode", "statut"],
+        &rows,
+    ))
+}
+
+fn bank_table(transactions: &[freeflow_core::domain::BankTransaction]) -> String {
+    let rows = transactions
+        .iter()
+        .map(|t| {
+            vec![
+                t.id.to_string(),
+                freeflow_core::domain::format_date(t.occurred_on),
+                Money::from_cents(t.amount_cents).to_string(),
+                t.description.clone(),
+                if t.matched_invoice_id.is_some() {
+                    "rapprochée".to_string()
+                } else {
+                    "à rapprocher".to_string()
+                },
+            ]
+        })
+        .collect::<Vec<_>>();
+    crate::table::render(&["id", "date", "montant", "libellé", "statut"], &rows)
 }
 
 pub fn run_bank(
@@ -235,6 +339,17 @@ pub fn run_bank(
             let outcome = Executor::new(store).execute(&command, ctx)?;
             format_outcome(&outcome, json)
         }
+        BankCommand::List { unmatched } => {
+            let mut transactions = list_bank_transactions(store.connection())?;
+            if unmatched {
+                transactions.retain(|t| t.matched_invoice_id.is_none());
+            }
+            if json {
+                format_value(&transactions, json)
+            } else {
+                bank_table(&transactions)
+            }
+        }
         BankCommand::Reconcile {
             transaction,
             invoice,
@@ -242,6 +357,13 @@ pub fn run_bank(
             let command = billing::ReconcileTransaction {
                 transaction_id: transaction,
                 invoice_id: invoice,
+            };
+            let outcome = Executor::new(store).execute(&command, ctx)?;
+            format_outcome(&outcome, json)
+        }
+        BankCommand::Unreconcile { transaction } => {
+            let command = billing::UnreconcileTransaction {
+                transaction_id: transaction,
             };
             let outcome = Executor::new(store).execute(&command, ctx)?;
             format_outcome(&outcome, json)

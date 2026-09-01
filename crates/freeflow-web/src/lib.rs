@@ -8,6 +8,7 @@ mod cloture;
 mod console;
 mod depenses;
 mod devis;
+mod facturation;
 mod handlers;
 mod layout;
 mod missions;
@@ -142,6 +143,12 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/time-entries/{id}/delete",
             post(missions::delete_time_entry),
+        )
+        .route("/facturation/table", get(facturation::table))
+        .route("/facturation/{id}", get(facturation::show_panel))
+        .route(
+            "/payments/{id}/void",
+            get(facturation::void_confirm_panel).post(facturation::void),
         )
         .route("/depenses/table", get(depenses::table))
         .route("/depenses/new", get(depenses::new_panel))

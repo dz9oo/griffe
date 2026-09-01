@@ -4,7 +4,7 @@ use rusqlite::Connection;
 use time::Date;
 
 use crate::app::AppError;
-use crate::domain::{ClientId, Invoice, InvoiceId, Money};
+use crate::domain::{BankTransaction, ClientId, Invoice, InvoiceId, Money, Payment, PaymentId};
 
 use super::row;
 use super::totals::{CanonicalInvoice, compute_invoice_hash};
@@ -22,6 +22,52 @@ pub fn list_invoices(conn: &Connection) -> Result<Vec<Invoice>, AppError> {
 /// # Errors
 pub fn invoice_by_id(conn: &Connection, id: InvoiceId) -> Result<Option<Invoice>, AppError> {
     row::invoice_by_id(conn, id)
+}
+
+/// Tous les encaissements, annulés compris, les plus récents d'abord — l'historique complet est
+/// la liste par défaut ici (contrairement aux entités archivables) : un paiement annulé reste
+/// une écriture qu'on doit pouvoir montrer, c'est le sens même de la contre-écriture.
+///
+/// # Errors
+pub fn list_payments(conn: &Connection) -> Result<Vec<Payment>, AppError> {
+    row::all_payments(conn)
+}
+
+/// # Errors
+pub fn payment_by_id(conn: &Connection, id: PaymentId) -> Result<Option<Payment>, AppError> {
+    row::payment_by_id(conn, id)
+}
+
+/// Encaissements d'une facture (annulés compris, les plus anciens d'abord) — alimente le
+/// panneau de détail d'une facture dans la fenêtre.
+///
+/// # Errors
+pub fn payments_for_invoice(
+    conn: &Connection,
+    invoice_id: InvoiceId,
+) -> Result<Vec<Payment>, AppError> {
+    row::payments_for_invoice(conn, invoice_id)
+}
+
+/// Solde encaissé (hors annulés) d'une facture — la brique du statut « payée / partielle »
+/// affiché par les façades, pour ne jamais le recalculer chacune à sa façon.
+///
+/// # Errors
+pub fn paid_amount(conn: &Connection, invoice_id: InvoiceId) -> Result<Money, AppError> {
+    Ok(row::payments_for_invoice(conn, invoice_id)?
+        .iter()
+        .filter(|p| !p.is_voided())
+        .map(|p| p.amount)
+        .sum())
+}
+
+/// Toutes les transactions bancaires importées, les plus récentes d'abord — comble le trou du
+/// lot 5 : après un import, il n'existait aucun moyen (CLI, MCP ou GUI) d'obtenir l'id d'une
+/// transaction à rapprocher sans requête SQL manuelle.
+///
+/// # Errors
+pub fn list_bank_transactions(conn: &Connection) -> Result<Vec<BankTransaction>, AppError> {
+    row::all_bank_transactions(conn)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,7 +154,7 @@ pub fn aged_balance(conn: &Connection, today: Date) -> Result<Vec<AgedInvoice>, 
         let totals = super::totals::compute_totals(&invoice.lines);
         let paid: Money = payments
             .iter()
-            .filter(|p| p.invoice_id == invoice.id)
+            .filter(|p| p.invoice_id == invoice.id && !p.is_voided())
             .map(|p| p.amount)
             .sum();
         let outstanding = totals.total_ttc - paid;

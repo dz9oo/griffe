@@ -73,7 +73,18 @@ implémentation.
   directe de la base.
 - Cinq taux de TVA (normal, intermédiaire, réduit, super-réduit, taux zéro / autoliquidation),
   arrondi au centime par taux.
-- Import de relevés bancaires CSV et OFX, rapprochement, balance âgée.
+- Import de relevés bancaires CSV et OFX, rapprochement, balance âgée — et depuis le lot 22 les
+  transactions importées sont **listables** (`bank list --unmatched` : celles restant à
+  rapprocher), une transaction déjà rapprochée ne peut plus l'être une seconde fois (doublon
+  d'encaissement silencieux, corrigé), et la lignée transaction → encaissement est persistée.
+- **Corrections d'encaissement** : un paiement saisi à tort s'**annule** (`payment void
+  --reason`, contre-écriture : il reste dans l'historique mais sort du statut payé, de la
+  balance âgée et du prévisionnel — le motif est journalisé dans l'audit chaîné), et un
+  rapprochement se **défait** (`bank unreconcile` : libère la transaction et annule
+  l'encaissement qui en était issu). En CLI, en MCP (`payment.*`/`bank.*`, actions sensibles :
+  un agent propose, un humain confirme) et depuis la fenêtre (fiche de facture : encaissements,
+  annulation, statut payée/partielle enfin calculé). Sans effet fiscal : TVA et IS sont calculés
+  sur les débits (factures émises), jamais sur les encaissements.
 - **Factur-X** : génère un vrai PDF/A-3b (via Typst) avec le XML CII EN 16931 embarqué en pièce
   jointe conforme, validé contre le XSD officiel vendorisé dans le dépôt. Anticipe la réforme
   française (réception obligatoire au 1ᵉʳ septembre 2026, émission TPE/PME au 1ᵉʳ septembre 2027).
@@ -269,8 +280,10 @@ distribués prêts à l'emploi — voir la checklist ci-dessous.
       « Dépenses » ci-dessus.
 - [ ] Éditeur graphique de devis (création/révision des lignes polymorphes depuis la fenêtre) —
       aujourd'hui CLI/MCP seulement.
-- [ ] `VoidPayment`/`UnreconcileTransaction` : un encaissement ou un rapprochement saisi à tort
-      n'est aujourd'hui ni corrigible ni annulable.
+- [x] `VoidPayment`/`UnreconcileTransaction` : annulation d'encaissement (contre-écriture,
+      motif journalisé) et rapprochement défaisable, avec lignée transaction → encaissement
+      persistée (migration 0013) et garde contre le double rapprochement — voir « Facturation &
+      TVA » ci-dessus.
 - [ ] Parité MCP sur `company`/`forecast`/`invoice render` — comblée pour `expense.*` (lot 21) et
       `fiscal.calendar`/`fiscal.years` (lots 19-20), le reste du serveur MCP demeure un
       sous-ensemble strict de la CLI.

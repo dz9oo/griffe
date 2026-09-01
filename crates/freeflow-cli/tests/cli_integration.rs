@@ -1350,3 +1350,208 @@ fn quote_lifecycle_by_reference_from_creation_to_acceptance() {
         "l'acceptation a produit une mission, visible dans la lignée du devis"
     );
 }
+
+#[test]
+fn payment_help_is_a_stable_interface_contract() {
+    let output = freeflow().args(["payment", "--help"]).output().unwrap();
+    insta::assert_snapshot!(String::from_utf8(output.stdout).unwrap());
+}
+
+#[test]
+fn bank_help_is_a_stable_interface_contract() {
+    let output = freeflow().args(["bank", "--help"]).output().unwrap();
+    insta::assert_snapshot!(String::from_utf8(output.stdout).unwrap());
+}
+
+#[test]
+fn payment_corrections_from_reconciliation_to_unreconcile_and_void() {
+    let db = temp_db("payment-corrections");
+    provision(&db);
+    let client_id = create_client(&db, "Kappa Software");
+
+    let lines = r#"[{"description":"Prestation","quantity":10.0,"unit_price":65000,"vat_rate":"Standard"}]"#;
+    let emit_out = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "--json",
+            "invoice",
+            "emit",
+            "--client",
+            &client_id,
+            "--lines",
+            lines,
+            "--issued-on",
+            "2026-09-01",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let invoice_id = json_result(&emit_out)["result"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Import d'un relevé : 7 800,00 € = TTC de la facture (6 500 € HT + TVA 20 %).
+    let statement = db.with_file_name("releve.csv");
+    std::fs::write(
+        &statement,
+        "date;description;montant\n2026-09-05;Virement Kappa;7800.00\n",
+    )
+    .unwrap();
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["bank", "import", "--format", "csv"])
+        .arg(&statement)
+        .assert()
+        .success();
+
+    // `bank list` comble le trou du lot 5 : l'id d'une transaction est enfin accessible.
+    let list_out = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--json", "bank", "list", "--unmatched"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let transactions = json_result(&list_out);
+    assert_eq!(transactions.as_array().unwrap().len(), 1);
+    let tx_id = transactions[0]["id"].as_str().unwrap().to_string();
+
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "bank",
+            "reconcile",
+            "--transaction",
+            &tx_id,
+            "--invoice",
+            &invoice_id,
+        ])
+        .assert()
+        .success();
+    let aged_out = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--json", "invoice", "aged-balance", "--today", "2026-10-15"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert!(json_result(&aged_out).as_array().unwrap().is_empty());
+
+    // Rapprocher deux fois la même transaction est refusé (bug latent corrigé au lot 22).
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "bank",
+            "reconcile",
+            "--transaction",
+            &tx_id,
+            "--invoice",
+            &invoice_id,
+        ])
+        .assert()
+        .failure()
+        .code(4);
+
+    // Défaire : la transaction est libérée, l'encaissement issu du rapprochement est annulé.
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["bank", "unreconcile", "--transaction", &tx_id])
+        .assert()
+        .success();
+    let unmatched_again = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--json", "bank", "list", "--unmatched"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(json_result(&unmatched_again).as_array().unwrap().len(), 1);
+    let aged_out = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--json", "invoice", "aged-balance", "--today", "2026-10-15"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(
+        json_result(&aged_out).as_array().unwrap().len(),
+        1,
+        "la facture redevient impayée"
+    );
+
+    // Encaissement manuel, puis annulation avec motif : la contre-écriture reste listée.
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "payment",
+            "record",
+            "--invoice",
+            &invoice_id,
+            "--amount",
+            "7800.00",
+            "--received-on",
+            "2026-09-20",
+            "--method",
+            "check",
+        ])
+        .assert()
+        .success();
+    let payments_out = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--json", "payment", "list"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let payments = json_result(&payments_out);
+    let manual = payments
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["voided_at"].is_null() && p["bank_transaction_id"].is_null())
+        .expect("l'encaissement manuel doit être listé, non annulé");
+    let payment_id = manual["id"].as_str().unwrap().to_string();
+
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "payment",
+            "void",
+            "--id",
+            &payment_id,
+            "--reason",
+            "saisi en double",
+        ])
+        .assert()
+        .success();
+    let payments_out = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--json", "payment", "list"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let payments = json_result(&payments_out);
+    assert_eq!(
+        payments.as_array().unwrap().len(),
+        2,
+        "les encaissements annulés restent dans l'historique"
+    );
+    assert!(
+        payments
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| !p["voided_at"].is_null()),
+        "les deux encaissements sont annulés"
+    );
+}

@@ -91,7 +91,7 @@ pub async fn missions(State(state): State<AppState>, headers: HeaderMap) -> Html
 pub async fn facturation(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
     let content = state
         .with_store(|store| {
-            views::facturation::render(store)
+            views::facturation::render(store, time::OffsetDateTime::now_utc().date())
                 .unwrap_or_else(|e| error_markup(ViewId::Facturation, e))
         })
         .await

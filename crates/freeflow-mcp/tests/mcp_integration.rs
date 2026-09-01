@@ -1089,3 +1089,102 @@ async fn a_quote_is_readable_by_tool_and_resource_after_creation() {
 
     client.cancel().await.unwrap();
 }
+
+#[tokio::test]
+async fn a_payment_correction_proposed_by_an_agent_waits_for_a_human() {
+    let db_path = test_db_path("payment-void");
+    let mut store = Store::create(&db_path, &Passphrase::from("s3cret")).unwrap();
+    let human = freeflow_core::app::ExecutionContext::new(freeflow_core::app::Actor::Human, false);
+
+    // Fixture posée en acteur humain, avant de donner le coffre au serveur : une facture payée.
+    let client_id = freeflow_core::domain::ClientId::new();
+    store
+        .connection()
+        .execute(
+            "INSERT INTO clients (id, name, created_at) \
+             VALUES (?1, 'Kappa Software', '2026-01-01T00:00:00Z')",
+            [client_id.to_string()],
+        )
+        .unwrap();
+    let Outcome::Applied(emitted) = Executor::new(&mut store)
+        .execute(
+            &EmitInvoice {
+                client_id,
+                mission_id: None,
+                lines: vec![freeflow_core::domain::InvoiceLine {
+                    description: "Prestation".to_string(),
+                    quantity: 10.0,
+                    unit_price: freeflow_core::domain::Money::from_cents(65_000),
+                    vat_rate: freeflow_core::domain::VatRate::Standard,
+                }],
+                issued_on: time::Date::from_calendar_date(2026, time::Month::September, 1).unwrap(),
+                payment_terms_days: 30,
+            },
+            &human,
+        )
+        .unwrap()
+    else {
+        panic!("expected Applied")
+    };
+    Executor::new(&mut store)
+        .execute(
+            &RecordPayment {
+                invoice_id: emitted.id,
+                amount: freeflow_core::domain::Money::from_cents(780_000),
+                received_on: time::Date::from_calendar_date(2026, time::Month::September, 10)
+                    .unwrap(),
+                method: freeflow_core::domain::PaymentMethod::BankTransfer,
+            },
+            &human,
+        )
+        .unwrap();
+
+    let client = spawn_client(store).await;
+
+    let listed = call(&client, "payment.list", json!({})).await;
+    let payments = json_of(&listed);
+    assert_eq!(payments.as_array().unwrap().len(), 1);
+    let payment_id = payments[0]["id"].as_str().unwrap().to_string();
+
+    // L'annulation proposée par l'agent reste en attente — et le dry_run (dette remboursée au
+    // lot 22) n'écrit rien du tout.
+    let dry = call(
+        &client,
+        "payment.void",
+        json!({"payment_id": payment_id, "dry_run": true}),
+    )
+    .await;
+    assert_eq!(json_of(&dry)["status"], "dry_run");
+
+    let voided = call(
+        &client,
+        "payment.void",
+        json!({"payment_id": payment_id, "reason": "saisi en double"}),
+    )
+    .await;
+    let pending_id = json_of(&voided)["pending_action_id"]
+        .as_str()
+        .expect("une annulation proposée par un agent dépose une action en attente")
+        .to_string();
+
+    let still_active = call(&client, "payment.list", json!({})).await;
+    assert!(
+        json_of(&still_active)[0]["voided_at"].is_null(),
+        "rien n'est annulé tant qu'un humain n'a pas confirmé"
+    );
+
+    let mut confirming_store =
+        Store::open_with_passphrase(&db_path, &Passphrase::from("s3cret")).unwrap();
+    let confirmed = Executor::new(&mut confirming_store)
+        .confirm::<freeflow_core::billing::VoidPayment>(pending_id.parse().unwrap())
+        .unwrap();
+    assert!(matches!(confirmed, Outcome::Applied(())));
+
+    let after = call(&client, "payment.list", json!({})).await;
+    assert!(
+        !json_of(&after)[0]["voided_at"].is_null(),
+        "la contre-écriture reste listée, marquée annulée"
+    );
+
+    client.cancel().await.unwrap();
+}

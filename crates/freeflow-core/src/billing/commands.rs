@@ -184,9 +184,58 @@ impl Command for RecordPayment {
             amount: self.amount,
             received_on: self.received_on,
             method: self.method,
+            bank_transaction_id: None,
+            voided_at: None,
         };
         row::insert_payment(conn, &payment)?;
         Ok(payment.id)
+    }
+}
+
+/// Annule un encaissement saisi à tort — une contre-écriture, jamais une suppression : le
+/// paiement reste dans l'historique (et dans le journal d'audit chaîné) mais sort de tous les
+/// calculs (statut payé, balance âgée, prévisionnel). S'il était issu d'un rapprochement
+/// bancaire, la transaction est libérée dans le même geste : la laisser « rapprochée » vers une
+/// facture sans encaissement mentirait au prochain rapprochement.
+///
+/// `reason` n'a pas de colonne : il voyage dans la commande elle-même, donc dans le
+/// `command_json` du journal d'audit — c'est là que vit la trace d'une correction comptable,
+/// pas dans la ligne corrigée.
+///
+/// Aucune garde d'exercice clos, contrairement aux dépenses : la TVA comme l'IS sont calculés
+/// sur les débits (factures émises), jamais sur les encaissements — annuler un paiement n'a
+/// aucun effet fiscal (voir `accounting::vat_due_for_period`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VoidPayment {
+    pub payment_id: PaymentId,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+impl Command for VoidPayment {
+    type Output = ();
+    const NAME: &'static str = "billing.void_payment";
+
+    // Le miroir de `RecordPayment` : mêmes conséquences comptables, même barrière.
+    fn requires_confirmation(&self) -> bool {
+        true
+    }
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        let payment = row::payment_by_id(conn, self.payment_id)?
+            .ok_or(BillingError::PaymentNotFound(self.payment_id))?;
+        // Verrou sémantique plutôt qu'optimiste : l'annulation est la seule mutation possible
+        // d'un paiement et n'arrive qu'une fois — voir le commentaire de la migration 0013.
+        if payment.is_voided() {
+            return Err(BillingError::PaymentAlreadyVoided(self.payment_id).into());
+        }
+        let voided_at = time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)?;
+        row::mark_payment_voided(conn, self.payment_id, &voided_at)?;
+        if let Some(transaction_id) = payment.bank_transaction_id {
+            row::clear_transaction_match(conn, transaction_id)?;
+        }
+        Ok(())
     }
 }
 
@@ -237,6 +286,14 @@ impl Command for ReconcileTransaction {
         let tx = row::bank_transaction_by_id(conn, self.transaction_id)?
             .ok_or(BillingError::TransactionNotFound)?;
 
+        // Bug latent corrigé au lot 22 : rapprocher une transaction déjà rapprochée créait un
+        // second encaissement pour la même ligne de relevé — un doublon silencieux dans le
+        // solde de la facture. Défaire d'abord (`UnreconcileTransaction`) si le rapprochement
+        // visait la mauvaise facture.
+        if tx.matched_invoice_id.is_some() {
+            return Err(BillingError::AlreadyReconciled(self.transaction_id).into());
+        }
+
         // Un débit (montant négatif) rapproché comme un encaissement fausserait le solde de la
         // facture : seul un crédit (montant positif) est un règlement.
         if tx.amount_cents <= 0 {
@@ -249,9 +306,58 @@ impl Command for ReconcileTransaction {
             amount: Money::from_cents(tx.amount_cents),
             received_on: tx.occurred_on,
             method: PaymentMethod::BankTransfer,
+            bank_transaction_id: Some(self.transaction_id),
+            voided_at: None,
         };
         row::insert_payment(conn, &payment)?;
         row::mark_transaction_matched(conn, self.transaction_id, self.invoice_id)?;
         Ok(payment.id)
+    }
+}
+
+/// Défait un rapprochement : libère la transaction bancaire et annule l'encaissement qui en
+/// était issu (contre-écriture, comme [`VoidPayment`]) — l'exact inverse de
+/// [`ReconcileTransaction`], en un seul geste atomique.
+///
+/// Pour un rapprochement antérieur à la migration `0013`, la lignée transaction → paiement
+/// n'existe pas en base : seule la transaction est libérée (`Output = None`), et le paiement
+/// orphelin s'annule séparément via `VoidPayment` — plutôt qu'une heuristique par date et
+/// montant qui pourrait annuler le mauvais paiement.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnreconcileTransaction {
+    pub transaction_id: BankTransactionId,
+}
+
+impl Command for UnreconcileTransaction {
+    /// L'encaissement annulé dans le même geste, s'il a pu être retrouvé par sa lignée.
+    type Output = Option<PaymentId>;
+    const NAME: &'static str = "billing.unreconcile_transaction";
+
+    // Le miroir de `ReconcileTransaction` : mêmes conséquences comptables, même barrière.
+    fn requires_confirmation(&self) -> bool {
+        true
+    }
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        let tx = row::bank_transaction_by_id(conn, self.transaction_id)?
+            .ok_or(BillingError::TransactionNotFound)?;
+        if tx.matched_invoice_id.is_none() {
+            return Err(BillingError::TransactionNotReconciled(self.transaction_id).into());
+        }
+
+        let linked_payment = row::all_payments(conn)?
+            .into_iter()
+            .find(|p| p.bank_transaction_id == Some(self.transaction_id) && !p.is_voided());
+        let voided = match linked_payment {
+            Some(payment) => {
+                let voided_at = time::OffsetDateTime::now_utc()
+                    .format(&time::format_description::well_known::Rfc3339)?;
+                row::mark_payment_voided(conn, payment.id, &voided_at)?;
+                Some(payment.id)
+            }
+            None => None,
+        };
+        row::clear_transaction_match(conn, self.transaction_id)?;
+        Ok(voided)
     }
 }
