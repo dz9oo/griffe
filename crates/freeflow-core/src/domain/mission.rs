@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use time::Date;
 
-use super::ids::{ClientId, MissionId, QuoteId};
+use super::ids::{ClientId, MissionId, OpportunityId, QuoteId};
 use super::money::Money;
 use super::period::{format_date, parse_date};
 
@@ -83,6 +83,11 @@ pub struct Mission {
     pub id: MissionId,
     pub client_id: ClientId,
     pub quote_id: Option<QuoteId>,
+    /// Lignée de prospection (lot 21) : l'opportunité dont cette mission est issue, posée par
+    /// `WinOpportunity` (gain direct) ou héritée du devis par `AcceptQuote`. Comme `quote_id`,
+    /// c'est une lignée, pas un lien éditable — `UpdateMission` ne l'expose pas. `None` pour une
+    /// mission créée directement, ou antérieure à la migration `0012`.
+    pub opportunity_id: Option<OpportunityId>,
     pub name: String,
     pub kind: MissionKind,
     pub milestones: Vec<Milestone>,

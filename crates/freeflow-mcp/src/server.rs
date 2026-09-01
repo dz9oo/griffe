@@ -53,6 +53,7 @@ impl FreeflowServer {
             + Self::prospection_router()
             + Self::missions_router()
             + Self::quotes_router()
+            + Self::expenses_router()
             + Self::billing_router()
             + Self::pending_router()
             + Self::fiscal_router()
@@ -77,11 +78,13 @@ impl ServerHandler for FreeflowServer {
              `pending.list`) qu'un humain doit confirmer lui-même, au terminal (`freeflow \
              confirm <id>`) ou dans la fenêtre — il n'existe volontairement aucun outil MCP \
              `pending.confirm` : un agent ne peut pas confirmer sa propre proposition. Les \
-             références à un client, une opportunité ou une mission (`client`, `opportunity`, \
-             `mission`, `clients.show`/`prospect.show`/`mission.show`…) acceptent un UUID, un \
-             préfixe d'UUID, ou un nom — voir `clients.list`/`prospect.list`/`mission.list`, ou \
-             les ressources `freeflow://clients`, `freeflow://opportunities`, \
-             `freeflow://missions`."
+             références à un client, une opportunité, une mission, un devis ou une dépense \
+             (`client`, `opportunity`, `mission`, `quote`, `expense`, \
+             `clients.show`/`prospect.show`/`mission.show`/`quote.show`/`expense.show`…) \
+             acceptent un UUID, un préfixe d'UUID, ou un nom/libellé (pour un devis : le nom du \
+             client porteur) — voir les outils `*.list`, ou les ressources \
+             `freeflow://clients`, `freeflow://opportunities`, `freeflow://missions`, \
+             `freeflow://quotes`, `freeflow://expenses`."
                 .to_string(),
         );
         info

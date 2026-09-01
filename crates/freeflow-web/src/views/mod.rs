@@ -2,6 +2,8 @@ pub mod clients;
 pub mod cloture;
 pub mod console;
 pub mod dashboard;
+pub mod depenses;
+pub mod devis;
 pub mod facturation;
 pub mod form;
 pub mod missions;

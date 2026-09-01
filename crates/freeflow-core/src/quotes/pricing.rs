@@ -108,6 +108,9 @@ pub fn derive_mission(quote: &Quote, started_on: Date) -> Result<Mission, QuoteE
         id: MissionId::new(),
         client_id: quote.client_id,
         quote_id: Some(quote.id),
+        // La lignée de prospection traverse le devis : une opportunité devisée puis acceptée
+        // reste rattachée à la mission qui en résulte, exactement comme un gain direct.
+        opportunity_id: quote.opportunity_id,
         name: quote
             .lines
             .first()

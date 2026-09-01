@@ -222,6 +222,54 @@ mod tests {
             .unwrap();
         assert_eq!(opportunity.stage, OpportunityStage::Won);
         assert_eq!(opportunity.next_action_at, None);
+
+        let mission = crate::missions::row::mission_by_id(store.connection(), mission_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            mission.opportunity_id,
+            Some(opportunity_id),
+            "la lignée du gain doit être persistée (migration 0012)"
+        );
+    }
+
+    #[test]
+    fn a_won_opportunity_with_its_mission_can_no_longer_be_deleted() {
+        let (mut store, client_id) = test_store("delete-won");
+        let create = new_opportunity(client_id, 4_500_000, 70, date(2026, Month::September, 1));
+        let Outcome::Applied(opportunity_id) = Executor::new(&mut store)
+            .execute(&create, &human_ctx())
+            .unwrap()
+        else {
+            panic!("expected Applied")
+        };
+        Executor::new(&mut store)
+            .execute(
+                &WinOpportunity {
+                    opportunity_id,
+                    started_on: date(2026, Month::October, 1),
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+
+        let refs = queries::opportunity_references(store.connection(), opportunity_id).unwrap();
+        assert_eq!(refs.missions, 1);
+        assert!(!refs.is_empty());
+
+        let opportunity = row::opportunity_by_id(store.connection(), opportunity_id)
+            .unwrap()
+            .unwrap();
+        let err = Executor::new(&mut store)
+            .execute(
+                &DeleteOpportunity {
+                    id: opportunity_id,
+                    revision: opportunity.revision,
+                },
+                &human_ctx(),
+            )
+            .unwrap_err();
+        assert!(matches!(err, AppError::Domain(msg) if msg.contains("mission")));
     }
 
     #[test]

@@ -23,6 +23,10 @@ const OPPORTUNITIES_COLLECTION_URI: &str = "freeflow://opportunities";
 const OPPORTUNITY_DETAIL_PREFIX: &str = "freeflow://opportunities/";
 const MISSIONS_COLLECTION_URI: &str = "freeflow://missions";
 const MISSION_DETAIL_PREFIX: &str = "freeflow://missions/";
+const QUOTES_COLLECTION_URI: &str = "freeflow://quotes";
+const QUOTE_DETAIL_PREFIX: &str = "freeflow://quotes/";
+const EXPENSES_COLLECTION_URI: &str = "freeflow://expenses";
+const EXPENSE_DETAIL_PREFIX: &str = "freeflow://expenses/";
 const FISCAL_YEARS_COLLECTION_URI: &str = "freeflow://fiscal-years";
 
 pub(crate) fn list() -> ListResourcesResult {
@@ -43,6 +47,14 @@ pub(crate) fn list() -> ListResourcesResult {
                 "Missions en cours et non archivées — voir mission.list pour élargir aux \
                  clôturées/archivées.",
             )
+            .with_mime_type("application/json"),
+        Resource::new(QUOTES_COLLECTION_URI, "quotes")
+            .with_description(
+                "Devis, toutes versions confondues, les plus récents d'abord — lignes comprises.",
+            )
+            .with_mime_type("application/json"),
+        Resource::new(EXPENSES_COLLECTION_URI, "expenses")
+            .with_description("Dépenses professionnelles, les plus récentes d'abord.")
             .with_mime_type("application/json"),
         Resource::new(FISCAL_YEARS_COLLECTION_URI, "fiscal-years")
             .with_description(
@@ -75,6 +87,15 @@ pub(crate) fn list_templates() -> ListResourceTemplatesResult {
                 "Fiche d'une mission (UUID, préfixe d'UUID, ou nom), avec ses saisies de temps, \
                  son échéancier de facturation et ce qui la référence.",
             )
+            .with_mime_type("application/json"),
+        ResourceTemplate::new(format!("{QUOTE_DETAIL_PREFIX}{{reference}}"), "quote")
+            .with_description(
+                "Fiche d'un devis (UUID, préfixe d'UUID, ou nom du client porteur), avec son \
+                 total HT net de remise et sa lignée (mission issue, versions).",
+            )
+            .with_mime_type("application/json"),
+        ResourceTemplate::new(format!("{EXPENSE_DETAIL_PREFIX}{{reference}}"), "expense")
+            .with_description("Fiche d'une dépense (UUID, préfixe d'UUID, ou libellé).")
             .with_mime_type("application/json"),
     ])
 }
@@ -169,6 +190,48 @@ pub(crate) fn read(store: &Store, uri: &str) -> Result<ReadResourceResult, McpEr
                 "references": references,
             }),
         );
+    }
+
+    if uri == QUOTES_COLLECTION_URI {
+        let quotes = freeflow_core::quotes::list_quotes(store.connection())
+            .map_err(|e| McpError::resource_not_found(e.to_string(), None))?;
+        return json_contents(uri, quotes);
+    }
+    if let Some(reference) = uri.strip_prefix(QUOTE_DETAIL_PREFIX) {
+        let id = crate::support::resolve_quote(store, reference)
+            .map_err(|e| McpError::resource_not_found(e, None))?;
+        let quote = freeflow_core::quotes::quote_by_id(store.connection(), id)
+            .map_err(|e| McpError::resource_not_found(e.to_string(), None))?
+            .ok_or_else(|| {
+                McpError::resource_not_found(format!("devis introuvable : {id}"), None)
+            })?;
+        let references = freeflow_core::quotes::quote_references(store.connection(), id)
+            .map_err(|e| McpError::resource_not_found(e.to_string(), None))?;
+        let total_net_ht: freeflow_core::domain::Money =
+            freeflow_core::quotes::priced_lines(&quote.lines, quote.discount)
+                .iter()
+                .map(|(gross, discount)| *gross - *discount)
+                .sum();
+        return json_contents(
+            uri,
+            json!({ "quote": quote, "total_net_ht": total_net_ht, "references": references }),
+        );
+    }
+
+    if uri == EXPENSES_COLLECTION_URI {
+        let expenses = freeflow_core::expenses::list_expenses(store.connection())
+            .map_err(|e| McpError::resource_not_found(e.to_string(), None))?;
+        return json_contents(uri, expenses);
+    }
+    if let Some(reference) = uri.strip_prefix(EXPENSE_DETAIL_PREFIX) {
+        let id = crate::support::resolve_expense(store, reference)
+            .map_err(|e| McpError::resource_not_found(e, None))?;
+        let expense = freeflow_core::expenses::expense_by_id(store.connection(), id)
+            .map_err(|e| McpError::resource_not_found(e.to_string(), None))?
+            .ok_or_else(|| {
+                McpError::resource_not_found(format!("dépense introuvable : {id}"), None)
+            })?;
+        return json_contents(uri, json!({ "expense": expense }));
     }
 
     if uri == FISCAL_YEARS_COLLECTION_URI {

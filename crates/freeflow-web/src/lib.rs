@@ -6,6 +6,8 @@ mod audit;
 mod clients;
 mod cloture;
 mod console;
+mod depenses;
+mod devis;
 mod handlers;
 mod layout;
 mod missions;
@@ -32,7 +34,9 @@ pub fn router(state: AppState) -> Router {
         .route("/view/dashboard", get(handlers::dashboard))
         .route("/view/prospection", get(handlers::prospection))
         .route("/view/missions", get(handlers::missions))
+        .route("/view/devis", get(handlers::devis))
         .route("/view/facturation", get(handlers::facturation))
+        .route("/view/depenses", get(handlers::depenses))
         .route("/view/clients", get(handlers::clients))
         .route("/view/cloture", get(handlers::cloture))
         .route("/view/console", get(handlers::console))
@@ -138,6 +142,26 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/time-entries/{id}/delete",
             post(missions::delete_time_entry),
+        )
+        .route("/depenses/table", get(depenses::table))
+        .route("/depenses/new", get(depenses::new_panel))
+        .route("/depenses", post(depenses::create))
+        .route(
+            "/depenses/{id}",
+            get(depenses::show_panel).post(depenses::update),
+        )
+        .route("/depenses/{id}/edit", get(depenses::edit_panel))
+        .route(
+            "/depenses/{id}/delete",
+            get(depenses::delete_confirm_panel).post(depenses::delete),
+        )
+        .route("/devis/table", get(devis::table))
+        .route("/devis/{id}", get(devis::show_panel))
+        .route("/devis/{id}/send", post(devis::send))
+        .route("/devis/{id}/decline", post(devis::decline))
+        .route(
+            "/devis/{id}/accept",
+            get(devis::accept_panel).post(devis::accept),
         )
         .route("/cloture/table", get(cloture::table))
         .route("/cloture/new", get(cloture::new_panel))

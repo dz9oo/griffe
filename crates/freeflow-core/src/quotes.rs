@@ -5,11 +5,13 @@
 mod commands;
 mod error;
 mod pricing;
+mod queries;
 mod row;
 
 pub use commands::{AcceptQuote, CreateQuote, DeclineQuote, ReviseQuote, SendQuote};
 pub use error::QuoteError;
 pub use pricing::{derive_mission, priced_lines};
+pub use queries::{QuoteReferences, list_quotes, quote_by_id, quote_references};
 
 #[cfg(test)]
 mod tests {
@@ -304,6 +306,123 @@ mod tests {
             total_discount,
             total_gross.apply_rate_bps(1_500),
             "la remise totale doit correspondre exactement au taux appliqué au total"
+        );
+    }
+
+    #[test]
+    fn list_quotes_loads_every_version_with_its_lines() {
+        let (mut store, client_id) = test_store("list");
+        let v1 = create(
+            &mut store,
+            client_id,
+            forfait_lines_30_40_30(4_500_000),
+            None,
+        );
+        let revise = ReviseQuote {
+            root_id: v1,
+            lines: forfait_lines_30_40_30(5_000_000),
+            discount: None,
+            terms: None,
+            valid_until: date(2026, Month::November, 30),
+        };
+        Executor::new(&mut store)
+            .execute(&revise, &human_ctx())
+            .unwrap();
+
+        let all = list_quotes(store.connection()).unwrap();
+        assert_eq!(all.len(), 2);
+        assert!(
+            all.iter().all(|q| q.lines.len() == 3),
+            "chaque version doit porter ses lignes, chargées par lot"
+        );
+        assert!(all.iter().all(|q| q.root_id == v1));
+    }
+
+    #[test]
+    fn quote_references_count_versions_and_the_mission_born_from_acceptance() {
+        let (mut store, client_id) = test_store("references");
+        let id = create(
+            &mut store,
+            client_id,
+            forfait_lines_30_40_30(4_500_000),
+            None,
+        );
+        let before = quote_references(store.connection(), id).unwrap();
+        assert_eq!(
+            before,
+            QuoteReferences {
+                missions: 0,
+                versions: 1
+            }
+        );
+
+        Executor::new(&mut store)
+            .execute(&SendQuote { quote_id: id }, &human_ctx())
+            .unwrap();
+        Executor::new(&mut store)
+            .execute(
+                &AcceptQuote {
+                    quote_id: id,
+                    started_on: date(2026, Month::September, 1),
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+
+        let after = quote_references(store.connection(), id).unwrap();
+        assert_eq!(after.missions, 1);
+    }
+
+    #[test]
+    fn accepting_a_quote_carries_its_opportunity_lineage_onto_the_mission() {
+        let (mut store, client_id) = test_store("lineage");
+        let opportunity_id = crate::domain::OpportunityId::new();
+        store
+            .connection()
+            .execute(
+                "INSERT INTO opportunities
+                    (id, client_id, name, stage, amount_cents, probability_percent, created_at)
+                 VALUES (?1, ?2, 'Refonte', 'proposal', 4500000, 60, '2026-01-01T00:00:00Z')",
+                [opportunity_id.to_string(), client_id.to_string()],
+            )
+            .unwrap();
+        let cmd = CreateQuote {
+            client_id,
+            opportunity_id: Some(opportunity_id),
+            lines: forfait_lines_30_40_30(4_500_000),
+            discount: None,
+            terms: None,
+            valid_until: date(2026, Month::October, 31),
+        };
+        let Outcome::Applied(quote_id) = Executor::new(&mut store)
+            .execute(&cmd, &human_ctx())
+            .unwrap()
+        else {
+            panic!("expected Applied")
+        };
+        Executor::new(&mut store)
+            .execute(&SendQuote { quote_id }, &human_ctx())
+            .unwrap();
+        let Outcome::Applied(mission_id) = Executor::new(&mut store)
+            .execute(
+                &AcceptQuote {
+                    quote_id,
+                    started_on: date(2026, Month::September, 1),
+                },
+                &human_ctx(),
+            )
+            .unwrap()
+        else {
+            panic!("expected Applied")
+        };
+
+        let mission = crate::missions::row::mission_by_id(store.connection(), mission_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            mission.opportunity_id,
+            Some(opportunity_id),
+            "la lignée opportunité → devis → mission doit être persistée"
         );
     }
 

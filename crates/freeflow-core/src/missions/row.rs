@@ -23,12 +23,14 @@ fn conv_err(e: impl std::error::Error + Send + Sync + 'static) -> rusqlite::Erro
 pub(crate) fn insert_mission(conn: &Connection, mission: &Mission) -> Result<(), AppError> {
     let kind_json = serde_json::to_string(&mission.kind)?;
     conn.execute(
-        "INSERT INTO missions (id, client_id, quote_id, name, kind, started_on, ended_on)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO missions
+            (id, client_id, quote_id, opportunity_id, name, kind, started_on, ended_on)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             mission.id.to_string(),
             mission.client_id.to_string(),
             mission.quote_id.map(|id| id.to_string()),
+            mission.opportunity_id.map(|id| id.to_string()),
             mission.name,
             kind_json,
             domain::format_date(mission.started_on),
@@ -63,6 +65,7 @@ fn row_to_mission_without_milestones(row: &Row) -> rusqlite::Result<Mission> {
     let kind: MissionKind = serde_json::from_str(&kind_json).map_err(conv_err)?;
 
     let quote_id: Option<String> = row.get("quote_id")?;
+    let opportunity_id: Option<String> = row.get("opportunity_id")?;
     let started_on: String = row.get("started_on")?;
     let ended_on: Option<String> = row.get("ended_on")?;
     let id: String = row.get("id")?;
@@ -78,6 +81,10 @@ fn row_to_mission_without_milestones(row: &Row) -> rusqlite::Result<Mission> {
         id: id.parse().map_err(conv_err)?,
         client_id: client_id.parse().map_err(conv_err)?,
         quote_id: quote_id.map(|s| s.parse()).transpose().map_err(conv_err)?,
+        opportunity_id: opportunity_id
+            .map(|s| s.parse())
+            .transpose()
+            .map_err(conv_err)?,
         name: row.get("name")?,
         kind,
         milestones: Vec::new(),

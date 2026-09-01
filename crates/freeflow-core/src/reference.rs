@@ -11,8 +11,8 @@
 use rusqlite::Connection;
 
 use crate::app::AppError;
-use crate::domain::{ClientId, MissionId, OpportunityId};
-use crate::{clients, missions, prospection};
+use crate::domain::{ClientId, ExpenseId, MissionId, OpportunityId, QuoteId};
+use crate::{clients, expenses, missions, prospection, quotes};
 
 /// Résultat de la résolution d'une référence texte vers un identifiant typé. `label` (dans
 /// `Ambiguous`) est le libellé lisible du candidat — le nom d'un client, par exemple — pour que
@@ -215,6 +215,71 @@ pub fn resolve_mission(conn: &Connection, needle: &str) -> Result<RefMatch<Missi
     }))
 }
 
+/// Résout `needle` en identifiant de dépense, par libellé — même doctrine que
+/// [`resolve_opportunity`] : les libellés de dépense sont tout sauf uniques (« Abonnement »,
+/// « Restaurant »), donc l'ambiguïté est qualifiée par la date et le montant, les deux
+/// discriminants naturels d'une ligne de frais.
+///
+/// # Errors
+pub fn resolve_expense(conn: &Connection, needle: &str) -> Result<RefMatch<ExpenseId>, AppError> {
+    let all_expenses = expenses::list_expenses(conn)?;
+    let candidates: Vec<(ExpenseId, String)> = all_expenses
+        .iter()
+        .map(|e| (e.id, e.label.clone()))
+        .collect();
+    let result = resolve_among(needle, &candidates);
+    Ok(qualify_ambiguous(result, |id| {
+        all_expenses
+            .iter()
+            .find(|e| e.id == id)
+            .map_or_else(String::new, |e| {
+                format!(
+                    "{} — {} ({})",
+                    e.label,
+                    crate::domain::format_date(e.incurred_on),
+                    e.amount
+                )
+            })
+    }))
+}
+
+/// Résout `needle` en identifiant de devis. Un devis n'a pas de nom propre : le matching par
+/// libellé se fait sur le **nom du client** (un UUID ou son préfixe restent prioritaires, comme
+/// partout) — « `freeflow quote show acme` » suffit tant qu'Acme n'a qu'un devis, et l'ambiguïté
+/// est qualifiée par la version, la date et le statut pour choisir parmi plusieurs.
+///
+/// # Errors
+pub fn resolve_quote(conn: &Connection, needle: &str) -> Result<RefMatch<QuoteId>, AppError> {
+    let all_clients = clients::list_clients(conn)?;
+    let all_quotes = quotes::list_quotes(conn)?;
+    let client_name = |id: ClientId| {
+        all_clients
+            .iter()
+            .find(|c| c.id == id)
+            .map_or_else(|| "?".to_string(), |c| c.name.clone())
+    };
+
+    let candidates: Vec<(QuoteId, String)> = all_quotes
+        .iter()
+        .map(|q| (q.id, client_name(q.client_id)))
+        .collect();
+    let result = resolve_among(needle, &candidates);
+    Ok(qualify_ambiguous(result, |id| {
+        all_quotes
+            .iter()
+            .find(|q| q.id == id)
+            .map_or_else(String::new, |q| {
+                format!(
+                    "{} — v{}, valide jusqu'au {} ({})",
+                    client_name(q.client_id),
+                    q.version,
+                    crate::domain::format_date(q.valid_until),
+                    q.status.as_str()
+                )
+            })
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -404,5 +469,107 @@ mod tests {
             resolve_mission(store.connection(), "refonte dashboard").unwrap(),
             RefMatch::Unique(id)
         );
+    }
+
+    fn record_expense(store: &mut Store, label: &str, day: u8) -> ExpenseId {
+        let cmd = crate::expenses::RecordExpense {
+            label: label.to_string(),
+            category: crate::domain::ExpenseCategory::Software,
+            amount: crate::domain::Money::from_cents(12_000),
+            vat_rate: crate::domain::VatRate::Standard,
+            vat_deductible: crate::domain::Money::from_cents(2_000),
+            incurred_on: time::Date::from_calendar_date(2026, time::Month::September, day).unwrap(),
+            receipt_hash: None,
+            receipt_filename: None,
+        };
+        let crate::app::Outcome::Applied(id) = Executor::new(store)
+            .execute(&cmd, &ExecutionContext::new(Actor::Human, false))
+            .unwrap()
+        else {
+            panic!("expected Applied")
+        };
+        id
+    }
+
+    #[test]
+    fn resolves_an_expense_by_label() {
+        let mut store = test_store("expense-by-label");
+        let id = record_expense(&mut store, "Abonnement hébergement", 5);
+        assert_eq!(
+            resolve_expense(store.connection(), "abonnement").unwrap(),
+            RefMatch::Unique(id)
+        );
+    }
+
+    #[test]
+    fn an_ambiguous_expense_label_is_qualified_by_date_and_amount() {
+        let mut store = test_store("expense-ambiguous");
+        let a = record_expense(&mut store, "Restaurant", 5);
+        let b = record_expense(&mut store, "Restaurant", 12);
+        let result = resolve_expense(store.connection(), "restaurant").unwrap();
+        let RefMatch::Ambiguous(candidates) = result else {
+            panic!("expected Ambiguous")
+        };
+        let ids: Vec<ExpenseId> = candidates.iter().map(|(id, _)| *id).collect();
+        assert!(ids.contains(&a) && ids.contains(&b));
+        assert!(
+            candidates
+                .iter()
+                .any(|(_, label)| label.contains("2026-09-05"))
+        );
+    }
+
+    fn create_quote(store: &mut Store, client_id: ClientId) -> crate::domain::QuoteId {
+        let cmd = crate::quotes::CreateQuote {
+            client_id,
+            opportunity_id: None,
+            lines: vec![crate::domain::QuoteLine {
+                description: "Prestation".to_string(),
+                kind: crate::domain::LineKind::Forfait {
+                    amount: crate::domain::Money::from_cents(1_000_000),
+                },
+                vat_rate: crate::domain::VatRate::Standard,
+            }],
+            discount: None,
+            terms: None,
+            valid_until: time::Date::from_calendar_date(2026, time::Month::October, 31).unwrap(),
+        };
+        let crate::app::Outcome::Applied(id) = Executor::new(store)
+            .execute(&cmd, &ExecutionContext::new(Actor::Human, false))
+            .unwrap()
+        else {
+            panic!("expected Applied")
+        };
+        id
+    }
+
+    #[test]
+    fn resolves_a_quote_by_client_name_and_by_uuid_prefix() {
+        let mut store = test_store("quote-by-client");
+        let client_id = create_client(&mut store, "Argon Digital");
+        let id = create_quote(&mut store, client_id);
+        assert_eq!(
+            resolve_quote(store.connection(), "argon").unwrap(),
+            RefMatch::Unique(id)
+        );
+        assert_eq!(
+            resolve_quote(store.connection(), &id.to_string()[..8]).unwrap(),
+            RefMatch::Unique(id)
+        );
+    }
+
+    #[test]
+    fn two_quotes_for_the_same_client_are_qualified_by_version_and_status() {
+        let mut store = test_store("quote-ambiguous");
+        let client_id = create_client(&mut store, "Argon Digital");
+        let a = create_quote(&mut store, client_id);
+        let b = create_quote(&mut store, client_id);
+        let result = resolve_quote(store.connection(), "argon").unwrap();
+        let RefMatch::Ambiguous(candidates) = result else {
+            panic!("expected Ambiguous")
+        };
+        let ids: Vec<crate::domain::QuoteId> = candidates.iter().map(|(id, _)| *id).collect();
+        assert!(ids.contains(&a) && ids.contains(&b));
+        assert!(candidates.iter().all(|(_, label)| label.contains("draft")));
     }
 }

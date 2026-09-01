@@ -40,7 +40,7 @@ pub(super) fn insert_quote(conn: &Connection, quote: &Quote) -> Result<(), AppEr
     Ok(())
 }
 
-fn row_to_quote_without_lines(row: &Row) -> rusqlite::Result<Quote> {
+pub(super) fn row_to_quote_without_lines(row: &Row) -> rusqlite::Result<Quote> {
     let id: String = row.get("id")?;
     let root_id: String = row.get("root_id")?;
     let client_id: String = row.get("client_id")?;

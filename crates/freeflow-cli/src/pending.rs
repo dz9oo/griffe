@@ -8,6 +8,7 @@ use clap::Subcommand;
 use freeflow_core::app::{self, Command, Executor, PendingActionId};
 use freeflow_core::billing::{EmitInvoice, IssueCreditNote, ReconcileTransaction, RecordPayment};
 use freeflow_core::clients::{DeleteClient, DeleteContact};
+use freeflow_core::expenses::DeleteExpense;
 use freeflow_core::fiscal_year::{ApproveFiscalYear, CloseFiscalYear, DeleteFiscalYear};
 use freeflow_core::missions::{DeleteMission, DeleteTimeEntry};
 use freeflow_core::prospection::{DeleteInteraction, DeleteOpportunity};
@@ -97,6 +98,9 @@ pub fn confirm(store: &mut Store, id: PendingActionId, json: bool) -> Result<Str
         Ok(format_outcome(&outcome, json))
     } else if action.command_name == DeleteFiscalYear::NAME {
         let outcome = Executor::new(store).confirm::<DeleteFiscalYear>(id)?;
+        Ok(format_outcome(&outcome, json))
+    } else if action.command_name == DeleteExpense::NAME {
+        let outcome = Executor::new(store).confirm::<DeleteExpense>(id)?;
         Ok(format_outcome(&outcome, json))
     } else {
         Err(CliError::UnknownConfirmableCommand(action.command_name))

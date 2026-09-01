@@ -997,3 +997,95 @@ async fn an_agent_closing_a_fiscal_year_only_deposits_a_pending_action() {
 
     client.cancel().await.unwrap();
 }
+
+#[tokio::test]
+async fn expense_lifecycle_over_mcp() {
+    let db_path = test_db_path("expense-lifecycle");
+    let store = Store::create(&db_path, &Passphrase::from("s3cret")).unwrap();
+    let client = spawn_client(store).await;
+
+    let recorded = call(
+        &client,
+        "expense.record",
+        json!({
+            "label": "Abonnement hébergement",
+            "category": "software",
+            "amount_cents": 12_000,
+            "vat_rate": "standard",
+            "vat_deductible_cents": 2_000,
+            "incurred_on": "2026-09-05",
+        }),
+    )
+    .await;
+    assert_eq!(recorded.is_error, Some(false));
+
+    // Mise à jour par référence (préfixe de libellé) : seul le montant change.
+    let updated = call(
+        &client,
+        "expense.update",
+        json!({"expense": "abonnement", "amount_cents": 24_000, "vat_deductible_cents": 4_000}),
+    )
+    .await;
+    assert_eq!(updated.is_error, Some(false));
+
+    let shown = call(&client, "expense.show", json!({"expense": "abonnement"})).await;
+    let expense = json_of(&shown);
+    assert_eq!(expense["amount"], 24_000);
+    assert_eq!(expense["revision"], 2);
+
+    // Suppression proposée par l'agent : action en attente, jamais un effet direct.
+    let deleted = call(&client, "expense.delete", json!({"expense": "abonnement"})).await;
+    let pending_id = json_of(&deleted)["pending_action_id"]
+        .as_str()
+        .expect("une suppression de dépense proposée par un agent dépose une action en attente")
+        .to_string();
+
+    let mut confirming_store =
+        Store::open_with_passphrase(&db_path, &Passphrase::from("s3cret")).unwrap();
+    let confirmed = Executor::new(&mut confirming_store)
+        .confirm::<freeflow_core::expenses::DeleteExpense>(pending_id.parse().unwrap())
+        .unwrap();
+    assert!(matches!(confirmed, Outcome::Applied(())));
+
+    let empty = call(&client, "expense.list", json!({})).await;
+    assert!(json_of(&empty).as_array().unwrap().is_empty());
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_quote_is_readable_by_tool_and_resource_after_creation() {
+    let store = Store::create(&test_db_path("quote-read"), &Passphrase::from("s3cret")).unwrap();
+    let client = spawn_client(store).await;
+
+    call(&client, "clients.create", json!({"name": "Kappa Software"})).await;
+    let lines = r#"[{"description":"Refonte plateforme","kind":{"Forfait":{"amount":4500000}},"vat_rate":"Standard"}]"#;
+    let created = call(
+        &client,
+        "quote.create",
+        json!({"client": "kappa", "lines_json": lines, "valid_until": "2026-10-31"}),
+    )
+    .await;
+    assert_eq!(created.is_error, Some(false));
+
+    // Lisible par l'outil, adressé par le nom du client porteur…
+    let shown = call(&client, "quote.show", json!({"quote": "kappa"})).await;
+    let view = json_of(&shown);
+    assert_eq!(view["quote"]["status"], "Draft");
+    assert_eq!(view["total_net_ht"], 4_500_000);
+    assert_eq!(view["references"]["versions"], 1);
+
+    // … et par la ressource de collection.
+    let resource = client
+        .read_resource(ReadResourceRequestParams::new("freeflow://quotes"))
+        .await
+        .unwrap();
+    let rmcp::model::ResourceContents::TextResourceContents { text, .. } = &resource.contents[0]
+    else {
+        panic!("contenu texte attendu")
+    };
+    let quotes: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(quotes.as_array().unwrap().len(), 1);
+
+    client.cancel().await.unwrap();
+}

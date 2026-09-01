@@ -110,6 +110,26 @@ pub async fn clients(State(state): State<AppState>, headers: HeaderMap) -> Html<
     respond(headers, ViewId::Clients, content).await
 }
 
+pub async fn devis(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
+    let content = state
+        .with_store(|store| {
+            views::devis::render(store).unwrap_or_else(|e| error_markup(ViewId::Devis, e))
+        })
+        .await
+        .unwrap_or_else(|| locked_markup(ViewId::Devis));
+    respond(headers, ViewId::Devis, content).await
+}
+
+pub async fn depenses(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
+    let content = state
+        .with_store(|store| {
+            views::depenses::render(store).unwrap_or_else(|e| error_markup(ViewId::Depenses, e))
+        })
+        .await
+        .unwrap_or_else(|| locked_markup(ViewId::Depenses));
+    respond(headers, ViewId::Depenses, content).await
+}
+
 pub async fn cloture(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
     let content = state
         .with_store(|store| {

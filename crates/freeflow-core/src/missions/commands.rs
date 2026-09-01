@@ -108,6 +108,10 @@ impl Command for CreateMission {
             id: MissionId::new(),
             client_id: self.client_id,
             quote_id: self.quote_id,
+            // Une mission créée directement n'a pas de lignée de prospection : ce lien ne naît
+            // que d'un gain (`WinOpportunity`) ou d'une acceptation de devis (`AcceptQuote`) —
+            // le poser à la main reviendrait à réécrire l'histoire de l'entonnoir.
+            opportunity_id: None,
             name: self.name.clone(),
             kind: self.kind.clone(),
             milestones: self.milestones.clone(),

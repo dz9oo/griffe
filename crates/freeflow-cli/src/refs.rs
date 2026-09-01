@@ -5,7 +5,7 @@
 
 use std::fmt::Display;
 
-use freeflow_core::domain::{ClientId, MissionId, OpportunityId};
+use freeflow_core::domain::{ClientId, ExpenseId, MissionId, OpportunityId, QuoteId};
 use freeflow_core::reference::{self, RefMatch};
 use freeflow_core::store::Store;
 
@@ -66,5 +66,25 @@ pub fn resolve_mission(store: &Store, needle: &str) -> Result<MissionId, CliErro
         "aucune mission",
         "missions",
         reference::resolve_mission(store.connection(), needle)?,
+    )
+}
+
+/// # Errors
+pub fn resolve_expense(store: &Store, needle: &str) -> Result<ExpenseId, CliError> {
+    translate(
+        needle,
+        "aucune dépense",
+        "dépenses",
+        reference::resolve_expense(store.connection(), needle)?,
+    )
+}
+
+/// # Errors
+pub fn resolve_quote(store: &Store, needle: &str) -> Result<QuoteId, CliError> {
+    translate(
+        needle,
+        "aucun devis",
+        "devis",
+        reference::resolve_quote(store.connection(), needle)?,
     )
 }

@@ -720,6 +720,18 @@ fn mission_help_is_a_stable_interface_contract() {
     insta::assert_snapshot!(String::from_utf8(output.stdout).unwrap());
 }
 
+#[test]
+fn quote_help_is_a_stable_interface_contract() {
+    let output = freeflow().args(["quote", "--help"]).output().unwrap();
+    insta::assert_snapshot!(String::from_utf8(output.stdout).unwrap());
+}
+
+#[test]
+fn expense_help_is_a_stable_interface_contract() {
+    let output = freeflow().args(["expense", "--help"]).output().unwrap();
+    insta::assert_snapshot!(String::from_utf8(output.stdout).unwrap());
+}
+
 fn create_client(db: &Path, name: &str) -> String {
     let output = freeflow()
         .env("FREEFLOW_DB", db)
@@ -1201,4 +1213,140 @@ fn year_close_by_an_agent_stays_pending_until_a_human_confirms() {
         .stdout
         .clone();
     assert_eq!(json_result(&list_out).as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn expense_lifecycle_record_edit_rm_by_reference() {
+    let db = temp_db("expense-lifecycle");
+    provision(&db);
+
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "expense",
+            "record",
+            "--label",
+            "Abonnement hébergement",
+            "--category",
+            "software",
+            "--amount",
+            "120.00",
+            "--vat-rate",
+            "standard",
+            "--vat-deductible",
+            "20.00",
+            "--incurred-on",
+            "2026-09-05",
+        ])
+        .assert()
+        .success();
+
+    // Édition par référence (préfixe de libellé, accents ignorés) : seul `--amount` change.
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "expense",
+            "edit",
+            "abonnement",
+            "--amount",
+            "240.00",
+            "--vat-deductible",
+            "40.00",
+        ])
+        .assert()
+        .success();
+
+    let show_out = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--json", "expense", "show", "abonnement"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let expense = json_result(&show_out);
+    assert_eq!(expense["amount"], 24_000);
+    assert_eq!(
+        expense["label"], "Abonnement hébergement",
+        "les champs non fournis à edit sont conservés"
+    );
+    assert_eq!(expense["revision"], 2, "l'édition bumpe la révision");
+
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["expense", "rm", "abonnement"])
+        .assert()
+        .success();
+    let list_out = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--json", "expense", "list"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(json_result(&list_out).as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn quote_lifecycle_by_reference_from_creation_to_acceptance() {
+    let db = temp_db("quote-lifecycle");
+    provision(&db);
+    create_client(&db, "Kappa Software");
+
+    let lines = r#"[{"description":"Refonte plateforme","kind":{"Forfait":{"amount":4500000}},"vat_rate":"Standard"}]"#;
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "quote",
+            "create",
+            "--client",
+            "kappa",
+            "--lines",
+            lines,
+            "--valid-until",
+            "2026-10-31",
+        ])
+        .assert()
+        .success();
+
+    // Un devis créé est enfin lisible (lot 21) — et adressable par le nom de son client.
+    let list_out = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--json", "quote", "list"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let quotes = json_result(&list_out);
+    assert_eq!(quotes.as_array().unwrap().len(), 1);
+    assert_eq!(quotes[0]["status"], "Draft");
+
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["quote", "send", "kappa"])
+        .assert()
+        .success();
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["quote", "accept", "kappa", "--started-on", "2026-11-01"])
+        .assert()
+        .success();
+
+    let show_out = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--json", "quote", "show", "kappa"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let quote = json_result(&show_out);
+    assert_eq!(quote["status"], "Accepted");
+    assert_eq!(quote["total_net_ht"], 4_500_000);
+    assert_eq!(
+        quote["references"]["missions"], 1,
+        "l'acceptation a produit une mission, visible dans la lignée du devis"
+    );
 }

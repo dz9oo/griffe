@@ -4,18 +4,24 @@
 //! `lines_json`, comme en CLI : une mini-syntaxe dédiée serait plus complexe à produire, pour
 //! un agent, qu'un objet JSON qu'il sait déjà écrire.
 //! Exemple : `[{"description":"Acompte","kind":{"Forfait":{"amount":1350000}},"vat_rate":"Standard"}]`
+//!
+//! Lot 21 : `list`/`show` (un devis créé était jusqu'ici illisible), adressage par référence
+//! (`{"quote": "acme"}` — UUID, préfixe, ou nom du client porteur) au lieu d'UUID nus, et
+//! remboursement de la dette `dry_run` des cinq outils préexistants qui appelaient encore
+//! `self.ctx(false)` en dur.
 
 use freeflow_core::app::Executor;
-use freeflow_core::domain::{ClientId, Discount, Money, OpportunityId, QuoteId, QuoteLine};
-use freeflow_core::quotes;
+use freeflow_core::domain::{Discount, Money, QuoteLine};
+use freeflow_core::quotes::{self, list_quotes, priced_lines, quote_by_id, quote_references};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
 use rmcp::{tool, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
+use serde_json::json;
 
 use crate::server::FreeflowServer;
-use crate::support::{err_text, ok_json, ok_or_return, outcome_json};
+use crate::support::{err_text, ok_json, ok_or_return, outcome_json, resolve_quote};
 
 fn resolve_discount(
     percent_bps: Option<u32>,
@@ -31,10 +37,20 @@ fn resolve_discount(
     }
 }
 
+/// Total HT net de remise — recalculé par `priced_lines`, jamais réimplémenté par façade.
+fn net_total(quote: &freeflow_core::domain::Quote) -> Money {
+    priced_lines(&quote.lines, quote.discount)
+        .iter()
+        .map(|(gross, discount)| *gross - *discount)
+        .sum()
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct CreateQuoteArgs {
-    client_id: String,
-    opportunity_id: Option<String>,
+    /// Référence du client : UUID, préfixe d'UUID, ou nom.
+    client: String,
+    /// Référence de l'opportunité liée : UUID, préfixe d'UUID, ou nom.
+    opportunity: Option<String>,
     /// Lignes du devis, au format JSON — voir la description du module.
     lines_json: String,
     /// Remise en dix-millièmes (`1000` = 10 %). Exclusif avec `discount_amount_cents`.
@@ -43,28 +59,43 @@ pub(crate) struct CreateQuoteArgs {
     discount_amount_cents: Option<i64>,
     terms: Option<String>,
     valid_until: String,
+    #[serde(default)]
+    dry_run: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct ReviseQuoteArgs {
-    /// Identifiant racine du devis à réviser (`root_id`).
-    root_id: String,
+    /// Référence de n'importe quelle version de la lignée à réviser (la révision repart
+    /// toujours de sa racine) : UUID, préfixe d'UUID, ou nom du client porteur.
+    quote: String,
     lines_json: String,
     discount_percent_bps: Option<u32>,
     discount_amount_cents: Option<i64>,
     terms: Option<String>,
     valid_until: String,
+    #[serde(default)]
+    dry_run: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub(crate) struct QuoteIdArgs {
-    id: String,
+pub(crate) struct QuoteRefArgs {
+    /// Référence du devis : UUID, préfixe d'UUID, ou nom du client porteur.
+    quote: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct QuoteRefMutationArgs {
+    quote: String,
+    #[serde(default)]
+    dry_run: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct AcceptQuoteArgs {
-    id: String,
+    quote: String,
     started_on: String,
+    #[serde(default)]
+    dry_run: bool,
 }
 
 #[tool_router(router = quotes_router, vis = "pub(crate)")]
@@ -79,9 +110,16 @@ impl FreeflowServer {
         )
     )]
     async fn quote_create(&self, Parameters(args): Parameters<CreateQuoteArgs>) -> CallToolResult {
-        let client_id: ClientId = ok_or_return!("client_id", args.client_id.parse());
-        let opportunity_id: Option<OpportunityId> = match &args.opportunity_id {
-            Some(s) => Some(ok_or_return!("opportunity_id", s.parse())),
+        let mut store = self.store.lock().await;
+        let client_id = ok_or_return!(
+            "client",
+            crate::support::resolve_client(&store, &args.client)
+        );
+        let opportunity_id = match &args.opportunity {
+            Some(reference) => Some(ok_or_return!(
+                "opportunity",
+                crate::support::resolve_opportunity(&store, reference)
+            )),
             None => None,
         };
         let lines: Vec<QuoteLine> =
@@ -102,11 +140,49 @@ impl FreeflowServer {
             terms: args.terms,
             valid_until,
         };
-        let mut store = self.store.lock().await;
-        match Executor::new(&mut store).execute(&cmd, &self.ctx(false)) {
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
             Err(e) => err_text(e.to_string()),
         }
+    }
+
+    /// Liste les devis, toutes versions confondues, les plus récents d'abord.
+    #[tool(
+        name = "quote.list",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    async fn quote_list(&self) -> CallToolResult {
+        let store = self.store.lock().await;
+        match list_quotes(store.connection()) {
+            Ok(all) => ok_json(all),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
+    /// Affiche un devis : contenu, total HT net de remise, lignée (mission issue de son
+    /// acceptation, nombre de versions).
+    #[tool(
+        name = "quote.show",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    async fn quote_show(&self, Parameters(args): Parameters<QuoteRefArgs>) -> CallToolResult {
+        let store = self.store.lock().await;
+        let id = ok_or_return!("quote", resolve_quote(&store, &args.quote));
+        let quote = match quote_by_id(store.connection(), id) {
+            Ok(Some(q)) => q,
+            Ok(None) => return err_text(format!("devis introuvable : {id}")),
+            Err(e) => return err_text(e.to_string()),
+        };
+        let references = match quote_references(store.connection(), id) {
+            Ok(r) => r,
+            Err(e) => return err_text(e.to_string()),
+        };
+        let total = net_total(&quote);
+        ok_json(json!({
+            "quote": quote,
+            "total_net_ht": total,
+            "references": references,
+        }))
     }
 
     /// Crée une nouvelle version d'un devis existant.
@@ -119,7 +195,13 @@ impl FreeflowServer {
         )
     )]
     async fn quote_revise(&self, Parameters(args): Parameters<ReviseQuoteArgs>) -> CallToolResult {
-        let root_id: QuoteId = ok_or_return!("root_id", args.root_id.parse());
+        let mut store = self.store.lock().await;
+        let id = ok_or_return!("quote", resolve_quote(&store, &args.quote));
+        let root_id = match quote_by_id(store.connection(), id) {
+            Ok(Some(q)) => q.root_id,
+            Ok(None) => return err_text(format!("devis introuvable : {id}")),
+            Err(e) => return err_text(e.to_string()),
+        };
         let lines: Vec<QuoteLine> =
             ok_or_return!("lines_json", serde_json::from_str(&args.lines_json));
         let discount = ok_or_return!(
@@ -137,8 +219,7 @@ impl FreeflowServer {
             terms: args.terms,
             valid_until,
         };
-        let mut store = self.store.lock().await;
-        match Executor::new(&mut store).execute(&cmd, &self.ctx(false)) {
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
             Err(e) => err_text(e.to_string()),
         }
@@ -153,10 +234,15 @@ impl FreeflowServer {
             idempotent_hint = false
         )
     )]
-    async fn quote_send(&self, Parameters(args): Parameters<QuoteIdArgs>) -> CallToolResult {
-        let quote_id: QuoteId = ok_or_return!("id", args.id.parse());
+    async fn quote_send(
+        &self,
+        Parameters(args): Parameters<QuoteRefMutationArgs>,
+    ) -> CallToolResult {
         let mut store = self.store.lock().await;
-        match Executor::new(&mut store).execute(&quotes::SendQuote { quote_id }, &self.ctx(false)) {
+        let quote_id = ok_or_return!("quote", resolve_quote(&store, &args.quote));
+        match Executor::new(&mut store)
+            .execute(&quotes::SendQuote { quote_id }, &self.ctx(args.dry_run))
+        {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
             Err(e) => err_text(e.to_string()),
         }
@@ -171,11 +257,14 @@ impl FreeflowServer {
             idempotent_hint = false
         )
     )]
-    async fn quote_decline(&self, Parameters(args): Parameters<QuoteIdArgs>) -> CallToolResult {
-        let quote_id: QuoteId = ok_or_return!("id", args.id.parse());
+    async fn quote_decline(
+        &self,
+        Parameters(args): Parameters<QuoteRefMutationArgs>,
+    ) -> CallToolResult {
         let mut store = self.store.lock().await;
+        let quote_id = ok_or_return!("quote", resolve_quote(&store, &args.quote));
         match Executor::new(&mut store)
-            .execute(&quotes::DeclineQuote { quote_id }, &self.ctx(false))
+            .execute(&quotes::DeclineQuote { quote_id }, &self.ctx(args.dry_run))
         {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
             Err(e) => err_text(e.to_string()),
@@ -192,18 +281,18 @@ impl FreeflowServer {
         )
     )]
     async fn quote_accept(&self, Parameters(args): Parameters<AcceptQuoteArgs>) -> CallToolResult {
-        let quote_id: QuoteId = ok_or_return!("id", args.id.parse());
+        let mut store = self.store.lock().await;
+        let quote_id = ok_or_return!("quote", resolve_quote(&store, &args.quote));
         let started_on = ok_or_return!(
             "started_on",
             freeflow_core::domain::parse_date(&args.started_on)
         );
-        let mut store = self.store.lock().await;
         match Executor::new(&mut store).execute(
             &quotes::AcceptQuote {
                 quote_id,
                 started_on,
             },
-            &self.ctx(false),
+            &self.ctx(args.dry_run),
         ) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
             Err(e) => err_text(e.to_string()),

@@ -1,0 +1,11 @@
+-- Lot 21 (« gestion des données : dépenses & devis lisibles ») : persiste la lignée
+-- opportunité → mission que `WinOpportunity` créait sans la tracer. Sans cette colonne,
+-- `OpportunityReferences` ne pouvait jamais compter les missions issues d'un gain (dette notée
+-- explicitement par le lot 16), et supprimer une opportunité gagnée orphelinait silencieusement
+-- la mission qui en descend.
+--
+-- Même doctrine que `missions.quote_id` : une lignée, pas un lien éditable. La colonne est posée
+-- par `WinOpportunity` (gain direct) ou héritée du devis par `AcceptQuote` (le devis porte déjà
+-- `opportunity_id`), et `UpdateMission` ne l'expose pas — une lignée de prospection ne se
+-- re-pointe pas plus qu'une lignée de facturation.
+ALTER TABLE missions ADD COLUMN opportunity_id TEXT REFERENCES opportunities(id);

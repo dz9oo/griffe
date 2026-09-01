@@ -57,7 +57,13 @@ implémentation.
 
 ### Devis
 - Versionnés et immuables une fois émis. Acceptation → génère la mission et son échéancier de
-  facturation automatiquement.
+  facturation automatiquement — et la mission garde la **lignée** de l'opportunité dont le devis
+  est issu (comme un gain direct).
+- **Lisibles** (`quote list`/`quote show` : contenu, total HT net de remise, mission issue,
+  nombre de versions) et désignables par **référence** (UUID, préfixe, ou nom du client porteur)
+  dans tous les verbes — en CLI, en MCP (`quote.*`, ressources `freeflow://quotes`) et depuis la
+  fenêtre (écran `devis` : liste, fiche avec lignes, envoyer/décliner/accepter). La création et
+  la révision restent CLI/MCP (lignes polymorphes en JSON, pas encore d'éditeur graphique).
 
 ### Facturation & TVA
 - Numérotation séquentielle **sans trou**, garantie même sous écriture concurrente entre
@@ -75,6 +81,13 @@ implémentation.
 ### Dépenses & obligations fiscales
 - Dépenses catégorisées (logiciels, matériel, déplacement, repas, bureau, formation/cotisations,
   autre) avec TVA déductible et justificatif archivé par hash d'intégrité (SHA-256).
+- Créer, consulter, **modifier** et **supprimer** une dépense — en CLI (`freeflow expense …`,
+  avec `--receipt`/`--clear-receipt` pour remplacer ou détacher le justificatif), en MCP
+  (`expense.*`, ressources `freeflow://expenses`) et depuis la fenêtre (écran `depenses`). Même
+  désignation par libellé/UUID/préfixe et même garde-fou d'écriture concurrente que les clients.
+  **Une dépense datée dans un exercice déjà clôturé (voir la clôture d'exercice) ne se crée, ne
+  se modifie et ne se supprime plus** : le résultat figé à la clôture a été calculé sur ces
+  lignes-là — supprimez d'abord l'exercice s'il n'est qu'un projet (`freeflow year rm`).
 - Échéances indicatives CA3 (TVA), acomptes d'IS, CFE — **volontairement pas une source de vérité
   fiscale** : le module le documente explicitement, à vérifier sur impots.gouv.fr.
 - Prévisionnel de trésorerie sur 12 mois (factures émises non payées + missions signées non
@@ -248,13 +261,19 @@ distribués prêts à l'emploi — voir la checklist ci-dessous.
 - [x] Gestion des données (opportunité + interaction, mission + saisie de temps) : modifier,
       archiver/désarchiver, supprimer, clore/rouvrir une mission — en CLI, en MCP et depuis la
       fenêtre. Voir « Prospection » et « Missions » ci-dessus.
-- [ ] Étendre la gestion des données aux dépenses (`UpdateExpense`/`DeleteExpense`). Lire un devis
-      reste impossible une fois créé (aucune query dédiée) ; `missions` n'a toujours pas de colonne
-      `opportunity_id` pour tracer le lien créé par un gain d'opportunité.
+- [x] Gestion des données des dépenses (`UpdateExpense`/`DeleteExpense`, avec garde « exercice
+      clôturé »), lecture des devis (`quote list`/`show`, écran `devis`, ressources MCP) et
+      colonne `missions.opportunity_id` traçant la lignée d'un gain d'opportunité (posée par
+      `WinOpportunity`, héritée du devis par `AcceptQuote` ; une opportunité gagnée dont la
+      mission existe encore n'est plus supprimable, seulement archivable) — voir « Devis » et
+      « Dépenses » ci-dessus.
+- [ ] Éditeur graphique de devis (création/révision des lignes polymorphes depuis la fenêtre) —
+      aujourd'hui CLI/MCP seulement.
 - [ ] `VoidPayment`/`UnreconcileTransaction` : un encaissement ou un rapprochement saisi à tort
       n'est aujourd'hui ni corrigible ni annulable.
-- [ ] Parité MCP sur `company`/`expense`/`fiscal`/`forecast`/`invoice render` — le serveur MCP
-      reste un sous-ensemble strict de la CLI en dehors des clients/opportunités/missions.
+- [ ] Parité MCP sur `company`/`forecast`/`invoice render` — comblée pour `expense.*` (lot 21) et
+      `fiscal.calendar`/`fiscal.years` (lots 19-20), le reste du serveur MCP demeure un
+      sous-ensemble strict de la CLI.
 - [ ] Sidecar v3 à clé maître enveloppée (modèle LUKS) : le coffre serait chiffré par une clé
       aléatoire, elle-même enveloppée dans le sidecar par la clé dérivée d'Argon2id. Un changement
       de passphrase deviendrait la réécriture atomique d'un seul petit fichier — plus de

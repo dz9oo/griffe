@@ -62,6 +62,7 @@ mod tests {
             id: MissionId::new(),
             client_id: ClientId::new(),
             quote_id: None,
+            opportunity_id: None,
             name: "Refonte dashboard IoT".to_string(),
             kind,
             milestones,

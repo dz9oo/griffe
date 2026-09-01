@@ -112,6 +112,31 @@ pub(crate) fn resolve_mission(
     )
 }
 
+/// Résout une référence texte vers un identifiant de dépense — voir [`resolve_opportunity`].
+pub(crate) fn resolve_expense(
+    store: &freeflow_core::store::Store,
+    needle: &str,
+) -> Result<freeflow_core::domain::ExpenseId, String> {
+    resolve_ref(
+        freeflow_core::reference::resolve_expense(store.connection(), needle),
+        "aucune dépense",
+        "dépenses",
+    )
+}
+
+/// Résout une référence texte vers un identifiant de devis (le libellé cherché est le nom du
+/// client porteur) — voir [`resolve_opportunity`].
+pub(crate) fn resolve_quote(
+    store: &freeflow_core::store::Store,
+    needle: &str,
+) -> Result<freeflow_core::domain::QuoteId, String> {
+    resolve_ref(
+        freeflow_core::reference::resolve_quote(store.connection(), needle),
+        "aucun devis",
+        "devis",
+    )
+}
+
 pub(crate) fn parse_loss_reason(s: &str) -> Result<freeflow_core::domain::LossReason, String> {
     use freeflow_core::domain::LossReason;
     match s {

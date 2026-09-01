@@ -166,18 +166,20 @@ pub fn pipeline_by_stage(conn: &Connection) -> Result<Vec<StageSummary>, AppErro
 }
 
 /// Ce qui empêche une opportunité d'être supprimée pour de bon — voir [`opportunity_references`].
-/// `quotes.opportunity_id` est la seule clé étrangère du schéma pointant vers `opportunities`, et
-/// un devis est immuable par trigger (lot 6) : une opportunité devisée n'est donc jamais
-/// supprimable, seulement archivable.
+/// Un devis est immuable par trigger (lot 6) : une opportunité devisée n'est donc jamais
+/// supprimable, seulement archivable. Une mission issue d'un gain (`missions.opportunity_id`,
+/// migration `0012`) bloque de même : la supprimer orphelinerait la lignée d'une mission —
+/// potentiellement déjà facturée — qui en descend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpportunityReferences {
     pub quotes: i64,
+    pub missions: i64,
 }
 
 impl OpportunityReferences {
     #[must_use]
     pub const fn is_empty(self) -> bool {
-        self.quotes == 0
+        self.quotes == 0 && self.missions == 0
     }
 }
 
@@ -194,7 +196,12 @@ pub fn opportunity_references(
         [id.to_string()],
         |row| row.get(0),
     )?;
-    Ok(OpportunityReferences { quotes })
+    let missions = conn.query_row(
+        "SELECT count(*) FROM missions WHERE opportunity_id = ?1",
+        [id.to_string()],
+        |row| row.get(0),
+    )?;
+    Ok(OpportunityReferences { quotes, missions })
 }
 
 /// Interactions d'une opportunité, les plus anciennes d'abord.

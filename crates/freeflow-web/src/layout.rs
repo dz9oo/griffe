@@ -9,8 +9,10 @@ use maud::{DOCTYPE, Markup, html};
 pub enum ViewId {
     Dashboard,
     Prospection,
+    Devis,
     Missions,
     Facturation,
+    Depenses,
     Clients,
     Cloture,
     Console,
@@ -22,8 +24,10 @@ impl ViewId {
         match self {
             Self::Dashboard => "/view/dashboard",
             Self::Prospection => "/view/prospection",
+            Self::Devis => "/view/devis",
             Self::Missions => "/view/missions",
             Self::Facturation => "/view/facturation",
+            Self::Depenses => "/view/depenses",
             Self::Clients => "/view/clients",
             Self::Cloture => "/view/cloture",
             Self::Console => "/view/console",
@@ -35,8 +39,10 @@ impl ViewId {
         match self {
             Self::Dashboard => "dashboard",
             Self::Prospection => "prospection",
+            Self::Devis => "devis",
             Self::Missions => "missions",
             Self::Facturation => "facturation",
+            Self::Depenses => "depenses",
             Self::Clients => "clients",
             Self::Cloture => "cloture",
             Self::Console => "console",
@@ -48,11 +54,14 @@ impl ViewId {
         self.slug()
     }
 
-    const ALL: [Self; 7] = [
+    // L'ordre suit le flux de travail : prospecter → deviser → réaliser → facturer → dépenser.
+    const ALL: [Self; 9] = [
         Self::Dashboard,
         Self::Prospection,
+        Self::Devis,
         Self::Missions,
         Self::Facturation,
+        Self::Depenses,
         Self::Clients,
         Self::Cloture,
         Self::Console,
@@ -107,6 +116,10 @@ fn palette() -> Markup {
                     button class="palette-item" type="button" data-label="nouvelle mission"
                       hx-get="/missions/new" hx-target="#panel" hx-swap="innerHTML" {
                         "+ nouvelle mission"
+                    }
+                    button class="palette-item" type="button" data-label="nouvelle dépense"
+                      hx-get="/depenses/new" hx-target="#panel" hx-swap="innerHTML" {
+                        "+ nouvelle dépense"
                     }
                     button class="palette-item" type="button" data-label="clore un exercice"
                       hx-get="/cloture/new" hx-target="#panel" hx-swap="innerHTML" {

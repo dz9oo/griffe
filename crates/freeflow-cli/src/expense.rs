@@ -1,17 +1,20 @@
-//! `freeflow expense ...`
+//! `freeflow expense ...` — les références (`<RÉFÉRENCE>`) acceptent un UUID complet, un préfixe
+//! d'UUID d'au moins 4 caractères hexadécimaux, ou un libellé de dépense (insensible à la casse
+//! et aux accents, exact puis par préfixe) : voir `freeflow_core::reference::resolve_expense`.
 
 use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
 use freeflow_core::app::{ExecutionContext, Executor};
-use freeflow_core::domain::{ExpenseCategory, Money, VatRate};
-use freeflow_core::expenses::{self, hash_receipt, list_expenses};
+use freeflow_core::domain::{Expense, ExpenseCategory, Money, VatRate};
+use freeflow_core::expenses::{self, expense_by_id, hash_receipt, list_expenses};
 use freeflow_core::store::Store;
 use time::Date;
 
 use crate::error::CliError;
 use crate::output::{format_outcome, format_value};
 use crate::parsers::{parse_date, parse_money};
+use crate::refs;
 
 #[derive(Debug, Args)]
 pub struct RecordArgs {
@@ -40,6 +43,45 @@ pub enum ExpenseCommand {
     Record(Box<RecordArgs>),
     /// Liste les dépenses, les plus récentes d'abord.
     List,
+    /// Affiche une dépense.
+    Show {
+        #[arg(value_name = "RÉFÉRENCE")]
+        reference: String,
+    },
+    /// Modifie une dépense existante — seuls les champs fournis changent, le reste est conservé
+    /// tel quel. Refusé si sa date tombe dans un exercice déjà clôturé.
+    Edit(Box<EditArgs>),
+    /// Supprime une dépense pour de bon — le justificatif archivé, lui, reste en place
+    /// (adressé par contenu, il peut être partagé par une autre dépense).
+    Rm {
+        #[arg(value_name = "RÉFÉRENCE")]
+        reference: String,
+    },
+}
+
+#[derive(Debug, Args)]
+pub struct EditArgs {
+    #[arg(value_name = "RÉFÉRENCE")]
+    reference: String,
+    #[arg(long)]
+    label: Option<String>,
+    #[arg(long, value_parser = clap::value_parser!(ExpenseCategory))]
+    category: Option<ExpenseCategory>,
+    #[arg(long, value_parser = parse_money)]
+    amount: Option<Money>,
+    #[arg(long, value_parser = clap::value_parser!(VatRate))]
+    vat_rate: Option<VatRate>,
+    #[arg(long, value_parser = parse_money)]
+    vat_deductible: Option<Money>,
+    #[arg(long, value_parser = parse_date)]
+    incurred_on: Option<Date>,
+    /// Remplace le justificatif : le nouveau fichier est haché et archivé, l'ancien reste en
+    /// place dans `receipts/`. Exclusif avec `--clear-receipt`.
+    #[arg(long, conflicts_with = "clear_receipt")]
+    receipt: Option<PathBuf>,
+    /// Détache le justificatif de la dépense (sans supprimer le fichier archivé).
+    #[arg(long)]
+    clear_receipt: bool,
 }
 
 /// Copie `receipt` dans `<répertoire du coffre>/receipts/<hash>-<nom d'origine>` (stockage
@@ -141,8 +183,111 @@ pub fn run(
         }
         ExpenseCommand::List => {
             let expenses = list_expenses(store.connection())?;
-            format_value(&expenses, json)
+            if json {
+                format_value(&expenses, json)
+            } else {
+                expense_table(&expenses)
+            }
+        }
+        ExpenseCommand::Show { reference } => {
+            let id = refs::resolve_expense(store, &reference)?;
+            let expense = expense_or_not_found(store, id)?;
+            format_value(&expense, json)
+        }
+        ExpenseCommand::Edit(args) => {
+            let id = refs::resolve_expense(store, &args.reference)?;
+            let current = expense_or_not_found(store, id)?;
+            // Même logique de justificatif que `Record` : hash seul en dry-run (lecture sans
+            // archivage), hash + copie sinon ; `--clear-receipt` détache sans toucher au fichier.
+            let (receipt_hash, receipt_filename) = if args.clear_receipt {
+                (None, None)
+            } else {
+                match &args.receipt {
+                    Some(path) if ctx.dry_run => {
+                        let content = std::fs::read(path).map_err(|e| {
+                            CliError::Unexpected(format!(
+                                "lecture de {} impossible : {e}",
+                                path.display()
+                            ))
+                        })?;
+                        (Some(hash_receipt(&content)), None)
+                    }
+                    Some(path) => {
+                        let (hash, filename) = archive_receipt(store.db_path(), path)?;
+                        (Some(hash), Some(filename))
+                    }
+                    None => (
+                        current.receipt_hash.clone(),
+                        current.receipt_filename.clone(),
+                    ),
+                }
+            };
+            let command = expenses::UpdateExpense {
+                id,
+                revision: current.revision,
+                label: args.label.unwrap_or(current.label),
+                category: args.category.unwrap_or(current.category),
+                amount: args.amount.unwrap_or(current.amount),
+                vat_rate: args.vat_rate.unwrap_or(current.vat_rate),
+                vat_deductible: args.vat_deductible.unwrap_or(current.vat_deductible),
+                incurred_on: args.incurred_on.unwrap_or(current.incurred_on),
+                receipt_hash,
+                receipt_filename,
+            };
+            let outcome = Executor::new(store).execute(&command, ctx)?;
+            format_outcome(&outcome, json)
+        }
+        ExpenseCommand::Rm { reference } => {
+            let id = refs::resolve_expense(store, &reference)?;
+            let current = expense_or_not_found(store, id)?;
+            let command = expenses::DeleteExpense {
+                id,
+                revision: current.revision,
+            };
+            let outcome = Executor::new(store).execute(&command, ctx)?;
+            format_outcome(&outcome, json)
         }
     };
     Ok(output)
+}
+
+fn expense_or_not_found(
+    store: &Store,
+    id: freeflow_core::domain::ExpenseId,
+) -> Result<Expense, CliError> {
+    expense_by_id(store.connection(), id)?
+        .ok_or_else(|| CliError::Domain(format!("dépense introuvable : {id}")))
+}
+
+fn expense_table(expenses: &[Expense]) -> String {
+    let rows = expenses
+        .iter()
+        .map(|e| {
+            vec![
+                e.id.to_string(),
+                freeflow_core::domain::format_date(e.incurred_on),
+                e.label.clone(),
+                e.category.as_str().to_string(),
+                e.amount.to_string(),
+                e.vat_deductible.to_string(),
+                if e.receipt_hash.is_some() {
+                    "oui".to_string()
+                } else {
+                    "—".to_string()
+                },
+            ]
+        })
+        .collect::<Vec<_>>();
+    crate::table::render(
+        &[
+            "id",
+            "date",
+            "libellé",
+            "catégorie",
+            "montant ttc",
+            "tva déductible",
+            "justificatif",
+        ],
+        &rows,
+    )
 }

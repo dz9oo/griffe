@@ -211,9 +211,9 @@ impl Command for DeleteOpportunity {
         let refs = opportunity_references(conn, self.id)?;
         if !refs.is_empty() {
             return Err(ProspectionError::HasReferences(format!(
-                "{} devis référence(nt) encore cette opportunité — archivez-la plutôt que de la \
-                 supprimer",
-                refs.quotes
+                "{} devis et {} mission(s) référencent encore cette opportunité — archivez-la \
+                 plutôt que de la supprimer",
+                refs.quotes, refs.missions
             ))
             .into());
         }
@@ -293,6 +293,7 @@ impl Command for WinOpportunity {
             id: MissionId::new(),
             client_id: opportunity.client_id,
             quote_id: None,
+            opportunity_id: Some(self.opportunity_id),
             name: opportunity.name.clone(),
             kind: MissionKind::Forfait {
                 budget: opportunity.amount,

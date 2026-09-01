@@ -270,6 +270,45 @@ async fn every_screen_renders_successfully_against_a_freshly_seeded_vault() {
                 &human_ctx(),
             )
             .unwrap();
+
+        // Un devis (avec remise) et une dépense, pour que les écrans du lot 21 aient du contenu
+        // à rendre — lignes, totaux nets, badges de statut.
+        Executor::new(&mut store)
+            .execute(
+                &freeflow_core::quotes::CreateQuote {
+                    client_id,
+                    opportunity_id: None,
+                    lines: vec![freeflow_core::domain::QuoteLine {
+                        description: "Refonte plateforme".to_string(),
+                        kind: freeflow_core::domain::LineKind::Forfait {
+                            amount: Money::from_cents(4_500_000),
+                        },
+                        vat_rate: freeflow_core::domain::VatRate::Standard,
+                    }],
+                    discount: Some(freeflow_core::domain::Discount::Percentage(1_000)),
+                    terms: None,
+                    valid_until: time::Date::from_calendar_date(2026, time::Month::October, 31)
+                        .unwrap(),
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+        Executor::new(&mut store)
+            .execute(
+                &freeflow_core::expenses::RecordExpense {
+                    label: "Abonnement hébergement".to_string(),
+                    category: freeflow_core::domain::ExpenseCategory::Software,
+                    amount: Money::from_cents(12_000),
+                    vat_rate: freeflow_core::domain::VatRate::Standard,
+                    vat_deductible: Money::from_cents(2_000),
+                    incurred_on: time::Date::from_calendar_date(2026, time::Month::September, 5)
+                        .unwrap(),
+                    receipt_hash: None,
+                    receipt_filename: None,
+                },
+                &human_ctx(),
+            )
+            .unwrap();
     }
 
     let router = freeflow_web::router(state);
@@ -277,8 +316,10 @@ async fn every_screen_renders_successfully_against_a_freshly_seeded_vault() {
     for path in [
         "/view/dashboard",
         "/view/prospection",
+        "/view/devis",
         "/view/missions",
         "/view/facturation",
+        "/view/depenses",
         "/view/clients",
         "/view/cloture",
     ] {
@@ -1931,4 +1972,241 @@ async fn closing_a_year_from_the_window_then_downloading_its_documents() {
         amended_body.contains("approuvé"),
         "réviser un exercice approuvé doit re-rendre le panneau avec l'erreur : {amended_body}"
     );
+}
+
+#[tokio::test]
+async fn expense_lifecycle_through_the_panel() {
+    let db_path = test_db_path("depenses-lifecycle");
+    let state = unlocked_state(&db_path).await;
+    let router = freeflow_web::router(state);
+
+    // Créer.
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/depenses")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(
+                    "label=Abonnement+h%C3%A9bergement&category=software&amount=120.00\
+                     &vat_rate=standard&vat_deductible=20.00&incurred_on=2026-09-05",
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("HX-Trigger").unwrap(),
+        "freeflow:saved"
+    );
+
+    let expense_id = {
+        let store = Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+        let expenses = freeflow_core::expenses::list_expenses(store.connection()).unwrap();
+        assert_eq!(expenses.len(), 1);
+        assert_eq!(expenses[0].amount, Money::from_cents(12_000));
+        expenses[0].id
+    };
+
+    let table = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/depenses/table")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(body_text(table).await.contains("Abonnement hébergement"));
+
+    // Modifier (révision 1 → 2) : seul le montant change, le reste est resoumis tel quel.
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/depenses/{expense_id}"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(
+                    "revision=1&label=Abonnement+h%C3%A9bergement&category=software\
+                     &amount=240.00&vat_rate=standard&vat_deductible=40.00&incurred_on=2026-09-05",
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("HX-Trigger").unwrap(),
+        "freeflow:saved"
+    );
+
+    // Une resoumission avec la révision périmée est un conflit, pas un écrasement silencieux.
+    let stale = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/depenses/{expense_id}"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(
+                    "revision=1&label=Ecrasement&category=software\
+                     &amount=1.00&vat_rate=standard&vat_deductible=0.00&incurred_on=2026-09-05",
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let stale_body = body_text(stale).await;
+    assert!(
+        stale_body.contains("form-conflict"),
+        "un conflit de révision doit proposer un rechargement : {stale_body}"
+    );
+
+    // Supprimer (la révision est relue côté serveur au moment du clic).
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/depenses/{expense_id}/delete"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("HX-Trigger").unwrap(),
+        "freeflow:saved"
+    );
+
+    let table = router
+        .oneshot(
+            Request::builder()
+                .uri("/depenses/table")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(body_text(table).await.contains("aucune dépense"));
+}
+
+#[tokio::test]
+async fn a_quote_can_be_sent_and_accepted_through_the_panel() {
+    let db_path = test_db_path("devis-lifecycle");
+    let state = unlocked_state_with_client(&db_path).await;
+    let router = freeflow_web::router(state);
+    let client_id = client_id_by_name(&db_path, "Kappa Software");
+
+    let quote_id = {
+        let mut store =
+            Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+        match Executor::new(&mut store)
+            .execute(
+                &freeflow_core::quotes::CreateQuote {
+                    client_id,
+                    opportunity_id: None,
+                    lines: vec![freeflow_core::domain::QuoteLine {
+                        description: "Refonte plateforme".to_string(),
+                        kind: freeflow_core::domain::LineKind::Forfait {
+                            amount: Money::from_cents(4_500_000),
+                        },
+                        vat_rate: freeflow_core::domain::VatRate::Standard,
+                    }],
+                    discount: None,
+                    terms: None,
+                    valid_until: time::Date::from_calendar_date(2026, time::Month::October, 31)
+                        .unwrap(),
+                },
+                &human_ctx(),
+            )
+            .unwrap()
+        {
+            freeflow_core::app::Outcome::Applied(id) => id,
+            other => panic!("expected Applied, got {other:?}"),
+        }
+    };
+
+    // La fiche du brouillon propose « marquer envoyé », pas encore « accepter ».
+    let detail = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/devis/{quote_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = body_text(detail).await;
+    assert!(body.contains("marquer envoyé"), "{body}");
+    assert!(!body.contains("accepter…"));
+
+    let sent = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/devis/{quote_id}/send"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(sent.status(), StatusCode::OK);
+    assert_eq!(sent.headers().get("HX-Trigger").unwrap(), "freeflow:saved");
+
+    let accepted = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/devis/{quote_id}/accept"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from("started_on=2026-11-01"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(accepted.status(), StatusCode::OK);
+    assert_eq!(
+        accepted.headers().get("HX-Trigger").unwrap(),
+        "freeflow:saved"
+    );
+
+    // L'acceptation a créé la mission, visible sur l'écran missions, et la fiche du devis
+    // documente cette lignée.
+    let missions_table = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/missions/table")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        body_text(missions_table)
+            .await
+            .contains("Refonte plateforme")
+    );
+
+    let detail = router
+        .oneshot(
+            Request::builder()
+                .uri(format!("/devis/{quote_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = body_text(detail).await;
+    assert!(body.contains("accepté"), "{body}");
+    assert!(body.contains("1 mission(s)"), "{body}");
 }
