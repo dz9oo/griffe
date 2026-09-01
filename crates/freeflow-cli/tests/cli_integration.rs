@@ -435,7 +435,9 @@ fn vault_status_reports_absence_then_presence() {
         .unwrap();
     let present_value: serde_json::Value = serde_json::from_slice(&present.stdout).unwrap();
     assert_eq!(present_value["exists"], true);
-    assert_eq!(present_value["sidecar_version"], 2);
+    // Un coffre neuf est v3 depuis le lot 24 : clé maître enveloppée, changement de passphrase
+    // sans re-chiffrement.
+    assert_eq!(present_value["sidecar_version"], 3);
     assert!(present_value["session_expires_at"].is_string());
 }
 
@@ -530,14 +532,20 @@ fn passphrase_change_dry_run_writes_nothing() {
     let old_file = passphrase_file(&db, "s3cret");
     let new_file = new_passphrase_file(&db, "new-s3cret");
 
-    freeflow()
+    let output = freeflow()
         .env("FREEFLOW_DB", &db)
-        .args(["--passphrase-file"])
+        .args(["--json", "--passphrase-file"])
         .arg(&old_file)
         .args(["--dry-run", "passphrase", "change", "--new-passphrase-file"])
         .arg(&new_file)
-        .assert()
-        .success();
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let value = json_result(&output.stdout);
+    assert_eq!(value["changed"], false);
+    // Coffre v3 : le dry-run annonce un simple ré-enveloppement, zéro octet à ré-chiffrer.
+    assert_eq!(value["reencrypts_database"], false);
+    assert_eq!(value["bytes_to_reencrypt"], 0);
 
     // L'ancienne passphrase ouvre toujours le coffre.
     freeflow()
@@ -592,6 +600,10 @@ fn passphrase_change_writes_a_backup_and_names_it_in_its_json_output() {
     let value = json_result(&output.stdout);
     assert_eq!(value["changed"], true);
     assert_eq!(value["dry_run"], false);
+    assert_eq!(
+        value["reencrypted"], false,
+        "un coffre v3 change de passphrase sans ré-chiffrer la base"
+    );
     assert_eq!(value["argon2"]["m_cost"], 65536);
     let backup_path = value["backup"].as_str().unwrap();
     assert!(

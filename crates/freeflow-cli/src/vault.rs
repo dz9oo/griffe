@@ -479,33 +479,62 @@ pub fn change_passphrase(
     let backups_dir = db_path.with_file_name("backups");
 
     if dry_run {
-        let page_count: i64 = store
-            .connection()
-            .query_row("PRAGMA page_count", [], |row| row.get(0))
-            .map_err(|e| CliError::Unexpected(format!("lecture de PRAGMA page_count : {e}")))?;
-        // `SQLCipher` répond à `PRAGMA page_size` par une colonne TEXTE nommée
-        // `cipher_page_size` plutôt que l'entier habituel de SQLite (voir sa surcharge de la
-        // pragma `page_size`/`cipher_page_size` dans son propre `pragma.c`) : lire une chaîne
-        // puis la parser, pas un entier direct.
-        let page_size: i64 = store
-            .connection()
-            .query_row("PRAGMA page_size", [], |row| row.get::<_, String>(0))
-            .map_err(|e| CliError::Unexpected(format!("lecture de PRAGMA page_size : {e}")))?
-            .parse()
-            .map_err(|e| CliError::Unexpected(format!("PRAGMA page_size non numérique : {e}")))?;
-        let bytes_to_reencrypt = page_count * page_size;
+        // Le régime dépend du format du sidecar : un coffre v3 (clé maître enveloppée) ne
+        // ré-chiffre rien — seule l'enveloppe est réécrite ; un coffre v1/v2 ré-chiffre tout et
+        // migre vers v3 au passage.
+        let sidecar_version = match Store::status(db_path).map_err(|e| map_store_err(db_path, e))? {
+            freeflow_core::store::VaultStatus::Exists {
+                sidecar_version, ..
+            } => sidecar_version,
+            freeflow_core::store::VaultStatus::Absent => {
+                return Err(CliError::NoVault(db_path.to_path_buf()));
+            }
+        };
+        let reencrypts_database = sidecar_version < 3;
+        let bytes_to_reencrypt = if reencrypts_database {
+            let page_count: i64 = store
+                .connection()
+                .query_row("PRAGMA page_count", [], |row| row.get(0))
+                .map_err(|e| CliError::Unexpected(format!("lecture de PRAGMA page_count : {e}")))?;
+            // `SQLCipher` répond à `PRAGMA page_size` par une colonne TEXTE nommée
+            // `cipher_page_size` plutôt que l'entier habituel de SQLite (voir sa surcharge de la
+            // pragma `page_size`/`cipher_page_size` dans son propre `pragma.c`) : lire une chaîne
+            // puis la parser, pas un entier direct.
+            let page_size: i64 = store
+                .connection()
+                .query_row("PRAGMA page_size", [], |row| row.get::<_, String>(0))
+                .map_err(|e| CliError::Unexpected(format!("lecture de PRAGMA page_size : {e}")))?
+                .parse()
+                .map_err(|e| {
+                    CliError::Unexpected(format!("PRAGMA page_size non numérique : {e}"))
+                })?;
+            page_count * page_size
+        } else {
+            0
+        };
         if json {
             let value = serde_json::json!({
                 "path": db_path,
                 "dry_run": true,
                 "changed": false,
+                "reencrypts_database": reencrypts_database,
                 "bytes_to_reencrypt": bytes_to_reencrypt,
             });
             return Ok(serde_json::to_string_pretty(&value).expect("Value se sérialise toujours"));
         }
+        if reencrypts_database {
+            return Ok(format!(
+                "(dry-run) passphrase inchangée pour {} — {bytes_to_reencrypt} octets seraient \
+                 ré-chiffrés (le coffre migrerait au format v3, clé maître enveloppée), une \
+                 sauvegarde préalable serait écrite dans {}",
+                db_path.display(),
+                backups_dir.display()
+            ));
+        }
         return Ok(format!(
-            "(dry-run) passphrase inchangée pour {} — {bytes_to_reencrypt} octets seraient \
-             ré-chiffrés, une sauvegarde préalable serait écrite dans {}",
+            "(dry-run) passphrase inchangée pour {} — la base ne serait pas ré-chiffrée, seule \
+             l'enveloppe de la clé maître (sidecar .kdf) serait réécrite ; une sauvegarde \
+             préalable serait écrite dans {}",
             db_path.display(),
             backups_dir.display()
         ));
@@ -526,6 +555,7 @@ pub fn change_passphrase(
         argon2_m_cost: report.argon2_m_cost,
         argon2_t_cost: report.argon2_t_cost,
         argon2_p_cost: report.argon2_p_cost,
+        reencrypted: report.reencrypted,
     };
     let ctx = ExecutionContext::new(actor, false);
     if let Err(e) = Executor::new(&mut store).execute(&event, &ctx) {
@@ -538,6 +568,7 @@ pub fn change_passphrase(
             "dry_run": false,
             "changed": true,
             "backup": report.backup_path,
+            "reencrypted": report.reencrypted,
             "argon2": {
                 "m_cost": report.argon2_m_cost,
                 "t_cost": report.argon2_t_cost,
@@ -547,9 +578,15 @@ pub fn change_passphrase(
         return Ok(serde_json::to_string_pretty(&value).expect("Value se sérialise toujours"));
     }
 
+    let regime = if report.reencrypted {
+        "\n  le coffre est passé au format v3 (clé maître enveloppée) : les prochains \
+         changements ne ré-chiffreront plus la base."
+    } else {
+        "\n  base non modifiée — seule l'enveloppe de la clé maître (sidecar) a été réécrite."
+    };
     Ok(format!(
-        "✓ passphrase changée : {}\n  sauvegarde préalable : {}\n  ⚠ cette sauvegarde et toutes \
-         les précédentes s'ouvrent avec l'ANCIENNE passphrase.",
+        "✓ passphrase changée : {}\n  sauvegarde préalable : {}{regime}\n  ⚠ cette sauvegarde et \
+         toutes les précédentes s'ouvrent avec l'ANCIENNE passphrase.",
         db_path.display(),
         report.backup_path.display()
     ))

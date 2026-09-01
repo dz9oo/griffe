@@ -112,7 +112,12 @@ implémentation.
   facturées + pipeline pondéré − charges connues).
 
 ### Sécurité & fiabilité
-- Chiffrement SQLCipher, clé dérivée par Argon2id. Aucune variable d'environnement de passphrase
+- Chiffrement SQLCipher par une **clé maître aléatoire** (modèle LUKS) : la passphrase ne sert
+  qu'à dériver, par Argon2id, la clé qui enveloppe cette clé maître dans le sidecar `<db>.kdf`
+  (scellement XChaCha20-Poly1305 — une mauvaise passphrase, comme un sidecar altéré, échoue au
+  tag d'authentification avant de toucher la base). Les coffres créés avant le format v3 restent
+  lisibles tels quels et migrent au premier changement de passphrase.
+  Aucune variable d'environnement de passphrase
   n'existe : la passphrase est saisie au clavier (invite masquée), lue dans un fichier
   (`--passphrase-file`, permissions vérifiées), ou produite par une commande externe
   (`--passphrase-command`, ex. `pass show freeflow`) — jamais écrite en clair sur disque, jamais
@@ -232,12 +237,19 @@ explicite, restaurée puis vérifiée avant de la mettre en usage.
 freeflow passphrase change   # invite l'ancienne, puis deux fois la nouvelle (saisies masquées)
 ```
 
-Ré-chiffre l'intégralité du coffre sous une clé neuve. L'ancienne passphrase est **toujours**
-exigée, même si une session est déjà active dans le trousseau OS ou si la fenêtre est déjà
+Sur un coffre au format v3 (tout coffre créé désormais), l'opération est **instantanée quelle
+que soit la taille du coffre** : la clé maître ne change pas, seule son enveloppe (le sidecar
+`.kdf`) est réécrite, atomiquement — la base n'est pas touchée. Un coffre plus ancien (v2) est
+ré-chiffré intégralement une dernière fois et migre au format v3 à cette occasion ; les
+changements suivants ne ré-chiffrent plus rien. L'ancienne passphrase est **toujours** exigée,
+même si une session est déjà active dans le trousseau OS ou si la fenêtre est déjà
 déverrouillée — ni l'une ni l'autre ne prouvent que c'est bien toi qui tapes la commande. Une
 sauvegarde est écrite automatiquement avant toute modification (`backups/pre-passphrase-change-
 *.db`) ; si l'opération échoue pour quelque raison que ce soit, rien n'a été touché. `--dry-run`
-affiche ce qui serait fait (volume à ré-chiffrer, emplacement de la sauvegarde) sans rien écrire.
+affiche ce qui serait fait (régime — ré-enveloppement seul ou re-chiffrement migrateur —, volume
+concerné, emplacement de la sauvegarde) sans rien écrire. Chaque sauvegarde voyage avec son
+propre `.kdf` : c'est lui qui porte la clé de cette copie-là — ne jamais séparer les deux
+fichiers.
 `--new-passphrase-file`/`--new-passphrase-command`/`--new-passphrase-stdin` existent en miroir des
 options `--passphrase-*` pour un usage non interactif. **Cette sauvegarde préalable — comme toute
 sauvegarde antérieure — reste chiffrée avec l'ANCIENNE passphrase** : ne t'en débarrasse pas sous
@@ -295,12 +307,12 @@ distribués prêts à l'emploi — voir la checklist ci-dessous.
 - [ ] Parité MCP sur `company`/`forecast`/`invoice render` — comblée pour `expense.*` (lot 21) et
       `fiscal.calendar`/`fiscal.years` (lots 19-20), le reste du serveur MCP demeure un
       sous-ensemble strict de la CLI.
-- [ ] Sidecar v3 à clé maître enveloppée (modèle LUKS) : le coffre serait chiffré par une clé
-      aléatoire, elle-même enveloppée dans le sidecar par la clé dérivée d'Argon2id. Un changement
-      de passphrase deviendrait la réécriture atomique d'un seul petit fichier — plus de
-      ré-chiffrement de la base, plus de fenêtre de bascule à gérer. Demande sa propre migration
-      des coffres v2 existants et un algorithme d'enveloppement (AEAD), hors périmètre du lot qui
-      a introduit `passphrase change`.
+- [x] Sidecar v3 à clé maître enveloppée (modèle LUKS) : le coffre est chiffré par une clé
+      aléatoire, elle-même scellée dans le sidecar (XChaCha20-Poly1305, en-tête en AAD) par la
+      clé dérivée d'Argon2id. Un changement de passphrase est devenu la réécriture atomique d'un
+      seul petit fichier — plus de ré-chiffrement de la base, plus de fenêtre de bascule. Les
+      coffres v2 migrent au premier `passphrase change` (le seul moment où re-chiffrer est de
+      toute façon inévitable) — voir « Sécurité » et « Changer de passphrase » ci-dessus.
 - [ ] Bundle `.dmg` macOS signé et notarisé, construit et testé sur une vraie machine macOS.
 - [ ] Bundle `.AppImage` Linux fonctionnel (résoudre l'incompatibilité `linuxdeploy-plugin-gtk` /
       chemin `gdk-pixbuf` non-FHS, ou bundler depuis une distribution Linux FHS conventionnelle).

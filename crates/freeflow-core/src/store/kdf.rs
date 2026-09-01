@@ -1,9 +1,9 @@
-//! Sidecar `<db>.kdf` : sel Argon2id, paramètres de coût, identifiant de coffre, vérificateur de
-//! clé. Deux formats coexistent sur disque :
+//! Sidecar `<db>.kdf` : sel Argon2id, paramètres de coût, identifiant de coffre, et — selon le
+//! format — vérificateur de clé ou clé maître enveloppée. Trois formats coexistent sur disque :
 //!
 //! - **v1** (17 octets) — `[version=1][sel:16]`. Aucun identifiant de coffre propre (l'appelant
 //!   retombe sur le hash du chemin), aucun vérificateur, paramètres Argon2 câblés en dur
-//!   ([`Argon2Cost::LEGACY`]).
+//!   ([`Argon2Cost::LEGACY`]). La clé du coffre est la clé dérivée elle-même.
 //! - **v2** (77 octets) — `[version=2][vault_id:16][sel:16][m_cost:4][t_cost:4][p_cost:4]
 //!   [vérificateur:32]`, tout en little-endian. Un coffre supprimé puis recréé au même chemin
 //!   obtient un `vault_id` aléatoire neuf : l'ancienne entrée du trousseau, indexée sur cet id,
@@ -11,26 +11,46 @@
 //!   trousseau/sidecar de l'ancien format. Le vérificateur permet de rejeter une mauvaise
 //!   passphrase *avant* de toucher `SQLCipher`, y compris sur un coffre dont le fichier `.db`
 //!   serait vide ou absent de page chiffrée lisible — chose que la seule lecture SQL ne peut pas
-//!   garantir.
+//!   garantir. La clé du coffre est là aussi la clé dérivée elle-même.
+//! - **v3** (133 octets, lot 24) — `[version=3][vault_id:16][sel:16][m_cost:4][t_cost:4]
+//!   [p_cost:4][key_id:16][nonce:24][clé_maître_enveloppée:48]`. Modèle LUKS : le coffre est
+//!   chiffré par une **clé maître aléatoire**, qui ne dérive d'aucune passphrase ; la passphrase
+//!   ne sert qu'à dériver (Argon2id) la clé d'enveloppement sous laquelle la clé maître est
+//!   scellée par XChaCha20-Poly1305, tout l'en-tête du fichier servant de données authentifiées.
+//!   Une mauvaise passphrase fait échouer le tag d'authentification — le rôle que le
+//!   vérificateur v2 jouait — et un changement de passphrase devient le ré-enveloppement de la
+//!   même clé maître sous un sel neuf : la réécriture atomique de ce seul fichier, sans jamais
+//!   ré-chiffrer la base. `key_id` (empreinte tronquée, à domaine séparé, de la clé maître) rend
+//!   une clé en cache dans le trousseau vérifiable contre le sidecar sans passphrase, comme le
+//!   vérificateur v2 le permettait.
 //!
 //! Un coffre v1 est migré vers v2 au premier déverrouillage réussi par passphrase, en conservant
 //! exactement le même sel et les mêmes paramètres : la clé dérivée ne change donc pas, aucun
-//! re-chiffrement `SQLCipher` n'est nécessaire.
+//! re-chiffrement `SQLCipher` n'est nécessaire. Un coffre v2, lui, ne migre vers v3 qu'au
+//! premier changement de passphrase — passer à une clé maître réellement aléatoire exige un
+//! re-chiffrement complet, que seul `passphrase change` (qui re-chiffre déjà) peut assumer ;
+//! jamais une migration silencieuse au déverrouillage.
 //!
-//! Un changement de passphrase ([`stage_rekey`]/[`commit_staged`]) passe par un sidecar en
-//! attente `<db>.kdf.new`, écrit et synchronisé sur disque *avant* que la base elle-même ne soit
-//! ré-chiffrée : si le process est interrompu entre la bascule de la base et celle du sidecar,
-//! les deux clés (ancienne et nouvelle) restent retrouvables sur disque, ce qui rend la reprise
-//! possible sans intervention (voir `Store::open_with_passphrase_with`).
+//! Un changement de passphrase **avec re-chiffrement** (v2 → v3, [`stage_rekey`]/
+//! [`commit_staged`]) passe par un sidecar en attente `<db>.kdf.new`, écrit et synchronisé sur
+//! disque *avant* que la base elle-même ne soit ré-chiffrée : si le process est interrompu entre
+//! la bascule de la base et celle du sidecar, les deux clés (ancienne et nouvelle) restent
+//! retrouvables sur disque, ce qui rend la reprise possible sans intervention (voir
+//! `Store::open_with_passphrase_with`). Un changement **sans re-chiffrement** (coffre déjà v3,
+//! [`Sidecar::rewrap`]) n'a pas besoin de ce mécanisme : un unique [`write_atomic`] suffit, il
+//! n'existe plus de fenêtre où base et sidecar pourraient diverger.
 
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use argon2::{Algorithm, Argon2, Params, Version};
+use chacha20poly1305::aead::{Aead, Payload};
+use chacha20poly1305::{KeyInit, XChaCha20Poly1305, XNonce};
 use rand::Rng;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
+use zeroize::Zeroize;
 
 use super::error::StoreError;
 use super::secret::{Passphrase, VaultKey};
@@ -38,12 +58,23 @@ use super::secret::{Passphrase, VaultKey};
 pub const SALT_LEN: usize = 16;
 pub const VAULT_ID_LEN: usize = 16;
 const VERIFIER_LEN: usize = 32;
+const KEY_ID_LEN: usize = 16;
+const NONCE_LEN: usize = 24;
+/// Clé maître (32) + tag Poly1305 (16).
+const WRAPPED_LEN: usize = VaultKey::LEN + 16;
 
 const V1_VERSION: u8 = 1;
 const V1_LEN: usize = 1 + SALT_LEN;
 
 const V2_VERSION: u8 = 2;
 const V2_LEN: usize = 1 + VAULT_ID_LEN + SALT_LEN + 4 + 4 + 4 + VERIFIER_LEN;
+
+const V3_VERSION: u8 = 3;
+/// Tout ce qui précède le nonce — c'est aussi, à l'octet près, l'AAD de l'enveloppe : un sidecar
+/// v3 dont l'en-tête aurait été altéré (identifiant, sel, coûts, `key_id`) fait échouer le tag
+/// d'authentification exactement comme une mauvaise passphrase.
+const V3_HEADER_LEN: usize = 1 + VAULT_ID_LEN + SALT_LEN + 4 + 4 + 4 + KEY_ID_LEN;
+const V3_LEN: usize = V3_HEADER_LEN + NONCE_LEN + WRAPPED_LEN;
 
 /// Coût Argon2id : mémoire (Kio), itérations, parallélisme. Les noms de champs reprennent la
 /// terminologie d'Argon2 elle-même (`m`/`t`/`p` cost) — les renommer perdrait en clarté pour qui
@@ -110,14 +141,27 @@ fn validate_argon2_params(m_cost: u32, t_cost: u32, p_cost: u32) -> Result<(), (
     Ok(())
 }
 
-/// Sidecar chargé : sel, coût, identifiant de coffre, et vérificateur si le format le porte
-/// (absent seulement pour un sidecar v1 pas encore migré).
+/// Sidecar chargé : sel, coût, identifiant de coffre, et corps propre au format — vérificateur
+/// de clé (v2), clé maître enveloppée (v3), ou rien (v1 pas encore migré).
 #[derive(Debug, Clone)]
 pub struct Sidecar {
     pub vault_id: VaultId,
     salt: [u8; SALT_LEN],
     cost: Argon2Cost,
-    verifier: Option<[u8; VERIFIER_LEN]>,
+    body: SidecarBody,
+}
+
+#[derive(Debug, Clone)]
+enum SidecarBody {
+    V1,
+    V2 {
+        verifier: [u8; VERIFIER_LEN],
+    },
+    V3 {
+        key_id: [u8; KEY_ID_LEN],
+        nonce: [u8; NONCE_LEN],
+        wrapped: [u8; WRAPPED_LEN],
+    },
 }
 
 /// Identifiant de compte trousseau. `V2` est un tirage aléatoire propre au sidecar ; `LegacyV1`
@@ -158,24 +202,142 @@ impl Sidecar {
 
     #[must_use]
     pub fn is_legacy(&self) -> bool {
-        self.verifier.is_none()
+        matches!(self.body, SidecarBody::V1)
     }
 
-    /// Vérifie `key` contre le vérificateur embarqué. Un sidecar v1 n'en porte aucun : dans ce
-    /// cas cette fonction ne peut rien affirmer, l'appelant continue de compter sur la
+    /// Version du format sur disque — exposée par `vault status`.
+    #[must_use]
+    pub fn version(&self) -> u8 {
+        match self.body {
+            SidecarBody::V1 => V1_VERSION,
+            SidecarBody::V2 { .. } => V2_VERSION,
+            SidecarBody::V3 { .. } => V3_VERSION,
+        }
+    }
+
+    /// `true` si ce sidecar enveloppe une clé maître (v3) — le format où changer de passphrase
+    /// se fait par [`Self::rewrap`], sans jamais toucher la base.
+    #[must_use]
+    pub fn wraps_master_key(&self) -> bool {
+        matches!(self.body, SidecarBody::V3 { .. })
+    }
+
+    /// Vérifie que `key` est bien la clé du coffre décrit par ce sidecar, **sans passphrase** —
+    /// c'est le contrôle appliqué à une clé sortie du cache trousseau. v2 : hash-vérificateur de
+    /// la clé dérivée ; v3 : empreinte `key_id` de la clé maître. Un sidecar v1 ne porte rien :
+    /// dans ce cas cette fonction ne peut rien affirmer, l'appelant continue de compter sur la
     /// validation `SQLCipher` (lecture réelle d'une page déjà chiffrée).
     #[must_use]
     pub fn verify(&self, key: &VaultKey) -> bool {
-        match &self.verifier {
-            Some(expected) => {
-                let vault_id = match &self.vault_id {
-                    VaultId::V2(id) => *id,
-                    VaultId::LegacyV1(_) => return false, // incohérent : jamais produit ainsi
-                };
-                bool::from(compute_verifier(&vault_id, key).ct_eq(expected))
+        let vault_id = match &self.vault_id {
+            VaultId::V2(id) => *id,
+            // Incohérent pour v2/v3 (jamais produits avec un id legacy) ; v1 n'en a pas besoin.
+            VaultId::LegacyV1(_) => return self.is_legacy(),
+        };
+        match &self.body {
+            SidecarBody::V1 => true,
+            SidecarBody::V2 { verifier } => {
+                bool::from(compute_verifier(&vault_id, key).ct_eq(verifier))
             }
-            None => true,
+            SidecarBody::V3 { key_id, .. } => {
+                bool::from(compute_key_id(&vault_id, key).ct_eq(key_id))
+            }
         }
+    }
+
+    /// Résout la clé du coffre depuis la passphrase, selon le format :
+    ///
+    /// - v1 : la clé dérivée elle-même, **sans aucune garantie** (pas de vérificateur — une
+    ///   mauvaise passphrase ne se détecte qu'à la lecture `SQLCipher`) ;
+    /// - v2 : la clé dérivée, vérifiée contre le hash embarqué ;
+    /// - v3 : la clé maître, déballée de son enveloppe AEAD par la clé d'enveloppement dérivée.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::WrongPassphrase`] si le vérificateur (v2) ou le tag d'authentification (v3)
+    /// rejette la passphrase — pour v3, un sidecar altéré est indistinguable d'une mauvaise
+    /// passphrase, c'est la nature d'un AEAD. [`StoreError::KeyDerivation`] si Argon2id échoue.
+    pub fn key_from_passphrase(&self, passphrase: &Passphrase) -> Result<VaultKey, StoreError> {
+        let derived = derive_key(passphrase, &self.salt, self.cost)?;
+        match &self.body {
+            SidecarBody::V1 => Ok(derived),
+            SidecarBody::V2 { .. } => {
+                if self.verify(&derived) {
+                    Ok(derived)
+                } else {
+                    Err(StoreError::WrongPassphrase)
+                }
+            }
+            SidecarBody::V3 { nonce, wrapped, .. } => {
+                let header = self.v3_header()?;
+                unwrap_master_key(&derived, nonce, &header, wrapped)
+                    .ok_or(StoreError::WrongPassphrase)
+            }
+        }
+    }
+
+    /// Ré-enveloppe la clé maître d'un sidecar v3 sous une nouvelle passphrase : sel neuf, coûts
+    /// [`Argon2Cost::CURRENT`] (un coffre resté à d'anciens paramètres en profite pour se mettre
+    /// à niveau), nonce neuf — puis réécrit `<db>.kdf` de façon atomique. La base n'est jamais
+    /// touchée : la clé maître, le `vault_id` et le `key_id` sont conservés à l'identique.
+    ///
+    /// C'est ici — au plus près des deux dérivations déjà payées — que « nouvelle passphrase
+    /// identique à l'ancienne » est détectée, comme `Store::change_passphrase` le fait pour un
+    /// coffre v2 : en comparant les clés d'enveloppement dérivées sous le même sel, en temps
+    /// constant.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::WrongPassphrase`] si `current` ne déballe pas la clé maître ;
+    /// [`StoreError::KeyDerivation`] si les deux passphrases sont identiques ou si Argon2id
+    /// échoue ; [`StoreError::CorruptKdfParams`] si ce sidecar n'est pas un v3 (l'appelant a
+    /// choisi la mauvaise branche) ; une erreur d'IO si l'écriture échoue.
+    pub fn rewrap(
+        &self,
+        db_path: &Path,
+        current: &Passphrase,
+        new: &Passphrase,
+    ) -> Result<Self, StoreError> {
+        let path = sidecar_path(db_path);
+        let (SidecarBody::V3 { key_id, .. }, VaultId::V2(vault_id)) = (&self.body, &self.vault_id)
+        else {
+            return Err(StoreError::CorruptKdfParams(path));
+        };
+        let master = self.key_from_passphrase(current)?;
+
+        let current_kek = derive_key(current, &self.salt, self.cost)?;
+        let new_kek_under_current_salt = derive_key(new, &self.salt, self.cost)?;
+        if bool::from(
+            new_kek_under_current_salt
+                .as_bytes()
+                .ct_eq(current_kek.as_bytes()),
+        ) {
+            return Err(StoreError::KeyDerivation(
+                "la nouvelle passphrase est identique à l'ancienne".to_string(),
+            ));
+        }
+
+        let mut salt = [0u8; SALT_LEN];
+        rand::rng().fill_bytes(&mut salt);
+        let cost = Argon2Cost::CURRENT;
+        let new_kek = derive_key(new, &salt, cost)?;
+        let body = write_v3(&path, vault_id, &salt, cost, key_id, &new_kek, &master)?;
+
+        Ok(Self {
+            vault_id: self.vault_id.clone(),
+            salt,
+            cost,
+            body,
+        })
+    }
+
+    /// L'en-tête v3 tel qu'il apparaît sur disque — et donc l'AAD de l'enveloppe.
+    fn v3_header(&self) -> Result<Vec<u8>, StoreError> {
+        let (SidecarBody::V3 { key_id, .. }, VaultId::V2(vault_id)) = (&self.body, &self.vault_id)
+        else {
+            return Err(StoreError::CorruptKdfParams(PathBuf::new()));
+        };
+        Ok(v3_header_bytes(vault_id, &self.salt, self.cost, key_id))
     }
 }
 
@@ -191,6 +353,94 @@ fn compute_verifier(vault_id: &[u8; VAULT_ID_LEN], key: &VaultKey) -> [u8; VERIF
     let mut out = [0u8; VERIFIER_LEN];
     out.copy_from_slice(&digest);
     out
+}
+
+/// Empreinte de la clé **maître** d'un sidecar v3 — même construction à domaine séparé que le
+/// vérificateur v2, tronquée à 16 octets : ce n'est pas une barrière cryptographique (la clé
+/// maître est déjà secrète, l'empreinte d'une clé de 256 bits d'entropie ne fuit rien
+/// d'inversible), seulement de quoi détecter qu'une clé sortie du trousseau OS ne correspond
+/// plus au sidecar courant.
+fn compute_key_id(vault_id: &[u8; VAULT_ID_LEN], master: &VaultKey) -> [u8; KEY_ID_LEN] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"freeflow.kdf.v3.key-id\0");
+    hasher.update(vault_id);
+    hasher.update(master.as_bytes());
+    let digest = hasher.finalize();
+    let mut out = [0u8; KEY_ID_LEN];
+    out.copy_from_slice(&digest[..KEY_ID_LEN]);
+    out
+}
+
+fn v3_header_bytes(
+    vault_id: &[u8; VAULT_ID_LEN],
+    salt: &[u8; SALT_LEN],
+    cost: Argon2Cost,
+    key_id: &[u8; KEY_ID_LEN],
+) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(V3_HEADER_LEN);
+    bytes.push(V3_VERSION);
+    bytes.extend_from_slice(vault_id);
+    bytes.extend_from_slice(salt);
+    bytes.extend_from_slice(&cost.m_cost.to_le_bytes());
+    bytes.extend_from_slice(&cost.t_cost.to_le_bytes());
+    bytes.extend_from_slice(&cost.p_cost.to_le_bytes());
+    bytes.extend_from_slice(key_id);
+    bytes
+}
+
+/// Construit le chiffreur d'enveloppe depuis la clé d'enveloppement, en effaçant la copie
+/// intermédiaire de clé (le chiffreur efface la sienne à sa destruction, feature `zeroize`).
+fn envelope_cipher(kek: &VaultKey) -> XChaCha20Poly1305 {
+    let mut key = chacha20poly1305::Key::from(*kek.as_bytes());
+    let cipher = XChaCha20Poly1305::new(&key);
+    key.zeroize();
+    cipher
+}
+
+/// Scelle la clé maître sous la clé d'enveloppement. L'en-tête complet du sidecar sert d'AAD.
+fn wrap_master_key(
+    kek: &VaultKey,
+    nonce: &[u8; NONCE_LEN],
+    header: &[u8],
+    master: &VaultKey,
+) -> Result<[u8; WRAPPED_LEN], StoreError> {
+    let sealed = envelope_cipher(kek)
+        .encrypt(
+            <&XNonce>::from(nonce),
+            Payload {
+                msg: master.as_bytes(),
+                aad: header,
+            },
+        )
+        .map_err(|_| StoreError::KeyDerivation("échec du scellement de la clé maître".into()))?;
+    let mut out = [0u8; WRAPPED_LEN];
+    out.copy_from_slice(&sealed);
+    Ok(out)
+}
+
+/// Déballe la clé maître. `None` si le tag d'authentification échoue — mauvaise passphrase ou
+/// sidecar altéré, indistinguables par construction.
+fn unwrap_master_key(
+    kek: &VaultKey,
+    nonce: &[u8; NONCE_LEN],
+    header: &[u8],
+    wrapped: &[u8; WRAPPED_LEN],
+) -> Option<VaultKey> {
+    let mut opened = envelope_cipher(kek)
+        .decrypt(
+            <&XNonce>::from(nonce),
+            Payload {
+                msg: wrapped,
+                aad: header,
+            },
+        )
+        .ok()?;
+    let mut bytes = [0u8; VaultKey::LEN];
+    bytes.copy_from_slice(&opened);
+    opened.zeroize();
+    let master = VaultKey::new(bytes);
+    bytes.zeroize();
+    Some(master)
 }
 
 /// Dérive la clé de chiffrement depuis `passphrase`, `salt` et `cost`.
@@ -251,7 +501,7 @@ fn parse_sidecar(bytes: &[u8], db_path: &Path, path: &Path) -> Result<Sidecar, S
                 vault_id: VaultId::legacy_for(db_path),
                 salt,
                 cost: Argon2Cost::LEGACY,
-                verifier: None,
+                body: SidecarBody::V1,
             })
         }
         Some(&V2_VERSION) if bytes.len() == V2_LEN => {
@@ -285,7 +535,48 @@ fn parse_sidecar(bytes: &[u8], db_path: &Path, path: &Path) -> Result<Sidecar, S
                     t_cost,
                     p_cost,
                 },
-                verifier: Some(verifier),
+                body: SidecarBody::V2 { verifier },
+            })
+        }
+        Some(&V3_VERSION) if bytes.len() == V3_LEN => {
+            let mut vault_id = [0u8; VAULT_ID_LEN];
+            vault_id.copy_from_slice(&bytes[1..=VAULT_ID_LEN]);
+            let mut offset = 1 + VAULT_ID_LEN;
+            let mut salt = [0u8; SALT_LEN];
+            salt.copy_from_slice(&bytes[offset..offset + SALT_LEN]);
+            offset += SALT_LEN;
+            let m_cost = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+            offset += 4;
+            let t_cost = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+            offset += 4;
+            let p_cost = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+            offset += 4;
+            let mut key_id = [0u8; KEY_ID_LEN];
+            key_id.copy_from_slice(&bytes[offset..offset + KEY_ID_LEN]);
+            offset += KEY_ID_LEN;
+            let mut nonce = [0u8; NONCE_LEN];
+            nonce.copy_from_slice(&bytes[offset..offset + NONCE_LEN]);
+            offset += NONCE_LEN;
+            let mut wrapped = [0u8; WRAPPED_LEN];
+            wrapped.copy_from_slice(&bytes[offset..offset + WRAPPED_LEN]);
+            // Mêmes bornes que pour v2 : les coûts viennent d'un fichier non fiable. L'enveloppe
+            // AEAD authentifie l'en-tête, mais seulement une fois la passphrase fournie — un
+            // paramètre délirant doit être rejeté avant de tenter la dérivation, pas après.
+            validate_argon2_params(m_cost, t_cost, p_cost)
+                .map_err(|()| StoreError::CorruptKdfParams(path.to_path_buf()))?;
+            Ok(Sidecar {
+                vault_id: VaultId::V2(vault_id),
+                salt,
+                cost: Argon2Cost {
+                    m_cost,
+                    t_cost,
+                    p_cost,
+                },
+                body: SidecarBody::V3 {
+                    key_id,
+                    nonce,
+                    wrapped,
+                },
             })
         }
         _ => Err(StoreError::CorruptKdfParams(path.to_path_buf())),
@@ -308,14 +599,16 @@ pub fn read(db_path: &Path) -> Result<Option<Sidecar>, StoreError> {
 /// # Errors
 ///
 /// [`StoreError::CorruptKdfParams`] si le fichier existe mais ne correspond à aucun format connu
-/// — ne devrait jamais arriver en pratique, [`stage_rekey`] n'écrit que des sidecars v2 valides.
+/// — ne devrait jamais arriver en pratique, [`stage_rekey`] n'écrit que des sidecars valides
+/// (v3 depuis le lot 24 ; un `<db>.kdf.new` v2 laissé par une version antérieure reste lisible).
 pub fn read_staged(db_path: &Path) -> Result<Option<Sidecar>, StoreError> {
     read_sidecar_file(&staged_sidecar_path(db_path), db_path)
 }
 
-/// Crée un sidecar v2 neuf pour un coffre en cours de création : sel et identifiant aléatoires,
-/// paramètres de coût courants. Dérive la clé, calcule le vérificateur, écrit le fichier de
-/// façon atomique (0600, refuse d'écraser un sidecar existant).
+/// Crée un sidecar v3 neuf pour un coffre en cours de création : identifiant, sel et **clé
+/// maître** aléatoires, paramètres de coût courants. Dérive la clé d'enveloppement, scelle la
+/// clé maître, écrit le fichier de façon atomique (0600, refuse d'écraser un sidecar existant).
+/// Retourne la clé maître — c'est elle, et jamais une clé dérivée, qui chiffre le coffre.
 ///
 /// # Errors
 ///
@@ -329,23 +622,37 @@ pub fn create(db_path: &Path, passphrase: &Passphrase) -> Result<(Sidecar, Vault
 
     let mut vault_id = [0u8; VAULT_ID_LEN];
     rand::rng().fill_bytes(&mut vault_id);
+    write_fresh_v3(&path, &vault_id, passphrase)
+}
+
+/// Le tronc commun de [`create`] et [`stage_rekey`] : sel, clé maître et nonce neufs, coûts
+/// courants, enveloppe scellée sous la passphrase fournie, écriture atomique à `path`.
+fn write_fresh_v3(
+    path: &Path,
+    vault_id: &[u8; VAULT_ID_LEN],
+    passphrase: &Passphrase,
+) -> Result<(Sidecar, VaultKey), StoreError> {
     let mut salt = [0u8; SALT_LEN];
     rand::rng().fill_bytes(&mut salt);
     let cost = Argon2Cost::CURRENT;
 
-    let key = derive_key(passphrase, &salt, cost)?;
-    let verifier = compute_verifier(&vault_id, &key);
+    let mut master_bytes = [0u8; VaultKey::LEN];
+    rand::rng().fill_bytes(&mut master_bytes);
+    let master = VaultKey::new(master_bytes);
+    master_bytes.zeroize();
 
-    write_v2(&path, &vault_id, &salt, cost, &verifier)?;
+    let kek = derive_key(passphrase, &salt, cost)?;
+    let key_id = compute_key_id(vault_id, &master);
+    let body = write_v3(path, vault_id, &salt, cost, &key_id, &kek, &master)?;
 
     Ok((
         Sidecar {
-            vault_id: VaultId::V2(vault_id),
+            vault_id: VaultId::V2(*vault_id),
             salt,
             cost,
-            verifier: Some(verifier),
+            body,
         },
-        key,
+        master,
     ))
 }
 
@@ -369,15 +676,17 @@ pub fn upgrade_v1_to_v2(
         vault_id: VaultId::V2(vault_id),
         salt: sidecar.salt,
         cost: sidecar.cost,
-        verifier: Some(verifier),
+        body: SidecarBody::V2 { verifier },
     })
 }
 
-/// Prépare — sans committer — le sidecar de la nouvelle passphrase d'un changement en cours :
-/// même `vault_id` (c'est l'identité du coffre, pas de la clé), sel neuf, paramètres de coût
-/// courants. Écrit `<db>.kdf.new` de façon durable (fsync du fichier et du répertoire parent) :
-/// c'est ce qui rend la fenêtre entre les deux renames de `Store::change_passphrase` récupérable
-/// après une interruption, plutôt qu'un simple espoir.
+/// Prépare — sans committer — le sidecar de la nouvelle passphrase d'un changement **avec
+/// re-chiffrement** (migration v2 → v3) : même `vault_id` (c'est l'identité du coffre, pas de la
+/// clé), sel, **clé maître** et nonce neufs, paramètres de coût courants. Le sidecar produit est
+/// un v3 : c'est ainsi qu'un coffre v2 migre, au moment où la base est de toute façon
+/// ré-chiffrée. Écrit `<db>.kdf.new` de façon durable (fsync du fichier et du répertoire
+/// parent) : c'est ce qui rend la fenêtre entre les deux renames de `Store::change_passphrase`
+/// récupérable après une interruption, plutôt qu'un simple espoir.
 ///
 /// # Errors
 ///
@@ -394,23 +703,7 @@ pub fn stage_rekey(
         // `VaultId::LegacyV1`.
         return Err(StoreError::CorruptKdfParams(path));
     };
-    let mut salt = [0u8; SALT_LEN];
-    rand::rng().fill_bytes(&mut salt);
-    let cost = Argon2Cost::CURRENT;
-
-    let key = derive_key(new, &salt, cost)?;
-    let verifier = compute_verifier(vault_id_bytes, &key);
-    write_v2(&path, vault_id_bytes, &salt, cost, &verifier)?;
-
-    Ok((
-        Sidecar {
-            vault_id: VaultId::V2(*vault_id_bytes),
-            salt,
-            cost,
-            verifier: Some(verifier),
-        },
-        key,
-    ))
+    write_fresh_v3(&path, vault_id_bytes, new)
 }
 
 /// Bascule le sidecar en attente sur le sidecar committé : `rename(<db>.kdf.new, <db>.kdf)` +
@@ -451,6 +744,36 @@ fn write_v2(
     bytes.extend_from_slice(&cost.p_cost.to_le_bytes());
     bytes.extend_from_slice(verifier);
     write_atomic(path, &bytes)
+}
+
+/// Scelle `master` sous `kek` (nonce aléatoire neuf, en-tête complet en AAD) et écrit le sidecar
+/// v3 de façon atomique. Retourne le corps écrit, pour que l'appelant construise un [`Sidecar`]
+/// fidèle au fichier.
+fn write_v3(
+    path: &Path,
+    vault_id: &[u8; VAULT_ID_LEN],
+    salt: &[u8; SALT_LEN],
+    cost: Argon2Cost,
+    key_id: &[u8; KEY_ID_LEN],
+    kek: &VaultKey,
+    master: &VaultKey,
+) -> Result<SidecarBody, StoreError> {
+    let mut nonce = [0u8; NONCE_LEN];
+    rand::rng().fill_bytes(&mut nonce);
+    let header = v3_header_bytes(vault_id, salt, cost, key_id);
+    let wrapped = wrap_master_key(kek, &nonce, &header, master)?;
+
+    let mut bytes = Vec::with_capacity(V3_LEN);
+    bytes.extend_from_slice(&header);
+    bytes.extend_from_slice(&nonce);
+    bytes.extend_from_slice(&wrapped);
+    write_atomic(path, &bytes)?;
+
+    Ok(SidecarBody::V3 {
+        key_id: *key_id,
+        nonce,
+        wrapped,
+    })
 }
 
 /// Écrit `bytes` dans `path` de façon atomique et durable : fichier temporaire créé 0600 dès sa
@@ -672,5 +995,128 @@ mod tests {
             & 0o777;
         assert_eq!(mode, 0o600);
         assert!(!append_suffix(&sidecar_path(&db_path), ".tmp").exists());
+    }
+
+    // -- Sidecar v3 : clé maître enveloppée (lot 24) -------------------------------------------
+
+    #[test]
+    fn a_fresh_sidecar_is_v3_and_round_trips_the_master_key_through_the_passphrase() {
+        let db_path = temp_db_path("v3-round-trip");
+        let (sidecar, master) = create(&db_path, &"s3cret".into()).unwrap();
+        assert_eq!(sidecar.version(), 3);
+        assert!(sidecar.wraps_master_key());
+        assert_eq!(fs::read(sidecar_path(&db_path)).unwrap().len(), V3_LEN);
+
+        let reread = read(&db_path).unwrap().unwrap();
+        let unwrapped = reread.key_from_passphrase(&"s3cret".into()).unwrap();
+        assert_eq!(unwrapped.as_bytes(), master.as_bytes());
+        assert!(matches!(
+            reread.key_from_passphrase(&"wrong".into()),
+            Err(StoreError::WrongPassphrase)
+        ));
+    }
+
+    #[test]
+    fn any_tampered_byte_of_a_v3_sidecar_is_rejected() {
+        // L'enveloppe AEAD authentifie l'en-tête entier (AAD) en plus du scellé : altérer
+        // n'importe quel octet — identifiant, sel, coûts, key_id, nonce, scellé — doit rejeter
+        // la passphrase pourtant correcte (ou signaler un fichier corrompu pour les octets que
+        // le parseur borne lui-même, version et coûts).
+        let db_path = temp_db_path("v3-tamper");
+        create(&db_path, &"s3cret".into()).unwrap();
+        let original = fs::read(sidecar_path(&db_path)).unwrap();
+        assert_eq!(original.len(), V3_LEN);
+
+        // Un octet représentatif par zone du format, pas tous les 133 : chaque essai coûte une
+        // dérivation Argon2 complète (64 Mio), les zones restantes sont couvertes par symétrie.
+        let one_byte_per_zone = [
+            0,                         // version
+            1,                         // vault_id
+            1 + VAULT_ID_LEN,          // sel
+            34,                        // m_cost (2e octet : reste borné, la dérivation diverge)
+            37,            // t_cost (1er octet : 3 → 2, dérivation divergente et bon marché)
+            41,            // p_cost (1 → 0 : rejeté par les bornes avant toute dérivation)
+            45,            // key_id
+            V3_HEADER_LEN, // nonce
+            V3_HEADER_LEN + NONCE_LEN, // scellé
+            V3_LEN - 1,    // tag
+        ];
+        for index in one_byte_per_zone {
+            let mut tampered = original.clone();
+            tampered[index] ^= 0x01;
+            fs::write(sidecar_path(&db_path), &tampered).unwrap();
+            let outcome = read(&db_path)
+                .and_then(|sidecar| sidecar.unwrap().key_from_passphrase(&"s3cret".into()));
+            assert!(outcome.is_err(), "octet {index} altéré accepté à tort");
+        }
+    }
+
+    #[test]
+    fn rewrap_changes_the_envelope_but_never_the_master_key_nor_the_vault_id() {
+        let db_path = temp_db_path("v3-rewrap");
+        let (before, master) = create(&db_path, &"old-s3cret".into()).unwrap();
+
+        let after = before
+            .rewrap(&db_path, &"old-s3cret".into(), &"new-s3cret".into())
+            .unwrap();
+        assert_eq!(after.vault_id, before.vault_id);
+        assert_ne!(after.salt(), before.salt());
+
+        let reread = read(&db_path).unwrap().unwrap();
+        assert_eq!(reread.version(), 3);
+        let unwrapped = reread.key_from_passphrase(&"new-s3cret".into()).unwrap();
+        assert_eq!(
+            unwrapped.as_bytes(),
+            master.as_bytes(),
+            "la clé maître survit au changement de passphrase — c'est tout l'intérêt du v3"
+        );
+        assert!(matches!(
+            reread.key_from_passphrase(&"old-s3cret".into()),
+            Err(StoreError::WrongPassphrase)
+        ));
+        // `verify` (le contrôle sans passphrase d'une clé sortie du cache) reconnaît toujours
+        // la même clé maître, avant comme après.
+        assert!(before.verify(&master));
+        assert!(reread.verify(&master));
+    }
+
+    #[test]
+    fn rewrap_rejects_a_wrong_current_passphrase_and_an_identical_new_one() {
+        let db_path = temp_db_path("v3-rewrap-refusals");
+        let (sidecar, _master) = create(&db_path, &"s3cret".into()).unwrap();
+        let bytes_before = fs::read(sidecar_path(&db_path)).unwrap();
+
+        assert!(matches!(
+            sidecar.rewrap(&db_path, &"wrong".into(), &"new-s3cret".into()),
+            Err(StoreError::WrongPassphrase)
+        ));
+        assert!(matches!(
+            sidecar.rewrap(&db_path, &"s3cret".into(), &"s3cret".into()),
+            Err(StoreError::KeyDerivation(_))
+        ));
+        assert_eq!(
+            fs::read(sidecar_path(&db_path)).unwrap(),
+            bytes_before,
+            "un refus ne réécrit jamais le sidecar"
+        );
+    }
+
+    #[test]
+    fn a_staged_rekey_now_produces_a_v3_sidecar_with_a_fresh_master_key() {
+        let db_path = temp_db_path("stage-produces-v3");
+        let (committed, old_master) = create(&db_path, &"s3cret".into()).unwrap();
+
+        let (staged, staged_key) =
+            stage_rekey(&db_path, &committed.vault_id, &"new-s3cret".into()).unwrap();
+        assert_eq!(staged.version(), 3);
+        assert_eq!(staged.vault_id, committed.vault_id);
+        assert_ne!(
+            staged_key.as_bytes(),
+            old_master.as_bytes(),
+            "la migration tire une clé maître neuve — jamais une clé dérivée d'une passphrase"
+        );
+        let reread = read_staged(&db_path).unwrap().unwrap();
+        let unwrapped = reread.key_from_passphrase(&"new-s3cret".into()).unwrap();
+        assert_eq!(unwrapped.as_bytes(), staged_key.as_bytes());
     }
 }

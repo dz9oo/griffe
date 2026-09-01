@@ -34,6 +34,13 @@ pub struct PassphraseChanged {
     pub argon2_m_cost: u32,
     pub argon2_t_cost: u32,
     pub argon2_p_cost: u32,
+    /// `true` si la base a été ré-chiffrée (coffre v1/v2 migrant vers le sidecar v3 à clé
+    /// maître enveloppée), `false` pour le simple ré-enveloppement d'un coffre déjà v3.
+    /// `default` : les événements consignés avant le lot 24 n'avaient pas ce champ — ils
+    /// correspondaient tous à un re-chiffrement, mais un défaut `false` reste le choix qui
+    /// n'invente rien (le champ dit alors « rien d'affirmé », pas « ré-chiffré »).
+    #[serde(default)]
+    pub reencrypted: bool,
 }
 
 impl Command for PassphraseChanged {
