@@ -12,6 +12,7 @@ pub enum ViewId {
     Missions,
     Facturation,
     Clients,
+    Cloture,
     Console,
 }
 
@@ -24,6 +25,7 @@ impl ViewId {
             Self::Missions => "/view/missions",
             Self::Facturation => "/view/facturation",
             Self::Clients => "/view/clients",
+            Self::Cloture => "/view/cloture",
             Self::Console => "/view/console",
         }
     }
@@ -36,6 +38,7 @@ impl ViewId {
             Self::Missions => "missions",
             Self::Facturation => "facturation",
             Self::Clients => "clients",
+            Self::Cloture => "cloture",
             Self::Console => "console",
         }
     }
@@ -45,12 +48,13 @@ impl ViewId {
         self.slug()
     }
 
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 7] = [
         Self::Dashboard,
         Self::Prospection,
         Self::Missions,
         Self::Facturation,
         Self::Clients,
+        Self::Cloture,
         Self::Console,
     ];
 }
@@ -103,6 +107,10 @@ fn palette() -> Markup {
                     button class="palette-item" type="button" data-label="nouvelle mission"
                       hx-get="/missions/new" hx-target="#panel" hx-swap="innerHTML" {
                         "+ nouvelle mission"
+                    }
+                    button class="palette-item" type="button" data-label="clore un exercice"
+                      hx-get="/cloture/new" hx-target="#panel" hx-swap="innerHTML" {
+                        "+ clore un exercice"
                     }
                 }
             }

@@ -19,6 +19,7 @@ mod quote;
 mod refs;
 mod table;
 mod vault;
+mod year;
 
 use std::path::{Path, PathBuf};
 
@@ -117,6 +118,9 @@ enum TopCommand {
     /// Prévisionnel de trésorerie sur 12 mois.
     #[command(subcommand)]
     Forecast(forecast::ForecastCommand),
+    /// Clôture d'exercice : snapshot du résultat, affectation, approbation, documents.
+    #[command(subcommand)]
+    Year(year::YearCommand),
     /// Sauvegardes : une automatique et silencieuse tourne déjà à chaque commande ; ces
     /// sous-commandes ne servent qu'à en forcer une, ou à restaurer.
     #[command(subcommand)]
@@ -336,5 +340,6 @@ fn run_command(
         TopCommand::Expense(cmd) => expense::run(cmd, store, ctx, json),
         TopCommand::Fiscal(cmd) => fiscal::run(cmd, store, json),
         TopCommand::Forecast(cmd) => forecast::run(cmd, store, json),
+        TopCommand::Year(cmd) => year::run(cmd, store, ctx, json),
     }
 }

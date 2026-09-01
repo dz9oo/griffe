@@ -988,3 +988,217 @@ fn contact_lifecycle_add_list_edit_rm() {
         .clone();
     assert_eq!(json_result(&empty_out).as_array().unwrap().len(), 0);
 }
+
+// -------------------------------------------------------------------------------------------
+// Clôture d'exercice (lot 20)
+// -------------------------------------------------------------------------------------------
+
+#[test]
+fn year_help_is_a_stable_interface_contract() {
+    let output = freeflow().args(["year", "--help"]).output().unwrap();
+    insta::assert_snapshot!(String::from_utf8(output.stdout).unwrap());
+}
+
+/// Profil minimal avec exercice civil et 1 000 € de capital (plafond de réserve légale 100 €).
+fn set_company_profile(db: &Path) {
+    freeflow()
+        .env("FREEFLOW_DB", db)
+        .args([
+            "company",
+            "set-profile",
+            "--name",
+            "Argon Digital",
+            "--legal-form",
+            "SASU",
+            "--siren",
+            "552100554",
+            "--street",
+            "12 rue de la Paix",
+            "--postal-code",
+            "75002",
+            "--city",
+            "Paris",
+            "--country",
+            "FR",
+            "--share-capital",
+            "1000",
+            "--fiscal-year-end",
+            "31/12",
+        ])
+        .assert()
+        .success();
+}
+
+#[test]
+fn year_lifecycle_close_amend_approve_then_immutable() {
+    let db = temp_db("year-lifecycle");
+    provision(&db);
+    set_company_profile(&db);
+    let client_id = create_client(&db, "Kappa Software");
+    let lines =
+        r#"[{"description":"Prestation","quantity":9.5,"unit_price":65000,"vat_rate":"Standard"}]"#;
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "invoice",
+            "emit",
+            "--client",
+            &client_id,
+            "--lines",
+            lines,
+            "--issued-on",
+            "2026-09-30",
+        ])
+        .assert()
+        .success();
+
+    // Clôture par --period : la période dérive de la clôture 31/12 du profil.
+    let close_out = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "--json",
+            "year",
+            "close",
+            "--period",
+            "2026",
+            "--dividends",
+            "1000",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(json_result(&close_out)["status"], "applied");
+
+    let list_out = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--json", "year", "list"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let years = json_result(&list_out);
+    let year = &years.as_array().unwrap()[0];
+    assert_eq!(year["starts_on"], "2026-01-01");
+    assert_eq!(year["ends_on"], "2026-12-31");
+    // CA 6 175 € HT, aucune charge : IS 15 % (926,25 €) → net 5 248,75 € ; dividendes
+    // 1 000 € → report 4 248,75 €.
+    assert_eq!(year["net_result_cents"], 524_875);
+    assert_eq!(year["retained_earnings_cents"], 424_875);
+    assert_eq!(year["approved_on"], serde_json::Value::Null);
+
+    // Amender le projet : seule la valeur fournie change (patch CLI, état complet au cœur).
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["year", "amend", "2026", "--legal-reserve", "50"])
+        .assert()
+        .success();
+    let shown = json_result(
+        &freeflow()
+            .env("FREEFLOW_DB", &db)
+            .args(["--json", "year", "show", "2026"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert_eq!(shown["legal_reserve_cents"], 5_000);
+    assert_eq!(shown["dividends_cents"], 100_000);
+    assert_eq!(shown["revision"], 2);
+
+    // L'export de liasse s'écrit et contient les cases attendues.
+    let liasse_path = db.with_file_name("liasse.json");
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["year", "render", "2026", "liasse", "--out"])
+        .arg(&liasse_path)
+        .assert()
+        .success();
+    let liasse: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&liasse_path).unwrap()).unwrap();
+    assert_eq!(liasse["siren"], "552100554");
+    assert!(
+        liasse["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["form"] == "2065")
+    );
+
+    // Approbation, puis l'exercice est immuable : amender ou supprimer échoue en erreur métier.
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["year", "approve", "2026", "--approved-on", "2027-05-15"])
+        .assert()
+        .success();
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["year", "amend", "2026", "--dividends", "0"])
+        .assert()
+        .failure()
+        .code(4)
+        .stderr(predicate::str::contains("déjà approuvé"));
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["year", "rm", "2026"])
+        .assert()
+        .failure()
+        .code(4);
+}
+
+#[test]
+fn year_close_by_an_agent_stays_pending_until_a_human_confirms() {
+    let db = temp_db("year-agent");
+    provision(&db);
+    set_company_profile(&db);
+
+    let pending_out = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "--json",
+            "--actor",
+            "agent:test-session",
+            "year",
+            "close",
+            "--period",
+            "2026",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let pending = json_result(&pending_out);
+    assert_eq!(pending["status"], "pending_confirmation");
+    let pending_id = pending["pending_action_id"].as_str().unwrap().to_string();
+
+    // Rien n'est clos tant qu'un humain n'a pas confirmé...
+    let list_out = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--json", "year", "list"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(json_result(&list_out).as_array().unwrap().len(), 0);
+
+    // ... et `freeflow confirm` sait rejouer cette commande-là.
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["confirm", "--id", &pending_id])
+        .assert()
+        .success();
+    let list_out = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--json", "year", "list"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(json_result(&list_out).as_array().unwrap().len(), 1);
+}

@@ -64,6 +64,7 @@ define_id!(InvoiceId);
 define_id!(PaymentId);
 define_id!(ExpenseId);
 define_id!(BankTransactionId);
+define_id!(FiscalYearId);
 
 #[cfg(test)]
 mod tests {

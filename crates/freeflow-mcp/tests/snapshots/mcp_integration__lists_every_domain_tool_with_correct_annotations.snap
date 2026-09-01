@@ -56,6 +56,8 @@ expression: "json!({\n    \"tool_names\": names, \"invoice_emit_input_schema\":\
     "clients.unarchive",
     "clients.update",
     "fiscal.calendar",
+    "fiscal.close_year",
+    "fiscal.years",
     "invoice.aged_balance",
     "invoice.credit_note",
     "invoice.emit",

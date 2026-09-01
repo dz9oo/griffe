@@ -141,6 +141,8 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "pending.list",
         "audit.verify_chain",
         "fiscal.calendar",
+        "fiscal.years",
+        "fiscal.close_year",
     ] {
         assert!(names.contains(expected), "outil manquant : {expected}");
     }
@@ -163,6 +165,7 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "invoice.aged_balance",
         "pending.list",
         "fiscal.calendar",
+        "fiscal.years",
     ] {
         assert_eq!(
             by_name(read_only)
@@ -929,6 +932,68 @@ async fn reading_an_unknown_resource_uri_is_a_protocol_level_error() {
         .read_resource(ReadResourceRequestParams::new("freeflow://unknown"))
         .await;
     assert!(result.is_err());
+
+    client.cancel().await.unwrap();
+}
+
+/// Profil minimal (exercice civil) écrit directement sur le `Store` avant de lancer le serveur —
+/// il n'existe pas d'outil MCP `company.set_profile` (dette de parité connue, feuille de route
+/// des lots 15/16).
+fn set_company_profile(store: &mut Store) {
+    let cmd = freeflow_core::company::SetCompanyProfile {
+        name: "Argon Digital".to_string(),
+        legal_form: "SASU".to_string(),
+        siren: freeflow_core::domain::Siren::parse("552100554").unwrap(),
+        vat_number: None,
+        address: freeflow_core::domain::Address {
+            street: "12 rue de la Paix".to_string(),
+            postal_code: "75002".to_string(),
+            city: "Paris".to_string(),
+            country: "FR".to_string(),
+        },
+        share_capital: None,
+        rcs_city: None,
+        iban: None,
+        fiscal_year_end: Some(freeflow_core::domain::FiscalYearEnd::CALENDAR),
+        vat_regime: None,
+        director_monthly_gross: None,
+        director_charge_ratio_bps: None,
+    };
+    Executor::new(store)
+        .execute(
+            &cmd,
+            &freeflow_core::app::ExecutionContext::new(freeflow_core::app::Actor::Human, false),
+        )
+        .unwrap();
+}
+
+#[tokio::test]
+async fn an_agent_closing_a_fiscal_year_only_deposits_a_pending_action() {
+    let db_path = test_db_path("fiscal-close-gate");
+    let mut store = Store::create(&db_path, &Passphrase::from("s3cret")).unwrap();
+    set_company_profile(&mut store);
+    let client = spawn_client(store).await;
+
+    let closed = call(&client, "fiscal.close_year", json!({"period": 2026})).await;
+    assert_eq!(closed.is_error, Some(false));
+    let body = json_of(&closed);
+    assert_eq!(body["status"], "pending_confirmation");
+    assert!(body["pending_action_id"].as_str().is_some());
+
+    // Rien n'est clos tant qu'un humain n'a pas confirmé — visible sur l'outil de liste comme
+    // sur la ressource.
+    let years = call(&client, "fiscal.years", json!({})).await;
+    assert_eq!(json_of(&years).as_array().unwrap().len(), 0);
+    let read = client
+        .read_resource(ReadResourceRequestParams::new("freeflow://fiscal-years"))
+        .await
+        .unwrap();
+    let text = match &read.contents[0] {
+        rmcp::model::ResourceContents::TextResourceContents { text, .. } => text.clone(),
+        other => panic!("expected text contents, got {other:?}"),
+    };
+    let payload: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(payload.as_array().unwrap().len(), 0);
 
     client.cancel().await.unwrap();
 }

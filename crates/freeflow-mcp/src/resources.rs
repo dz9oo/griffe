@@ -23,6 +23,7 @@ const OPPORTUNITIES_COLLECTION_URI: &str = "freeflow://opportunities";
 const OPPORTUNITY_DETAIL_PREFIX: &str = "freeflow://opportunities/";
 const MISSIONS_COLLECTION_URI: &str = "freeflow://missions";
 const MISSION_DETAIL_PREFIX: &str = "freeflow://missions/";
+const FISCAL_YEARS_COLLECTION_URI: &str = "freeflow://fiscal-years";
 
 pub(crate) fn list() -> ListResourcesResult {
     ListResourcesResult::with_all_items(vec![
@@ -41,6 +42,12 @@ pub(crate) fn list() -> ListResourcesResult {
             .with_description(
                 "Missions en cours et non archivées — voir mission.list pour élargir aux \
                  clôturées/archivées.",
+            )
+            .with_mime_type("application/json"),
+        Resource::new(FISCAL_YEARS_COLLECTION_URI, "fiscal-years")
+            .with_description(
+                "Exercices clos (snapshot du résultat, affectation, approbation), du plus \
+                 ancien au plus récent.",
             )
             .with_mime_type("application/json"),
     ])
@@ -161,6 +168,18 @@ pub(crate) fn read(store: &Store, uri: &str) -> Result<ReadResourceResult, McpEr
                 "effective_daily_rate_cents": effective_daily_rate_cents,
                 "references": references,
             }),
+        );
+    }
+
+    if uri == FISCAL_YEARS_COLLECTION_URI {
+        let years = freeflow_core::fiscal_year::list_fiscal_years(store.connection())
+            .map_err(|e| McpError::resource_not_found(e.to_string(), None))?;
+        return json_contents(
+            uri,
+            years
+                .iter()
+                .map(crate::tools::fiscal::year_json)
+                .collect::<Vec<_>>(),
         );
     }
 

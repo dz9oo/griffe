@@ -110,6 +110,16 @@ pub async fn clients(State(state): State<AppState>, headers: HeaderMap) -> Html<
     respond(headers, ViewId::Clients, content).await
 }
 
+pub async fn cloture(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
+    let content = state
+        .with_store(|store| {
+            views::cloture::render(store).unwrap_or_else(|e| error_markup(ViewId::Cloture, e))
+        })
+        .await
+        .unwrap_or_else(|| locked_markup(ViewId::Cloture));
+    respond(headers, ViewId::Cloture, content).await
+}
+
 pub async fn console(headers: HeaderMap) -> Html<String> {
     respond(headers, ViewId::Console, views::console::render()).await
 }

@@ -1,0 +1,2 @@
+DROP TRIGGER trg_fiscal_years_immutable_update;
+DROP TRIGGER trg_fiscal_years_immutable_delete;

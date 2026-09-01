@@ -1463,6 +1463,7 @@ dependencies = [
  "assert_cmd",
  "clap",
  "freeflow-core",
+ "freeflow-docs",
  "freeflow-invoice",
  "insta",
  "predicates",
@@ -1510,6 +1511,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "freeflow-docs"
+version = "0.1.0"
+dependencies = [
+ "freeflow-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "time",
+]
+
+[[package]]
 name = "freeflow-invoice"
 version = "0.1.0"
 dependencies = [
@@ -1543,9 +1556,11 @@ dependencies = [
  "axum",
  "freeflow-cli",
  "freeflow-core",
+ "freeflow-docs",
  "http-body-util",
  "maud",
  "serde",
+ "serde_json",
  "shell-words",
  "time",
  "tokio",

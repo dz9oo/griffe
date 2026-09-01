@@ -4,6 +4,7 @@
 mod assets;
 mod audit;
 mod clients;
+mod cloture;
 mod console;
 mod handlers;
 mod layout;
@@ -33,6 +34,7 @@ pub fn router(state: AppState) -> Router {
         .route("/view/missions", get(handlers::missions))
         .route("/view/facturation", get(handlers::facturation))
         .route("/view/clients", get(handlers::clients))
+        .route("/view/cloture", get(handlers::cloture))
         .route("/view/console", get(handlers::console))
         .route("/console/run", post(console::run))
         .route("/audit/recent", get(audit::recent))
@@ -137,6 +139,23 @@ pub fn router(state: AppState) -> Router {
             "/time-entries/{id}/delete",
             post(missions::delete_time_entry),
         )
+        .route("/cloture/table", get(cloture::table))
+        .route("/cloture/new", get(cloture::new_panel))
+        .route("/cloture", post(cloture::create))
+        .route(
+            "/cloture/{id}",
+            get(cloture::show_panel).post(cloture::update),
+        )
+        .route("/cloture/{id}/edit", get(cloture::edit_panel))
+        .route(
+            "/cloture/{id}/approve",
+            get(cloture::approve_panel).post(cloture::approve),
+        )
+        .route(
+            "/cloture/{id}/delete",
+            get(cloture::delete_confirm_panel).post(cloture::delete),
+        )
+        .route("/cloture/{id}/doc/{kind}", get(cloture::document))
         .route("/session/touch", post(unlock::touch))
         .route("/lock", post(unlock::lock))
         .route("/unlock", get(unlock::show).post(unlock::submit))

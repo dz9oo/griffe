@@ -19,6 +19,7 @@ path = "src/main.rs"
 [dependencies]
 clap = { version = "4.6.6", features = ["derive", "env"] }
 freeflow-core = { version = "0.1.0", path = "../freeflow-core" }
+freeflow-docs = { version = "0.1.0", path = "../freeflow-docs" }
 freeflow-invoice = { version = "0.1.0", path = "../freeflow-invoice" }
 rpassword = "7.5.4"
 serde = "1.0.229"

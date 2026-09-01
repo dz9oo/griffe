@@ -29,5 +29,11 @@ pub fn migrations() -> Migrations<'static> {
         )),
         M::up(include_str!("migrations/0010_fiscal_year_up.sql"))
             .down(include_str!("migrations/0010_fiscal_year_down.sql")),
+        M::up(include_str!(
+            "migrations/0011_fiscal_year_immutability_up.sql"
+        ))
+        .down(include_str!(
+            "migrations/0011_fiscal_year_immutability_down.sql"
+        )),
     ])
 }

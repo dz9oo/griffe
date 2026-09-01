@@ -11,6 +11,7 @@ pub mod company;
 pub mod domain;
 pub mod expenses;
 pub mod fiscal;
+pub mod fiscal_year;
 pub mod forecast;
 pub mod missions;
 pub mod prospection;

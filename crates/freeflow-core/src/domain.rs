@@ -22,8 +22,8 @@ pub use calendar::{
 pub use client::{Address, Client, Contact};
 pub use expense::{Expense, ExpenseCategory, UnknownExpenseCategory};
 pub use ids::{
-    BankTransactionId, ClientId, ContactId, ExpenseId, InteractionId, InvoiceId, MissionId,
-    OpportunityId, PaymentId, QuoteId, TimeEntryId,
+    BankTransactionId, ClientId, ContactId, ExpenseId, FiscalYearId, InteractionId, InvoiceId,
+    MissionId, OpportunityId, PaymentId, QuoteId, TimeEntryId,
 };
 pub use interaction::{Interaction, InteractionKind, UnknownInteractionKind};
 pub use invoice::{Invoice, InvoiceLine, InvoiceStatus};

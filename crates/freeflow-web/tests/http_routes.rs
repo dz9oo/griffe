@@ -280,6 +280,7 @@ async fn every_screen_renders_successfully_against_a_freshly_seeded_vault() {
         "/view/missions",
         "/view/facturation",
         "/view/clients",
+        "/view/cloture",
     ] {
         let response = router
             .clone()
@@ -1717,4 +1718,217 @@ async fn time_entry_lifecycle_through_the_panel() {
         .await
         .unwrap();
     assert!(!body_text(deleted).await.contains("Corrigee"));
+}
+
+// -------------------------------------------------------------------------------------------
+// Clôture d'exercice (lot 20)
+// -------------------------------------------------------------------------------------------
+
+/// Coffre avec profil (exercice civil, capital 1 000 €) et une facture émise en 2026 — le
+/// minimum pour qu'une clôture ait un résultat non nul à figer.
+async fn unlocked_state_with_activity(db_path: &Path) -> AppState {
+    let mut store = Store::create(db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    Executor::new(&mut store)
+        .execute(
+            &freeflow_core::company::SetCompanyProfile {
+                name: "Argon Digital".to_string(),
+                legal_form: "SASU".to_string(),
+                siren: freeflow_core::domain::Siren::parse("552100554").unwrap(),
+                vat_number: None,
+                address: freeflow_core::domain::Address {
+                    street: "12 rue de la Paix".to_string(),
+                    postal_code: "75002".to_string(),
+                    city: "Paris".to_string(),
+                    country: "FR".to_string(),
+                },
+                share_capital: Some(Money::from_cents(100_000)),
+                rcs_city: Some("Paris".to_string()),
+                iban: None,
+                fiscal_year_end: Some(freeflow_core::domain::FiscalYearEnd::CALENDAR),
+                vat_regime: None,
+                director_monthly_gross: None,
+                director_charge_ratio_bps: None,
+            },
+            &human_ctx(),
+        )
+        .unwrap();
+    let client_id = match Executor::new(&mut store)
+        .execute(
+            &CreateClient {
+                name: "Kappa Software".to_string(),
+                siren: None,
+                vat_number: None,
+                address: None,
+            },
+            &human_ctx(),
+        )
+        .unwrap()
+    {
+        freeflow_core::app::Outcome::Applied(id) => id,
+        other => panic!("expected Applied, got {other:?}"),
+    };
+    Executor::new(&mut store)
+        .execute(
+            &freeflow_core::billing::EmitInvoice {
+                client_id,
+                mission_id: None,
+                lines: vec![freeflow_core::domain::InvoiceLine {
+                    description: "Prestation".to_string(),
+                    quantity: 9.5,
+                    unit_price: Money::from_cents(65_000),
+                    vat_rate: freeflow_core::domain::VatRate::Standard,
+                }],
+                issued_on: time::Date::from_calendar_date(2026, time::Month::September, 30)
+                    .unwrap(),
+                payment_terms_days: 30,
+            },
+            &human_ctx(),
+        )
+        .unwrap();
+    drop(store);
+
+    let state = AppState::new(db_path.to_path_buf());
+    state
+        .unlock(&Passphrase::from(PASSPHRASE), false)
+        .await
+        .unwrap();
+    state
+}
+
+fn fiscal_year_id(db_path: &Path) -> freeflow_core::domain::FiscalYearId {
+    let store = Store::open_with_passphrase(db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    freeflow_core::fiscal_year::list_fiscal_years(store.connection())
+        .unwrap()
+        .first()
+        .expect("un exercice clos attendu")
+        .id
+}
+
+#[tokio::test]
+async fn closing_a_year_from_the_window_then_downloading_its_documents() {
+    let db_path = test_db_path("cloture-e2e");
+    let state = unlocked_state_with_activity(&db_path).await;
+    let router = freeflow_web::router(state);
+
+    // Clore 2026 depuis le formulaire du panneau.
+    let closed = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/cloture")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(
+                    "starts_on=2026-01-01&ends_on=2026-12-31&legal_reserve=50&dividends=1000",
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(closed.status(), StatusCode::OK);
+    assert_eq!(
+        closed
+            .headers()
+            .get("HX-Trigger")
+            .map(|v| v.to_str().unwrap()),
+        Some("freeflow:saved"),
+        "une clôture réussie doit fermer le panneau et rafraîchir la liste"
+    );
+    let id = fiscal_year_id(&db_path);
+
+    // La liste et le panneau de détail rendent l'exercice.
+    let table = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/cloture/table")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let table_body = body_text(table).await;
+    assert!(table_body.contains("2026-12-31"));
+    assert!(table_body.contains("projet"));
+
+    // Les documents se téléchargent avec le bon type de contenu — liasse JSON et PV PDF (rendu
+    // par le vrai binaire typst, comme les tests de freeflow-docs).
+    let liasse = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/cloture/{id}/doc/liasse"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        liasse
+            .headers()
+            .get("content-type")
+            .map(|v| v.to_str().unwrap()),
+        Some("application/json")
+    );
+    let liasse_body = body_text(liasse).await;
+    assert!(liasse_body.contains("2065"));
+
+    let minutes = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/cloture/{id}/doc/minutes"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        minutes
+            .headers()
+            .get("content-type")
+            .map(|v| v.to_str().unwrap()),
+        Some("application/pdf")
+    );
+    let pdf_bytes = minutes.into_body().collect().await.unwrap().to_bytes();
+    assert!(pdf_bytes.starts_with(b"%PDF-"));
+
+    // Approuver, puis vérifier que la révision d'affectation est refusée avec un bandeau.
+    let approved = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/cloture/{id}/approve"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from("approved_on=2027-05-15"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        approved
+            .headers()
+            .get("HX-Trigger")
+            .map(|v| v.to_str().unwrap()),
+        Some("freeflow:saved")
+    );
+
+    let amended = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/cloture/{id}"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from("revision=2&legal_reserve=0&dividends=0"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let amended_body = body_text(amended).await;
+    assert!(
+        amended_body.contains("approuvé"),
+        "réviser un exercice approuvé doit re-rendre le panneau avec l'erreur : {amended_body}"
+    );
 }

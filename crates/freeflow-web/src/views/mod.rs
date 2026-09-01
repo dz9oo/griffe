@@ -1,4 +1,5 @@
 pub mod clients;
+pub mod cloture;
 pub mod console;
 pub mod dashboard;
 pub mod facturation;
