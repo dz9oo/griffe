@@ -54,6 +54,16 @@ pub(crate) struct AgedBalanceArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct RenderInvoiceArgs {
+    /// Identifiant de la facture (UUID).
+    id: String,
+    /// Chemin du fichier PDF à écrire — refusé s'il existe déjà.
+    out: String,
+    /// Délai de paiement en jours, pour la mention sur le document (défaut : 30).
+    payment_terms_days: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct RecordPaymentArgs {
     invoice_id: String,
     /// Montant encaissé, en centimes.
@@ -171,6 +181,52 @@ impl FreeflowServer {
         match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
             Err(e) => err_text(e.to_string()),
+        }
+    }
+
+    /// Rend une facture émise en PDF Factur-X (PDF/A-3b + XML CII embarqué) dans `out` — refuse
+    /// d'écraser un fichier existant. Comme en CLI, le rendu (`typst`) et l'écriture disque sont
+    /// de l'IO d'adaptateur : rien n'est modifié en base, mais l'appel écrit un fichier sur le
+    /// poste. Nécessite un profil d'entreprise (`company.set_profile`).
+    #[tool(
+        name = "invoice.render",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false
+        )
+    )]
+    async fn invoice_render(
+        &self,
+        Parameters(args): Parameters<RenderInvoiceArgs>,
+    ) -> CallToolResult {
+        let invoice_id: InvoiceId = ok_or_return!("id", args.id.parse());
+        let store = self.store.lock().await;
+        let invoice = match billing::invoice_by_id(store.connection(), invoice_id) {
+            Ok(Some(invoice)) => invoice,
+            Ok(None) => return err_text(format!("facture introuvable : {invoice_id}")),
+            Err(e) => return err_text(e.to_string()),
+        };
+        let client =
+            match freeflow_core::clients::client_by_id(store.connection(), invoice.client_id) {
+                Ok(Some(client)) => client,
+                Ok(None) => return err_text(format!("client introuvable : {}", invoice.client_id)),
+                Err(e) => return err_text(e.to_string()),
+            };
+        let profile = match freeflow_core::company::company_profile(store.connection()) {
+            Ok(Some(p)) => p,
+            Ok(None) => {
+                return err_text("aucun profil d'entreprise défini : company.set_profile");
+            }
+            Err(e) => return err_text(e.to_string()),
+        };
+        let pdf = ok_or_return!(
+            "render",
+            freeflow_invoice::render_pdf(&invoice, &client, &profile, args.payment_terms_days)
+        );
+        match crate::tools::fiscal::write_new_document(&args.out, &pdf) {
+            Ok(msg) => ok_json(json!({ "written": msg })),
+            Err(e) => err_text(e),
         }
     }
 

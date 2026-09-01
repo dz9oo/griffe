@@ -36,9 +36,8 @@ impl FreeflowServer {
         }
     }
 
-    /// `dry_run` : les outils `clients.*` l'exposent comme argument (`dry_run: bool`, défaut
-    /// `false`) — l'équivalent du `--dry-run` de la CLI, absent des autres modules d'outils
-    /// pour l'instant (voir la feuille de route du lot 15 dans `CLAUDE.md`).
+    /// `dry_run` : chaque outil mutant l'expose comme argument (`dry_run: bool`, défaut
+    /// `false`) — l'équivalent du `--dry-run` de la CLI.
     pub(crate) fn ctx(&self, dry_run: bool) -> ExecutionContext {
         ExecutionContext::new(
             Actor::Agent {
@@ -50,6 +49,7 @@ impl FreeflowServer {
 
     pub(crate) fn tool_router() -> ToolRouter<Self> {
         Self::clients_router()
+            + Self::company_router()
             + Self::prospection_router()
             + Self::missions_router()
             + Self::quotes_router()
@@ -57,6 +57,7 @@ impl FreeflowServer {
             + Self::billing_router()
             + Self::pending_router()
             + Self::fiscal_router()
+            + Self::forecast_router()
     }
 }
 
@@ -73,7 +74,8 @@ impl ServerHandler for FreeflowServer {
             "FreeFlow — gestion pour indépendant. Les outils exposent les mêmes commandes et \
              requêtes que la CLI `freeflow`. Les actions à effet légal, financier ou \
              destructeur significatif (émission de facture, avoir, suppression d'un client, \
-             d'une opportunité ou d'une mission) ne s'appliquent pas directement : elles \
+             d'une opportunité ou d'une mission, clôture, approbation ou suppression d'un \
+             exercice) ne s'appliquent pas directement : elles \
              renvoient une action en attente (`pending_action_id`, consultable via \
              `pending.list`) qu'un humain doit confirmer lui-même, au terminal (`freeflow \
              confirm <id>`) ou dans la fenêtre — il n'existe volontairement aucun outil MCP \
@@ -84,7 +86,8 @@ impl ServerHandler for FreeflowServer {
              acceptent un UUID, un préfixe d'UUID, ou un nom/libellé (pour un devis : le nom du \
              client porteur) — voir les outils `*.list`, ou les ressources \
              `freeflow://clients`, `freeflow://opportunities`, `freeflow://missions`, \
-             `freeflow://quotes`, `freeflow://expenses`."
+             `freeflow://quotes`, `freeflow://expenses`, `freeflow://fiscal-years`, \
+             `freeflow://company`."
                 .to_string(),
         );
         info

@@ -1578,6 +1578,8 @@ name = "freeflow-mcp"
 version = "0.1.0"
 dependencies = [
  "freeflow-core",
+ "freeflow-docs",
+ "freeflow-invoice",
  "insta",
  "rmcp",
  "schemars 1.2.2",

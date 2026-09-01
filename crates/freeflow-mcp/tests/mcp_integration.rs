@@ -135,14 +135,24 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "invoice.credit_note",
         "invoice.verify_chain",
         "invoice.aged_balance",
+        "invoice.render",
         "payment.record",
         "bank.import",
         "bank.reconcile",
         "pending.list",
         "audit.verify_chain",
+        "company.show",
+        "company.set_profile",
+        "forecast.show",
         "fiscal.calendar",
+        "fiscal.deadlines",
         "fiscal.years",
+        "fiscal.year_show",
         "fiscal.close_year",
+        "fiscal.amend_year",
+        "fiscal.approve_year",
+        "fiscal.delete_year",
+        "fiscal.render_year",
     ] {
         assert!(names.contains(expected), "outil manquant : {expected}");
     }
@@ -164,8 +174,12 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "prospect.pipeline",
         "invoice.aged_balance",
         "pending.list",
+        "company.show",
+        "forecast.show",
         "fiscal.calendar",
+        "fiscal.deadlines",
         "fiscal.years",
+        "fiscal.year_show",
     ] {
         assert_eq!(
             by_name(read_only)
@@ -187,6 +201,7 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "prospect.interactions.delete",
         "mission.delete",
         "mission.time.delete",
+        "fiscal.delete_year",
     ] {
         let ann = by_name(destructive).annotations.as_ref().unwrap();
         assert_eq!(ann.read_only_hint, Some(false));
@@ -1185,6 +1200,297 @@ async fn a_payment_correction_proposed_by_an_agent_waits_for_a_human() {
         !json_of(&after)[0]["voided_at"].is_null(),
         "la contre-écriture reste listée, marquée annulée"
     );
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn the_company_profile_roundtrips_through_set_profile_show_and_the_company_resource() {
+    let store = Store::create(&test_db_path("company"), &Passphrase::from("s3cret")).unwrap();
+    let client = spawn_client(store).await;
+
+    let empty = call(&client, "company.show", json!(null)).await;
+    assert_eq!(empty.is_error, Some(false));
+    assert!(json_of(&empty).is_null(), "aucun profil au départ");
+
+    let set = call(
+        &client,
+        "company.set_profile",
+        json!({
+            "name": "Lumen Conseil",
+            "legal_form": "SASU",
+            "siren": "552100554",
+            "street": "1 rue de la Paix",
+            "postal_code": "75002",
+            "city": "Paris",
+            "country": "FR",
+            "share_capital_cents": 100_000,
+            "fiscal_year_end": "31/12",
+            "vat_regime": "real_normal_quarterly",
+        }),
+    )
+    .await;
+    assert_eq!(set.is_error, Some(false));
+    assert_eq!(json_of(&set)["status"], "applied");
+
+    let shown = call(&client, "company.show", json!(null)).await;
+    let profile = json_of(&shown);
+    assert_eq!(profile["name"], "Lumen Conseil");
+    assert_eq!(profile["siren"], "552100554");
+
+    let read = client
+        .read_resource(ReadResourceRequestParams::new("freeflow://company"))
+        .await
+        .unwrap();
+    let text = match &read.contents[0] {
+        rmcp::model::ResourceContents::TextResourceContents { text, .. } => text.clone(),
+        other => panic!("expected text contents, got {other:?}"),
+    };
+    let resource: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(resource["name"], "Lumen Conseil");
+
+    let bad = call(
+        &client,
+        "company.set_profile",
+        json!({
+            "name": "X",
+            "legal_form": "SASU",
+            "siren": "123",
+            "street": "s",
+            "postal_code": "p",
+            "city": "c",
+            "country": "FR",
+        }),
+    )
+    .await;
+    assert_eq!(
+        bad.is_error,
+        Some(true),
+        "un SIREN invalide est une erreur d'outil, visible par l'agent"
+    );
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn the_forecast_tool_projects_twelve_months() {
+    let store = Store::create(&test_db_path("forecast"), &Passphrase::from("s3cret")).unwrap();
+    let client = spawn_client(store).await;
+
+    let forecast = call(
+        &client,
+        "forecast.show",
+        json!({"starting_cash_cents": 1_000_000, "today": "2026-09-01"}),
+    )
+    .await;
+    assert_eq!(forecast.is_error, Some(false));
+    let body = json_of(&forecast);
+    assert_eq!(body["months"].as_array().unwrap().len(), 12);
+    assert!(
+        body.as_object()
+            .unwrap()
+            .contains_key("first_shortfall_month"),
+        "le premier mois en découvert est toujours annoncé, même null"
+    );
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn the_fiscal_deadlines_tool_returns_dated_deadlines() {
+    let store = Store::create(&test_db_path("deadlines"), &Passphrase::from("s3cret")).unwrap();
+    let client = spawn_client(store).await;
+
+    let deadlines = call(&client, "fiscal.deadlines", json!({"today": "2026-04-01"})).await;
+    assert_eq!(deadlines.is_error, Some(false));
+    let rows = json_of(&deadlines);
+    assert!(!rows.as_array().unwrap().is_empty());
+    for row in rows.as_array().unwrap() {
+        assert!(row["kind"].is_string());
+        assert!(row["due_on"].is_string());
+    }
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_fiscal_year_can_be_shown_and_amended_but_approval_and_deletion_need_a_human() {
+    use freeflow_core::app::{Actor, ExecutionContext};
+    use freeflow_core::company::SetCompanyProfile;
+    use freeflow_core::domain::{Address, Money, Siren};
+    use freeflow_core::fiscal_year::CloseFiscalYear;
+
+    let db_path = test_db_path("year-lifecycle");
+    let mut store = Store::create(&db_path, &Passphrase::from("s3cret")).unwrap();
+
+    // Clore l'exercice en humain, hors du canal MCP : `fiscal.close_year` proposé par un agent
+    // ne fait que déposer une action en attente (déjà couvert par ailleurs). La clôture exige un
+    // profil d'entreprise (le résultat et la réserve légale en dépendent) — posé d'abord.
+    let human = ExecutionContext::new(Actor::Human, false);
+    Executor::new(&mut store)
+        .execute(
+            &SetCompanyProfile {
+                name: "Lumen Conseil".into(),
+                legal_form: "SASU".into(),
+                siren: Siren::parse("552100554").unwrap(),
+                vat_number: None,
+                address: Address {
+                    street: "1 rue de la Paix".into(),
+                    postal_code: "75002".into(),
+                    city: "Paris".into(),
+                    country: "FR".into(),
+                },
+                share_capital: None,
+                rcs_city: None,
+                iban: None,
+                fiscal_year_end: None,
+                vat_regime: None,
+                director_monthly_gross: None,
+                director_charge_ratio_bps: None,
+            },
+            &human,
+        )
+        .unwrap();
+    let closed = Executor::new(&mut store)
+        .execute(
+            &CloseFiscalYear {
+                starts_on: time::Date::from_calendar_date(2025, time::Month::January, 1).unwrap(),
+                ends_on: time::Date::from_calendar_date(2025, time::Month::December, 31).unwrap(),
+                legal_reserve: Money::from_cents(0),
+                dividends: Money::from_cents(0),
+            },
+            &human,
+        )
+        .unwrap();
+    assert!(matches!(closed, Outcome::Applied(_)));
+    let client = spawn_client(store).await;
+
+    let shown = call(&client, "fiscal.year_show", json!({"period": 2025})).await;
+    assert_eq!(shown.is_error, Some(false));
+    let record = json_of(&shown);
+    assert_eq!(record["ends_on"], "2025-12-31");
+    assert!(record["approved_on"].is_null());
+
+    let amended = call(
+        &client,
+        "fiscal.amend_year",
+        json!({"period": 2025, "legal_reserve_cents": 0}),
+    )
+    .await;
+    assert_eq!(amended.is_error, Some(false));
+    assert_eq!(
+        json_of(&amended)["status"],
+        "applied",
+        "réviser une affectation en projet n'exige pas de confirmation"
+    );
+
+    let approved = call(
+        &client,
+        "fiscal.approve_year",
+        json!({"period": 2025, "approved_on": "2026-06-30"}),
+    )
+    .await;
+    assert_eq!(json_of(&approved)["status"], "pending_confirmation");
+
+    let deleted = call(&client, "fiscal.delete_year", json!({"period": 2025})).await;
+    assert_eq!(json_of(&deleted)["status"], "pending_confirmation");
+
+    let still_there = call(&client, "fiscal.year_show", json!({"period": 2025})).await;
+    let record = json_of(&still_there);
+    assert!(
+        record["approved_on"].is_null(),
+        "rien n'est approuvé ni supprimé tant qu'un humain n'a pas confirmé"
+    );
+
+    // La liasse (JSON) exerce le rendu de document sans dépendre de `typst` — et le refus
+    // d'écraser un fichier existant, la garde propre à l'adaptateur MCP.
+    let out = db_path.parent().unwrap().join("liasse-2025.json");
+    let rendered = call(
+        &client,
+        "fiscal.render_year",
+        json!({"period": 2025, "doc": "liasse", "out": out.to_str().unwrap()}),
+    )
+    .await;
+    assert_eq!(rendered.is_error, Some(false));
+    let liasse: Value = serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    assert!(liasse.is_object());
+    let overwrite = call(
+        &client,
+        "fiscal.render_year",
+        json!({"period": 2025, "doc": "liasse", "out": out.to_str().unwrap()}),
+    )
+    .await;
+    assert_eq!(
+        overwrite.is_error,
+        Some(true),
+        "un fichier existant n'est jamais écrasé par l'agent"
+    );
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn rendering_an_invoice_writes_a_facturx_pdf() {
+    let db_path = test_db_path("invoice-render");
+    let store = Store::create(&db_path, &Passphrase::from("s3cret")).unwrap();
+    let client = spawn_client(store).await;
+
+    let profile_set = call(
+        &client,
+        "company.set_profile",
+        json!({
+            "name": "Lumen Conseil",
+            "legal_form": "SASU",
+            "siren": "552100554",
+            "street": "1 rue de la Paix",
+            "postal_code": "75002",
+            "city": "Paris",
+            "country": "FR",
+            "vat_number": "FR96552100554",
+        }),
+    )
+    .await;
+    assert_eq!(
+        profile_set.is_error,
+        Some(false),
+        "{:?}",
+        profile_set.content
+    );
+    let created = call(&client, "clients.create", json!({"name": "Kappa Software"})).await;
+    let client_id = json_of(&created)["result"].as_str().unwrap().to_string();
+    let lines_json = serde_json::to_string(&json!([
+        {"description": "Sept.", "quantity": 2.0, "unit_price": 65000, "vat_rate": "Standard"}
+    ]))
+    .unwrap();
+    let emitted = call(
+        &client,
+        "invoice.emit",
+        json!({"client_id": client_id, "lines_json": lines_json, "issued_on": "2026-09-01"}),
+    )
+    .await;
+    let pending_id = json_of(&emitted)["pending_action_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut confirming_store =
+        Store::open_with_passphrase(&db_path, &Passphrase::from("s3cret")).unwrap();
+    let confirmed = Executor::new(&mut confirming_store)
+        .confirm::<EmitInvoice>(pending_id.parse().unwrap())
+        .unwrap();
+    let Outcome::Applied(invoice) = confirmed else {
+        panic!("expected Applied")
+    };
+
+    let out = db_path.parent().unwrap().join("facture.pdf");
+    let rendered = call(
+        &client,
+        "invoice.render",
+        json!({"id": invoice.id.to_string(), "out": out.to_str().unwrap()}),
+    )
+    .await;
+    assert_eq!(rendered.is_error, Some(false), "{:?}", rendered.content);
+    let bytes = std::fs::read(&out).unwrap();
+    assert!(bytes.starts_with(b"%PDF"), "le fichier écrit est un PDF");
 
     client.cancel().await.unwrap();
 }

@@ -304,9 +304,15 @@ distribués prêts à l'emploi — voir la checklist ci-dessous.
       motif journalisé) et rapprochement défaisable, avec lignée transaction → encaissement
       persistée (migration 0013) et garde contre le double rapprochement — voir « Facturation &
       TVA » ci-dessus.
-- [ ] Parité MCP sur `company`/`forecast`/`invoice render` — comblée pour `expense.*` (lot 21) et
-      `fiscal.calendar`/`fiscal.years` (lots 19-20), le reste du serveur MCP demeure un
-      sous-ensemble strict de la CLI.
+- [x] Parité MCP sur `company`/`forecast`/`invoice render` — comblée pour `expense.*` (lot 21) et
+      `fiscal.calendar`/`fiscal.years` (lots 19-20), puis achevée (lot 25) : `company.show`/
+      `company.set_profile` (+ ressource `freeflow://company`), `forecast.show`,
+      `fiscal.deadlines`, cycle de vie complet des exercices (`fiscal.year_show`/`amend_year`/
+      `approve_year`/`delete_year` — approbation et suppression derrière confirmation humaine,
+      comme la clôture) et rendu de documents (`invoice.render` Factur-X, `fiscal.render_year`
+      PV/affectation/synthèse/liasse) qui refusent d'écraser un fichier existant. Hors périmètre
+      MCP par conception, comme avant : session/coffre (`init`/`unlock`/`lock`/`passphrase`/
+      `backup`) et `confirm`.
 - [x] Sidecar v3 à clé maître enveloppée (modèle LUKS) : le coffre est chiffré par une clé
       aléatoire, elle-même scellée dans le sidecar (XChaCha20-Poly1305, en-tête en AAD) par la
       clé dérivée d'Argon2id. Un changement de passphrase est devenu la réécriture atomique d'un

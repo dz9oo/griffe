@@ -28,6 +28,7 @@ const QUOTE_DETAIL_PREFIX: &str = "freeflow://quotes/";
 const EXPENSES_COLLECTION_URI: &str = "freeflow://expenses";
 const EXPENSE_DETAIL_PREFIX: &str = "freeflow://expenses/";
 const FISCAL_YEARS_COLLECTION_URI: &str = "freeflow://fiscal-years";
+const COMPANY_URI: &str = "freeflow://company";
 
 pub(crate) fn list() -> ListResourcesResult {
     ListResourcesResult::with_all_items(vec![
@@ -60,6 +61,12 @@ pub(crate) fn list() -> ListResourcesResult {
             .with_description(
                 "Exercices clos (snapshot du résultat, affectation, approbation), du plus \
                  ancien au plus récent.",
+            )
+            .with_mime_type("application/json"),
+        Resource::new(COMPANY_URI, "company")
+            .with_description(
+                "Identité légale de l'émetteur (mentions obligatoires des factures), ou null si \
+                 aucun profil n'est défini — voir company.set_profile.",
             )
             .with_mime_type("application/json"),
     ])
@@ -244,6 +251,12 @@ pub(crate) fn read(store: &Store, uri: &str) -> Result<ReadResourceResult, McpEr
                 .map(crate::tools::fiscal::year_json)
                 .collect::<Vec<_>>(),
         );
+    }
+
+    if uri == COMPANY_URI {
+        let profile = freeflow_core::company::company_profile(store.connection())
+            .map_err(|e| McpError::resource_not_found(e.to_string(), None))?;
+        return json_contents(uri, profile);
     }
 
     Err(McpError::resource_not_found(
