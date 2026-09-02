@@ -38,6 +38,35 @@ async fn body_text(response: axum::response::Response) -> String {
     String::from_utf8(bytes.to_vec()).unwrap()
 }
 
+/// Construit un corps `multipart/form-data` à la main (aucune dépendance de test pour ça) :
+/// des champs texte, et éventuellement un fichier dans le champ `receipt`. Renvoie l'en-tête
+/// `content-type` (avec sa frontière) et le corps.
+fn multipart_form(fields: &[(&str, &str)], file: Option<(&str, &[u8])>) -> (String, Vec<u8>) {
+    const BOUNDARY: &str = "----freeflow-test-boundary-7d4a";
+    let mut body = Vec::new();
+    for (name, value) in fields {
+        body.extend_from_slice(
+            format!(
+                "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
+            )
+            .as_bytes(),
+        );
+    }
+    if let Some((filename, content)) = file {
+        body.extend_from_slice(
+            format!(
+                "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"receipt\"; \
+                 filename=\"{filename}\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+            )
+            .as_bytes(),
+        );
+        body.extend_from_slice(content);
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(format!("--{BOUNDARY}--\r\n").as_bytes());
+    (format!("multipart/form-data; boundary={BOUNDARY}"), body)
+}
+
 /// Crée un coffre neuf et renvoie un `AppState` déjà déverrouillé dessus (`remember = false` :
 /// jamais de mise en cache dans le trousseau OS réel de la machine qui exécute les tests).
 async fn unlocked_state(db_path: &Path) -> AppState {
@@ -2007,22 +2036,33 @@ async fn closing_a_year_from_the_window_then_downloading_its_documents() {
 
 #[tokio::test]
 async fn expense_lifecycle_through_the_panel() {
+    // Depuis le lot 29, les formulaires de dépense sont en `multipart/form-data` (champ
+    // fichier du justificatif) : un `<input type="file">` laissé vide arrive comme une partie
+    // sans nom de fichier et sans contenu, que le lecteur ignore.
     let db_path = test_db_path("depenses-lifecycle");
     let state = unlocked_state(&db_path).await;
     let router = freeflow_web::router(state);
 
-    // Créer.
+    // Créer, sans justificatif.
+    let (content_type, body) = multipart_form(
+        &[
+            ("label", "Abonnement hébergement"),
+            ("category", "software"),
+            ("amount", "120.00"),
+            ("vat_rate", "standard"),
+            ("vat_deductible", "20.00"),
+            ("incurred_on", "2026-09-05"),
+        ],
+        Some(("", b"")),
+    );
     let response = router
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri("/depenses")
-                .header("content-type", "application/x-www-form-urlencoded")
-                .body(Body::from(
-                    "label=Abonnement+h%C3%A9bergement&category=software&amount=120.00\
-                     &vat_rate=standard&vat_deductible=20.00&incurred_on=2026-09-05",
-                ))
+                .header("content-type", content_type)
+                .body(Body::from(body))
                 .unwrap(),
         )
         .await
@@ -2038,6 +2078,10 @@ async fn expense_lifecycle_through_the_panel() {
         let expenses = freeflow_core::expenses::list_expenses(store.connection()).unwrap();
         assert_eq!(expenses.len(), 1);
         assert_eq!(expenses[0].amount, Money::from_cents(12_000));
+        assert!(
+            expenses[0].receipt_hash.is_none(),
+            "champ fichier vide = pas de justificatif"
+        );
         expenses[0].id
     };
 
@@ -2054,17 +2098,26 @@ async fn expense_lifecycle_through_the_panel() {
     assert!(body_text(table).await.contains("Abonnement hébergement"));
 
     // Modifier (révision 1 → 2) : seul le montant change, le reste est resoumis tel quel.
+    let (content_type, body) = multipart_form(
+        &[
+            ("revision", "1"),
+            ("label", "Abonnement hébergement"),
+            ("category", "software"),
+            ("amount", "240.00"),
+            ("vat_rate", "standard"),
+            ("vat_deductible", "40.00"),
+            ("incurred_on", "2026-09-05"),
+        ],
+        None,
+    );
     let response = router
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri(format!("/depenses/{expense_id}"))
-                .header("content-type", "application/x-www-form-urlencoded")
-                .body(Body::from(
-                    "revision=1&label=Abonnement+h%C3%A9bergement&category=software\
-                     &amount=240.00&vat_rate=standard&vat_deductible=40.00&incurred_on=2026-09-05",
-                ))
+                .header("content-type", content_type)
+                .body(Body::from(body))
                 .unwrap(),
         )
         .await
@@ -2076,17 +2129,26 @@ async fn expense_lifecycle_through_the_panel() {
     );
 
     // Une resoumission avec la révision périmée est un conflit, pas un écrasement silencieux.
+    let (content_type, body) = multipart_form(
+        &[
+            ("revision", "1"),
+            ("label", "Ecrasement"),
+            ("category", "software"),
+            ("amount", "1.00"),
+            ("vat_rate", "standard"),
+            ("vat_deductible", "0.00"),
+            ("incurred_on", "2026-09-05"),
+        ],
+        None,
+    );
     let stale = router
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri(format!("/depenses/{expense_id}"))
-                .header("content-type", "application/x-www-form-urlencoded")
-                .body(Body::from(
-                    "revision=1&label=Ecrasement&category=software\
-                     &amount=1.00&vat_rate=standard&vat_deductible=0.00&incurred_on=2026-09-05",
-                ))
+                .header("content-type", content_type)
+                .body(Body::from(body))
                 .unwrap(),
         )
         .await
@@ -2125,6 +2187,177 @@ async fn expense_lifecycle_through_the_panel() {
         .await
         .unwrap();
     assert!(body_text(table).await.contains("aucune dépense"));
+}
+
+#[tokio::test]
+async fn a_receipt_uploaded_from_the_panel_is_archived_like_the_cli_does() {
+    // Le fichier reçu en multipart est archivé à côté du coffre (`receipts/<hash>-<nom>`, en
+    // 0600) par le même helper que `freeflow expense record --receipt`, et la dépense porte le
+    // hash SHA-256 du contenu. La case « détacher » vide les deux champs sans supprimer le
+    // fichier archivé — exactement `expense edit --clear-receipt`.
+    let db_path = test_db_path("depenses-receipt");
+    let state = unlocked_state(&db_path).await;
+    let router = freeflow_web::router(state);
+
+    let content: &[u8] = b"%PDF-1.4 facture fournisseur de test";
+    let expected_hash = freeflow_core::expenses::hash_receipt(content);
+    let (content_type, body) = multipart_form(
+        &[
+            ("label", "Écran externe"),
+            ("category", "equipment"),
+            ("amount", "300.00"),
+            ("vat_rate", "standard"),
+            ("vat_deductible", "50.00"),
+            ("incurred_on", "2026-09-05"),
+        ],
+        // Un nom venu du navigateur ne doit pas pouvoir sortir de `receipts/`.
+        Some(("../../facture-ecran.pdf", content)),
+    );
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/depenses")
+                .header("content-type", content_type)
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("HX-Trigger").unwrap(),
+        "freeflow:saved",
+        "le justificatif ne doit pas faire échouer la création"
+    );
+
+    let (expense_id, archived_name) = {
+        let store = Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+        let expenses = freeflow_core::expenses::list_expenses(store.connection()).unwrap();
+        assert_eq!(expenses.len(), 1);
+        let expense = &expenses[0];
+        assert_eq!(
+            expense.receipt_hash.as_deref(),
+            Some(expected_hash.as_str())
+        );
+        let archived_name = expense.receipt_filename.clone().unwrap();
+        assert_eq!(archived_name, format!("{expected_hash}-facture-ecran.pdf"));
+        (expense.id, archived_name)
+    };
+    let archived_path = db_path
+        .parent()
+        .unwrap()
+        .join("receipts")
+        .join(&archived_name);
+    assert_eq!(
+        std::fs::read(&archived_path).unwrap(),
+        content,
+        "le fichier archivé est le contenu reçu, tel quel"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&archived_path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "justificatif illisible aux autres utilisateurs"
+        );
+    }
+
+    // La fiche et la liste montrent le justificatif ; le panneau d'édition propose de le
+    // remplacer ou de le détacher.
+    let detail = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/depenses/{expense_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(body_text(detail).await.contains(&archived_name));
+    let edit = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/depenses/{expense_id}/edit"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let edit_body = body_text(edit).await;
+    assert!(edit_body.contains("multipart/form-data"), "{edit_body}");
+    assert!(edit_body.contains("name=\"clear_receipt\""), "{edit_body}");
+    assert!(edit_body.contains("type=\"file\""), "{edit_body}");
+
+    // Détacher : les champs se vident, le fichier archivé reste en place.
+    let (content_type, body) = multipart_form(
+        &[
+            ("revision", "1"),
+            ("label", "Écran externe"),
+            ("category", "equipment"),
+            ("amount", "300.00"),
+            ("vat_rate", "standard"),
+            ("vat_deductible", "50.00"),
+            ("incurred_on", "2026-09-05"),
+            ("current_receipt", &archived_name),
+            ("clear_receipt", "on"),
+        ],
+        Some(("", b"")),
+    );
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/depenses/{expense_id}"))
+                .header("content-type", content_type)
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        response.headers().get("HX-Trigger").unwrap(),
+        "freeflow:saved"
+    );
+    {
+        let store = Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+        let expense = freeflow_core::expenses::expense_by_id(store.connection(), expense_id)
+            .unwrap()
+            .unwrap();
+        assert!(expense.receipt_hash.is_none());
+        assert!(expense.receipt_filename.is_none());
+        assert_eq!(expense.revision, 2);
+    }
+    assert!(
+        archived_path.exists(),
+        "détacher ne supprime pas le fichier archivé"
+    );
+
+    // Un corps multipart tronqué (frontière finale absente) est un bandeau, jamais un 500.
+    let (content_type, body) = multipart_form(&[("label", "x")], None);
+    let truncated = &body[..body.len() - 10];
+    let broken = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/depenses")
+                .header("content-type", content_type)
+                .body(Body::from(truncated.to_vec()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(broken.status(), StatusCode::OK);
+    assert!(body_text(broken).await.contains("form-error"));
 }
 
 #[tokio::test]

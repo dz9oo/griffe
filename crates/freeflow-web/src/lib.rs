@@ -152,10 +152,17 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/depenses/table", get(depenses::table))
         .route("/depenses/new", get(depenses::new_panel))
-        .route("/depenses", post(depenses::create))
+        // Les deux routes de saisie reçoivent un `multipart/form-data` (justificatif) : limite
+        // de corps relevée pour elles seules, voir `depenses::body_limit`.
+        .route(
+            "/depenses",
+            post(depenses::create).layer(depenses::body_limit()),
+        )
         .route(
             "/depenses/{id}",
-            get(depenses::show_panel).post(depenses::update),
+            get(depenses::show_panel)
+                .post(depenses::update)
+                .layer(depenses::body_limit()),
         )
         .route("/depenses/{id}/edit", get(depenses::edit_panel))
         .route(

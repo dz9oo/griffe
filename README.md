@@ -30,6 +30,9 @@ implémentation.
   restent valides).
 - Désignation par UUID, préfixe d'UUID, ou **nom** (insensible à la casse et aux accents) en CLI
   et en MCP — pas besoin de copier un identifiant complet pour agir sur un client.
+- `freeflow client edit` ne change que les champs fournis ; `--clear-siren`, `--clear-vat-number`
+  et `--clear-address` (et `--clear-email`/`--clear-phone`/`--clear-role` sur un contact)
+  effacent un champ optionnel sans en fournir un nouveau.
 - Garde-fou contre l'écriture concurrente : chaque modification porte la révision lue au
   préalable ; une modification concurrente est détectée plutôt qu'écrasée silencieusement.
 
@@ -101,8 +104,10 @@ implémentation.
   autre) avec TVA déductible et justificatif archivé par hash d'intégrité (SHA-256).
 - Créer, consulter, **modifier** et **supprimer** une dépense — en CLI (`freeflow expense …`,
   avec `--receipt`/`--clear-receipt` pour remplacer ou détacher le justificatif), en MCP
-  (`expense.*`, ressources `freeflow://expenses`) et depuis la fenêtre (écran `depenses`). Même
-  désignation par libellé/UUID/préfixe et même garde-fou d'écriture concurrente que les clients.
+  (`expense.*`, ressources `freeflow://expenses`) et depuis la fenêtre (écran `depenses`, avec
+  un champ fichier pour joindre, remplacer ou détacher le justificatif — archivé exactement comme
+  par la CLI, à côté du coffre, en `0600`). Même désignation par libellé/UUID/préfixe et même
+  garde-fou d'écriture concurrente que les clients.
   **Une dépense datée dans un exercice déjà clôturé (voir la clôture d'exercice) ne se crée, ne
   se modifie et ne se supprime plus** : le résultat figé à la clôture a été calculé sur ces
   lignes-là — supprimez d'abord l'exercice s'il n'est qu'un projet (`freeflow year rm`).

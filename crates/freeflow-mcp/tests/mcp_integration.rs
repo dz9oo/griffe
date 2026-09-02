@@ -953,8 +953,8 @@ async fn reading_an_unknown_resource_uri_is_a_protocol_level_error() {
 }
 
 /// Profil minimal (exercice civil) écrit directement sur le `Store` avant de lancer le serveur —
-/// il n'existe pas d'outil MCP `company.set_profile` (dette de parité connue, feuille de route
-/// des lots 15/16).
+/// l'outil MCP `company.set_profile` existe depuis le lot 25 (et est testé plus bas), mais les
+/// scénarios fiscaux n'ont pas à en dépendre : ils testent le calendrier, pas la saisie du profil.
 fn set_company_profile(store: &mut Store) {
     let cmd = freeflow_core::company::SetCompanyProfile {
         name: "Argon Digital".to_string(),

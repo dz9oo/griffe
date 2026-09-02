@@ -31,6 +31,8 @@ use freeflow_core::store::Store;
 use error::CliError;
 use vault::PassphraseOpts;
 
+pub use expense::{ArchivedReceipt, archive_receipt_bytes};
+
 #[derive(Parser)]
 #[command(
     name = "freeflow",

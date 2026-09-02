@@ -164,6 +164,11 @@ td.num{ text-align:right; }
   border-radius:var(--radius); color:var(--text-0); font-family:var(--font-ui); font-size:13px; outline:none;
 }
 .field textarea{ font-family:var(--font-mono); resize:vertical; }
+.field input[type="file"]{ width:100%; font-size:12px; color:var(--text-1); }
+.field input[type="file"]::file-selector-button{
+  padding:6px 10px; margin-right:10px; background:var(--bg-2); border:1px solid var(--border);
+  border-radius:var(--radius); color:var(--text-0); font-family:var(--font-ui); font-size:12px; cursor:pointer;
+}
 .field input:focus, .field select:focus, .field textarea:focus{ border-color:var(--accent-dim); }
 .field input[aria-invalid="true"], .field select[aria-invalid="true"], .field textarea[aria-invalid="true"]{ border-color:var(--red); }
 .field-error{ font-size:11px; color:var(--red); margin-top:5px; }

@@ -87,6 +87,14 @@ pub struct EditArgs {
 /// Copie `receipt` dans `<répertoire du coffre>/receipts/<hash>-<nom d'origine>` (stockage
 /// adressé par contenu : un même fichier importé deux fois écrase le même chemin, sans le
 /// dupliquer) et renvoie `(hash, nom de fichier archivé)`.
+/// Résultat de l'archivage d'un justificatif : son hash d'intégrité et le nom du fichier copié
+/// dans `receipts/`, tels que la commande du cœur les persiste.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchivedReceipt {
+    pub hash: String,
+    pub filename: String,
+}
+
 fn archive_receipt(
     db_path: &std::path::Path,
     receipt: &std::path::Path,
@@ -94,33 +102,59 @@ fn archive_receipt(
     let content = std::fs::read(receipt).map_err(|e| {
         CliError::Unexpected(format!("lecture de {} impossible : {e}", receipt.display()))
     })?;
-    let hash = hash_receipt(&content);
     let original_name = receipt.file_name().map_or_else(
         || "justificatif".to_string(),
         |n| n.to_string_lossy().into_owned(),
     );
+    let archived =
+        archive_receipt_bytes(db_path, &original_name, &content).map_err(CliError::Unexpected)?;
+    Ok((archived.hash, archived.filename))
+}
+
+/// Archive le contenu d'un justificatif à côté du coffre (`<répertoire du coffre>/receipts/
+/// <hash>-<nom d'origine>`) et renvoie ce qu'il faut persister sur la dépense.
+///
+/// C'est l'IO annexe que `CLAUDE.md` réserve à l'adaptateur appelant, jamais à `Command::apply` :
+/// la CLI l'invoque pour `--receipt <fichier>`, la fenêtre (`freeflow-web`) pour un fichier reçu
+/// en multipart — une seule implémentation, jamais réécrite par façade. `original_name` est
+/// réduit à son composant final : un nom venu d'un navigateur ne doit pas pouvoir sortir de
+/// `receipts/` (« ../x »).
+///
+/// # Errors
+///
+/// Un message lisible si le répertoire ne peut être créé ou le fichier écrit.
+pub fn archive_receipt_bytes(
+    db_path: &std::path::Path,
+    original_name: &str,
+    content: &[u8],
+) -> Result<ArchivedReceipt, String> {
+    let hash = hash_receipt(content);
+    let original_name = std::path::Path::new(original_name)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .filter(|n| !n.is_empty() && n != "." && n != "..")
+        .unwrap_or_else(|| "justificatif".to_string());
     let archived_name = format!("{hash}-{original_name}");
 
     let receipts_dir = db_path
         .parent()
         .map_or_else(|| PathBuf::from("receipts"), |p| p.join("receipts"));
-    std::fs::create_dir_all(&receipts_dir).map_err(|e| {
-        CliError::Unexpected(format!(
-            "création de {} impossible : {e}",
-            receipts_dir.display()
-        ))
-    })?;
+    std::fs::create_dir_all(&receipts_dir)
+        .map_err(|e| format!("création de {} impossible : {e}", receipts_dir.display()))?;
     // Le justificatif (facture fournisseur, note de frais…) vit à côté du coffre chiffré mais
     // n'est pas lui-même chiffré : au minimum, on le rend illisible aux autres utilisateurs de la
     // machine — le répertoire en 0700 et le fichier en 0600 — pour ne pas laisser en clair, en
     // 0644 (umask par défaut), des données que tout le reste du produit protège.
     tighten_dir_permissions(&receipts_dir);
     let archived_path = receipts_dir.join(&archived_name);
-    std::fs::write(&archived_path, &content)
-        .map_err(|e| CliError::Unexpected(format!("écriture du justificatif impossible : {e}")))?;
+    std::fs::write(&archived_path, content)
+        .map_err(|e| format!("écriture du justificatif impossible : {e}"))?;
     tighten_file_permissions(&archived_path);
 
-    Ok((hash, archived_name))
+    Ok(ArchivedReceipt {
+        hash,
+        filename: archived_name,
+    })
 }
 
 #[cfg(unix)]

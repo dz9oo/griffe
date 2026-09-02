@@ -101,6 +101,30 @@ pub fn field_help(text: &str) -> Markup {
     }
 }
 
+/// Champ fichier (`<input type="file">`) — n'a de sens que dans un formulaire en
+/// `multipart/form-data` (`hx-encoding`), sinon le navigateur n'envoie que le nom. `accept`
+/// filtre le sélecteur natif, sans rien valider côté serveur. Aucune valeur pré-remplie : un
+/// navigateur n'en accepte pas pour ce type de champ.
+pub fn file(name: &str, label: &str, accept: &str) -> Markup {
+    html! {
+        div class="field" {
+            label for=(name) { (label) }
+            input id=(name) name=(name) type="file" accept=(accept);
+        }
+    }
+}
+
+/// Case à cocher — soumise comme `name=on` quand cochée, absente sinon (sémantique HTML
+/// standard, que le lecteur du formulaire interprète en booléen).
+pub fn checkbox(name: &str, label: &str) -> Markup {
+    html! {
+        label class="field-checkbox" {
+            input name=(name) type="checkbox" value="on";
+            span { (label) }
+        }
+    }
+}
+
 /// Champ caché — porte la révision optimiste d'une entité en édition (voir `CLAUDE.md`,
 /// « garde-fou d'écriture concurrente ») : invisible, mais bien soumis avec le reste du
 /// formulaire.

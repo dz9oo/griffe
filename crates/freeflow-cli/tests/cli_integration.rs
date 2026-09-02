@@ -786,6 +786,81 @@ fn client_edit_changes_only_the_fields_provided_and_bumps_the_revision() {
 }
 
 #[test]
+fn client_edit_clear_flags_erase_optional_fields_that_or_current_could_never_erase() {
+    // Le patron `champ.or(current.champ)` de `edit` conserve toujours un optionnel existant :
+    // sans `--clear-*`, un SIREN saisi par erreur serait indélébile depuis la CLI (trou noté au
+    // lot 16 et comblé ici). `--siren` et `--clear-siren` sont exclusifs, refusés par clap
+    // avant tout accès au coffre.
+    let db = temp_db("client-edit-clear");
+    provision(&db);
+    let id = create_client(&db, "Kappa Software");
+
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "client",
+            "edit",
+            &id,
+            "--siren",
+            "552100554",
+            "--vat-number",
+            "FR96552100554",
+            "--street",
+            "1 rue Haute",
+            "--postal-code",
+            "69001",
+            "--city",
+            "Lyon",
+            "--country",
+            "FR",
+        ])
+        .assert()
+        .success();
+
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "client",
+            "edit",
+            &id,
+            "--siren",
+            "552100554",
+            "--clear-siren",
+        ])
+        .assert()
+        .failure()
+        .code(2);
+
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "client",
+            "edit",
+            &id,
+            "--clear-siren",
+            "--clear-vat-number",
+            "--clear-address",
+        ])
+        .assert()
+        .success();
+
+    let show_out = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--json", "client", "show", &id])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let client = json_result(&show_out);
+    assert_eq!(client["name"], "Kappa Software", "nom conservé");
+    assert!(client["siren"].is_null(), "SIREN effacé : {client}");
+    assert!(client["vat_number"].is_null(), "TVA effacée : {client}");
+    assert!(client["address"].is_null(), "adresse effacée : {client}");
+    assert_eq!(client["revision"], 3);
+}
+
+#[test]
 fn editing_twice_in_a_row_reads_the_fresh_revision_each_time() {
     // `client edit` fait un lire-modifier-écrire dans la même invocation (jamais de révision
     // exposée comme argument nu — voir `CLAUDE.md`) : deux éditions successives voient chacune
@@ -993,6 +1068,28 @@ fn contact_lifecycle_add_list_edit_rm() {
         .args(["client", "contact", "edit", &contact_id, "--role", "DAF"])
         .assert()
         .success();
+
+    // `--clear-email` efface un optionnel que `--email` seul ne pourrait jamais vider ; le rôle
+    // posé juste avant et le nom, non mentionnés, survivent.
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["client", "contact", "edit", &contact_id, "--clear-email"])
+        .assert()
+        .success();
+    let cleared_out = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "--json", "client", "contact", "list", "--client", &client_id,
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let contact = &json_result(&cleared_out)[0];
+    assert!(contact["email"].is_null(), "e-mail effacé : {contact}");
+    assert_eq!(contact["role"], "DAF");
+    assert_eq!(contact["name"], "Alex Martin");
 
     freeflow()
         .env("FREEFLOW_DB", &db)

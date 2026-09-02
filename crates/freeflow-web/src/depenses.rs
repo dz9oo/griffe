@@ -2,16 +2,23 @@
 //! `clients` (voir le commentaire de tête de `crate::clients`) : succès → `200` vide +
 //! `HX-Trigger: freeflow:saved`, échec → `200` avec le panneau re-rendu. Toute action ici est un
 //! acte humain direct (`AppState::human_ctx()`).
+//!
+//! Seule différence avec les autres écrans : les formulaires de création et de modification
+//! sont en `multipart/form-data` (lot 29), pour le champ fichier du justificatif. Le fichier
+//! reçu est archivé par [`freeflow_cli::archive_receipt_bytes`] — la même IO d'adaptateur que
+//! `freeflow expense record --receipt`, jamais réimplémentée ici — *avant* de construire la
+//! commande du cœur, qui ne reçoit que le hash et le nom archivé (voir `CLAUDE.md`, « les
+//! `Command` ne touchent que `&Connection` »). Le corps du protocole `freeflow://` arrive
+//! entier en mémoire (voir `freeflow-desktop/src/main.rs`) : le multipart y passe comme
+//! n'importe quel `POST`, sans socket ni fichier temporaire.
 
-use axum::Form;
-use axum::extract::{Path, State};
+use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
 use axum::http::HeaderValue;
 use axum::response::{Html, IntoResponse, Response};
 use freeflow_core::app::{AppError, Executor, Outcome};
 use freeflow_core::domain::{Expense, ExpenseCategory, ExpenseId, Money, VatRate};
 use freeflow_core::expenses;
 use maud::html;
-use serde::Deserialize;
 
 use crate::state::AppState;
 use crate::views;
@@ -48,9 +55,21 @@ fn parse_id<T: std::str::FromStr>(raw: &str) -> Option<T> {
     raw.parse().ok()
 }
 
-#[derive(Debug, Deserialize)]
+/// Taille maximale d'un corps `multipart` sur les routes de saisie de dépense : au-delà de la
+/// limite par défaut d'axum (2 Mio), trop juste pour une facture fournisseur scannée. Une
+/// borne reste nécessaire — le corps entier est tenu en mémoire — et 32 Mio couvre largement
+/// un PDF ou une photo de note de frais sans permettre d'épuiser la mémoire de la fenêtre.
+const EXPENSE_FORM_BODY_LIMIT: usize = 32 * 1024 * 1024;
+
+/// Pose la limite de corps ci-dessus sur une route de saisie de dépense.
+pub fn body_limit() -> DefaultBodyLimit {
+    DefaultBodyLimit::max(EXPENSE_FORM_BODY_LIMIT)
+}
+
+/// Champs texte du formulaire de dépense, tels que lus par [`read_multipart_form`] — plus de
+/// `axum::Form`/`serde_urlencoded` ici depuis le passage en multipart.
+#[derive(Debug, Default)]
 pub struct ExpenseForm {
-    #[serde(default)]
     revision: Option<String>,
     label: String,
     category: String,
@@ -58,6 +77,80 @@ pub struct ExpenseForm {
     vat_rate: String,
     vat_deductible: String,
     incurred_on: String,
+    /// Nom du justificatif actuellement archivé — affiché par le panneau d'édition, jamais lu
+    /// pour persister quoi que ce soit (l'état de référence est toujours relu dans le coffre).
+    current_receipt: Option<String>,
+    /// Case « détacher le justificatif » (`on` quand cochée) — l'équivalent de
+    /// `expense edit --clear-receipt` : détache sans toucher au fichier archivé.
+    clear_receipt: bool,
+}
+
+/// Fichier reçu dans le champ `receipt` du formulaire, tel quel, avant archivage.
+struct UploadedReceipt {
+    filename: String,
+    content: Vec<u8>,
+}
+
+/// Lit un formulaire `multipart/form-data` : les champs texte remplissent un [`ExpenseForm`],
+/// le champ fichier `receipt` (s'il porte un nom et un contenu — un `<input type="file">` laissé
+/// vide arrive comme une partie vide) devient un [`UploadedReceipt`].
+async fn read_multipart_form(
+    mut multipart: Multipart,
+) -> Result<(ExpenseForm, Option<UploadedReceipt>), String> {
+    let mut form = ExpenseForm::default();
+    let mut receipt = None;
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| format!("formulaire illisible : {e}"))?
+    {
+        let name = field.name().unwrap_or_default().to_string();
+        if name == "receipt" {
+            let filename = field.file_name().unwrap_or_default().to_string();
+            let content = field
+                .bytes()
+                .await
+                .map_err(|e| format!("justificatif illisible : {e}"))?;
+            if !filename.is_empty() && !content.is_empty() {
+                receipt = Some(UploadedReceipt {
+                    filename,
+                    content: content.to_vec(),
+                });
+            }
+            continue;
+        }
+        let value = field
+            .text()
+            .await
+            .map_err(|e| format!("champ « {name} » illisible : {e}"))?;
+        match name.as_str() {
+            "revision" => form.revision = Some(value),
+            "label" => form.label = value,
+            "category" => form.category = value,
+            "amount" => form.amount = value,
+            "vat_rate" => form.vat_rate = value,
+            "vat_deductible" => form.vat_deductible = value,
+            "incurred_on" => form.incurred_on = value,
+            "current_receipt" => form.current_receipt = Some(value).filter(|v| !v.is_empty()),
+            "clear_receipt" => form.clear_receipt = value == "on" || value == "true",
+            // Un champ inconnu est une soumission forgée ou un formulaire d'une autre version :
+            // ignoré, les validations de champ feront le reste.
+            _ => {}
+        }
+    }
+    Ok((form, receipt))
+}
+
+/// Archive le justificatif reçu à côté du coffre et renvoie `(hash, nom archivé)` — ou une
+/// erreur de bandeau si le disque refuse. IO bloquante, comme tout accès au `Store` dans ces
+/// handlers (transport en mémoire, une requête à la fois).
+fn archive_uploaded(
+    state: &AppState,
+    receipt: &UploadedReceipt,
+) -> Result<(Option<String>, Option<String>), String> {
+    let archived =
+        freeflow_cli::archive_receipt_bytes(state.db_path(), &receipt.filename, &receipt.content)?;
+    Ok((Some(archived.hash), Some(archived.filename)))
 }
 
 impl From<&ExpenseForm> for ExpenseFormValues {
@@ -69,6 +162,7 @@ impl From<&ExpenseForm> for ExpenseFormValues {
             vat_rate: f.vat_rate.clone(),
             vat_deductible: f.vat_deductible.clone(),
             incurred_on: f.incurred_on.clone(),
+            current_receipt: f.current_receipt.clone(),
         }
     }
 }
@@ -192,13 +286,42 @@ pub async fn new_panel() -> Html<String> {
     )
 }
 
-pub async fn create(State(state): State<AppState>, Form(form): Form<ExpenseForm>) -> Response {
+pub async fn create(State(state): State<AppState>, multipart: Multipart) -> Response {
+    let (form, receipt) = match read_multipart_form(multipart).await {
+        Ok(read) => read,
+        Err(message) => {
+            let errors = ExpenseFormErrors {
+                banner: Some(message),
+                ..Default::default()
+            };
+            return Html(
+                views::depenses::new_panel(&ExpenseFormValues::default(), &errors).into_string(),
+            )
+            .into_response();
+        }
+    };
     let parsed = match parse_expense_form(&form) {
         Ok(p) => p,
         Err(errors) => {
             return Html(views::depenses::new_panel(&(&form).into(), &errors).into_string())
                 .into_response();
         }
+    };
+    // Archivage *après* validation des champs (un formulaire refusé ne laisse pas de fichier
+    // orphelin dans `receipts/`) et *avant* la commande, comme la CLI.
+    let (receipt_hash, receipt_filename) = match &receipt {
+        Some(uploaded) => match archive_uploaded(&state, uploaded) {
+            Ok(archived) => archived,
+            Err(message) => {
+                let errors = ExpenseFormErrors {
+                    banner: Some(message),
+                    ..Default::default()
+                };
+                return Html(views::depenses::new_panel(&(&form).into(), &errors).into_string())
+                    .into_response();
+            }
+        },
+        None => (None, None),
     };
     let cmd = expenses::RecordExpense {
         label: parsed.label,
@@ -207,8 +330,8 @@ pub async fn create(State(state): State<AppState>, Form(form): Form<ExpenseForm>
         vat_rate: parsed.vat_rate,
         vat_deductible: parsed.vat_deductible,
         incurred_on: parsed.incurred_on,
-        receipt_hash: None,
-        receipt_filename: None,
+        receipt_hash,
+        receipt_filename,
     };
     match execute(&state, cmd).await {
         None => locked_fragment().into_response(),
@@ -259,10 +382,24 @@ pub async fn edit_panel(State(state): State<AppState>, Path(id): Path<String>) -
 pub async fn update(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    Form(form): Form<ExpenseForm>,
+    multipart: Multipart,
 ) -> Response {
     let Some(id) = parse_id::<ExpenseId>(&id) else {
         return message_fragment("identifiant de dépense invalide").into_response();
+    };
+    let (form, receipt) = match read_multipart_form(multipart).await {
+        Ok(read) => read,
+        Err(message) => {
+            let errors = ExpenseFormErrors {
+                banner: Some(message),
+                ..Default::default()
+            };
+            return Html(
+                views::depenses::edit_panel(id, 0, &ExpenseFormValues::default(), &errors)
+                    .into_string(),
+            )
+            .into_response();
+        }
     };
     let revision: i64 = form
         .revision
@@ -278,13 +415,35 @@ pub async fn update(
             .into_response();
         }
     };
-    // Le justificatif existant voyage tel quel dans l'état complet : le panneau ne l'édite pas
-    // (voir le commentaire de tête de `views::depenses`).
-    let (receipt_hash, receipt_filename) = match current_expense(&state, id).await {
+    // Même logique de justificatif que `expense edit` en CLI : la case « détacher » vide les
+    // deux champs sans toucher au fichier archivé ; un fichier reçu remplace l'existant ; sinon
+    // le justificatif actuel, relu dans le coffre (jamais depuis le formulaire), voyage tel quel
+    // dans l'état complet.
+    let current = match current_expense(&state, id).await {
         None => return locked_fragment().into_response(),
         Some(Err(e)) => return message_fragment(&e.to_string()).into_response(),
         Some(Ok(None)) => return message_fragment("dépense introuvable").into_response(),
-        Some(Ok(Some(e))) => (e.receipt_hash, e.receipt_filename),
+        Some(Ok(Some(e))) => e,
+    };
+    let (receipt_hash, receipt_filename) = if form.clear_receipt {
+        (None, None)
+    } else if let Some(uploaded) = &receipt {
+        match archive_uploaded(&state, uploaded) {
+            Ok(archived) => archived,
+            Err(message) => {
+                let errors = ExpenseFormErrors {
+                    banner: Some(message),
+                    ..Default::default()
+                };
+                return Html(
+                    views::depenses::edit_panel(id, revision, &(&form).into(), &errors)
+                        .into_string(),
+                )
+                .into_response();
+            }
+        }
+    } else {
+        (current.receipt_hash, current.receipt_filename)
     };
     let cmd = expenses::UpdateExpense {
         id,

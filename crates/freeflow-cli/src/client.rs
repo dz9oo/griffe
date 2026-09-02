@@ -48,23 +48,35 @@ pub enum ClientCommand {
     },
     /// Modifie un client existant — seuls les champs fournis changent, le reste est conservé
     /// tel quel.
+    ///
+    /// `--clear-siren`/`--clear-vat-number`/`--clear-address` effacent un champ optionnel sans en
+    /// fournir un nouveau.
     Edit {
         #[arg(value_name = "RÉFÉRENCE")]
         reference: String,
         #[arg(long)]
         name: Option<String>,
-        #[arg(long, value_parser = parse_siren)]
+        #[arg(long, value_parser = parse_siren, conflicts_with = "clear_siren")]
         siren: Option<Siren>,
-        #[arg(long, value_parser = parse_vat_number)]
+        /// Efface le SIREN, sans en fournir un nouveau.
+        #[arg(long)]
+        clear_siren: bool,
+        #[arg(long, value_parser = parse_vat_number, conflicts_with = "clear_vat_number")]
         vat_number: Option<VatNumber>,
-        #[arg(long, requires_all = ["postal_code", "city", "country"])]
+        /// Efface le numéro de TVA intracommunautaire, sans en fournir un nouveau.
+        #[arg(long)]
+        clear_vat_number: bool,
+        #[arg(long, requires_all = ["postal_code", "city", "country"], conflicts_with = "clear_address")]
         street: Option<String>,
-        #[arg(long)]
+        #[arg(long, conflicts_with = "clear_address")]
         postal_code: Option<String>,
-        #[arg(long)]
+        #[arg(long, conflicts_with = "clear_address")]
         city: Option<String>,
-        #[arg(long)]
+        #[arg(long, conflicts_with = "clear_address")]
         country: Option<String>,
+        /// Efface l'adresse postale, sans en fournir une nouvelle.
+        #[arg(long)]
+        clear_address: bool,
     },
     /// Retire un client des listes actives sans le supprimer — les factures et devis passés
     /// gardent une référence valide.
@@ -108,18 +120,30 @@ pub enum ContactCommand {
         #[arg(long, value_name = "RÉFÉRENCE")]
         client: String,
     },
-    /// Modifie un contact existant.
+    /// Modifie un contact existant — seuls les champs fournis changent.
+    ///
+    /// `--clear-email`/`--clear-phone`/`--clear-role` effacent un champ optionnel sans en fournir
+    /// un nouveau.
     Edit {
         #[arg(value_parser = clap::value_parser!(ContactId))]
         id: ContactId,
         #[arg(long)]
         name: Option<String>,
-        #[arg(long)]
+        #[arg(long, conflicts_with = "clear_email")]
         email: Option<String>,
+        /// Efface l'adresse e-mail, sans en fournir une nouvelle.
         #[arg(long)]
+        clear_email: bool,
+        #[arg(long, conflicts_with = "clear_phone")]
         phone: Option<String>,
+        /// Efface le téléphone, sans en fournir un nouveau.
         #[arg(long)]
+        clear_phone: bool,
+        #[arg(long, conflicts_with = "clear_role")]
         role: Option<String>,
+        /// Efface la fonction, sans en fournir une nouvelle.
+        #[arg(long)]
+        clear_role: bool,
     },
     /// Supprime un contact.
     Rm {
@@ -238,15 +262,22 @@ pub fn run(
             reference,
             name,
             siren,
+            clear_siren,
             vat_number,
+            clear_vat_number,
             street,
             postal_code,
             city,
             country,
+            clear_address,
         } => {
             let id = refs::resolve_client(store, &reference)?;
             let current = client_or_not_found(store, id)?;
+            // Le patron `champ.or(current.champ)` ne sait jamais effacer un optionnel : chaque
+            // `--clear-*` est l'échappatoire explicite (même trou comblé au lot 16 pour
+            // `prospect edit --clear-source`/`--clear-note`).
             let address = match (street, postal_code, city, country) {
+                _ if clear_address => None,
                 (Some(street), Some(postal_code), Some(city), Some(country)) => Some(Address {
                     street,
                     postal_code,
@@ -259,8 +290,16 @@ pub fn run(
                 id,
                 revision: current.revision,
                 name: name.unwrap_or(current.name),
-                siren: siren.or(current.siren),
-                vat_number: vat_number.or(current.vat_number),
+                siren: if clear_siren {
+                    None
+                } else {
+                    siren.or(current.siren)
+                },
+                vat_number: if clear_vat_number {
+                    None
+                } else {
+                    vat_number.or(current.vat_number)
+                },
                 address,
             };
             let outcome = Executor::new(store).execute(&command, ctx)?;
@@ -339,17 +378,24 @@ fn run_contact(
             id,
             name,
             email,
+            clear_email,
             phone,
+            clear_phone,
             role,
+            clear_role,
         } => {
             let current = contact_or_not_found(store, id)?;
+            let keep_unless_cleared =
+                |clear: bool, new: Option<String>, current: Option<String>| {
+                    if clear { None } else { new.or(current) }
+                };
             let command = clients::UpdateContact {
                 id,
                 revision: current.revision,
                 name: name.unwrap_or(current.name),
-                email: email.or(current.email),
-                phone: phone.or(current.phone),
-                role: role.or(current.role),
+                email: keep_unless_cleared(clear_email, email, current.email),
+                phone: keep_unless_cleared(clear_phone, phone, current.phone),
+                role: keep_unless_cleared(clear_role, role, current.role),
             };
             let outcome = Executor::new(store).execute(&command, ctx)?;
             format_outcome(&outcome, json)

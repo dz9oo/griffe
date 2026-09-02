@@ -1,11 +1,14 @@
 //! Écran `depenses` (lot 21) — même patron que `clients` (lot 15) : liste auto-rafraîchie +
 //! panneau latéral pour créer/afficher/modifier/supprimer une dépense.
 //!
-//! Pas de justificatif ici : l'archivage d'un fichier local (lecture, hash, copie en
-//! `receipts/`) passe par la CLI (`freeflow expense record --receipt …`) — un champ d'upload
-//! dans la webview exigerait du multipart et une politique de fichiers propre à la coque, hors
-//! périmètre de ce lot. Le panneau d'édition conserve tel quel le justificatif existant (la
-//! commande du cœur voyage toujours en état complet), et la fiche l'affiche s'il y en a un.
+//! Justificatif (lot 29) : les formulaires de création et de modification sont en
+//! `multipart/form-data` (`hx-encoding`, htmx envoie alors un `FormData`, sans script inline ni
+//! `eval` — compatible avec la CSP `script-src 'self'` de la fenêtre) et portent un
+//! `<input type="file">` ; la webview ouvre le sélecteur de fichiers natif de la plateforme.
+//! L'archivage lui-même (hash, copie en `receipts/`) est fait par `crate::depenses` via le
+//! helper partagé avec la CLI. Le panneau d'édition affiche le justificatif actuel, permet de le
+//! remplacer ou de le détacher (case à cocher, l'équivalent de `--clear-receipt`) — sinon il
+//! voyage tel quel dans l'état complet de la commande.
 
 use freeflow_core::app::AppError;
 use freeflow_core::domain::{Expense, ExpenseCategory, ExpenseId, Money, VatRate};
@@ -34,6 +37,10 @@ pub const VAT_RATE_OPTIONS: [(&str, &str); 5] = [
     ("zero", "0 % (exonéré)"),
 ];
 
+/// Types de fichiers proposés par le sélecteur — un filtre d'ergonomie côté navigateur, pas une
+/// validation : tout contenu reçu est archivé tel quel, comme `--receipt` en CLI.
+const RECEIPT_ACCEPT: &str = ".pdf,.png,.jpg,.jpeg,.heic,.webp,image/*,application/pdf";
+
 fn category_label(category: ExpenseCategory) -> &'static str {
     CATEGORY_OPTIONS
         .iter()
@@ -49,6 +56,9 @@ pub struct ExpenseFormValues {
     pub vat_rate: String,
     pub vat_deductible: String,
     pub incurred_on: String,
+    /// Nom du justificatif déjà archivé (édition seulement) — affiché, jamais persisté depuis
+    /// le formulaire.
+    pub current_receipt: Option<String>,
 }
 
 impl From<&Expense> for ExpenseFormValues {
@@ -60,6 +70,7 @@ impl From<&Expense> for ExpenseFormValues {
             vat_rate: e.vat_rate.as_str().to_string(),
             vat_deductible: e.vat_deductible.to_decimal_string(),
             incurred_on: freeflow_core::domain::format_date(e.incurred_on),
+            current_receipt: e.receipt_filename.clone(),
         }
     }
 }
@@ -81,7 +92,7 @@ fn expense_form(
     errors: &ExpenseFormErrors,
 ) -> Markup {
     html! {
-        form hx-post=(action) hx-target="#panel" hx-swap="innerHTML" {
+        form hx-post=(action) hx-target="#panel" hx-swap="innerHTML" hx-encoding="multipart/form-data" enctype="multipart/form-data" {
             @if let Some((message, reload)) = &errors.conflict {
                 (form::conflict_banner(message, reload))
             } @else {
@@ -98,6 +109,15 @@ fn expense_form(
                 (form::number("vat_deductible", "TVA déductible (€)", &values.vat_deductible, "0.01", errors.vat_deductible.as_deref()))
                 (form::field_help("La TVA effectivement déductible peut être inférieure à montant × taux (véhicules, restauration…)."))
                 (form::date("incurred_on", "Date d'engagement", &values.incurred_on, errors.incurred_on.as_deref()))
+                @if let Some(current) = &values.current_receipt {
+                    (form::hidden("current_receipt", current))
+                    (form::file("receipt", "Remplacer le justificatif", RECEIPT_ACCEPT))
+                    (form::field_help(&format!("Justificatif actuel : {current}")))
+                    (form::checkbox("clear_receipt", "Détacher le justificatif (le fichier archivé reste en place)"))
+                } @else {
+                    (form::file("receipt", "Justificatif", RECEIPT_ACCEPT))
+                    (form::field_help("Facture fournisseur, ticket, note de frais — archivé à côté du coffre avec son hash d'intégrité SHA-256."))
+                }
                 (form::actions(if revision.is_some() { "Enregistrer" } else { "Enregistrer la dépense" }))
             }
         }
@@ -145,7 +165,7 @@ pub fn detail_panel(expense: &Expense, error: Option<&str>) -> Markup {
         }
         @if expense.receipt_hash.is_none() {
             div class="detail-note" {
-                "Aucun justificatif attaché — l'archivage d'un fichier passe par la CLI : "
+                "Aucun justificatif attaché — ajoutez-en un via « modifier », ou en CLI : "
                 code { "freeflow expense edit " (expense.id) " --receipt <fichier>" }
             }
         }
