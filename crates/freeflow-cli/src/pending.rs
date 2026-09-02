@@ -11,7 +11,7 @@ use freeflow_core::billing::{
     VoidPayment,
 };
 use freeflow_core::clients::{DeleteClient, DeleteContact};
-use freeflow_core::expenses::DeleteExpense;
+use freeflow_core::expenses::{DeleteExpense, ReconcileExpense, RecordExpense};
 use freeflow_core::fiscal_year::{ApproveFiscalYear, CloseFiscalYear, DeleteFiscalYear};
 use freeflow_core::missions::{DeleteMission, DeleteTimeEntry};
 use freeflow_core::opening_balance::{
@@ -107,6 +107,14 @@ pub fn confirm(store: &mut Store, id: PendingActionId, json: bool) -> Result<Str
         Ok(format_outcome(&outcome, json))
     } else if action.command_name == DeleteExpense::NAME {
         let outcome = Executor::new(store).confirm::<DeleteExpense>(id)?;
+        Ok(format_outcome(&outcome, json))
+    } else if action.command_name == ReconcileExpense::NAME {
+        let outcome = Executor::new(store).confirm::<ReconcileExpense>(id)?;
+        Ok(format_outcome(&outcome, json))
+    } else if action.command_name == RecordExpense::NAME {
+        // Une dépense n'est en attente que si un agent l'a proposée *rapprochée* d'un débit du
+        // relevé (`bank_transaction_id`) — le seul cas où `RecordExpense` exige confirmation.
+        let outcome = Executor::new(store).confirm::<RecordExpense>(id)?;
         Ok(format_outcome(&outcome, json))
     } else if action.command_name == VoidPayment::NAME {
         let outcome = Executor::new(store).confirm::<VoidPayment>(id)?;

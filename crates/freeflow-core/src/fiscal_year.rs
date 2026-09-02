@@ -881,6 +881,7 @@ mod tests {
                     incurred_on: date(year, TimeMonth::October, 5),
                     receipt_hash: None,
                     receipt_filename: None,
+                    bank_transaction_id: None,
                 },
                 &human(),
             )
@@ -1348,6 +1349,7 @@ mod tests {
                     incurred_on: date(2026, TimeMonth::March, 5),
                     receipt_hash: None,
                     receipt_filename: None,
+                    bank_transaction_id: None,
                 },
                 &human(),
             )
@@ -1395,6 +1397,7 @@ mod tests {
                     incurred_on: date(year, TimeMonth::March, 5),
                     receipt_hash: None,
                     receipt_filename: None,
+                    bank_transaction_id: None,
                 },
                 &human(),
             )

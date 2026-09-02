@@ -139,6 +139,7 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "payment.record",
         "bank.import",
         "bank.reconcile",
+        "expense.reconcile",
         "pending.list",
         "audit.verify_chain",
         "company.show",
@@ -1077,6 +1078,128 @@ async fn expense_lifecycle_over_mcp() {
 
     let empty = call(&client, "expense.list", json!({})).await;
     assert!(json_of(&empty).as_array().unwrap().is_empty());
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn expense_reconciliation_over_mcp_needs_a_human() {
+    // Lot 33 : rapprocher une dépense d'un débit du relevé — depuis le débit (`expense.record`
+    // avec `bank_transaction_id`) ou après coup (`expense.reconcile`) — est une action de
+    // rapprochement bancaire : l'agent la propose, un humain la confirme.
+    let db_path = test_db_path("expense-reconciliation");
+    let store = Store::create(&db_path, &Passphrase::from("s3cret")).unwrap();
+    let client = spawn_client(store).await;
+
+    let imported = call(
+        &client,
+        "bank.import",
+        json!({
+            "format": "csv",
+            "content": "date;description;montant\n2026-09-07;PRLV CABINET COMPTA;-960.00\n2026-09-09;FRAIS;-12.50\n",
+        }),
+    )
+    .await;
+    assert_eq!(imported.is_error, Some(false));
+    let listed = call(&client, "bank.list", json!({"unmatched": true})).await;
+    let transactions = json_of(&listed);
+    assert_eq!(transactions.as_array().unwrap().len(), 2);
+    let fees_tx = transactions[1]["id"].as_str().unwrap().to_string();
+    let bank_tx = transactions[0]["id"].as_str().unwrap().to_string();
+
+    // Depuis le débit : montant et date repris, action en attente.
+    let proposed = call(
+        &client,
+        "expense.record",
+        json!({
+            "label": "Expert-comptable",
+            "category": "fees",
+            "vat_rate": "standard",
+            "vat_deductible_cents": 16_000,
+            "bank_transaction_id": fees_tx,
+        }),
+    )
+    .await;
+    let pending_id = json_of(&proposed)["pending_action_id"]
+        .as_str()
+        .expect("une dépense rapprochée proposée par un agent dépose une action en attente")
+        .to_string();
+    assert!(
+        json_of(&call(&client, "expense.list", json!({})).await)
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let mut confirming_store =
+        Store::open_with_passphrase(&db_path, &Passphrase::from("s3cret")).unwrap();
+    let confirmed = Executor::new(&mut confirming_store)
+        .confirm::<freeflow_core::expenses::RecordExpense>(pending_id.parse().unwrap())
+        .unwrap();
+    assert!(matches!(confirmed, Outcome::Applied(_)));
+    drop(confirming_store);
+
+    let shown = call(&client, "expense.show", json!({"expense": "expert"})).await;
+    let expense = json_of(&shown);
+    assert_eq!(expense["amount"], 96_000);
+    // `time::Date` se sérialise en (année, jour ordinal) : le 7 septembre 2026 est le 250e.
+    assert_eq!(expense["incurred_on"], json!([2026, 250]));
+    assert_eq!(expense["bank_transaction"]["id"], fees_tx);
+
+    // Sans débit, `amount_cents`/`incurred_on` restent requis — et une dépense ordinaire ne
+    // demande pas de confirmation.
+    let refused = call(
+        &client,
+        "expense.record",
+        json!({"label": "x", "category": "other", "vat_rate": "zero", "vat_deductible_cents": 0}),
+    )
+    .await;
+    assert_eq!(refused.is_error, Some(true));
+    let recorded = call(
+        &client,
+        "expense.record",
+        json!({
+            "label": "Frais bancaires",
+            "category": "bank_charges",
+            "amount_cents": 1_250,
+            "vat_rate": "zero",
+            "vat_deductible_cents": 0,
+            "incurred_on": "2026-09-09",
+        }),
+    )
+    .await;
+    assert_eq!(json_of(&recorded)["status"], "applied");
+
+    // Après coup : action en attente ; confirmée, le débit n'est plus à rapprocher.
+    let proposed = call(
+        &client,
+        "expense.reconcile",
+        json!({"expense": "frais", "transaction_id": bank_tx}),
+    )
+    .await;
+    let pending_id = json_of(&proposed)["pending_action_id"]
+        .as_str()
+        .expect("un rapprochement proposé par un agent dépose une action en attente")
+        .to_string();
+    let mut confirming_store =
+        Store::open_with_passphrase(&db_path, &Passphrase::from("s3cret")).unwrap();
+    Executor::new(&mut confirming_store)
+        .confirm::<freeflow_core::expenses::ReconcileExpense>(pending_id.parse().unwrap())
+        .unwrap();
+    drop(confirming_store);
+    let listed = call(&client, "bank.list", json!({"unmatched": true})).await;
+    assert!(json_of(&listed).as_array().unwrap().is_empty());
+
+    // La ressource de détail porte aussi le débit.
+    let resource = client
+        .read_resource(ReadResourceRequestParams::new("freeflow://expenses/frais"))
+        .await
+        .unwrap();
+    let rmcp::model::ResourceContents::TextResourceContents { text, .. } = &resource.contents[0]
+    else {
+        panic!("contenu texte attendu")
+    };
+    let detail: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(detail["expense"]["bank_transaction"]["id"], bank_tx);
 
     client.cancel().await.unwrap();
 }

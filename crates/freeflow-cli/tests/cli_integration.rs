@@ -1537,6 +1537,211 @@ fn expense_lifecycle_record_edit_rm_by_reference() {
 }
 
 #[test]
+fn expense_reconciliation_with_a_statement_debit_by_cli() {
+    // Lot 33 : un débit du relevé importé paie une dépense — créée depuis le débit (montant et
+    // date repris), ou rapprochée après coup au montant exact ; `bank list --unmatched` ne le
+    // montre plus, `bank unreconcile` le libère sans toucher à la dépense, et `expense rm`
+    // libère le sien.
+    let db = temp_db("expense-reconciliation");
+    provision(&db);
+
+    let statement = db.with_file_name("releve-debits.csv");
+    std::fs::write(
+        &statement,
+        "date;description;montant\n2026-09-07;PRLV CABINET COMPTA;-960.00\n\
+         2026-09-09;FRAIS TENUE DE COMPTE;-12.50\n2026-09-10;VIR CLIENT;500.00\n",
+    )
+    .unwrap();
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["bank", "import", "--format", "csv"])
+        .arg(&statement)
+        .assert()
+        .success();
+    let list_out = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--json", "bank", "list", "--unmatched"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let transactions = json_result(&list_out);
+    assert_eq!(transactions.as_array().unwrap().len(), 3);
+    let tx_of = |description: &str| {
+        transactions
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["description"] == description)
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let fees_tx = tx_of("PRLV CABINET COMPTA");
+    let bank_tx = tx_of("FRAIS TENUE DE COMPTE");
+    let credit_tx = tx_of("VIR CLIENT");
+
+    // Créée depuis le débit : `--amount`/`--incurred-on` omis, repris du relevé ; catégorie
+    // « honoraires » (nouvelle au lot 33).
+    let record_out = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "--json",
+            "expense",
+            "record",
+            "--label",
+            "Expert-comptable",
+            "--category",
+            "fees",
+            "--vat-rate",
+            "standard",
+            "--vat-deductible",
+            "160.00",
+            "--transaction",
+            &fees_tx,
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(json_result(&record_out)["status"], "applied");
+    let show_out = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--json", "expense", "show", "expert"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let shown = json_result(&show_out);
+    assert_eq!(shown["amount"], 96_000, "montant repris du débit");
+    // `time::Date` se sérialise en (année, jour ordinal) : le 7 septembre 2026 est le 250e.
+    assert_eq!(
+        shown["incurred_on"],
+        serde_json::json!([2026, 250]),
+        "date reprise du débit"
+    );
+    assert_eq!(shown["category"], "Fees");
+    assert_eq!(shown["bank_transaction"]["id"], fees_tx);
+
+    // Sans `--transaction`, montant et date restent obligatoires — refusé par clap.
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "expense",
+            "record",
+            "--label",
+            "x",
+            "--category",
+            "other",
+            "--vat-rate",
+            "zero",
+            "--vat-deductible",
+            "0",
+        ])
+        .assert()
+        .failure()
+        .code(2);
+
+    // Une dépense existante se rapproche après coup, au montant exact ; un crédit est refusé.
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "expense",
+            "record",
+            "--label",
+            "Frais bancaires",
+            "--category",
+            "bank_charges",
+            "--amount",
+            "12.50",
+            "--vat-rate",
+            "zero",
+            "--vat-deductible",
+            "0",
+            "--incurred-on",
+            "2026-09-09",
+        ])
+        .assert()
+        .success();
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["expense", "reconcile", "frais", "--transaction", &credit_tx])
+        .assert()
+        .failure()
+        .code(4)
+        .stderr(predicates::str::contains("crédit"));
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["expense", "reconcile", "frais", "--transaction", &bank_tx])
+        .assert()
+        .success();
+
+    let list_out = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--json", "bank", "list", "--unmatched"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let remaining = json_result(&list_out);
+    assert_eq!(remaining.as_array().unwrap().len(), 1);
+    assert_eq!(remaining[0]["id"], credit_tx);
+    let table = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["expense", "list"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert!(String::from_utf8(table).unwrap().contains("2026-09-09"));
+
+    // Le montant d'une dépense rapprochée est celui du relevé.
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["expense", "edit", "frais", "--amount", "13.00"])
+        .assert()
+        .failure()
+        .code(4)
+        .stderr(predicates::str::contains("relevé"));
+
+    // Défaire libère le débit, la dépense reste ; supprimer l'autre libère son débit.
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["bank", "unreconcile", "--transaction", &bank_tx])
+        .assert()
+        .success();
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["expense", "rm", "expert"])
+        .assert()
+        .success();
+    let list_out = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--json", "bank", "list", "--unmatched"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(json_result(&list_out).as_array().unwrap().len(), 3);
+    let list_out = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--json", "expense", "list"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(json_result(&list_out).as_array().unwrap().len(), 1);
+}
+
+#[test]
 fn quote_lifecycle_by_reference_from_creation_to_acceptance() {
     let db = temp_db("quote-lifecycle");
     provision(&db);

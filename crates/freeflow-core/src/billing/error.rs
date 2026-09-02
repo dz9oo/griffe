@@ -33,7 +33,7 @@ pub enum BillingError {
 
     #[error(
         "la transaction {0} est déjà rapprochée — défaites d'abord ce rapprochement \
-         (bank unreconcile) si elle visait la mauvaise facture"
+         (bank unreconcile) si elle visait la mauvaise facture ou la mauvaise dépense"
     )]
     AlreadyReconciled(BankTransactionId),
 

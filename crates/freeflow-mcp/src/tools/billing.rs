@@ -333,8 +333,9 @@ impl FreeflowServer {
         }
     }
 
-    /// Rapproche une transaction bancaire importée avec une facture (crée l'encaissement
-    /// correspondant).
+    /// Rapproche un crédit importé avec une facture (crée l'encaissement correspondant) — pour
+    /// un débit et une dépense, voir `expense.reconcile` / `expense.record` avec
+    /// `bank_transaction_id`.
     #[tool(
         name = "bank.reconcile",
         annotations(
@@ -399,7 +400,8 @@ impl FreeflowServer {
         }
     }
 
-    /// Liste les transactions bancaires importées, les plus récentes d'abord.
+    /// Liste les transactions bancaires importées, les plus récentes d'abord (`unmatched` :
+    /// celles rapprochées ni d'une facture ni d'une dépense).
     #[tool(
         name = "bank.list",
         annotations(read_only_hint = true, open_world_hint = false)
@@ -409,7 +411,7 @@ impl FreeflowServer {
         match list_bank_transactions(store.connection()) {
             Ok(mut transactions) => {
                 if args.unmatched {
-                    transactions.retain(|t| t.matched_invoice_id.is_none());
+                    transactions.retain(|t| !t.is_matched());
                 }
                 ok_json(transactions)
             }
@@ -419,7 +421,8 @@ impl FreeflowServer {
 
     /// Défait un rapprochement : libère la transaction et annule l'encaissement qui en était
     /// issu (rapprochement historique sans lignée : seule la transaction est libérée, le
-    /// paiement s'annule via `payment.void`). Même exigence de confirmation que `payment.void`.
+    /// paiement s'annule via `payment.void` ; débit rapproché d'une dépense : la dépense reste,
+    /// seule la transaction est libérée). Même exigence de confirmation que `payment.void`.
     #[tool(
         name = "bank.unreconcile",
         annotations(

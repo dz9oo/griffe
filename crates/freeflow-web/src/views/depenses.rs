@@ -9,23 +9,35 @@
 //! helper partagé avec la CLI. Le panneau d'édition affiche le justificatif actuel, permet de le
 //! remplacer ou de le détacher (case à cocher, l'équivalent de `--clear-receipt`) — sinon il
 //! voyage tel quel dans l'état complet de la commande.
+//!
+//! Rapprochement bancaire (lot 33) : les débits du relevé importé (`freeflow bank import`, la
+//! fenêtre n'importe pas) restant à rapprocher sont listés au-dessus des dépenses ; chacun
+//! ouvre le formulaire de création pré-rempli (montant, date, libellé, champ caché
+//! `bank_transaction_id`) — la dépense est créée rapprochée. Une dépense existante se rapproche
+//! depuis sa fiche (panneau listant les débits du même montant) et le rapprochement se défait
+//! depuis la fiche aussi (la dépense reste, le débit redevient « à rapprocher »).
 
 use freeflow_core::app::AppError;
-use freeflow_core::domain::{Expense, ExpenseCategory, ExpenseId, Money, VatRate};
-use freeflow_core::expenses::{expense_by_id, list_expenses};
+use freeflow_core::billing::unmatched_debits;
+use freeflow_core::domain::{
+    BankTransaction, Expense, ExpenseCategory, ExpenseId, Money, VatRate, format_date,
+};
+use freeflow_core::expenses::{ExpenseDetail, expense_detail, list_expenses, reconciled_debits};
 use freeflow_core::store::Store;
 use maud::{Markup, html};
 
 use crate::layout::{ViewId, view_head};
 use crate::views::{form, panel};
 
-pub const CATEGORY_OPTIONS: [(&str, &str); 7] = [
+pub const CATEGORY_OPTIONS: [(&str, &str); 9] = [
     ("software", "logiciels & abonnements"),
     ("equipment", "matériel"),
     ("travel", "déplacements"),
     ("meals", "repas"),
     ("office", "bureau"),
     ("professional", "professionnel (formation, assurance…)"),
+    ("fees", "honoraires (expert-comptable, avocat…)"),
+    ("bank_charges", "frais bancaires"),
     ("other", "autre"),
 ];
 
@@ -59,6 +71,10 @@ pub struct ExpenseFormValues {
     /// Nom du justificatif déjà archivé (édition seulement) — affiché, jamais persisté depuis
     /// le formulaire.
     pub current_receipt: Option<String>,
+    /// Débit du relevé que la dépense créée paiera (création seulement, lot 33) : id en champ
+    /// caché, et son résumé pour l'aide du formulaire.
+    pub bank_transaction_id: Option<String>,
+    pub bank_transaction_note: Option<String>,
 }
 
 impl From<&Expense> for ExpenseFormValues {
@@ -69,9 +85,39 @@ impl From<&Expense> for ExpenseFormValues {
             amount: e.amount.to_decimal_string(),
             vat_rate: e.vat_rate.as_str().to_string(),
             vat_deductible: e.vat_deductible.to_decimal_string(),
-            incurred_on: freeflow_core::domain::format_date(e.incurred_on),
+            incurred_on: format_date(e.incurred_on),
             current_receipt: e.receipt_filename.clone(),
+            bank_transaction_id: None,
+            bank_transaction_note: None,
         }
+    }
+}
+
+/// Résumé d'un débit pour l'aide du formulaire et la fiche.
+fn debit_summary(tx: &BankTransaction) -> String {
+    format!(
+        "{} — {} ({})",
+        format_date(tx.occurred_on),
+        Money::from_cents(-tx.amount_cents),
+        tx.description
+    )
+}
+
+/// Le formulaire de création pré-rempli depuis un débit du relevé (lot 33) : montant et date
+/// du débit, libellé du relevé, catégorie « autre » à préciser, TVA à renseigner par
+/// l'utilisateur (le relevé ne la connaît pas — zéro déductible par défaut, jamais deviné).
+#[must_use]
+pub fn form_values_from_debit(tx: &BankTransaction) -> ExpenseFormValues {
+    ExpenseFormValues {
+        label: tx.description.clone(),
+        category: "other".to_string(),
+        amount: Money::from_cents(-tx.amount_cents).to_decimal_string(),
+        vat_rate: VatRate::Standard.as_str().to_string(),
+        vat_deductible: Money::ZERO.to_decimal_string(),
+        incurred_on: format_date(tx.occurred_on),
+        current_receipt: None,
+        bank_transaction_id: Some(tx.id.to_string()),
+        bank_transaction_note: Some(debit_summary(tx)),
     }
 }
 
@@ -101,6 +147,14 @@ fn expense_form(
                 }
                 @if let Some(revision) = revision {
                     (form::hidden("revision", &revision.to_string()))
+                }
+                @if let Some(transaction) = &values.bank_transaction_id {
+                    (form::hidden("bank_transaction_id", transaction))
+                    div class="detail-note" {
+                        "Rapprochée au débit du relevé : "
+                        (values.bank_transaction_note.clone().unwrap_or_default())
+                        ". Le montant doit rester celui du débit."
+                    }
                 }
                 (form::text("label", "Libellé", &values.label, errors.label.as_deref()))
                 (form::select("category", "Catégorie", &CATEGORY_OPTIONS, &values.category, None))
@@ -143,7 +197,8 @@ pub fn edit_panel(
     )
 }
 
-pub fn detail_panel(expense: &Expense, error: Option<&str>) -> Markup {
+pub fn detail_panel(detail: &ExpenseDetail, error: Option<&str>) -> Markup {
+    let expense = &detail.expense;
     let body = html! {
         @if let Some(msg) = error {
             (form::error_banner(msg))
@@ -156,11 +211,17 @@ pub fn detail_panel(expense: &Expense, error: Option<&str>) -> Markup {
             dt { "Montant TTC" } dd class="mono" { (expense.amount) }
             dt { "TVA déductible" } dd class="mono" { (expense.vat_deductible) }
             dt { "Taux de TVA" } dd { (expense.vat_rate.as_str()) }
-            dt { "Engagée le" } dd { (freeflow_core::domain::format_date(expense.incurred_on)) }
+            dt { "Engagée le" } dd { (format_date(expense.incurred_on)) }
             @if let Some(filename) = &expense.receipt_filename {
                 dt { "Justificatif" } dd class="mono" { (filename) }
             } @else if expense.receipt_hash.is_some() {
                 dt { "Justificatif" } dd { "haché, non archivé" }
+            }
+            dt { "Relevé bancaire" }
+            @if let Some(tx) = &detail.bank_transaction {
+                dd { span class="badge ok" { "rapprochée" } " " (debit_summary(tx)) }
+            } @else {
+                dd { "non rapprochée — réputée payée à sa date dans le grand livre" }
             }
         }
         @if expense.receipt_hash.is_none() {
@@ -171,19 +232,64 @@ pub fn detail_panel(expense: &Expense, error: Option<&str>) -> Markup {
         }
         div class="detail-actions" {
             button class="btn" hx-get=(format!("/depenses/{}/edit", expense.id)) hx-target="#panel" hx-swap="innerHTML" { "modifier" }
+            @if detail.bank_transaction.is_some() {
+                button class="btn" hx-post=(format!("/depenses/{}/unreconcile", expense.id)) hx-target="#panel" hx-swap="innerHTML" { "défaire le rapprochement" }
+            } @else {
+                button class="btn" hx-get=(format!("/depenses/{}/reconcile", expense.id)) hx-target="#panel" hx-swap="innerHTML" { "rapprocher d'un débit" }
+            }
             button class="btn danger" hx-get=(format!("/depenses/{}/delete", expense.id)) hx-target="#panel" hx-swap="innerHTML" { "supprimer" }
         }
     };
     panel::sheet(&expense.label, body)
 }
 
+/// Panneau de rapprochement d'une dépense existante : les débits du relevé restant à
+/// rapprocher **au montant exact** de la dépense — la seule garde que le cœur accepte, autant
+/// ne proposer que ce qui passera.
+pub fn reconcile_panel(
+    expense: &Expense,
+    candidates: &[BankTransaction],
+    error: Option<&str>,
+) -> Markup {
+    let options: Vec<(String, String)> = candidates
+        .iter()
+        .map(|tx| (tx.id.to_string(), debit_summary(tx)))
+        .collect();
+    let borrowed: Vec<(&str, &str)> = options
+        .iter()
+        .map(|(id, text)| (id.as_str(), text.as_str()))
+        .collect();
+    let body = html! {
+        @if let Some(msg) = error {
+            (form::error_banner(msg))
+        }
+        div class="detail-note" {
+            "Débits du relevé importé de " (expense.amount) " restant à rapprocher. "
+            "Le rapprochement date le décaissement du relevé dans le grand livre (401 puis 512)."
+        }
+        @if candidates.is_empty() {
+            div class="empty-state" {
+                "aucun débit de ce montant à rapprocher — importez d'abord le relevé : "
+                code { "freeflow bank import --format csv|ofx <fichier>" }
+            }
+        } @else {
+            form hx-post=(format!("/depenses/{}/reconcile", expense.id)) hx-target="#panel" hx-swap="innerHTML" {
+                (form::select("transaction", "Débit du relevé", &borrowed, borrowed[0].0, None))
+                (form::actions("Rapprocher"))
+            }
+        }
+    };
+    panel::sheet(&format!("Rapprocher « {} »", expense.label), body)
+}
+
 pub fn delete_confirm_panel(expense: &Expense) -> Markup {
     let body = html! {
         div class="detail-note" {
             "Supprimer définitivement « " (expense.label) " » ("
-            (expense.amount) ", " (freeflow_core::domain::format_date(expense.incurred_on))
+            (expense.amount) ", " (format_date(expense.incurred_on))
             ") ? Cette action est irréversible — refusée si la dépense tombe dans un exercice "
-            "déjà clôturé. Le justificatif archivé, lui, reste en place."
+            "déjà clôturé. Le justificatif archivé, lui, reste en place, et le débit du relevé "
+            "rapproché, s'il y en a un, redevient « à rapprocher »."
         }
         div class="form-actions" {
             // Révision relue côté serveur au moment du clic — même raison que la suppression de
@@ -198,6 +304,8 @@ pub fn delete_confirm_panel(expense: &Expense) -> Markup {
 
 pub fn list_fragment(store: &Store) -> Result<Markup, AppError> {
     let expenses = list_expenses(store.connection())?;
+    let reconciled = reconciled_debits(store.connection())?;
+    let debits = unmatched_debits(store.connection())?;
     Ok(html! {
         div id="depenses-list"
             hx-get="/depenses/table"
@@ -206,6 +314,28 @@ pub fn list_fragment(store: &Store) -> Result<Markup, AppError> {
             hx-swap="outerHTML" {
             div class="pipe-toolbar" {
                 button class="btn primary" hx-get="/depenses/new" hx-target="#panel" hx-swap="innerHTML" { "+ nouvelle dépense" }
+            }
+            @if !debits.is_empty() {
+                div class="panel bordered" style="padding:0;margin-bottom:12px" {
+                    table {
+                        tr {
+                            th style="padding-left:18px" { "débit du relevé à rapprocher" }
+                            th { "libellé" }
+                            th { "montant" }
+                            th style="padding-right:18px" { }
+                        }
+                        @for tx in &debits {
+                            tr {
+                                td style="padding-left:18px" class="mono" { (format_date(tx.occurred_on)) }
+                                td { (tx.description) }
+                                td class="mono" { (Money::from_cents(-tx.amount_cents)) }
+                                td style="padding-right:18px" {
+                                    button class="btn" hx-get=(format!("/depenses/new?transaction={}", tx.id)) hx-target="#panel" hx-swap="innerHTML" { "+ dépense" }
+                                }
+                            }
+                        }
+                    }
+                }
             }
             @if expenses.is_empty() {
                 div class="empty-state" { "aucune dépense — cliquez sur « nouvelle dépense »" }
@@ -218,17 +348,22 @@ pub fn list_fragment(store: &Store) -> Result<Markup, AppError> {
                             th { "catégorie" }
                             th { "montant ttc" }
                             th { "tva déductible" }
-                            th style="padding-right:18px" { "justificatif" }
+                            th { "justificatif" }
+                            th style="padding-right:18px" { "relevé" }
                         }
                         @for expense in &expenses {
                             tr class="row-clickable" hx-get=(format!("/depenses/{}", expense.id)) hx-target="#panel" hx-swap="innerHTML" {
-                                td style="padding-left:18px" class="mono" { (freeflow_core::domain::format_date(expense.incurred_on)) }
+                                td style="padding-left:18px" class="mono" { (format_date(expense.incurred_on)) }
                                 td { (expense.label) }
                                 td { (category_label(expense.category)) }
                                 td class="mono" { (expense.amount) }
                                 td class="mono" { (expense.vat_deductible) }
-                                td style="padding-right:18px" {
+                                td {
                                     @if expense.receipt_hash.is_some() { span class="badge ok" { "oui" } }
+                                    @else { "—" }
+                                }
+                                td style="padding-right:18px" class="mono" {
+                                    @if let Some(tx) = reconciled.get(&expense.id) { (format_date(tx.occurred_on)) }
                                     @else { "—" }
                                 }
                             }
@@ -253,8 +388,19 @@ pub fn render(store: &Store) -> Result<Markup, AppError> {
     })
 }
 
-pub fn load(store: &Store, id: ExpenseId) -> Result<Option<Expense>, AppError> {
-    expense_by_id(store.connection(), id)
+pub fn load(store: &Store, id: ExpenseId) -> Result<Option<ExpenseDetail>, AppError> {
+    expense_detail(store.connection(), id)
+}
+
+/// Les débits restant à rapprocher au montant exact d'une dépense (lot 33).
+pub fn reconcile_candidates(
+    store: &Store,
+    amount: Money,
+) -> Result<Vec<BankTransaction>, AppError> {
+    Ok(unmatched_debits(store.connection())?
+        .into_iter()
+        .filter(|tx| Money::from_cents(-tx.amount_cents) == amount)
+        .collect())
 }
 
 /// Sélectionne le taux par défaut du formulaire de création — le taux normal, celui de
@@ -263,7 +409,7 @@ pub fn default_form_values(today: time::Date) -> ExpenseFormValues {
     ExpenseFormValues {
         category: "software".to_string(),
         vat_rate: VatRate::Standard.as_str().to_string(),
-        incurred_on: freeflow_core::domain::format_date(today),
+        incurred_on: format_date(today),
         ..Default::default()
     }
 }

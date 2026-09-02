@@ -65,6 +65,7 @@ expression: "json!({\n    \"tool_names\": names, \"invoice_emit_input_schema\":\
     "company.show",
     "expense.delete",
     "expense.list",
+    "expense.reconcile",
     "expense.record",
     "expense.show",
     "expense.update",

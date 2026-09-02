@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use time::{Date, OffsetDateTime};
 
-use super::ids::{BankTransactionId, InvoiceId, PaymentId};
+use super::ids::{BankTransactionId, ExpenseId, InvoiceId, PaymentId};
 use super::money::Money;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,4 +78,22 @@ pub struct BankTransaction {
     pub amount_cents: i64,
     pub description: String,
     pub matched_invoice_id: Option<InvoiceId>,
+    /// Dépense rapprochée de ce débit (lot 33, migration `0016`) — exclusif avec
+    /// `matched_invoice_id` : un crédit règle une facture, un débit paie une dépense.
+    #[serde(default)]
+    pub matched_expense_id: Option<ExpenseId>,
+}
+
+impl BankTransaction {
+    /// Rapprochée, d'une facture ou d'une dépense.
+    #[must_use]
+    pub const fn is_matched(&self) -> bool {
+        self.matched_invoice_id.is_some() || self.matched_expense_id.is_some()
+    }
+
+    /// Une sortie d'argent — ce qui peut payer une dépense.
+    #[must_use]
+    pub const fn is_debit(&self) -> bool {
+        self.amount_cents < 0
+    }
 }

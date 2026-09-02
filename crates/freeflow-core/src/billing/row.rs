@@ -254,7 +254,7 @@ pub(super) fn insert_bank_transaction(
     Ok(changed > 0)
 }
 
-pub(super) fn bank_transaction_by_id(
+pub(crate) fn bank_transaction_by_id(
     conn: &Connection,
     id: BankTransactionId,
 ) -> Result<Option<BankTransaction>, AppError> {
@@ -271,12 +271,17 @@ fn row_to_bank_transaction(row: &Row) -> rusqlite::Result<BankTransaction> {
     let id: String = row.get("id")?;
     let occurred_on: String = row.get("occurred_on")?;
     let matched_invoice_id: Option<String> = row.get("matched_invoice_id")?;
+    let matched_expense_id: Option<String> = row.get("matched_expense_id")?;
     Ok(BankTransaction {
         id: id.parse().map_err(conv_err)?,
         occurred_on: domain::parse_date(&occurred_on).map_err(conv_err)?,
         amount_cents: row.get("amount_cents")?,
         description: row.get("description")?,
         matched_invoice_id: matched_invoice_id
+            .map(|s| s.parse())
+            .transpose()
+            .map_err(conv_err)?,
+        matched_expense_id: matched_expense_id
             .map(|s| s.parse())
             .transpose()
             .map_err(conv_err)?,
@@ -295,15 +300,45 @@ pub(super) fn mark_transaction_matched(
     Ok(())
 }
 
-pub(super) fn clear_transaction_match(
+/// Libère la transaction, quel que soit le côté rapproché (facture ou dépense, lot 33).
+pub(crate) fn clear_transaction_match(
     conn: &Connection,
     id: BankTransactionId,
 ) -> Result<(), AppError> {
     conn.execute(
-        "UPDATE bank_transactions SET matched_invoice_id = NULL WHERE id = ?1",
+        "UPDATE bank_transactions SET matched_invoice_id = NULL, matched_expense_id = NULL
+          WHERE id = ?1",
         [id.to_string()],
     )?;
     Ok(())
+}
+
+/// Rapproche la transaction d'une dépense (lot 33) — les gardes (débit, montant, exclusivité)
+/// sont celles de `crate::expenses::ReconcileExpense`.
+pub(crate) fn mark_transaction_matched_expense(
+    conn: &Connection,
+    id: BankTransactionId,
+    expense_id: crate::domain::ExpenseId,
+) -> Result<(), AppError> {
+    conn.execute(
+        "UPDATE bank_transactions SET matched_expense_id = ?1 WHERE id = ?2",
+        params![expense_id.to_string(), id.to_string()],
+    )?;
+    Ok(())
+}
+
+/// Le débit rapproché d'une dépense, s'il y en a un (lot 33).
+pub(crate) fn bank_transaction_for_expense(
+    conn: &Connection,
+    expense_id: crate::domain::ExpenseId,
+) -> Result<Option<BankTransaction>, AppError> {
+    conn.query_row(
+        "SELECT * FROM bank_transactions WHERE matched_expense_id = ?1",
+        [expense_id.to_string()],
+        row_to_bank_transaction,
+    )
+    .optional()
+    .map_err(AppError::from)
 }
 
 /// Toutes les transactions importées, les plus récentes d'abord — jusqu'au lot 22, rien ne

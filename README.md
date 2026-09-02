@@ -85,8 +85,9 @@ implémentation.
   arrondi au centime par taux.
 - Import de relevés bancaires CSV et OFX, rapprochement, balance âgée — et depuis le lot 22 les
   transactions importées sont **listables** (`bank list --unmatched` : celles restant à
-  rapprocher), une transaction déjà rapprochée ne peut plus l'être une seconde fois (doublon
-  d'encaissement silencieux, corrigé), et la lignée transaction → encaissement est persistée.
+  rapprocher, d'une facture pour un crédit ou d'une dépense pour un débit — voir « Dépenses »),
+  une transaction déjà rapprochée ne peut plus l'être une seconde fois (doublon d'encaissement
+  silencieux, corrigé), et la lignée transaction → encaissement est persistée.
 - **Corrections d'encaissement** : un paiement saisi à tort s'**annule** (`payment void
   --reason`, contre-écriture : il reste dans l'historique mais sort du statut payé, de la
   balance âgée et du prévisionnel — le motif est journalisé dans l'audit chaîné), et un
@@ -101,7 +102,8 @@ implémentation.
 
 ### Dépenses & obligations fiscales
 - Dépenses catégorisées (logiciels, matériel, déplacement, repas, bureau, formation/cotisations,
-  autre) avec TVA déductible et justificatif archivé par hash d'intégrité (SHA-256).
+  **honoraires**, **frais bancaires**, autre) avec TVA déductible et justificatif archivé par
+  hash d'intégrité (SHA-256).
 - Créer, consulter, **modifier** et **supprimer** une dépense — en CLI (`freeflow expense …`,
   avec `--receipt`/`--clear-receipt` pour remplacer ou détacher le justificatif), en MCP
   (`expense.*`, ressources `freeflow://expenses`) et depuis la fenêtre (écran `depenses`, avec
@@ -111,6 +113,19 @@ implémentation.
   **Une dépense datée dans un exercice déjà clôturé (voir la clôture d'exercice) ne se crée, ne
   se modifie et ne se supprime plus** : le résultat figé à la clôture a été calculé sur ces
   lignes-là — supprimez d'abord l'exercice s'il n'est qu'un projet (`freeflow year rm`).
+- **Rapprochement bancaire des dépenses** : les débits du relevé importé (`bank list
+  --unmatched`, qui ne montrait jusqu'ici que des lignes à jamais « à rapprocher » côté sorties)
+  paient des dépenses. Créer la dépense depuis le débit — `freeflow expense record --transaction
+  <id>` reprend le montant et la date du relevé s'ils sont omis, outil MCP `expense.record` avec
+  `bank_transaction_id`, bouton « + dépense » du bloc « débits du relevé à rapprocher » de
+  l'écran `depenses` (formulaire pré-rempli) — ou rapprocher une dépense existante au montant
+  exact (`expense reconcile <réf> --transaction <id>`, `expense.reconcile`, bouton « rapprocher
+  d'un débit » de la fiche, qui ne propose que les débits du même montant). Un crédit est refusé,
+  un débit ne se rapproche qu'une fois, une dépense rapprochée garde le montant du relevé ;
+  `bank unreconcile` libère le débit sans toucher à la dépense, supprimer la dépense libère son
+  débit. Côté agent MCP, rapprocher est une action de rapprochement bancaire comme
+  `bank.reconcile` : proposée, puis confirmée par un humain. `expense show` (et `expense.show`,
+  `freeflow://expenses/{réf}`) porte le débit rapproché sous `bank_transaction`.
 - Échéances indicatives CA3 (TVA), acomptes d'IS, CFE — **volontairement pas une source de vérité
   fiscale** : le module le documente explicitement, à vérifier sur impots.gouv.fr. La date limite
   de la CA3 suit toutefois la **grille officielle** (BOFIP BOI-TVA-DECLA-20-20-10-10) : zone du
@@ -127,7 +142,10 @@ implémentation.
   facturées + pipeline pondéré − charges connues).
 - **Grand livre dérivé, balance et bilan** : FreeFlow ne tient pas de comptabilité, il *dérive*
   les écritures de ses faits — bilan d'ouverture (journal `AN`), factures et avoirs (`VE`),
-  encaissements et annulations (`BQ`), dépenses (`AC`), puis les opérations de clôture (`OD`) :
+  encaissements et annulations (`BQ`), dépenses (`AC` ; une dépense rapprochée d'un débit du
+  relevé passe par 401 : la charge à sa date, le décaissement 401/512 à la date du relevé, en
+  `BQ`, éventuellement dans l'exercice suivant — un 401 créditeur au bilan), puis les opérations
+  de clôture (`OD`) :
   rémunération du dirigeant (641/645 contre 421/431, réputée due), IS (695 contre 444) et
   affectation du résultat de l'exercice précédent (120/129 vers 1061, 457, 110/119, datée de
   l'AG ou du premier jour de l'exercice tant que la décision est un projet). Les exercices
@@ -342,8 +360,9 @@ distribués prêts à l'emploi — voir la checklist ci-dessous.
   impots.gouv.fr. La date de la CA3 suit la grille officielle et le régime réel simplifié est
   modélisé (acomptes 3514, CA12), mais la base des acomptes est la TVA nette de l'exercice
   précédent — le domaine ne distingue pas la TVA sur immobilisations, que la règle légale exclut.
-- **Grand livre dérivé, pas une comptabilité tenue** : les dépenses sont réputées payées à leur
-  date (pas de compte fournisseur), l'équipement passe en charge sans seuil d'immobilisation, la
+- **Grand livre dérivé, pas une comptabilité tenue** : une dépense non rapprochée d'un débit du
+  relevé est réputée payée à sa date (le 401 n'apparaît que pour les dépenses rapprochées),
+  l'équipement passe en charge sans seuil d'immobilisation, la
   rémunération du dirigeant est réputée due et non décaissée (aucun fait de paie), la TVA n'est
   jamais liquidée (445660/445710 restent bruts au bilan), pas d'amortissement de l'exercice, de
   provision ni de régularisation ; lettrage et devise du FEC restent vides. Un exercice qui suit
@@ -426,6 +445,10 @@ distribués prêts à l'emploi — voir la checklist ci-dessous.
       report en arrière en produit, suivi des déficits dans la liasse — voir « Dépenses &
       obligations fiscales » ci-dessus. Non suivi : l'utilisation de la créance sur les cinq
       exercices suivants et son remboursement.
+- [x] Catégories de dépense « honoraires » (622600) et « frais bancaires » (627000), et
+      rapprochement bancaire des dépenses : un débit du relevé importé crée ou rapproche une
+      dépense, au montant exact, dans les trois façades ; le grand livre date alors le
+      décaissement du relevé (401 puis 512) — voir « Dépenses & obligations fiscales ».
 - [ ] Tableau de bord de rentabilité par client sur la durée (au-delà de la mission en cours).
 - [ ] Chiffrement additionnel des pièces jointes de justificatifs de dépenses sur disque (au-delà
       du hash d'intégrité SHA-256 déjà en place).

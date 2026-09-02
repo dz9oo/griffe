@@ -334,6 +334,7 @@ async fn every_screen_renders_successfully_against_a_freshly_seeded_vault() {
                         .unwrap(),
                     receipt_hash: None,
                     receipt_filename: None,
+                    bank_transaction_id: None,
                 },
                 &human_ctx(),
             )
@@ -2282,6 +2283,252 @@ async fn expense_lifecycle_through_the_panel() {
         .await
         .unwrap();
     assert!(body_text(table).await.contains("aucune dépense"));
+}
+
+#[tokio::test]
+async fn expense_reconciliation_through_the_panel() {
+    // Lot 33 : un débit du relevé importé (la fenêtre n'importe pas : c'est `bank import`)
+    // pré-remplit une nouvelle dépense, créée rapprochée ; une dépense existante se rapproche
+    // depuis sa fiche parmi les débits du même montant ; le rapprochement se défait depuis la
+    // fiche, la dépense restant en place.
+    let db_path = test_db_path("depenses-reconciliation");
+    let state = unlocked_state(&db_path).await;
+    let router = freeflow_web::router(state);
+
+    let (fees_tx, bank_tx) = {
+        let mut store =
+            Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+        Executor::new(&mut store)
+            .execute(
+                &freeflow_core::billing::ImportBankTransactions {
+                    transactions: vec![
+                        freeflow_core::billing::ParsedTransaction {
+                            occurred_on: time::Date::from_calendar_date(
+                                2026,
+                                time::Month::September,
+                                7,
+                            )
+                            .unwrap(),
+                            amount_cents: -96_000,
+                            description: "PRLV CABINET COMPTA".to_string(),
+                        },
+                        freeflow_core::billing::ParsedTransaction {
+                            occurred_on: time::Date::from_calendar_date(
+                                2026,
+                                time::Month::September,
+                                9,
+                            )
+                            .unwrap(),
+                            amount_cents: -1_250,
+                            description: "FRAIS TENUE DE COMPTE".to_string(),
+                        },
+                    ],
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+        let debits = freeflow_core::billing::unmatched_debits(store.connection()).unwrap();
+        let id_of = |description: &str| {
+            debits
+                .iter()
+                .find(|t| t.description == description)
+                .unwrap()
+                .id
+        };
+        (id_of("PRLV CABINET COMPTA"), id_of("FRAIS TENUE DE COMPTE"))
+    };
+
+    // La liste montre les débits à rapprocher ; le formulaire pré-rempli porte le débit.
+    let table = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/depenses/table")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let table_body = body_text(table).await;
+    assert!(table_body.contains("débit du relevé à rapprocher"));
+    assert!(table_body.contains("PRLV CABINET COMPTA"));
+    let prefilled = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/depenses/new?transaction={fees_tx}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let prefilled_body = body_text(prefilled).await;
+    assert!(prefilled_body.contains(&format!("value=\"{fees_tx}\"")));
+    assert!(prefilled_body.contains("value=\"960.00\""));
+    assert!(prefilled_body.contains("value=\"2026-09-07\""));
+
+    let (content_type, body) = multipart_form(
+        &[
+            ("label", "Expert-comptable"),
+            ("category", "fees"),
+            ("amount", "960.00"),
+            ("vat_rate", "standard"),
+            ("vat_deductible", "160.00"),
+            ("incurred_on", "2026-09-07"),
+            ("bank_transaction_id", &fees_tx.to_string()),
+        ],
+        Some(("", b"")),
+    );
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/depenses")
+                .header("content-type", content_type)
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        response.headers().get("HX-Trigger").unwrap(),
+        "freeflow:saved"
+    );
+    let fees_id = {
+        let store = Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+        let detail = freeflow_core::expenses::list_expenses(store.connection())
+            .unwrap()
+            .into_iter()
+            .next()
+            .map(|e| {
+                freeflow_core::expenses::expense_detail(store.connection(), e.id)
+                    .unwrap()
+                    .unwrap()
+            })
+            .unwrap();
+        assert_eq!(detail.bank_transaction.map(|t| t.id), Some(fees_tx));
+        detail.expense.id
+    };
+
+    // Un montant qui n'est pas celui du débit est refusé par le cœur : bandeau, rien de créé.
+    let (content_type, body) = multipart_form(
+        &[
+            ("label", "Autre"),
+            ("category", "other"),
+            ("amount", "10.00"),
+            ("vat_rate", "zero"),
+            ("vat_deductible", "0.00"),
+            ("incurred_on", "2026-09-09"),
+            ("bank_transaction_id", &bank_tx.to_string()),
+        ],
+        None,
+    );
+    let refused = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/depenses")
+                .header("content-type", content_type)
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(refused.headers().get("HX-Trigger").is_none());
+    let refused_body = body_text(refused).await;
+    assert!(refused_body.contains("montant exact"), "{refused_body}");
+    assert!(
+        refused_body.contains("FRAIS TENUE DE COMPTE"),
+        "le formulaire re-rendu garde le débit et son résumé"
+    );
+
+    // La fiche montre le rapprochement ; le défaire libère le débit et garde la dépense.
+    let detail = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/depenses/{fees_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let detail_body = body_text(detail).await;
+    assert!(detail_body.contains("rapprochée"));
+    assert!(detail_body.contains("défaire le rapprochement"));
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/depenses/{fees_id}/unreconcile"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        response.headers().get("HX-Trigger").unwrap(),
+        "freeflow:saved"
+    );
+
+    // Rapprocher après coup : le panneau ne propose que les débits du même montant.
+    let panel = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/depenses/{fees_id}/reconcile"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let panel_body = body_text(panel).await;
+    assert!(panel_body.contains(&fees_tx.to_string()));
+    assert!(!panel_body.contains(&bank_tx.to_string()));
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/depenses/{fees_id}/reconcile"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(format!("transaction={fees_tx}")))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        response.headers().get("HX-Trigger").unwrap(),
+        "freeflow:saved"
+    );
+    let table = router
+        .oneshot(
+            Request::builder()
+                .uri("/depenses/table")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let table_body = body_text(table).await;
+    assert!(
+        !table_body.contains("PRLV CABINET COMPTA"),
+        "le débit n'est plus à rapprocher"
+    );
+    assert!(
+        table_body.contains("FRAIS TENUE DE COMPTE"),
+        "l'autre l'est toujours"
+    );
+    {
+        let store = Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+        let detail = freeflow_core::expenses::expense_detail(store.connection(), fees_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(detail.bank_transaction.map(|t| t.id), Some(fees_tx));
+    }
 }
 
 #[tokio::test]

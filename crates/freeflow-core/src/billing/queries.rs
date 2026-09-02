@@ -4,7 +4,9 @@ use rusqlite::Connection;
 use time::Date;
 
 use crate::app::AppError;
-use crate::domain::{BankTransaction, ClientId, Invoice, InvoiceId, Money, Payment, PaymentId};
+use crate::domain::{
+    BankTransaction, BankTransactionId, ClientId, Invoice, InvoiceId, Money, Payment, PaymentId,
+};
 
 use super::row;
 use super::totals::{CanonicalInvoice, compute_invoice_hash};
@@ -68,6 +70,27 @@ pub fn paid_amount(conn: &Connection, invoice_id: InvoiceId) -> Result<Money, Ap
 /// # Errors
 pub fn list_bank_transactions(conn: &Connection) -> Result<Vec<BankTransaction>, AppError> {
     row::all_bank_transactions(conn)
+}
+
+/// Une transaction importée par son id (lot 33 : les façades pré-remplissent une dépense depuis
+/// un débit du relevé).
+///
+/// # Errors
+pub fn bank_transaction_by_id(
+    conn: &Connection,
+    id: BankTransactionId,
+) -> Result<Option<BankTransaction>, AppError> {
+    row::bank_transaction_by_id(conn, id)
+}
+
+/// Les débits du relevé restant à rapprocher d'une dépense, les plus récents d'abord (lot 33).
+///
+/// # Errors
+pub fn unmatched_debits(conn: &Connection) -> Result<Vec<BankTransaction>, AppError> {
+    Ok(row::all_bank_transactions(conn)?
+        .into_iter()
+        .filter(|t| t.is_debit() && !t.is_matched())
+        .collect())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

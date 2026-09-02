@@ -9,8 +9,8 @@ Usage: freeflow bank [OPTIONS] <COMMAND>
 Commands:
   import       Importe un relevé bancaire (CSV ou OFX)
   list         Liste les transactions importées, les plus récentes d'abord (`--unmatched` pour ne voir que celles restant à rapprocher)
-  reconcile    Rapproche une transaction importée avec une facture (crée l'encaissement correspondant)
-  unreconcile  Défait un rapprochement : libère la transaction et annule l'encaissement qui en était issu (pour un rapprochement historique sans lignée, seule la transaction est libérée — annulez le paiement via `payment void`)
+  reconcile    Rapproche un crédit importé avec une facture (crée l'encaissement correspondant) — pour un débit et une dépense, voir `expense reconcile` / `expense record --transaction`
+  unreconcile  Défait un rapprochement : libère la transaction et annule l'encaissement qui en était issu (pour un rapprochement historique sans lignée, seule la transaction est libérée — annulez le paiement via `payment void`). Pour un débit rapproché d'une dépense, la dépense reste, seule la transaction est libérée
   help         Print this message or the help of the given subcommand(s)
 
 Options:

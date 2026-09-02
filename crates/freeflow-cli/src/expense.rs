@@ -6,8 +6,11 @@ use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
 use freeflow_core::app::{ExecutionContext, Executor};
-use freeflow_core::domain::{Expense, ExpenseCategory, Money, VatRate};
-use freeflow_core::expenses::{self, expense_by_id, hash_receipt, list_expenses};
+use freeflow_core::billing::bank_transaction_by_id;
+use freeflow_core::domain::{BankTransactionId, Expense, ExpenseCategory, Money, VatRate};
+use freeflow_core::expenses::{
+    self, expense_by_id, expense_detail, hash_receipt, list_expenses, reconciled_debits,
+};
 use freeflow_core::store::Store;
 use time::Date;
 
@@ -20,21 +23,29 @@ use crate::refs;
 pub struct RecordArgs {
     #[arg(long)]
     label: String,
+    /// `software`, `equipment`, `travel`, `meals`, `office`, `professional`, `fees`
+    /// (honoraires), `bank_charges` (frais bancaires) ou `other`.
     #[arg(long, value_parser = clap::value_parser!(ExpenseCategory))]
     category: ExpenseCategory,
-    #[arg(long, value_parser = parse_money)]
-    amount: Money,
+    /// Montant TTC — repris du débit du relevé si omis avec `--transaction`.
+    #[arg(long, value_parser = parse_money, required_unless_present = "transaction")]
+    amount: Option<Money>,
     #[arg(long, value_parser = clap::value_parser!(VatRate))]
     vat_rate: VatRate,
     /// TVA effectivement déductible (peut être inférieure à `amount × taux` — voir la
     /// documentation de `freeflow_core::expenses`).
     #[arg(long, value_parser = parse_money)]
     vat_deductible: Money,
-    #[arg(long, value_parser = parse_date)]
-    incurred_on: Date,
+    /// Date d'engagement — reprise de la date du débit du relevé si omise avec `--transaction`.
+    #[arg(long, value_parser = parse_date, required_unless_present = "transaction")]
+    incurred_on: Option<Date>,
     /// Justificatif à archiver : haché (SHA-256) et copié dans `receipts/` à côté du coffre.
     #[arg(long)]
     receipt: Option<PathBuf>,
+    /// Débit du relevé importé (`bank list --unmatched`) que cette dépense paie : elle est
+    /// créée rapprochée, au montant exact du débit.
+    #[arg(long, value_parser = clap::value_parser!(BankTransactionId))]
+    transaction: Option<BankTransactionId>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -52,10 +63,19 @@ pub enum ExpenseCommand {
     /// tel quel. Refusé si sa date tombe dans un exercice déjà clôturé.
     Edit(Box<EditArgs>),
     /// Supprime une dépense pour de bon — le justificatif archivé, lui, reste en place
-    /// (adressé par contenu, il peut être partagé par une autre dépense).
+    /// (adressé par contenu, il peut être partagé par une autre dépense) et le débit du
+    /// relevé rapproché, s'il y en a un, est libéré.
     Rm {
         #[arg(value_name = "RÉFÉRENCE")]
         reference: String,
+    },
+    /// Rapproche une dépense d'un débit du relevé importé, au montant exact (défaire :
+    /// `bank unreconcile`).
+    Reconcile {
+        #[arg(value_name = "RÉFÉRENCE")]
+        reference: String,
+        #[arg(long, value_parser = clap::value_parser!(BankTransactionId))]
+        transaction: BankTransactionId,
     },
 }
 
@@ -202,15 +222,37 @@ pub fn run(
                 }
                 None => (None, None),
             };
+            // Avec `--transaction`, le montant et la date manquants viennent du débit lui-même
+            // — la commande du cœur, elle, exige toujours le montant exact.
+            let debit = match args.transaction {
+                Some(id) => Some(bank_transaction_by_id(store.connection(), id)?.ok_or_else(
+                    || CliError::Domain(format!("transaction bancaire introuvable : {id}")),
+                )?),
+                None => None,
+            };
+            let (amount, incurred_on) = match (&debit, args.amount, args.incurred_on) {
+                (Some(debit), amount, incurred_on) => (
+                    amount.unwrap_or_else(|| Money::from_cents(-debit.amount_cents)),
+                    incurred_on.unwrap_or(debit.occurred_on),
+                ),
+                // `required_unless_present` garantit les deux sans `--transaction`.
+                (None, Some(amount), Some(incurred_on)) => (amount, incurred_on),
+                (None, _, _) => {
+                    return Err(CliError::Domain(
+                        "--amount et --incurred-on sont requis sans --transaction".to_string(),
+                    ));
+                }
+            };
             let command = expenses::RecordExpense {
                 label: args.label,
                 category: args.category,
-                amount: args.amount,
+                amount,
                 vat_rate: args.vat_rate,
                 vat_deductible: args.vat_deductible,
-                incurred_on: args.incurred_on,
+                incurred_on,
                 receipt_hash,
                 receipt_filename,
+                bank_transaction_id: args.transaction,
             };
             let outcome = Executor::new(store).execute(&command, ctx)?;
             format_outcome(&outcome, json)
@@ -220,13 +262,15 @@ pub fn run(
             if json {
                 format_value(&expenses, json)
             } else {
-                expense_table(&expenses)
+                let reconciled = reconciled_debits(store.connection())?;
+                expense_table(&expenses, &reconciled)
             }
         }
         ExpenseCommand::Show { reference } => {
             let id = refs::resolve_expense(store, &reference)?;
-            let expense = expense_or_not_found(store, id)?;
-            format_value(&expense, json)
+            let detail = expense_detail(store.connection(), id)?
+                .ok_or_else(|| CliError::Domain(format!("dépense introuvable : {id}")))?;
+            format_value(&detail, json)
         }
         ExpenseCommand::Edit(args) => {
             let id = refs::resolve_expense(store, &args.reference)?;
@@ -281,6 +325,18 @@ pub fn run(
             let outcome = Executor::new(store).execute(&command, ctx)?;
             format_outcome(&outcome, json)
         }
+        ExpenseCommand::Reconcile {
+            reference,
+            transaction,
+        } => {
+            let id = refs::resolve_expense(store, &reference)?;
+            let command = expenses::ReconcileExpense {
+                transaction_id: transaction,
+                expense_id: id,
+            };
+            let outcome = Executor::new(store).execute(&command, ctx)?;
+            format_outcome(&outcome, json)
+        }
     };
     Ok(output)
 }
@@ -293,7 +349,13 @@ fn expense_or_not_found(
         .ok_or_else(|| CliError::Domain(format!("dépense introuvable : {id}")))
 }
 
-fn expense_table(expenses: &[Expense]) -> String {
+fn expense_table(
+    expenses: &[Expense],
+    reconciled: &std::collections::HashMap<
+        freeflow_core::domain::ExpenseId,
+        freeflow_core::domain::BankTransaction,
+    >,
+) -> String {
     let rows = expenses
         .iter()
         .map(|e| {
@@ -309,6 +371,10 @@ fn expense_table(expenses: &[Expense]) -> String {
                 } else {
                     "—".to_string()
                 },
+                reconciled.get(&e.id).map_or_else(
+                    || "—".to_string(),
+                    |t| freeflow_core::domain::format_date(t.occurred_on),
+                ),
             ]
         })
         .collect::<Vec<_>>();
@@ -321,6 +387,7 @@ fn expense_table(expenses: &[Expense]) -> String {
             "montant ttc",
             "tva déductible",
             "justificatif",
+            "relevé",
         ],
         &rows,
     )

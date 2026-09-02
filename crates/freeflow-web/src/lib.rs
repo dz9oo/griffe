@@ -166,6 +166,11 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/depenses/{id}/edit", get(depenses::edit_panel))
         .route(
+            "/depenses/{id}/reconcile",
+            get(depenses::reconcile_panel).post(depenses::reconcile),
+        )
+        .route("/depenses/{id}/unreconcile", post(depenses::unreconcile))
+        .route(
             "/depenses/{id}/delete",
             get(depenses::delete_confirm_panel).post(depenses::delete),
         )

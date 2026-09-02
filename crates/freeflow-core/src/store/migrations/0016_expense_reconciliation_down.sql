@@ -1,0 +1,2 @@
+DROP INDEX idx_bank_transactions_matched_expense;
+ALTER TABLE bank_transactions DROP COLUMN matched_expense_id;

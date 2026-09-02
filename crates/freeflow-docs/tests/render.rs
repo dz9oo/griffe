@@ -134,6 +134,7 @@ fn ledger(profile: &CompanyProfile) -> Ledger {
         clients: &[],
         payments: &[],
         expenses: &[],
+        bank_transactions: &[],
         opening: Some(OpeningLines::from_opening_balance(
             &freeflow_core::domain::OpeningBalance {
                 opens_on: date(2026, Month::January, 1),

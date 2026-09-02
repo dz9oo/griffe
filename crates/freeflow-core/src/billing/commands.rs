@@ -289,8 +289,8 @@ impl Command for ReconcileTransaction {
         // Bug latent corrigé au lot 22 : rapprocher une transaction déjà rapprochée créait un
         // second encaissement pour la même ligne de relevé — un doublon silencieux dans le
         // solde de la facture. Défaire d'abord (`UnreconcileTransaction`) si le rapprochement
-        // visait la mauvaise facture.
-        if tx.matched_invoice_id.is_some() {
+        // visait la mauvaise facture. Depuis le lot 33, « rapprochée » couvre aussi une dépense.
+        if tx.is_matched() {
             return Err(BillingError::AlreadyReconciled(self.transaction_id).into());
         }
 
@@ -323,6 +323,12 @@ impl Command for ReconcileTransaction {
 /// n'existe pas en base : seule la transaction est libérée (`Output = None`), et le paiement
 /// orphelin s'annule séparément via `VoidPayment` — plutôt qu'une heuristique par date et
 /// montant qui pourrait annuler le mauvais paiement.
+///
+/// Lot 33 : pour une transaction rapprochée d'une **dépense** (`crate::expenses::
+/// ReconcileExpense`), seule la transaction est libérée (`Output = None`) — la dépense reste,
+/// avec sa catégorie, sa TVA et son justificatif : elle n'est pas *issue* du relevé comme l'est
+/// un encaissement, elle lui a seulement été appariée. La supprimer est un autre geste
+/// (`DeleteExpense`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UnreconcileTransaction {
     pub transaction_id: BankTransactionId,
@@ -341,7 +347,7 @@ impl Command for UnreconcileTransaction {
     fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
         let tx = row::bank_transaction_by_id(conn, self.transaction_id)?
             .ok_or(BillingError::TransactionNotFound)?;
-        if tx.matched_invoice_id.is_none() {
+        if !tx.is_matched() {
             return Err(BillingError::TransactionNotReconciled(self.transaction_id).into());
         }
 

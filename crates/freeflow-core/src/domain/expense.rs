@@ -17,6 +17,13 @@ pub enum ExpenseCategory {
     Office,
     /// Formations, cotisations professionnelles, assurances.
     Professional,
+    /// Honoraires (expert-comptable, avocat, sous-traitance intellectuelle) — lot 33 : compte
+    /// 622600, distingué de `Professional` parce qu'une SASU qui clôture seule paie au moins un
+    /// cabinet, et que le 2033-B les isole.
+    Fees,
+    /// Frais bancaires (tenue de compte, commissions) — lot 33 : compte 627000 ; le plus souvent
+    /// exonérés de TVA, d'où un taux `zero` attendu mais jamais imposé.
+    BankCharges,
     Other,
 }
 
@@ -25,6 +32,19 @@ pub enum ExpenseCategory {
 pub struct UnknownExpenseCategory(pub String);
 
 impl ExpenseCategory {
+    /// Toutes les catégories, dans l'ordre de présentation des façades.
+    pub const ALL: [Self; 9] = [
+        Self::Software,
+        Self::Equipment,
+        Self::Travel,
+        Self::Meals,
+        Self::Office,
+        Self::Professional,
+        Self::Fees,
+        Self::BankCharges,
+        Self::Other,
+    ];
+
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -34,6 +54,8 @@ impl ExpenseCategory {
             Self::Meals => "meals",
             Self::Office => "office",
             Self::Professional => "professional",
+            Self::Fees => "fees",
+            Self::BankCharges => "bank_charges",
             Self::Other => "other",
         }
     }
@@ -49,6 +71,8 @@ impl std::str::FromStr for ExpenseCategory {
             "meals" => Ok(Self::Meals),
             "office" => Ok(Self::Office),
             "professional" => Ok(Self::Professional),
+            "fees" => Ok(Self::Fees),
+            "bank_charges" => Ok(Self::BankCharges),
             "other" => Ok(Self::Other),
             other => Err(UnknownExpenseCategory(other.to_string())),
         }

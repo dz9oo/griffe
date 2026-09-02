@@ -20,8 +20,12 @@ pub use import::{
     ImportError, ParsedTransaction, parse_csv_bank_statement, parse_ofx_bank_statement,
 };
 pub use queries::{
-    AgedInvoice, AgingBucket, ChainStatus, aged_balance, invoice_by_id, list_bank_transactions,
-    list_invoices, list_payments, paid_amount, payment_by_id, payments_for_invoice, verify_chain,
+    AgedInvoice, AgingBucket, ChainStatus, aged_balance, bank_transaction_by_id, invoice_by_id,
+    list_bank_transactions, list_invoices, list_payments, paid_amount, payment_by_id,
+    payments_for_invoice, unmatched_debits, verify_chain,
+};
+pub(crate) use row::{
+    bank_transaction_for_expense, clear_transaction_match, mark_transaction_matched_expense,
 };
 pub use totals::{InvoiceTotals, VatBreakdownLine, compute_totals};
 

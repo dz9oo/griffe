@@ -31,9 +31,17 @@
 //! l'exercice est la somme des comptes de gestion (classes 6 et 7) ; il se retrouve donc au
 //! passif du bilan *après* IS.
 //!
-//! Limites assumées, dites dans les libellés : les dépenses sont réputées payées à leur date
-//! (pas de compte fournisseur), l'équipement est passé en charge sans seuil d'immobilisation, la
-//! TVA n'est jamais liquidée (445660/445710 restent bruts, aucune CA3 n'étant un fait daté), pas
+//! **Dépenses et relevé** (lot 33) : une dépense *rapprochée* d'un débit du relevé bancaire
+//! (`expenses::ReconcileExpense`) est comptabilisée en deux temps — la charge à sa date
+//! d'engagement (`AC`, 6xx et 445660 contre 401), le décaissement à la date du relevé (`BQ`,
+//! 401 contre 512) — qui peuvent tomber dans deux exercices : un 401 créditeur au bilan est une
+//! facture fournisseur reçue avant la clôture et payée après. Une dépense non rapprochée reste
+//! réputée payée à sa date (charge contre 512 directement) : sans relevé, le domaine n'a pas de
+//! meilleure date. Le 512 dérivé suit donc le relevé exactement là où il a été rapproché.
+//!
+//! Limites assumées, dites dans les libellés : les dépenses non rapprochées sont réputées payées
+//! à leur date, l'équipement est passé en charge sans seuil d'immobilisation, la TVA n'est
+//! jamais liquidée (445660/445710 restent bruts, aucune CA3 n'étant un fait daté), pas
 //! d'amortissement, de provision ni de régularisation. Un export pour l'expert-comptable, qui
 //! reste maître des écritures définitives.
 
@@ -46,12 +54,12 @@ use time::Date;
 
 use crate::accounting::{corporate_income_tax, director_gross, impute_prior_losses};
 use crate::app::AppError;
-use crate::billing::{compute_totals, list_invoices, list_payments};
+use crate::billing::{compute_totals, list_bank_transactions, list_invoices, list_payments};
 use crate::clients::list_clients;
 use crate::company::{CompanyProfile, company_profile};
 use crate::domain::{
-    Client, ClientId, Expense, ExpenseCategory, FiscalYear, FiscalYearEnd, Invoice, InvoiceId,
-    Money, OpeningBalance, Payment, PaymentMethod, format_date,
+    BankTransaction, Client, ClientId, Expense, ExpenseCategory, ExpenseId, FiscalYear,
+    FiscalYearEnd, Invoice, InvoiceId, Money, OpeningBalance, Payment, PaymentMethod, format_date,
 };
 use crate::expenses::list_expenses;
 use crate::fiscal_year::{FiscalYearRecord, fiscal_year_ending_in, list_fiscal_years};
@@ -68,7 +76,7 @@ pub enum Journal {
     Sales,
     /// `AC` : dépenses.
     Purchases,
-    /// `BQ` : encaissements et leurs annulations.
+    /// `BQ` : encaissements et leurs annulations, décaissements des dépenses rapprochées.
     Bank,
     /// `OD` : opérations diverses — rémunération du dirigeant, IS, affectation du résultat.
     Misc,
@@ -138,6 +146,9 @@ pub mod accounts {
     use super::Account;
 
     pub const CLIENTS: Account = Account::fixed("411000", "Clients");
+    /// Fournisseurs (lot 33) : la charge d'une dépense rapprochée y attend son décaissement,
+    /// daté du relevé.
+    pub const SUPPLIERS: Account = Account::fixed("401000", "Fournisseurs");
     pub const BANK: Account = Account::fixed("512000", "Banque");
     pub const SERVICES: Account = Account::fixed("706000", "Prestations de services");
     pub const VAT_COLLECTED: Account = Account::fixed("445710", "TVA collectée");
@@ -151,6 +162,8 @@ pub mod accounts {
     pub const OFFICE: Account = Account::fixed("606400", "Fournitures administratives");
     pub const PROFESSIONAL: Account =
         Account::fixed("618000", "Divers : formation, documentation, cotisations");
+    pub const FEES: Account = Account::fixed("622600", "Honoraires");
+    pub const BANK_CHARGES: Account = Account::fixed("627000", "Services bancaires et assimilés");
     pub const OTHER: Account = Account::fixed("658000", "Charges diverses de gestion courante");
 
     // Opérations de clôture (lot 31).
@@ -186,6 +199,8 @@ pub const fn charge_account(category: ExpenseCategory) -> Account {
         ExpenseCategory::Meals => accounts::MEALS,
         ExpenseCategory::Office => accounts::OFFICE,
         ExpenseCategory::Professional => accounts::PROFESSIONAL,
+        ExpenseCategory::Fees => accounts::FEES,
+        ExpenseCategory::BankCharges => accounts::BANK_CHARGES,
         ExpenseCategory::Other => accounts::OTHER,
     }
 }
@@ -296,6 +311,9 @@ pub struct LedgerFacts<'a> {
     pub clients: &'a [Client],
     pub payments: &'a [Payment],
     pub expenses: &'a [Expense],
+    /// Les transactions du relevé importé (lot 33) : seules celles rapprochées d'une dépense
+    /// (`matched_expense_id`) comptent ici, elles datent le décaissement de cette dépense.
+    pub bank_transactions: &'a [BankTransaction],
     /// À-nouveaux au premier jour, s'il y en a (voir le commentaire de module).
     pub opening: Option<OpeningLines>,
     /// Le snapshot de clôture de *cet* exercice, s'il est clos dans l'application : il fixe
@@ -512,28 +530,62 @@ impl Facts<'_> {
         entries
     }
 
-    /// Achats : une dépense est réputée payée à sa date (le domaine enregistre un montant TTC
-    /// réellement payé) — charge HT (TTC − TVA déductible) et 445660 contre 512.
-    fn purchase_entries(&self, expenses: &[Expense]) -> Vec<LedgerEntry> {
-        let mut entries = Vec::new();
-        for expense in expenses
+    /// Achats : une dépense non rapprochée est réputée payée à sa date (le domaine enregistre
+    /// un montant TTC réellement payé) — charge HT (TTC − TVA déductible) et 445660 contre 512.
+    /// Une dépense rapprochée d'un débit du relevé (lot 33) passe par 401 : la charge à sa date
+    /// (`AC`), le décaissement 401/512 à la date du relevé (`BQ`) — deux écritures distinctes,
+    /// chacune retenue si *sa* date tombe dans l'exercice.
+    fn purchase_entries(
+        &self,
+        expenses: &[Expense],
+        bank_transactions: &[BankTransaction],
+    ) -> Vec<LedgerEntry> {
+        let debits: HashMap<ExpenseId, &BankTransaction> = bank_transactions
             .iter()
-            .filter(|e| self.exercise.contains(e.incurred_on))
-        {
+            .filter_map(|t| t.matched_expense_id.map(|id| (id, t)))
+            .collect();
+        let mut entries = Vec::new();
+        for expense in expenses {
+            let piece = expense
+                .receipt_filename
+                .clone()
+                .unwrap_or_else(|| format!("DEP-{}", short_id(expense.id).to_ascii_uppercase()));
             let charge = expense.amount - expense.vat_deductible;
-            entries.extend(entry(
-                Journal::Purchases,
-                expense.incurred_on,
-                expense.receipt_filename.clone().unwrap_or_else(|| {
-                    format!("DEP-{}", short_id(expense.id).to_ascii_uppercase())
-                }),
-                expense.label.clone(),
-                vec![
-                    line(charge_account(expense.category), charge),
-                    line(accounts::VAT_DEDUCTIBLE, expense.vat_deductible),
-                    line(accounts::BANK, -expense.amount),
-                ],
-            ));
+            let debit = debits.get(&expense.id).copied();
+            let paid_through = debit.map_or(accounts::BANK, |_| accounts::SUPPLIERS);
+            if self.exercise.contains(expense.incurred_on) {
+                entries.extend(entry(
+                    Journal::Purchases,
+                    expense.incurred_on,
+                    piece.clone(),
+                    expense.label.clone(),
+                    vec![
+                        line(charge_account(expense.category), charge),
+                        line(accounts::VAT_DEDUCTIBLE, expense.vat_deductible),
+                        line(paid_through, -expense.amount),
+                    ],
+                ));
+            }
+            let Some(debit) = debit else {
+                continue;
+            };
+            if self.exercise.contains(debit.occurred_on) {
+                entries.extend(entry(
+                    Journal::Bank,
+                    debit.occurred_on,
+                    piece,
+                    format!(
+                        "Paiement {} — relevé du {} ({})",
+                        expense.label,
+                        format_date(debit.occurred_on),
+                        debit.description
+                    ),
+                    vec![
+                        line(accounts::SUPPLIERS, expense.amount),
+                        line(accounts::BANK, -expense.amount),
+                    ],
+                ));
+            }
         }
         entries
     }
@@ -661,8 +713,8 @@ impl Ledger {
     /// Construit le grand livre d'un exercice à partir des faits du domaine — fonction pure,
     /// testable sans base. Seuls les faits *datés dans l'exercice* sont retenus : une facture
     /// par sa date d'émission, un encaissement par sa date de réception, son annulation par sa
-    /// date d'annulation, une dépense par sa date d'engagement ; les opérations de clôture sont
-    /// datées du dernier jour.
+    /// date d'annulation, une dépense par sa date d'engagement et son décaissement rapproché
+    /// par la date du relevé ; les opérations de clôture sont datées du dernier jour.
     #[must_use]
     pub fn build(facts: LedgerFacts<'_>) -> Self {
         let index = Facts {
@@ -673,7 +725,7 @@ impl Ledger {
         let mut entries = index.opening_entries(facts.opening);
         entries.extend(index.sales_entries(facts.invoices));
         entries.extend(index.bank_entries(facts.payments));
-        entries.extend(index.purchase_entries(facts.expenses));
+        entries.extend(index.purchase_entries(facts.expenses, facts.bank_transactions));
         entries.extend(index.appropriation_entries(facts.appropriations));
 
         let director_total = facts.snapshot.map_or_else(
@@ -1401,6 +1453,7 @@ struct Loaded {
     clients: Vec<Client>,
     payments: Vec<Payment>,
     expenses: Vec<Expense>,
+    bank_transactions: Vec<BankTransaction>,
     opening: Option<OpeningBalance>,
     fiscal_years: Vec<FiscalYearRecord>,
 }
@@ -1419,6 +1472,7 @@ impl Loaded {
             clients: list_clients(conn)?,
             payments: list_payments(conn)?,
             expenses: list_expenses(conn)?,
+            bank_transactions: list_bank_transactions(conn)?,
             opening: opening_balance(conn)?.map(|r| r.balance),
             fiscal_years: list_fiscal_years(conn)?,
         })
@@ -1479,6 +1533,7 @@ impl Loaded {
             clients: &self.clients,
             payments: &self.payments,
             expenses: &self.expenses,
+            bank_transactions: &self.bank_transactions,
             opening,
             snapshot,
             appropriations,
@@ -1516,10 +1571,24 @@ pub fn ledger_ending_in(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{Address, FiscalYearId, InvoiceLine, InvoiceStatus, Siren, VatRate};
+    use crate::domain::{
+        Address, BankTransactionId, FiscalYearId, InvoiceLine, InvoiceStatus, Siren, VatRate,
+    };
     use proptest::prelude::*;
     use time::Month as TimeMonth;
     use time::OffsetDateTime;
+
+    /// Un débit du relevé rapproché de `expense`, daté de `on` (lot 33).
+    fn debit_for(expense: &Expense, on: Date) -> BankTransaction {
+        BankTransaction {
+            id: BankTransactionId::new(),
+            occurred_on: on,
+            amount_cents: -expense.amount.cents(),
+            description: "CB FOURNISSEUR".to_string(),
+            matched_invoice_id: None,
+            matched_expense_id: Some(expense.id),
+        }
+    }
 
     fn date(year: i32, month: TimeMonth, day: u8) -> Date {
         Date::from_calendar_date(year, month, day).unwrap()
@@ -1614,6 +1683,7 @@ mod tests {
             clients: &[],
             payments: &[],
             expenses,
+            bank_transactions: &[],
             opening,
             snapshot: None,
             prior_losses: Money::ZERO,
@@ -1813,6 +1883,7 @@ mod tests {
             clients: &[],
             payments: &[],
             expenses: &[],
+            bank_transactions: &[],
             opening: Some(ledger.closing_opening_lines()),
             snapshot: None,
             prior_losses: Money::ZERO,
@@ -1885,6 +1956,7 @@ mod tests {
             clients: &[],
             payments: &[],
             expenses: &[],
+            bank_transactions: &[],
             opening: Some(OpeningLines {
                 label: "AN".to_string(),
                 lines: vec![
@@ -2259,5 +2331,99 @@ mod tests {
             Money::from_cents(80_000)
         );
         assert_eq!(sheet.liability(LiabilityRubric::Result), Money::ZERO);
+    }
+
+    // --- Rapprochement bancaire des dépenses (lot 33). ---
+
+    #[test]
+    fn a_reconciled_expense_is_charged_at_its_date_and_paid_at_the_statement_date() {
+        // Honoraires de 960 € TTC engagés le 28 décembre 2026, débités le 4 janvier 2027 : la
+        // charge (622600 + 445660 contre 401) est dans 2026, le décaissement (401 contre 512)
+        // dans 2027 ; au 31 décembre 2026, 401 créditeur est une dette fournisseur (case 166)
+        // et la banque n'a pas encore bougé.
+        let p = profile(None, None);
+        let mut fees = expense(96_000, 16_000, date(2026, TimeMonth::December, 28));
+        fees.category = ExpenseCategory::Fees;
+        let mut unreconciled = expense(6_000, 0, date(2026, TimeMonth::June, 1));
+        unreconciled.label = "Fournitures".to_string();
+        let expenses = vec![fees.clone(), unreconciled];
+        let debits = vec![debit_for(&fees, date(2027, TimeMonth::January, 4))];
+
+        let y2026 = Ledger::build(LedgerFacts {
+            bank_transactions: &debits,
+            ..facts(&p, FiscalYear::calendar(2026), &[], &expenses, None)
+        });
+        let purchases: Vec<&LedgerEntry> = y2026
+            .entries
+            .iter()
+            .filter(|e| e.journal == Journal::Purchases)
+            .collect();
+        assert_eq!(purchases.len(), 2);
+        let charged = purchases
+            .iter()
+            .find(|e| e.label == "Honoraires")
+            .expect("la charge des honoraires est dans 2026");
+        assert_eq!(charged.lines[0].account, accounts::FEES);
+        assert_eq!(charged.lines[0].amount, Money::from_cents(80_000));
+        assert_eq!(charged.lines[2].account, accounts::SUPPLIERS);
+        assert_eq!(charged.lines[2].amount, Money::from_cents(-96_000));
+        let direct = purchases.iter().find(|e| e.label != "Honoraires").unwrap();
+        assert_eq!(
+            direct.lines[1].account,
+            accounts::BANK,
+            "une dépense non rapprochée reste réputée payée à sa date"
+        );
+        assert!(
+            y2026.entries.iter().all(|e| e.journal != Journal::Bank),
+            "aucun décaissement en 2026 : le relevé le date de 2027"
+        );
+        let sheet = y2026.balance_sheet();
+        assert_eq!(
+            sheet.liability(LiabilityRubric::Suppliers),
+            Money::from_cents(96_000)
+        );
+        assert_eq!(sheet.asset_net(AssetRubric::Cash), Money::ZERO);
+        assert_eq!(
+            sheet.liability(LiabilityRubric::Borrowings),
+            Money::from_cents(6_000),
+            "seule la dépense non rapprochée a touché la banque (créditrice → concours)"
+        );
+        assert_eq!(sheet.total_assets_net, sheet.total_liabilities);
+
+        let y2027 = Ledger::build(LedgerFacts {
+            bank_transactions: &debits,
+            ..facts(&p, FiscalYear::calendar(2027), &[], &expenses, None)
+        });
+        assert!(
+            y2027
+                .entries
+                .iter()
+                .all(|e| e.journal != Journal::Purchases),
+            "la charge n'est pas dans 2027"
+        );
+        let paid = y2027
+            .entries
+            .iter()
+            .find(|e| e.journal == Journal::Bank)
+            .expect("le décaissement est dans 2027");
+        assert_eq!(paid.date, date(2027, TimeMonth::January, 4));
+        assert_eq!(paid.piece_ref, charged.piece_ref);
+        assert_eq!(paid.lines[0].account, accounts::SUPPLIERS);
+        assert_eq!(paid.lines[0].amount, Money::from_cents(96_000));
+        assert_eq!(paid.lines[1].account, accounts::BANK);
+        assert!(paid.label.contains("CB FOURNISSEUR"));
+        assert!(y2027.entries.iter().all(LedgerEntry::is_balanced));
+    }
+
+    #[test]
+    fn the_new_categories_have_their_own_charge_accounts() {
+        assert_eq!(charge_account(ExpenseCategory::Fees).number, "622600");
+        assert_eq!(
+            charge_account(ExpenseCategory::BankCharges).number,
+            "627000"
+        );
+        for category in ExpenseCategory::ALL {
+            assert_eq!(charge_account(category).class(), 6);
+        }
     }
 }

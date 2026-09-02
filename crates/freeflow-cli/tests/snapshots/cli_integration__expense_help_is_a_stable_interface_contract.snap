@@ -7,12 +7,13 @@ Dépenses professionnelles et TVA déductible
 Usage: freeflow expense [OPTIONS] <COMMAND>
 
 Commands:
-  record  Enregistre une dépense professionnelle
-  list    Liste les dépenses, les plus récentes d'abord
-  show    Affiche une dépense
-  edit    Modifie une dépense existante — seuls les champs fournis changent, le reste est conservé tel quel. Refusé si sa date tombe dans un exercice déjà clôturé
-  rm      Supprime une dépense pour de bon — le justificatif archivé, lui, reste en place (adressé par contenu, il peut être partagé par une autre dépense)
-  help    Print this message or the help of the given subcommand(s)
+  record     Enregistre une dépense professionnelle
+  list       Liste les dépenses, les plus récentes d'abord
+  show       Affiche une dépense
+  edit       Modifie une dépense existante — seuls les champs fournis changent, le reste est conservé tel quel. Refusé si sa date tombe dans un exercice déjà clôturé
+  rm         Supprime une dépense pour de bon — le justificatif archivé, lui, reste en place (adressé par contenu, il peut être partagé par une autre dépense) et le débit du relevé rapproché, s'il y en a un, est libéré
+  reconcile  Rapproche une dépense d'un débit du relevé importé, au montant exact (défaire : `bank unreconcile`)
+  help       Print this message or the help of the given subcommand(s)
 
 Options:
       --db <DB>

@@ -103,6 +103,7 @@ impl Fec {
             clients,
             payments,
             expenses,
+            bank_transactions: &[],
             opening: opening
                 .filter(|o| o.opens_on == exercise.start())
                 .map(OpeningLines::from_opening_balance),
@@ -838,6 +839,7 @@ mod tests {
                     incurred_on: date(2026, TimeMonth::February, 2),
                     receipt_hash: None,
                     receipt_filename: Some("billet.pdf".to_string()),
+                    bank_transaction_id: None,
                 },
                 &human,
             )
@@ -854,6 +856,7 @@ mod tests {
                     incurred_on: date(2026, TimeMonth::July, 1),
                     receipt_hash: None,
                     receipt_filename: None,
+                    bank_transaction_id: None,
                 },
                 &human,
             )

@@ -111,7 +111,8 @@ pub enum BankCommand {
         #[arg(long)]
         unmatched: bool,
     },
-    /// Rapproche une transaction importée avec une facture (crée l'encaissement correspondant).
+    /// Rapproche un crédit importé avec une facture (crée l'encaissement correspondant) —
+    /// pour un débit et une dépense, voir `expense reconcile` / `expense record --transaction`.
     Reconcile {
         #[arg(long, value_parser = clap::value_parser!(BankTransactionId))]
         transaction: BankTransactionId,
@@ -120,7 +121,8 @@ pub enum BankCommand {
     },
     /// Défait un rapprochement : libère la transaction et annule l'encaissement qui en était
     /// issu (pour un rapprochement historique sans lignée, seule la transaction est libérée —
-    /// annulez le paiement via `payment void`).
+    /// annulez le paiement via `payment void`). Pour un débit rapproché d'une dépense, la
+    /// dépense reste, seule la transaction est libérée.
     Unreconcile {
         #[arg(long, value_parser = clap::value_parser!(BankTransactionId))]
         transaction: BankTransactionId,
@@ -309,7 +311,9 @@ fn bank_table(transactions: &[freeflow_core::domain::BankTransaction]) -> String
                 Money::from_cents(t.amount_cents).to_string(),
                 t.description.clone(),
                 if t.matched_invoice_id.is_some() {
-                    "rapprochée".to_string()
+                    "rapprochée (facture)".to_string()
+                } else if t.matched_expense_id.is_some() {
+                    "rapprochée (dépense)".to_string()
                 } else {
                     "à rapprocher".to_string()
                 },
@@ -342,7 +346,7 @@ pub fn run_bank(
         BankCommand::List { unmatched } => {
             let mut transactions = list_bank_transactions(store.connection())?;
             if unmatched {
-                transactions.retain(|t| t.matched_invoice_id.is_none());
+                transactions.retain(|t| !t.is_matched());
             }
             if json {
                 format_value(&transactions, json)

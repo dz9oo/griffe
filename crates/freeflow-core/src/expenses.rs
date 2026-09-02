@@ -16,6 +16,20 @@
 //! silencieusement diverger la comptabilité vivante de ce qui a été déclaré. L'échappatoire,
 //! tant que l'exercice n'est qu'un projet non approuvé : `freeflow year rm` d'abord, corriger,
 //! re-clore. Un exercice approuvé, lui, est définitif — comme la liasse qu'il a produite.
+//!
+//! Lot 33 : **rapprochement bancaire des dépenses.** Un débit du relevé importé (`bank import`)
+//! se rapproche d'une dépense ([`ReconcileExpense`], ou [`RecordExpense`] avec
+//! `bank_transaction_id` pour créer la dépense *depuis* le débit), au montant exact — comme un
+//! crédit se rapproche d'une facture (`billing::ReconcileTransaction`). Le rapprochement n'est
+//! pas un attribut de la dépense mais de la transaction (`bank_transactions.matched_expense_id`,
+//! migration `0016`) : il ne touche ni au montant ni à la date de la dépense, donc jamais au
+//! résultat figé d'un exercice clos — il n'est pas soumis à la garde « exercice clôturé ». Sa
+//! seule conséquence comptable est dans le grand livre dérivé (`crate::ledger`) : une dépense
+//! rapprochée n'est plus réputée payée à sa date, son décaissement est daté du relevé, via un
+//! compte fournisseur. Une dépense rapprochée garde le montant de son débit
+//! ([`ExpensesError::ReconciledAmountLocked`]) ; la supprimer libère la transaction (elle
+//! redevient « à rapprocher ») ; `billing::UnreconcileTransaction` libère la transaction sans
+//! toucher à la dépense.
 
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Deserialize, Serialize};
@@ -25,7 +39,10 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
 use crate::app::{AppError, Command};
-use crate::domain::{self, Expense, ExpenseCategory, ExpenseId, Money, VatRate};
+use crate::billing;
+use crate::domain::{
+    self, BankTransaction, BankTransactionId, Expense, ExpenseCategory, ExpenseId, Money, VatRate,
+};
 
 fn conv_err(e: impl std::error::Error + Send + Sync + 'static) -> rusqlite::Error {
     rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
@@ -48,6 +65,36 @@ pub enum ExpensesError {
          la dépense à l'exercice courant"
     )]
     FiscalYearClosed(String),
+
+    #[error("transaction bancaire introuvable : {0}")]
+    TransactionNotFound(BankTransactionId),
+
+    #[error("la transaction {0} est un crédit : seul un débit (sortie d'argent) paie une dépense")]
+    NotADebit(BankTransactionId),
+
+    #[error(
+        "la transaction {0} est déjà rapprochée — défaites d'abord ce rapprochement \
+         (bank unreconcile) si elle visait la mauvaise dépense ou la mauvaise facture"
+    )]
+    TransactionAlreadyReconciled(BankTransactionId),
+
+    #[error(
+        "la dépense {0} est déjà rapprochée d'un débit du relevé — défaites d'abord ce \
+         rapprochement (bank unreconcile)"
+    )]
+    ExpenseAlreadyReconciled(ExpenseId),
+
+    #[error(
+        "le montant de la dépense ({expense}) diffère du débit du relevé ({transaction}) : un \
+         rapprochement se fait au montant exact"
+    )]
+    AmountMismatch { expense: Money, transaction: Money },
+
+    #[error(
+        "la dépense {0} est rapprochée d'un débit du relevé : son montant est celui du relevé — \
+         défaites d'abord le rapprochement (bank unreconcile) pour le modifier"
+    )]
+    ReconciledAmountLocked(ExpenseId),
 }
 
 impl From<ExpensesError> for AppError {
@@ -89,6 +136,37 @@ fn ensure_vat_within_amount(vat_deductible: Money, amount: Money) -> Result<(), 
     Ok(())
 }
 
+/// Le montant TTC qu'un débit du relevé paie : l'opposé de sa sortie d'argent.
+fn debit_amount(tx: &BankTransaction) -> Money {
+    Money::from_cents(-tx.amount_cents)
+}
+
+/// Les gardes communes d'un rapprochement de dépense : la transaction existe, est un débit,
+/// n'est rapprochée de rien, et son montant est exactement `amount`. Renvoie la transaction
+/// relue.
+fn rapprochable_debit(
+    conn: &Connection,
+    transaction_id: BankTransactionId,
+    amount: Money,
+) -> Result<BankTransaction, AppError> {
+    let tx = billing::bank_transaction_by_id(conn, transaction_id)?
+        .ok_or(ExpensesError::TransactionNotFound(transaction_id))?;
+    if tx.is_matched() {
+        return Err(ExpensesError::TransactionAlreadyReconciled(transaction_id).into());
+    }
+    if !tx.is_debit() {
+        return Err(ExpensesError::NotADebit(transaction_id).into());
+    }
+    if debit_amount(&tx) != amount {
+        return Err(ExpensesError::AmountMismatch {
+            expense: amount,
+            transaction: debit_amount(&tx),
+        }
+        .into());
+    }
+    Ok(tx)
+}
+
 /// Hash SHA-256 hexadécimal d'un justificatif — le même algorithme que le chaînage de factures
 /// et le journal d'audit, pour n'avoir qu'une seule primitive d'intégrité dans toute l'appli.
 #[must_use]
@@ -106,15 +184,31 @@ pub struct RecordExpense {
     pub incurred_on: time::Date,
     pub receipt_hash: Option<String>,
     pub receipt_filename: Option<String>,
+    /// Lot 33 : le débit du relevé que cette dépense paie — la dépense est créée et rapprochée
+    /// dans le même geste. Mêmes gardes que [`ReconcileExpense`] ; `amount` doit être le montant
+    /// exact du débit (les façades le pré-remplissent depuis la transaction). `default` pour que
+    /// les entrées d'audit antérieures restent lisibles.
+    #[serde(default)]
+    pub bank_transaction_id: Option<BankTransactionId>,
 }
 
 impl Command for RecordExpense {
     type Output = ExpenseId;
     const NAME: &'static str = "expenses.record";
 
+    /// Créer une dépense est un geste ordinaire ; la rapprocher d'un débit du relevé est un
+    /// acte de rapprochement bancaire, derrière la même barrière que
+    /// `billing::ReconcileTransaction` : un agent le propose, un humain le confirme.
+    fn requires_confirmation(&self) -> bool {
+        self.bank_transaction_id.is_some()
+    }
+
     fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
         ensure_vat_within_amount(self.vat_deductible, self.amount)?;
         ensure_outside_closed_fiscal_year(conn, self.incurred_on)?;
+        if let Some(transaction_id) = self.bank_transaction_id {
+            rapprochable_debit(conn, transaction_id, self.amount)?;
+        }
         let expense = Expense {
             id: ExpenseId::new(),
             label: self.label.clone(),
@@ -129,7 +223,41 @@ impl Command for RecordExpense {
             revision: 1,
         };
         insert_expense(conn, &expense)?;
+        if let Some(transaction_id) = self.bank_transaction_id {
+            billing::mark_transaction_matched_expense(conn, transaction_id, expense.id)?;
+        }
         Ok(expense.id)
+    }
+}
+
+/// Rapproche un débit du relevé d'une dépense existante — le miroir, côté dépenses, de
+/// `billing::ReconcileTransaction` : au montant exact, une transaction par dépense, sans rien
+/// créer. Pas de révision : le rapprochement est porté par la transaction, pas par la dépense
+/// (voir le commentaire de module), et ses gardes (« déjà rapprochée ») sont sémantiques.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReconcileExpense {
+    pub transaction_id: BankTransactionId,
+    pub expense_id: ExpenseId,
+}
+
+impl Command for ReconcileExpense {
+    type Output = ();
+    const NAME: &'static str = "expenses.reconcile";
+
+    /// Même barrière que `billing::ReconcileTransaction` : un agent propose, un humain confirme.
+    fn requires_confirmation(&self) -> bool {
+        true
+    }
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        let expense = expense_by_id(conn, self.expense_id)?
+            .ok_or(ExpensesError::NotFound(self.expense_id))?;
+        if billing::bank_transaction_for_expense(conn, self.expense_id)?.is_some() {
+            return Err(ExpensesError::ExpenseAlreadyReconciled(self.expense_id).into());
+        }
+        rapprochable_debit(conn, self.transaction_id, expense.amount)?;
+        billing::mark_transaction_matched_expense(conn, self.transaction_id, self.expense_id)?;
+        Ok(())
     }
 }
 
@@ -167,6 +295,12 @@ impl Command for UpdateExpense {
         // viderait autant que d'en faire entrer une (nouvelle date).
         ensure_outside_closed_fiscal_year(conn, current.incurred_on)?;
         ensure_outside_closed_fiscal_year(conn, self.incurred_on)?;
+        // Une dépense rapprochée garde le montant de son débit : le relevé fait foi (lot 33).
+        if self.amount != current.amount
+            && billing::bank_transaction_for_expense(conn, self.id)?.is_some()
+        {
+            return Err(ExpensesError::ReconciledAmountLocked(self.id).into());
+        }
         let new_revision = require_expense_revision(conn, self.id, self.revision)?;
         conn.execute(
             "UPDATE expenses
@@ -212,10 +346,13 @@ impl Command for DeleteExpense {
         let current = expense_by_id(conn, self.id)?.ok_or(ExpensesError::NotFound(self.id))?;
         ensure_outside_closed_fiscal_year(conn, current.incurred_on)?;
         require_expense_revision(conn, self.id, self.revision)?;
-        // Rien ne référence une dépense dans le schéma (aucune FK entrante) : la suppression est
-        // réelle, sans tableau de références à consulter. Le fichier justificatif archivé, lui,
-        // reste en place — adressé par contenu, il peut être partagé par une autre dépense, et
-        // le supprimer serait de l'IO d'adaptateur de toute façon.
+        // Seule référence entrante depuis le lot 33 : le débit du relevé rapproché, qui est
+        // libéré (il redevient « à rapprocher ») — le relevé, lui, ne ment pas. Le fichier
+        // justificatif archivé reste en place — adressé par contenu, il peut être partagé par
+        // une autre dépense, et le supprimer serait de l'IO d'adaptateur de toute façon.
+        if let Some(tx) = billing::bank_transaction_for_expense(conn, self.id)? {
+            billing::clear_transaction_match(conn, tx.id)?;
+        }
         conn.execute(
             "DELETE FROM expenses WHERE id = ?1 AND revision = ?2",
             params![self.id.to_string(), self.revision],
@@ -278,6 +415,51 @@ pub fn expense_by_id(conn: &Connection, id: ExpenseId) -> Result<Option<Expense>
     .map_err(AppError::from)
 }
 
+/// Le débit du relevé rapproché d'une dépense, s'il y en a un (lot 33).
+///
+/// # Errors
+pub fn bank_transaction_for_expense(
+    conn: &Connection,
+    id: ExpenseId,
+) -> Result<Option<BankTransaction>, AppError> {
+    billing::bank_transaction_for_expense(conn, id)
+}
+
+/// Une dépense avec son débit rapproché — la vue que `expense show`, `expense.show` et la
+/// ressource `freeflow://expenses/{référence}` partagent : les champs de la dépense restent au
+/// premier niveau du JSON, seule une clé `bank_transaction` s'ajoute (`null` si non rapprochée).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ExpenseDetail {
+    #[serde(flatten)]
+    pub expense: Expense,
+    pub bank_transaction: Option<BankTransaction>,
+}
+
+/// # Errors
+pub fn expense_detail(conn: &Connection, id: ExpenseId) -> Result<Option<ExpenseDetail>, AppError> {
+    let Some(expense) = expense_by_id(conn, id)? else {
+        return Ok(None);
+    };
+    let bank_transaction = billing::bank_transaction_for_expense(conn, id)?;
+    Ok(Some(ExpenseDetail {
+        expense,
+        bank_transaction,
+    }))
+}
+
+/// Les dépenses rapprochées, indexées par id de dépense : le débit qui les paie (lot 33) —
+/// une seule requête, pour le grand livre.
+///
+/// # Errors
+pub fn reconciled_debits(
+    conn: &Connection,
+) -> Result<std::collections::HashMap<ExpenseId, BankTransaction>, AppError> {
+    Ok(billing::list_bank_transactions(conn)?
+        .into_iter()
+        .filter_map(|t| t.matched_expense_id.map(|id| (id, t)))
+        .collect())
+}
+
 /// Les plus récemment engagées d'abord.
 ///
 /// # Errors
@@ -311,6 +493,9 @@ pub fn expenses_between(
 mod tests {
     use super::*;
     use crate::app::{Actor, ExecutionContext, Executor, Outcome};
+    use crate::billing::{
+        ImportBankTransactions, ParsedTransaction, UnreconcileTransaction, list_bank_transactions,
+    };
     use crate::store::{Passphrase, Store};
     use time::Month;
 
@@ -341,6 +526,7 @@ mod tests {
             incurred_on: date(2026, Month::September, 5),
             receipt_hash: Some("deadbeef".to_string()),
             receipt_filename: Some("facture.pdf".to_string()),
+            bank_transaction_id: None,
         }
     }
 
@@ -434,6 +620,32 @@ mod tests {
     /// Ligne d'exercice clôturé minimale, insérée directement — le chemin officiel
     /// (`CloseFiscalYear`) exige un profil d'entreprise complet qui n'apporterait rien à ces
     /// tests ; la garde ne regarde que `starts_on`/`ends_on`.
+    /// Importe un débit (montant négatif) ou un crédit du relevé et renvoie son id.
+    fn import_transaction(
+        store: &mut Store,
+        on: time::Date,
+        amount_cents: i64,
+    ) -> BankTransactionId {
+        Executor::new(store)
+            .execute(
+                &ImportBankTransactions {
+                    transactions: vec![ParsedTransaction {
+                        occurred_on: on,
+                        amount_cents,
+                        description: format!("CB {amount_cents}"),
+                    }],
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+        list_bank_transactions(store.connection())
+            .unwrap()
+            .into_iter()
+            .find(|t| t.occurred_on == on && t.amount_cents == amount_cents)
+            .unwrap()
+            .id
+    }
+
     fn seed_closed_year(conn: &Connection, year: i32) {
         conn.execute(
             "INSERT INTO fiscal_years
@@ -590,5 +802,259 @@ mod tests {
             .execute(&move_in, &human_ctx())
             .unwrap_err();
         assert!(matches!(&err, AppError::Domain(msg) if msg.contains("exercice")));
+    }
+
+    // --- Rapprochement bancaire (lot 33). ---
+
+    #[test]
+    fn reconciling_an_expense_with_a_debit_of_the_same_amount_links_both_ways() {
+        let mut store = test_store("reconcile-ok");
+        let id = record(&mut store, &sample()); // 120,00 €
+        let tx = import_transaction(&mut store, date(2026, Month::September, 7), -12_000);
+
+        let outcome = Executor::new(&mut store)
+            .execute(
+                &ReconcileExpense {
+                    transaction_id: tx,
+                    expense_id: id,
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+        assert!(matches!(outcome, Outcome::Applied(())));
+
+        let detail = expense_detail(store.connection(), id).unwrap().unwrap();
+        assert_eq!(detail.bank_transaction.as_ref().map(|t| t.id), Some(tx));
+        let listed = list_bank_transactions(store.connection()).unwrap();
+        assert_eq!(listed[0].matched_expense_id, Some(id));
+        assert!(listed[0].is_matched());
+        assert!(
+            crate::billing::unmatched_debits(store.connection())
+                .unwrap()
+                .is_empty()
+        );
+
+        // Une seconde dépense ne peut pas se rapprocher du même débit, ni la même dépense d'un
+        // second débit.
+        let other = record(&mut store, &sample());
+        let err = Executor::new(&mut store)
+            .execute(
+                &ReconcileExpense {
+                    transaction_id: tx,
+                    expense_id: other,
+                },
+                &human_ctx(),
+            )
+            .unwrap_err();
+        assert!(matches!(&err, AppError::Domain(msg) if msg.contains("déjà rapprochée")));
+        let tx2 = import_transaction(&mut store, date(2026, Month::September, 8), -12_000);
+        let err = Executor::new(&mut store)
+            .execute(
+                &ReconcileExpense {
+                    transaction_id: tx2,
+                    expense_id: id,
+                },
+                &human_ctx(),
+            )
+            .unwrap_err();
+        assert!(matches!(&err, AppError::Domain(msg) if msg.contains("déjà rapprochée")));
+    }
+
+    #[test]
+    fn a_credit_or_a_different_amount_cannot_be_reconciled_with_an_expense() {
+        let mut store = test_store("reconcile-refused");
+        let id = record(&mut store, &sample()); // 120,00 €
+        let credit = import_transaction(&mut store, date(2026, Month::September, 7), 12_000);
+        let err = Executor::new(&mut store)
+            .execute(
+                &ReconcileExpense {
+                    transaction_id: credit,
+                    expense_id: id,
+                },
+                &human_ctx(),
+            )
+            .unwrap_err();
+        assert!(matches!(&err, AppError::Domain(msg) if msg.contains("crédit")));
+
+        let other_amount = import_transaction(&mut store, date(2026, Month::September, 7), -12_001);
+        let err = Executor::new(&mut store)
+            .execute(
+                &ReconcileExpense {
+                    transaction_id: other_amount,
+                    expense_id: id,
+                },
+                &human_ctx(),
+            )
+            .unwrap_err();
+        assert!(matches!(&err, AppError::Domain(msg) if msg.contains("montant exact")));
+
+        let err = Executor::new(&mut store)
+            .execute(
+                &ReconcileExpense {
+                    transaction_id: BankTransactionId::new(),
+                    expense_id: id,
+                },
+                &human_ctx(),
+            )
+            .unwrap_err();
+        assert!(matches!(&err, AppError::Domain(msg) if msg.contains("introuvable")));
+    }
+
+    #[test]
+    fn recording_an_expense_from_a_debit_creates_it_reconciled_and_needs_a_human() {
+        let mut store = test_store("record-from-debit");
+        let tx = import_transaction(&mut store, date(2026, Month::September, 7), -12_000);
+        let mut cmd = sample();
+        cmd.bank_transaction_id = Some(tx);
+
+        // Proposée par un agent : action en attente, rien n'est créé.
+        let outcome = Executor::new(&mut store)
+            .execute(
+                &cmd,
+                &ExecutionContext::new(
+                    Actor::Agent {
+                        session: "sess-test".into(),
+                    },
+                    false,
+                ),
+            )
+            .unwrap();
+        assert!(matches!(outcome, Outcome::PendingConfirmation(_)));
+        assert!(list_expenses(store.connection()).unwrap().is_empty());
+        assert!(
+            !sample().requires_confirmation(),
+            "sans débit, créer une dépense reste un geste ordinaire"
+        );
+
+        let id = record(&mut store, &cmd);
+        let detail = expense_detail(store.connection(), id).unwrap().unwrap();
+        assert_eq!(detail.bank_transaction.as_ref().map(|t| t.id), Some(tx));
+
+        // Au mauvais montant, rien n'est créé — ni la dépense, ni le lien.
+        let tx2 = import_transaction(&mut store, date(2026, Month::September, 8), -9_900);
+        let mut wrong = sample();
+        wrong.bank_transaction_id = Some(tx2);
+        let err = Executor::new(&mut store)
+            .execute(&wrong, &human_ctx())
+            .unwrap_err();
+        assert!(matches!(&err, AppError::Domain(msg) if msg.contains("montant exact")));
+        assert_eq!(list_expenses(store.connection()).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_reconciled_expense_keeps_the_statement_amount_until_unreconciled() {
+        let mut store = test_store("reconciled-amount-locked");
+        let id = record(&mut store, &sample());
+        let tx = import_transaction(&mut store, date(2026, Month::September, 7), -12_000);
+        Executor::new(&mut store)
+            .execute(
+                &ReconcileExpense {
+                    transaction_id: tx,
+                    expense_id: id,
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+
+        // Le libellé, la catégorie, la date restent libres…
+        let current = expense_by_id(store.connection(), id).unwrap().unwrap();
+        let mut update = update_from(&current);
+        update.label = "Hébergement (septembre)".to_string();
+        update.category = ExpenseCategory::Fees;
+        update.incurred_on = date(2026, Month::September, 1);
+        Executor::new(&mut store)
+            .execute(&update, &human_ctx())
+            .unwrap();
+
+        // … pas le montant : le relevé fait foi.
+        let current = expense_by_id(store.connection(), id).unwrap().unwrap();
+        let mut update = update_from(&current);
+        update.amount = Money::from_cents(13_000);
+        let err = Executor::new(&mut store)
+            .execute(&update, &human_ctx())
+            .unwrap_err();
+        assert!(matches!(&err, AppError::Domain(msg) if msg.contains("relevé")));
+
+        // Défaire libère le débit sans toucher à la dépense, qui redevient modifiable.
+        let outcome = Executor::new(&mut store)
+            .execute(&UnreconcileTransaction { transaction_id: tx }, &human_ctx())
+            .unwrap();
+        assert!(matches!(outcome, Outcome::Applied(None)));
+        let detail = expense_detail(store.connection(), id).unwrap().unwrap();
+        assert!(detail.bank_transaction.is_none());
+        assert_eq!(detail.expense.label, "Hébergement (septembre)");
+        assert_eq!(
+            crate::billing::unmatched_debits(store.connection())
+                .unwrap()
+                .len(),
+            1
+        );
+        let current = expense_by_id(store.connection(), id).unwrap().unwrap();
+        let mut update = update_from(&current);
+        update.amount = Money::from_cents(13_000);
+        Executor::new(&mut store)
+            .execute(&update, &human_ctx())
+            .unwrap();
+    }
+
+    #[test]
+    fn deleting_a_reconciled_expense_frees_its_debit() {
+        let mut store = test_store("delete-frees-debit");
+        let id = record(&mut store, &sample());
+        let tx = import_transaction(&mut store, date(2026, Month::September, 7), -12_000);
+        Executor::new(&mut store)
+            .execute(
+                &ReconcileExpense {
+                    transaction_id: tx,
+                    expense_id: id,
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+
+        Executor::new(&mut store)
+            .execute(&DeleteExpense { id, revision: 1 }, &human_ctx())
+            .unwrap();
+        assert!(expense_by_id(store.connection(), id).unwrap().is_none());
+        let listed = list_bank_transactions(store.connection()).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert!(
+            !listed[0].is_matched(),
+            "le relevé ne ment pas : le débit reste, libéré"
+        );
+    }
+
+    #[test]
+    fn reconciling_is_not_blocked_by_a_closed_fiscal_year() {
+        // Le rapprochement ne touche ni au montant ni à la date : le résultat figé ne bouge
+        // pas, seul le grand livre dérivé date autrement le décaissement.
+        let mut store = test_store("reconcile-closed-year");
+        let id = record(&mut store, &sample()); // 2026-09-05
+        let tx = import_transaction(&mut store, date(2026, Month::October, 2), -12_000);
+        seed_closed_year(store.connection(), 2026);
+        Executor::new(&mut store)
+            .execute(
+                &ReconcileExpense {
+                    transaction_id: tx,
+                    expense_id: id,
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+        Executor::new(&mut store)
+            .execute(&UnreconcileTransaction { transaction_id: tx }, &human_ctx())
+            .unwrap();
+    }
+
+    #[test]
+    fn every_category_round_trips_through_its_text_form() {
+        for category in ExpenseCategory::ALL {
+            assert_eq!(category.as_str().parse::<ExpenseCategory>(), Ok(category));
+        }
+        assert_eq!("fees".parse::<ExpenseCategory>(), Ok(ExpenseCategory::Fees));
+        assert_eq!(
+            "bank_charges".parse::<ExpenseCategory>(),
+            Ok(ExpenseCategory::BankCharges)
+        );
     }
 }

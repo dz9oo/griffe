@@ -12,13 +12,16 @@
 //! entier en mémoire (voir `freeflow-desktop/src/main.rs`) : le multipart y passe comme
 //! n'importe quel `POST`, sans socket ni fichier temporaire.
 
-use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
+use axum::Form;
+use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State};
 use axum::http::HeaderValue;
 use axum::response::{Html, IntoResponse, Response};
 use freeflow_core::app::{AppError, Executor, Outcome};
-use freeflow_core::domain::{Expense, ExpenseCategory, ExpenseId, Money, VatRate};
-use freeflow_core::expenses;
+use freeflow_core::billing::{self, bank_transaction_by_id};
+use freeflow_core::domain::{BankTransactionId, ExpenseCategory, ExpenseId, Money, VatRate};
+use freeflow_core::expenses::{self, ExpenseDetail};
 use maud::html;
+use serde::Deserialize;
 
 use crate::state::AppState;
 use crate::views;
@@ -83,6 +86,9 @@ pub struct ExpenseForm {
     /// Case « détacher le justificatif » (`on` quand cochée) — l'équivalent de
     /// `expense edit --clear-receipt` : détache sans toucher au fichier archivé.
     clear_receipt: bool,
+    /// Débit du relevé que la dépense créée paie (création seulement, lot 33) — l'équivalent
+    /// de `expense record --transaction`.
+    bank_transaction_id: Option<String>,
 }
 
 /// Fichier reçu dans le champ `receipt` du formulaire, tel quel, avant archivage.
@@ -133,6 +139,9 @@ async fn read_multipart_form(
             "incurred_on" => form.incurred_on = value,
             "current_receipt" => form.current_receipt = Some(value).filter(|v| !v.is_empty()),
             "clear_receipt" => form.clear_receipt = value == "on" || value == "true",
+            "bank_transaction_id" => {
+                form.bank_transaction_id = Some(value).filter(|v| !v.is_empty());
+            }
             // Un champ inconnu est une soumission forgée ou un formulaire d'une autre version :
             // ignoré, les validations de champ feront le reste.
             _ => {}
@@ -163,8 +172,30 @@ impl From<&ExpenseForm> for ExpenseFormValues {
             vat_deductible: f.vat_deductible.clone(),
             incurred_on: f.incurred_on.clone(),
             current_receipt: f.current_receipt.clone(),
+            bank_transaction_id: f.bank_transaction_id.clone(),
+            bank_transaction_note: None,
         }
     }
+}
+
+/// Les valeurs d'un formulaire de création à re-rendre, avec le résumé du débit rapproché relu
+/// dans le coffre (la note n'est qu'un affichage, jamais un champ soumis).
+async fn create_form_values(state: &AppState, form: &ExpenseForm) -> ExpenseFormValues {
+    let mut values: ExpenseFormValues = form.into();
+    if let Some(id) = form
+        .bank_transaction_id
+        .as_deref()
+        .and_then(parse_id::<BankTransactionId>)
+    {
+        let debit = state
+            .with_store(|store| bank_transaction_by_id(store.connection(), id))
+            .await;
+        if let Some(Ok(Some(tx))) = debit {
+            values.bank_transaction_note =
+                views::depenses::form_values_from_debit(&tx).bank_transaction_note;
+        }
+    }
+    values
 }
 
 struct ParsedExpenseForm {
@@ -257,7 +288,7 @@ fn expense_error_banner(e: AppError, reload_hx_get: &str) -> ExpenseFormErrors {
 async fn current_expense(
     state: &AppState,
     id: ExpenseId,
-) -> Option<Result<Option<Expense>, AppError>> {
+) -> Option<Result<Option<ExpenseDetail>, AppError>> {
     state
         .with_store(|store| views::depenses::load(store, id))
         .await
@@ -275,15 +306,47 @@ pub async fn table(State(state): State<AppState>) -> Html<String> {
 
 // -- Créer / afficher / modifier / supprimer -----------------------------------------------
 
-pub async fn new_panel() -> Html<String> {
+#[derive(Debug, Deserialize)]
+pub struct NewQuery {
+    /// Débit du relevé dont pré-remplir la dépense (lot 33).
+    transaction: Option<String>,
+}
+
+pub async fn new_panel(
+    State(state): State<AppState>,
+    Query(query): Query<NewQuery>,
+) -> Html<String> {
     let today = time::OffsetDateTime::now_utc().date();
-    Html(
-        views::depenses::new_panel(
-            &views::depenses::default_form_values(today),
-            &ExpenseFormErrors::default(),
-        )
-        .into_string(),
-    )
+    let Some(transaction) = query.transaction.as_deref().filter(|t| !t.is_empty()) else {
+        return Html(
+            views::depenses::new_panel(
+                &views::depenses::default_form_values(today),
+                &ExpenseFormErrors::default(),
+            )
+            .into_string(),
+        );
+    };
+    let Some(id) = parse_id::<BankTransactionId>(transaction) else {
+        return message_fragment("identifiant de transaction invalide");
+    };
+    match state
+        .with_store(|store| bank_transaction_by_id(store.connection(), id))
+        .await
+    {
+        None => locked_fragment(),
+        Some(Err(e)) => message_fragment(&e.to_string()),
+        Some(Ok(None)) => message_fragment("transaction bancaire introuvable"),
+        Some(Ok(Some(tx))) if !tx.is_debit() || tx.is_matched() => {
+            message_fragment("cette transaction n'est pas un débit à rapprocher")
+        }
+        Some(Ok(Some(tx))) => Html(
+            views::depenses::new_panel(
+                &views::depenses::form_values_from_debit(&tx),
+                &ExpenseFormErrors::default(),
+            )
+            .into_string(),
+        ),
+    }
 }
 
 pub async fn create(State(state): State<AppState>, multipart: Multipart) -> Response {
@@ -303,9 +366,26 @@ pub async fn create(State(state): State<AppState>, multipart: Multipart) -> Resp
     let parsed = match parse_expense_form(&form) {
         Ok(p) => p,
         Err(errors) => {
-            return Html(views::depenses::new_panel(&(&form).into(), &errors).into_string())
+            let values = create_form_values(&state, &form).await;
+            return Html(views::depenses::new_panel(&values, &errors).into_string())
                 .into_response();
         }
+    };
+    // Un id de débit forgé est un bandeau, pas une panique — le cœur revérifie tout de toute
+    // façon (débit, montant exact, non rapproché).
+    let bank_transaction_id = match form.bank_transaction_id.as_deref() {
+        None => None,
+        Some(raw) => match parse_id::<BankTransactionId>(raw) {
+            Some(id) => Some(id),
+            None => {
+                let errors = ExpenseFormErrors {
+                    banner: Some("identifiant de transaction bancaire invalide".to_string()),
+                    ..Default::default()
+                };
+                return Html(views::depenses::new_panel(&(&form).into(), &errors).into_string())
+                    .into_response();
+            }
+        },
     };
     // Archivage *après* validation des champs (un formulaire refusé ne laisse pas de fichier
     // orphelin dans `receipts/`) et *avant* la commande, comme la CLI.
@@ -317,7 +397,8 @@ pub async fn create(State(state): State<AppState>, multipart: Multipart) -> Resp
                     banner: Some(message),
                     ..Default::default()
                 };
-                return Html(views::depenses::new_panel(&(&form).into(), &errors).into_string())
+                let values = create_form_values(&state, &form).await;
+                return Html(views::depenses::new_panel(&values, &errors).into_string())
                     .into_response();
             }
         },
@@ -332,13 +413,15 @@ pub async fn create(State(state): State<AppState>, multipart: Multipart) -> Resp
         incurred_on: parsed.incurred_on,
         receipt_hash,
         receipt_filename,
+        bank_transaction_id,
     };
     match execute(&state, cmd).await {
         None => locked_fragment().into_response(),
         Some(Ok(_)) => saved(),
         Some(Err(e)) => {
             let errors = expense_error_banner(e, "/depenses/new");
-            Html(views::depenses::new_panel(&(&form).into(), &errors).into_string()).into_response()
+            let values = create_form_values(&state, &form).await;
+            Html(views::depenses::new_panel(&values, &errors).into_string()).into_response()
         }
     }
 }
@@ -353,9 +436,7 @@ pub async fn show_panel(State(state): State<AppState>, Path(id): Path<String>) -
         Some(Ok(None)) => {
             message_fragment("dépense introuvable — elle a peut-être été supprimée entre-temps")
         }
-        Some(Ok(Some(expense))) => {
-            Html(views::depenses::detail_panel(&expense, None).into_string())
-        }
+        Some(Ok(Some(detail))) => Html(views::depenses::detail_panel(&detail, None).into_string()),
     }
 }
 
@@ -367,11 +448,11 @@ pub async fn edit_panel(State(state): State<AppState>, Path(id): Path<String>) -
         None => locked_fragment(),
         Some(Err(e)) => message_fragment(&e.to_string()),
         Some(Ok(None)) => message_fragment("dépense introuvable"),
-        Some(Ok(Some(expense))) => Html(
+        Some(Ok(Some(detail))) => Html(
             views::depenses::edit_panel(
                 id,
-                expense.revision,
-                &(&expense).into(),
+                detail.expense.revision,
+                &(&detail.expense).into(),
                 &ExpenseFormErrors::default(),
             )
             .into_string(),
@@ -423,7 +504,7 @@ pub async fn update(
         None => return locked_fragment().into_response(),
         Some(Err(e)) => return message_fragment(&e.to_string()).into_response(),
         Some(Ok(None)) => return message_fragment("dépense introuvable").into_response(),
-        Some(Ok(Some(e))) => e,
+        Some(Ok(Some(detail))) => detail.expense,
     };
     let (receipt_hash, receipt_filename) = if form.clear_receipt {
         (None, None)
@@ -479,8 +560,8 @@ pub async fn delete_confirm_panel(
         None => locked_fragment(),
         Some(Err(e)) => message_fragment(&e.to_string()),
         Some(Ok(None)) => message_fragment("dépense introuvable"),
-        Some(Ok(Some(expense))) => {
-            Html(views::depenses::delete_confirm_panel(&expense).into_string())
+        Some(Ok(Some(detail))) => {
+            Html(views::depenses::delete_confirm_panel(&detail.expense).into_string())
         }
     }
 }
@@ -495,17 +576,103 @@ pub async fn delete(State(state): State<AppState>, Path(id): Path<String>) -> Re
         Some(Ok(None)) => {
             return message_fragment("dépense introuvable — déjà supprimée").into_response();
         }
-        Some(Ok(Some(expense))) => expense.revision,
+        Some(Ok(Some(detail))) => detail.expense.revision,
     };
     match execute(&state, expenses::DeleteExpense { id, revision }).await {
         None => locked_fragment().into_response(),
         Some(Ok(_)) => saved(),
-        Some(Err(e)) => match current_expense(&state, id).await {
-            Some(Ok(Some(expense))) => {
-                Html(views::depenses::detail_panel(&expense, Some(&e.to_string())).into_string())
-                    .into_response()
+        Some(Err(e)) => detail_with_error(&state, id, &e.to_string()).await,
+    }
+}
+
+/// Re-rend la fiche avec un bandeau d'erreur — pour les actions déclenchées depuis la fiche.
+async fn detail_with_error(state: &AppState, id: ExpenseId, error: &str) -> Response {
+    match current_expense(state, id).await {
+        Some(Ok(Some(detail))) => {
+            Html(views::depenses::detail_panel(&detail, Some(error)).into_string()).into_response()
+        }
+        _ => message_fragment(error).into_response(),
+    }
+}
+
+// -- Rapprochement bancaire (lot 33) ---------------------------------------------------------
+
+pub async fn reconcile_panel(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Html<String> {
+    let Some(id) = parse_id::<ExpenseId>(&id) else {
+        return message_fragment("identifiant de dépense invalide");
+    };
+    let loaded = state
+        .with_store(|store| {
+            let Some(detail) = views::depenses::load(store, id)? else {
+                return Ok(None);
+            };
+            let candidates = views::depenses::reconcile_candidates(store, detail.expense.amount)?;
+            Ok::<_, AppError>(Some((detail, candidates)))
+        })
+        .await;
+    match loaded {
+        None => locked_fragment(),
+        Some(Err(e)) => message_fragment(&e.to_string()),
+        Some(Ok(None)) => message_fragment("dépense introuvable"),
+        Some(Ok(Some((detail, _)))) if detail.bank_transaction.is_some() => {
+            Html(views::depenses::detail_panel(&detail, Some("déjà rapprochée")).into_string())
+        }
+        Some(Ok(Some((detail, candidates)))) => {
+            Html(views::depenses::reconcile_panel(&detail.expense, &candidates, None).into_string())
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ReconcileForm {
+    transaction: String,
+}
+
+pub async fn reconcile(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Form(form): Form<ReconcileForm>,
+) -> Response {
+    let Some(id) = parse_id::<ExpenseId>(&id) else {
+        return message_fragment("identifiant de dépense invalide").into_response();
+    };
+    let Some(transaction_id) = parse_id::<BankTransactionId>(&form.transaction) else {
+        return message_fragment("identifiant de transaction invalide").into_response();
+    };
+    let cmd = expenses::ReconcileExpense {
+        transaction_id,
+        expense_id: id,
+    };
+    match execute(&state, cmd).await {
+        None => locked_fragment().into_response(),
+        Some(Ok(_)) => saved(),
+        Some(Err(e)) => detail_with_error(&state, id, &e.to_string()).await,
+    }
+}
+
+/// Défait le rapprochement de la dépense — `billing::UnreconcileTransaction` sur son débit :
+/// la dépense reste, le débit redevient « à rapprocher ».
+pub async fn unreconcile(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let Some(id) = parse_id::<ExpenseId>(&id) else {
+        return message_fragment("identifiant de dépense invalide").into_response();
+    };
+    let transaction_id = match current_expense(&state, id).await {
+        None => return locked_fragment().into_response(),
+        Some(Err(e)) => return message_fragment(&e.to_string()).into_response(),
+        Some(Ok(None)) => return message_fragment("dépense introuvable").into_response(),
+        Some(Ok(Some(detail))) => match detail.bank_transaction {
+            Some(tx) => tx.id,
+            None => {
+                return detail_with_error(&state, id, "cette dépense n'est pas rapprochée").await;
             }
-            _ => message_fragment(&e.to_string()).into_response(),
         },
+    };
+    match execute(&state, billing::UnreconcileTransaction { transaction_id }).await {
+        None => locked_fragment().into_response(),
+        Some(Ok(_)) => saved(),
+        Some(Err(e)) => detail_with_error(&state, id, &e.to_string()).await,
     }
 }

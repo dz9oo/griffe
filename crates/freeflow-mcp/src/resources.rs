@@ -248,7 +248,7 @@ pub(crate) fn read(store: &Store, uri: &str) -> Result<ReadResourceResult, McpEr
     if let Some(reference) = uri.strip_prefix(EXPENSE_DETAIL_PREFIX) {
         let id = crate::support::resolve_expense(store, reference)
             .map_err(|e| McpError::resource_not_found(e, None))?;
-        let expense = freeflow_core::expenses::expense_by_id(store.connection(), id)
+        let expense = freeflow_core::expenses::expense_detail(store.connection(), id)
             .map_err(|e| McpError::resource_not_found(e.to_string(), None))?
             .ok_or_else(|| {
                 McpError::resource_not_found(format!("dépense introuvable : {id}"), None)

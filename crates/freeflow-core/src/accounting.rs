@@ -657,6 +657,7 @@ mod tests {
                     incurred_on: date(2026, TimeMonth::October, 5),
                     receipt_hash: None,
                     receipt_filename: None,
+                    bank_transaction_id: None,
                 },
                 &human(),
             )

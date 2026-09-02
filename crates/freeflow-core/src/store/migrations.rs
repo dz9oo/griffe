@@ -43,5 +43,11 @@ pub fn migrations() -> Migrations<'static> {
             .down(include_str!("migrations/0014_opening_balance_down.sql")),
         M::up(include_str!("migrations/0015_tax_losses_up.sql"))
             .down(include_str!("migrations/0015_tax_losses_down.sql")),
+        M::up(include_str!(
+            "migrations/0016_expense_reconciliation_up.sql"
+        ))
+        .down(include_str!(
+            "migrations/0016_expense_reconciliation_down.sql"
+        )),
     ])
 }
