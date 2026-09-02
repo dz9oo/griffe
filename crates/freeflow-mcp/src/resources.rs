@@ -32,6 +32,7 @@ const COMPANY_URI: &str = "freeflow://company";
 const OPENING_BALANCE_URI: &str = "freeflow://opening-balance";
 const BALANCE_SHEET_PREFIX: &str = "freeflow://balance-sheet/";
 const CLOSING_CHECKLIST_PREFIX: &str = "freeflow://closing-checklist/";
+const CLOSING_GLOSSARY_URI: &str = "freeflow://closing-glossary";
 
 pub(crate) fn list() -> ListResourcesResult {
     ListResourcesResult::with_all_items(vec![
@@ -70,6 +71,13 @@ pub(crate) fn list() -> ListResourcesResult {
             .with_description(
                 "Identité légale de l'émetteur (mentions obligatoires des factures), ou null si \
                  aucun profil n'est défini — voir company.set_profile.",
+            )
+            .with_mime_type("application/json"),
+        Resource::new(CLOSING_GLOSSARY_URI, "closing-glossary")
+            .with_description(
+                "Lexique de la clôture (lot 35) : les mots du parcours et des documents \
+                 expliqués sans jargon, pour les reprendre tels quels auprès d'un utilisateur \
+                 sans notion comptable — [{ term, meaning }].",
             )
             .with_mime_type("application/json"),
         Resource::new(OPENING_BALANCE_URI, "opening-balance")
@@ -277,6 +285,10 @@ pub(crate) fn read(store: &Store, uri: &str) -> Result<ReadResourceResult, McpEr
                 .map(crate::tools::fiscal::year_json)
                 .collect::<Vec<_>>(),
         );
+    }
+
+    if uri == CLOSING_GLOSSARY_URI {
+        return json_contents(uri, freeflow_core::closing::glossary_json());
     }
 
     if uri == OPENING_BALANCE_URI {

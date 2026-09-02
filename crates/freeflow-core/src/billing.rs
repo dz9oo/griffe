@@ -270,6 +270,32 @@ mod tests {
     }
 
     #[test]
+    fn an_invoice_cancelled_by_a_credit_note_leaves_the_aged_balance() {
+        // Lot 35 : trouvé par le scénario de preuve — une facture annulée restait « non
+        // encaissée » en entier dans la balance âgée (donc au tableau de bord, dans le
+        // prévisionnel et dans le parcours de clôture).
+        let (mut store, client_id) = test_store("credit-note-aged");
+        let original = emit(&mut store, client_id, date(2026, Month::September, 1));
+        let kept = emit(&mut store, client_id, date(2026, Month::September, 2));
+        let before = aged_balance(store.connection(), date(2026, Month::October, 15)).unwrap();
+        assert_eq!(before.len(), 2);
+
+        Executor::new(&mut store)
+            .execute(
+                &IssueCreditNote {
+                    invoice_id: original.id,
+                    issued_on: date(2026, Month::September, 5),
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+
+        let aged = aged_balance(store.connection(), date(2026, Month::October, 15)).unwrap();
+        assert_eq!(aged.len(), 1, "{aged:?}");
+        assert_eq!(aged[0].invoice_id, kept.id);
+    }
+
+    #[test]
     fn cannot_credit_the_same_invoice_twice() {
         let (mut store, client_id) = test_store("credit-note-twice");
         let original = emit(&mut store, client_id, date(2026, Month::September, 1));

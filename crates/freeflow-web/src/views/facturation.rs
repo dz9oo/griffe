@@ -19,12 +19,15 @@ use time::Date;
 use crate::layout::{ViewId, view_head};
 use crate::views::{form, panel};
 
-/// Statut réel d'une facture, calculé — jamais lu depuis la colonne `status`.
-fn status_badge(invoice: &Invoice, paid: Money, today: Date) -> Markup {
+/// Statut réel d'une facture, calculé — jamais lu depuis la colonne `status`. `cancelled` :
+/// un avoir l'annule (lot 35 — elle s'affichait « retard » une fois échue).
+fn status_badge(invoice: &Invoice, paid: Money, cancelled: bool, today: Date) -> Markup {
     let ttc = compute_totals(&invoice.lines).total_ttc;
     html! {
         @if invoice.credited_invoice_id.is_some() {
             span class="badge info" { "avoir" }
+        } @else if cancelled {
+            span class="badge info" { "annulée par avoir" }
         } @else if paid.cents() >= ttc.cents() && ttc.cents() > 0 {
             span class="badge ok" { "payée" }
         } @else if paid.cents() > 0 {
@@ -79,7 +82,8 @@ pub fn list_fragment(store: &Store, today: Date) -> Result<Markup, AppError> {
                                 td { (client_name) }
                                 td class="mono" { (format_date(invoice.issued_on)) }
                                 td class="mono" { (format_date(invoice.due_on)) }
-                                td { (status_badge(invoice, paid_for(invoice.id), today)) }
+                                @let cancelled = invoices.iter().any(|c| c.credited_invoice_id == Some(invoice.id));
+                                td { (status_badge(invoice, paid_for(invoice.id), cancelled, today)) }
                                 td class="num" style="padding-right:18px" { (totals.total_ttc) }
                             }
                         }
@@ -157,13 +161,19 @@ pub fn detail_panel(
         .filter(|p| !p.is_voided())
         .map(|p| p.amount)
         .sum();
+    let cancelled = list_invoices(store.connection())
+        .map(|all| {
+            all.iter()
+                .any(|c| c.credited_invoice_id == Some(invoice.id))
+        })
+        .unwrap_or(false);
     let body = html! {
         @if let Some(msg) = error {
             (form::error_banner(msg))
         }
         div class="detail-head" {
             div class="detail-title" { (invoice.number) " — " (client_name) }
-            (status_badge(invoice, paid, today))
+            (status_badge(invoice, paid, cancelled, today))
         }
         dl class="detail-fields" {
             dt { "Total TTC" } dd class="mono" { (totals.total_ttc) }

@@ -19,8 +19,8 @@ use std::path::{Path, PathBuf};
 use clap::{Subcommand, ValueEnum};
 use freeflow_core::app::{ExecutionContext, Executor};
 use freeflow_core::closing::{
-    ClosingChecklist, ClosingPhase, ClosingStep, ClosingStepKey, StepStatus, checklist_json,
-    closing_checklist,
+    ClosingChecklist, ClosingPhase, ClosingStep, ClosingStepKey, GLOSSARY, StepStatus,
+    checklist_json, closing_checklist, glossary_json,
 };
 use freeflow_core::company::{CompanyProfile, company_profile};
 use freeflow_core::domain::{FiscalYearEnd, Money, OpeningBalanceLine, format_date};
@@ -121,6 +121,9 @@ pub enum YearCommand {
         #[arg(long, value_parser = parse_date)]
         today: Option<Date>,
     },
+    /// Lexique de la clôture : les mots du parcours et des documents (bilan, à-nouveaux,
+    /// report à nouveau, réserve légale, liasse, FEC…) expliqués sans jargon.
+    Glossary,
     /// Balance des comptes et bilan (2033-A) dérivés du grand livre de l'exercice clos dans
     /// PERIOD — clos ou non : à-nouveaux, ventes, achats, banque, opérations de clôture.
     Balance {
@@ -483,6 +486,17 @@ fn checklist_human(checklist: &ClosingChecklist) -> String {
             }
         }
     }
+    out.push_str("\nLes mots de ce parcours sont expliqués par `freeflow year glossary`.");
+    out.trim_end().to_string()
+}
+
+/// Le lexique en texte : un terme par paragraphe, sa définition en retrait.
+fn glossary_human() -> String {
+    use std::fmt::Write as _;
+    let mut out = String::from("Lexique de la clôture\n");
+    for entry in GLOSSARY {
+        let _ = write!(out, "\n{}\n    {}\n", entry.term, entry.meaning);
+    }
     out.trim_end().to_string()
 }
 
@@ -776,6 +790,13 @@ pub fn run(
                 format_value(&checklist_json(&checklist), true)
             } else {
                 checklist_human(&checklist)
+            }
+        }
+        YearCommand::Glossary => {
+            if json {
+                format_value(&glossary_json(), true)
+            } else {
+                glossary_human()
             }
         }
         YearCommand::Rm { period } => {

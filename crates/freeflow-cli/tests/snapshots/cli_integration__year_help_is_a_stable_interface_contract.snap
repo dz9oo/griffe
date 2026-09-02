@@ -14,6 +14,7 @@ Commands:
   approve    Approuve un exercice (date de l'AG) — il devient immuable. Nécessite confirmation humaine quand `--actor agent:...`
   rm         Supprime un exercice encore en projet (clos par erreur)
   checklist  Parcours de clôture guidé de l'exercice clos dans PERIOD : où en est la clôture, ce qui la bloque, ce qui mérite attention, et ce qui reste à faire après (approbation, documents, solde d'IS, liasse, dépôt au greffe). Lecture seule
+  glossary   Lexique de la clôture : les mots du parcours et des documents (bilan, à-nouveaux, report à nouveau, réserve légale, liasse, FEC…) expliqués sans jargon
   balance    Balance des comptes et bilan (2033-A) dérivés du grand livre de l'exercice clos dans PERIOD — clos ou non : à-nouveaux, ventes, achats, banque, opérations de clôture
   render     Rend un document de clôture (PDF, ou JSON pour la liasse) dans `--out`
   opening    Bilan d'ouverture : reprise du dernier bilan tenu avant FreeFlow (expert-comptable), point de départ du report à nouveau, de la réserve légale et des à-nouveaux du FEC

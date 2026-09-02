@@ -162,7 +162,9 @@ pub struct AgedInvoice {
 
 /// Balance âgée : pour chaque facture (hors avoir) dont le solde restant dû est non nul,
 /// l'antériorité du retard par rapport à `today`. Une facture payée d'avance (solde négatif)
-/// ou pas encore échue apparaît en `Current`.
+/// ou pas encore échue apparaît en `Current`. Un avoir vient en déduction de la facture qu'il
+/// annule (ses lignes sont négatives) : une facture intégralement annulée n'a plus de solde et
+/// n'apparaît pas — lot 35, jusque-là elle restait comptée « non encaissée » en entier.
 ///
 /// # Errors
 pub fn aged_balance(conn: &Connection, today: Date) -> Result<Vec<AgedInvoice>, AppError> {
@@ -175,12 +177,17 @@ pub fn aged_balance(conn: &Connection, today: Date) -> Result<Vec<AgedInvoice>, 
             continue; // un avoir n'a pas de solde propre à surveiller.
         }
         let totals = super::totals::compute_totals(&invoice.lines);
+        let credited: Money = invoices
+            .iter()
+            .filter(|c| c.credited_invoice_id == Some(invoice.id))
+            .map(|c| super::totals::compute_totals(&c.lines).total_ttc)
+            .sum();
         let paid: Money = payments
             .iter()
             .filter(|p| p.invoice_id == invoice.id && !p.is_voided())
             .map(|p| p.amount)
             .sum();
-        let outstanding = totals.total_ttc - paid;
+        let outstanding = totals.total_ttc + credited - paid;
         if outstanding.is_zero() {
             continue;
         }

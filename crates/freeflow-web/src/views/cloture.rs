@@ -8,7 +8,7 @@
 
 use freeflow_core::app::AppError;
 use freeflow_core::closing::{
-    ClosingChecklist, ClosingPhase, ClosingStep, ClosingStepKey, StepStatus,
+    ClosingChecklist, ClosingPhase, ClosingStep, ClosingStepKey, GLOSSARY, StepStatus,
 };
 use freeflow_core::domain::Money;
 use freeflow_core::domain::Side;
@@ -475,6 +475,15 @@ pub fn checklist_panel(checklist: &ClosingChecklist) -> Markup {
         @if let Some(id) = checklist.fiscal_year.as_ref().map(|r| r.id) {
             div class="detail-actions" {
                 button class="btn small" hx-get=(format!("/cloture/{id}")) hx-target="#panel" hx-swap="innerHTML" { "fiche de l'exercice" }
+            }
+        }
+        details class="glossary" {
+            summary { "Lexique — les mots de la clôture, sans jargon" }
+            dl class="glossary-list" {
+                @for entry in GLOSSARY {
+                    dt { (entry.term) }
+                    dd { (entry.meaning) }
+                }
             }
         }
     };

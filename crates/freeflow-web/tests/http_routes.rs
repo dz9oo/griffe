@@ -1925,6 +1925,12 @@ async fn closing_a_year_from_the_window_then_downloading_its_documents() {
     assert!(journey.contains("exercice en cours"), "{journey}");
     assert!(journey.contains("Exercice écoulé"), "{journey}");
     assert!(journey.contains("Profil d'entreprise"), "{journey}");
+    // Lot 35 : le lexique du cœur, replié sous le parcours.
+    assert!(
+        journey.contains("Lexique — les mots de la clôture"),
+        "{journey}"
+    );
+    assert!(journey.contains("<dt>Report à nouveau</dt>"), "{journey}");
     assert!(
         !journey.contains("/cloture/new?"),
         "pas de bouton « clore » tant qu'un point bloque : {journey}"

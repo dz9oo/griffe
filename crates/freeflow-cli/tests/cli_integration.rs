@@ -2,69 +2,15 @@
 //! `insta` du contrat `--help` et des sorties `--json`, et vérification qu'un code de sortie
 //! distinct existe par famille d'erreur.
 //!
-//! Ces tests lancent un vrai sous-processus (`assert_cmd`), donc ne peuvent pas injecter de
-//! trousseau en mémoire (réservé aux tests dans le même process, via
-//! `freeflow_core::store::testing`). `provision()` crée le coffre avec `--passphrase-file` et
-//! `--remember` : une seule écriture dans le trousseau OS réel par coffre de test (identifié par
-//! un `vault_id` aléatoire propre au sidecar — aucune collision possible entre exécutions), très
-//! en-deçà du volume d'écritures d'avant ce lot (une par commande, implicitement).
+//! Les aides (coffre temporaire, `provision`, lecture JSON) vivent dans `common/mod.rs`,
+//! partagées avec le scénario de preuve de bout en bout (`closing_scenario.rs`, lot 35).
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
 
-use assert_cmd::Command;
 use predicates::prelude::*;
 
-static COUNTER: AtomicU32 = AtomicU32::new(0);
-
-/// Un répertoire propre à ce test, pas directement `<tmp>/vault.db` : entre autres,
-/// `db_path.with_file_name("backups")` (utilisé aussi bien par la sauvegarde automatique que par
-/// `passphrase change`) doit rester propre à un seul test, jamais un `<tmp>/backups` partagé par
-/// tous les tests tournant en parallèle dans le même process.
-fn temp_db(label: &str) -> PathBuf {
-    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    std::env::temp_dir()
-        .join(format!(
-            "freeflow-cli-test-{label}-{}-{n}",
-            std::process::id()
-        ))
-        .join("vault.db")
-}
-
-fn freeflow() -> Command {
-    Command::cargo_bin("freeflow").expect("le binaire freeflow doit être compilé pour les tests")
-}
-
-/// Écrit une passphrase dans un fichier temporaire en 0600 (Unix) et renvoie son chemin.
-fn passphrase_file(db: &Path, passphrase: &str) -> PathBuf {
-    let path = db.with_extension("passphrase");
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(&path, passphrase).unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-    }
-    path
-}
-
-/// Crée le coffre et met la clé en cache dans le trousseau OS (`--remember`) : les commandes
-/// suivantes de ce test, chacune un nouveau sous-processus, la retrouvent via
-/// `Store::open_cached` sans avoir à repasser de passphrase.
-fn provision(db: &Path) {
-    let pass_file = passphrase_file(db, "s3cret");
-    freeflow()
-        .env("FREEFLOW_DB", db)
-        .args(["--passphrase-file"])
-        .arg(&pass_file)
-        .args(["init", "--remember"])
-        .assert()
-        .success();
-}
-
-fn json_result(output: &[u8]) -> serde_json::Value {
-    serde_json::from_slice(output).expect("une sortie --json doit être du JSON valide")
-}
+mod common;
+use common::{create_client, freeflow, json_result, passphrase_file, provision, temp_db};
 
 #[test]
 fn golden_path_from_prospection_to_paid_invoice() {
@@ -742,18 +688,6 @@ fn quote_help_is_a_stable_interface_contract() {
 fn expense_help_is_a_stable_interface_contract() {
     let output = freeflow().args(["expense", "--help"]).output().unwrap();
     insta::assert_snapshot!(String::from_utf8(output.stdout).unwrap());
-}
-
-fn create_client(db: &Path, name: &str) -> String {
-    let output = freeflow()
-        .env("FREEFLOW_DB", db)
-        .args(["--json", "client", "create", "--name", name])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    json_result(&output)["result"].as_str().unwrap().to_string()
 }
 
 #[test]

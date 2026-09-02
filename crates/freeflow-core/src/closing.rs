@@ -902,15 +902,22 @@ fn close_step(facts: &Facts, blocked: bool, minimum_reserve: Option<Money>) -> C
         "Rien ne bloque : la clôture fige le résultat et enregistre l'affectation en projet, \
          révisable jusqu'à l'approbation.",
     );
-    if let Some(minimum) = minimum_reserve {
-        use std::fmt::Write as _;
-        let _ = write!(
-            step.detail,
-            " Dotation minimale à la réserve légale : {minimum} (art. L232-10 du Code de \
-             commerce — un vingtième du bénéfice diminué des pertes antérieures, jusqu'à 10 % du \
-             capital)."
-        );
-        step = step.amount(minimum);
+    match minimum_reserve {
+        Some(minimum) if minimum.is_zero() => step.detail.push_str(
+            " Aucune dotation à la réserve légale n'est obligatoire cette année (pas de \
+             bénéfice à mettre en réserve, ou réserve déjà au dixième du capital).",
+        ),
+        Some(minimum) => {
+            use std::fmt::Write as _;
+            let _ = write!(
+                step.detail,
+                " Dotation minimale à la réserve légale : {minimum} (art. L232-10 du Code de \
+                 commerce — un vingtième du bénéfice diminué des pertes antérieures, jusqu'à \
+                 10 % du capital)."
+            );
+            step = step.amount(minimum);
+        }
+        None => {}
     }
     step
 }
@@ -1164,6 +1171,7 @@ fn result_json(r: &AccountingResult) -> serde_json::Value {
         "expenses_cents": r.expenses.cents(),
         "director_remuneration_cents": r.director_remuneration.cents(),
         "result_before_tax_cents": r.result_before_tax.cents(),
+        "prior_losses_available_cents": r.prior_losses_available.cents(),
         "losses_imputed_cents": r.losses_imputed.cents(),
         "taxable_result_cents": r.taxable_result.cents(),
         "corporate_tax_cents": r.corporate_tax.cents(),
@@ -1171,6 +1179,143 @@ fn result_json(r: &AccountingResult) -> serde_json::Value {
         "carry_back_credit_cents": r.carry_back_credit.cents(),
         "net_result_cents": r.net_result.cents(),
     })
+}
+
+/// Une entrée du lexique de la clôture : le mot tel qu'il apparaît dans le parcours et les
+/// documents, et son explication avec les mots de tous les jours.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct GlossaryEntry {
+    pub term: &'static str,
+    pub meaning: &'static str,
+}
+
+/// Lexique de la clôture (lot 35) — écrit pour un indépendant sans notion de comptabilité, et
+/// partagé tel quel par les trois façades (`freeflow year glossary`, volet « lexique » du
+/// panneau « parcours » de la fenêtre, ressource MCP `freeflow://closing-glossary`) : le
+/// vocabulaire est expliqué une fois, dans le cœur, jamais paraphrasé par une façade. Dans
+/// l'ordre où l'on rencontre les mots en clôturant.
+pub const GLOSSARY: &[GlossaryEntry] = &[
+    GlossaryEntry {
+        term: "Exercice",
+        meaning: "La période d'un an sur laquelle on fait les comptes (du 1er janvier au \
+                  31 décembre, ou décalée — du 1er octobre au 30 septembre par exemple). \
+                  FreeFlow désigne un exercice par l'année civile de sa fin : « 2026 » est \
+                  l'exercice qui se termine en 2026.",
+    },
+    GlossaryEntry {
+        term: "Bilan",
+        meaning: "La photo, au dernier jour de l'exercice, de ce que la société possède (sa \
+                  banque, ce que ses clients lui doivent, la TVA à récupérer — l'actif) et de \
+                  ce qu'elle doit (TVA à reverser, impôt, et ce qu'elle doit à son associé : \
+                  capital, bénéfices passés — le passif). Les deux totaux sont toujours égaux.",
+    },
+    GlossaryEntry {
+        term: "Bilan d'ouverture",
+        meaning: "La photo au premier jour du premier exercice suivi ici, recopiée compte par \
+                  compte depuis le dernier bilan de l'expert-comptable. C'est le point de \
+                  départ de tout : sans lui, FreeFlow part de zéro, comme si la société \
+                  venait d'être créée.",
+    },
+    GlossaryEntry {
+        term: "À-nouveaux",
+        meaning: "Les soldes de départ d'un exercice : le bilan d'ouverture pour le premier, \
+                  le bilan de clôture de l'exercice précédent pour les suivants. FreeFlow les \
+                  enchaîne tout seul.",
+    },
+    GlossaryEntry {
+        term: "Grand livre, balance",
+        meaning: "Le grand livre est la liste de toutes les écritures comptables, compte par \
+                  compte ; la balance en est le résumé (un solde par compte). FreeFlow les \
+                  dérive de ce qu'il connaît (factures, encaissements, dépenses, relevé) : il \
+                  ne tient pas de comptabilité, il la déduit de vos faits.",
+    },
+    GlossaryEntry {
+        term: "Rapprochement bancaire",
+        meaning: "Faire coïncider chaque ligne du relevé bancaire importé avec une facture \
+                  encaissée (un crédit) ou une dépense (un débit). C'est ce qui rend le \
+                  compte « banque » du bilan égal à votre vrai solde.",
+    },
+    GlossaryEntry {
+        term: "Justificatif",
+        meaning: "La pièce (facture, ticket, relevé) qui prouve une dépense. Sans elle, la \
+                  dépense et sa TVA ne sont pas déductibles en cas de contrôle. FreeFlow \
+                  l'archive à côté du coffre et en garde l'empreinte.",
+    },
+    GlossaryEntry {
+        term: "Résultat",
+        meaning: "Ce que l'exercice a rapporté : les ventes hors taxes moins les dépenses hors \
+                  taxes (et la rémunération du président s'il y en a une). Positif, c'est un \
+                  bénéfice ; négatif, une perte.",
+    },
+    GlossaryEntry {
+        term: "Résultat fiscal, déficit reportable",
+        meaning: "Le résultat sur lequel l'impôt se calcule. Une perte (un « déficit ») n'est \
+                  pas perdue : elle se garde en réserve et vient réduire les bénéfices des \
+                  exercices suivants avant impôt. FreeFlow tient ce compte tout seul.",
+    },
+    GlossaryEntry {
+        term: "IS (impôt sur les sociétés)",
+        meaning: "L'impôt de la société sur son résultat fiscal : 15 % jusqu'à 42 500 €, \
+                  25 % au-delà. Nul quand l'exercice est en perte. Le solde se paie le 15 du \
+                  quatrième mois suivant la clôture (relevé 2572, sur impots.gouv.fr).",
+    },
+    GlossaryEntry {
+        term: "Report en arrière",
+        meaning: "Une option, à la clôture d'un exercice en perte : au lieu de garder la perte \
+                  pour plus tard, la déduire du bénéfice de l'exercice précédent — l'État doit \
+                  alors à la société une partie de l'impôt déjà payé (une « créance »). \
+                  Proposée seulement quand elle est possible.",
+    },
+    GlossaryEntry {
+        term: "Report à nouveau",
+        meaning: "Le cumul des bénéfices et des pertes passés que vous n'avez pas distribués. \
+                  Il augmente d'un bénéfice, diminue d'une perte et des dividendes versés.",
+    },
+    GlossaryEntry {
+        term: "Réserve légale",
+        meaning: "Une part du bénéfice que la loi oblige à garder dans la société : au moins \
+                  un vingtième (5 %) du bénéfice chaque année, jusqu'à ce que la réserve \
+                  atteigne un dixième du capital. FreeFlow calcule ce minimum et vous le \
+                  propose.",
+    },
+    GlossaryEntry {
+        term: "Affectation du résultat",
+        meaning: "Décider ce que devient le bénéfice : la réserve légale d'abord, puis des \
+                  dividendes et/ou le report à nouveau. Une perte, elle, vient en moins du \
+                  report à nouveau. Se décide à la clôture, se révise jusqu'à l'approbation.",
+    },
+    GlossaryEntry {
+        term: "Approbation des comptes",
+        meaning: "En SASU, la décision écrite de l'associé unique qui arrête les comptes de \
+                  l'exercice, à prendre dans les six mois de la clôture. FreeFlow en rédige le \
+                  procès-verbal (PV). Une fois approuvé, l'exercice ne se modifie plus.",
+    },
+    GlossaryEntry {
+        term: "Liasse fiscale",
+        meaning: "La déclaration annuelle de résultat : le formulaire 2065 et les tableaux \
+                  2033 (bilan, compte de résultat, suivi des déficits). À télétransmettre sur \
+                  impots.gouv.fr en EDI (via un expert-comptable ou un partenaire EDI) dans \
+                  les trois mois de la clôture. FreeFlow en fournit les chiffres, case par case.",
+    },
+    GlossaryEntry {
+        term: "FEC",
+        meaning: "Le Fichier des Écritures Comptables, que l'administration peut demander en \
+                  cas de contrôle : toutes les écritures de l'exercice dans un format imposé. \
+                  FreeFlow l'exporte depuis son grand livre dérivé.",
+    },
+    GlossaryEntry {
+        term: "Dépôt des comptes au greffe",
+        meaning: "Rendre publics le bilan, le compte de résultat et la décision d'affectation, \
+                  sur le guichet unique des formalités d'entreprises, dans le mois qui suit \
+                  l'approbation (deux mois par voie électronique).",
+    },
+];
+
+/// Le lexique en JSON (`[{ "term", "meaning" }]`), partagé par `year glossary --json` et la
+/// ressource MCP.
+#[must_use]
+pub fn glossary_json() -> serde_json::Value {
+    json!(GLOSSARY)
 }
 
 /// La vue JSON du parcours — la même pour `year checklist --json`, l'outil MCP et la ressource.
@@ -1226,6 +1371,34 @@ mod tests {
     use crate::opening_balance::RecordOpeningBalance;
     use crate::store::{Passphrase, Store};
     use time::Month as TimeMonth;
+
+    #[test]
+    fn the_glossary_explains_every_step_title_without_repeating_itself() {
+        // Lot 35 : chaque entrée est unique, non vide, et le lexique couvre le vocabulaire des
+        // titres d'étapes qu'un non-comptable rencontre en premier.
+        let mut seen = std::collections::HashSet::new();
+        for entry in GLOSSARY {
+            assert!(
+                !entry.term.is_empty() && entry.meaning.len() > 40,
+                "{entry:?}"
+            );
+            assert!(seen.insert(entry.term), "terme en double : {}", entry.term);
+        }
+        for word in [
+            "Bilan d'ouverture",
+            "Rapprochement bancaire",
+            "Affectation du résultat",
+            "Approbation des comptes",
+            "Liasse fiscale",
+            "Dépôt des comptes au greffe",
+        ] {
+            assert!(
+                GLOSSARY.iter().any(|e| e.term == word),
+                "{word} manque au lexique"
+            );
+        }
+        assert_eq!(glossary_json().as_array().unwrap().len(), GLOSSARY.len());
+    }
 
     fn test_store(label: &str) -> Store {
         let dir = std::env::temp_dir().join(format!(

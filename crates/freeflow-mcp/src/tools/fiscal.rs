@@ -602,6 +602,8 @@ impl FreeflowServer {
     /// légale (art. L232-10) et le report en arrière possible. Lecture seule : les gestes
     /// passent par fiscal.close_year, fiscal.amend_year, fiscal.approve_year,
     /// fiscal.set_opening_balance, company.set_profile, expense.*, bank.*. Montants en centimes.
+    /// Le vocabulaire des étapes est expliqué sans jargon par la ressource
+    /// `freeflow://closing-glossary`, à reprendre auprès d'un utilisateur non comptable.
     #[tool(
         name = "fiscal.checklist",
         annotations(read_only_hint = true, idempotent_hint = true)

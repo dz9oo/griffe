@@ -1585,6 +1585,26 @@ async fn a_fiscal_year_can_be_shown_and_amended_but_approval_and_deletion_need_a
         via_resource["stage"], "draft",
         "même vue, datée du jour réel"
     );
+    // Lot 35 : le lexique, une ressource sans paramètre.
+    let glossary = client
+        .read_resource(ReadResourceRequestParams::new(
+            "freeflow://closing-glossary",
+        ))
+        .await
+        .unwrap();
+    let text = match &glossary.contents[0] {
+        rmcp::model::ResourceContents::TextResourceContents { text, .. } => text.clone(),
+        other => panic!("contenu inattendu : {other:?}"),
+    };
+    let glossary: Value = serde_json::from_str(&text).unwrap();
+    assert!(
+        glossary
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["term"] == "Réserve légale"),
+        "{glossary}"
+    );
     assert_eq!(via_resource["steps"].as_array().unwrap().len(), 16);
 
     let amended = call(

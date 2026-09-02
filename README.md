@@ -79,6 +79,9 @@ implémentation.
 - Numérotation séquentielle **sans trou**, garantie même sous écriture concurrente entre
   processus (CLI + GUI + MCP ouverts en même temps).
 - Facture émise **immuable** : ni modification ni suppression, seulement annulation par avoir.
+  Une facture annulée par un avoir sort de la balance âgée (donc du tableau de bord, du
+  prévisionnel et du parcours de clôture) et s'affiche « annulée par avoir » dans la fenêtre —
+  jusqu'au lot 35, elle restait comptée « non encaissée » en entier.
 - Journal d'audit **chaîné par hash** — `freeflow audit verify-chain` détecte toute altération
   directe de la base.
 - Cinq taux de TVA (normal, intermédiaire, réduit, super-réduit, taux zéro / autoliquidation),
@@ -194,7 +197,12 @@ implémentation.
   à la clôture (ou un résultat qui serait faux) ; une étape *attention* mérite un regard sans rien
   empêcher. Les étapes viennent du cœur ; chaque façade y branche ses propres gestes (la commande
   à taper, l'outil à appeler, le bouton du panneau — le formulaire de clôture de la fenêtre
-  arrive pré-rempli avec la période et la dotation minimale).
+  arrive pré-rempli avec la période et la dotation minimale). Sur un exercice sans bénéfice, le
+  parcours dit qu'aucune dotation n'est obligatoire plutôt que d'afficher un minimum de 0 €.
+  Les mots du parcours sont expliqués sans jargon par le **lexique de la clôture**, écrit une
+  fois dans le cœur : `freeflow year glossary`, volet « lexique » du panneau « parcours », ressource
+  MCP `freeflow://closing-glossary`. Le tout est rejoué de bout en bout par le scénario de preuve
+  du lot 35 — voir « Clôturer seul son exercice, pas à pas ».
 - **Déficits fiscaux : report en avant et report en arrière.** Le résultat *fiscal* d'un
   exercice n'est pas son résultat comptable : les déficits des exercices antérieurs (bilan
   d'ouverture, puis chaque exercice déficitaire clos ici) **s'imputent sur le bénéfice avant
@@ -368,6 +376,187 @@ console de la fenêtre : lance-la depuis un terminal, fenêtre fermée (voir `CL
 plateforme. Les bundles installables (`.dmg` macOS, `.AppImage` Linux) ne sont pas encore
 distribués prêts à l'emploi — voir la checklist ci-dessous.
 
+## Clôturer seul son exercice, pas à pas
+
+Cette section s'adresse à toi si tu n'as **aucune notion de comptabilité** : elle raconte, dans
+l'ordre, ce que FreeFlow te fait faire une fois par an, avec les mots de tous les jours d'abord
+et le mot du comptable entre parenthèses. Le scénario ci-dessous est celui que le dépôt rejoue
+automatiquement à chaque vérification (`crates/freeflow-cli/tests/closing_scenario.rs`, lot 35),
+avec tous les chiffres attendus posés à la main avant d'écrire le test : ce n'est pas un exemple
+décoratif, c'est la preuve que la chaîne complète tient.
+
+**Le cas.** Lumen Conseil est une SASU créée il y a quelques années, capital 1 000 €, dont
+l'exercice se termine chaque **30 septembre**. Jusqu'ici, un cabinet tenait les comptes. À
+partir du 1er octobre 2025, tu continues seul avec FreeFlow. Ta première année seul est une
+année de transition **sans aucune facture** ; l'année suivante, l'activité reprend.
+
+### Les mots à connaître (il n'y en a que huit)
+
+- **Exercice** : la période d'un an sur laquelle on fait les comptes. Ici du 1er octobre au
+  30 septembre. FreeFlow désigne un exercice par l'**année civile de sa fin** : « 2026 » est
+  l'exercice qui va du 1er octobre 2025 au 30 septembre 2026.
+- **Bilan** : la photo de ce que la société possède (sa banque, ce que les clients lui doivent)
+  et de ce qu'elle doit (TVA à reverser, impôt, et ce qu'elle « doit » à son associé : le
+  capital et les bénéfices passés non distribués). Les deux colonnes sont toujours égales.
+- **Bilan d'ouverture** : la photo au premier jour, telle que le cabinet te l'a remise. C'est le
+  point de départ ; sans elle, FreeFlow partirait de zéro comme si la société venait de naître.
+- **Résultat** : ce que l'exercice a rapporté (ventes hors taxes moins dépenses hors taxes).
+  Positif, c'est un bénéfice ; négatif, une perte (un « déficit »). L'**IS** (impôt sur les
+  sociétés) se calcule dessus — 15 % jusqu'à 42 500 €, 25 % au-delà — et une perte se garde en
+  réserve pour réduire l'impôt des bénéfices suivants (« déficit reportable »).
+- **Report à nouveau** : le cumul des bénéfices et pertes passés que tu n'as pas distribués. Il
+  augmente d'un bénéfice, diminue d'une perte, diminue des dividendes.
+- **Réserve légale** : une part du bénéfice que la loi t'oblige à garder dans la société (5 % du
+  bénéfice chaque année, jusqu'à ce qu'elle atteigne 10 % du capital). FreeFlow te chiffre le
+  minimum.
+- **Rapprochement bancaire** : faire coïncider chaque ligne de ton relevé avec une facture
+  encaissée ou une dépense. C'est ce qui rend le compte « banque » du bilan égal à ton solde réel.
+- **Liasse fiscale** et **FEC** : les deux fichiers que l'administration attend — la déclaration
+  annuelle de résultat (formulaires 2065 et 2033) et le fichier de toutes les écritures. FreeFlow
+  produit les chiffres de la première (JSON) et le second (texte) ; le dépôt lui-même se fait sur
+  impots.gouv.fr (voir plus bas).
+
+Le reste du vocabulaire est expliqué au fil de l'app : `freeflow year glossary`, le volet
+« lexique » du panneau « parcours » de la fenêtre, ou la ressource MCP
+`freeflow://closing-glossary`.
+
+### Année 1 (exercice 2026) : une année sans facture
+
+1. **Dis qui tu es** — une fois pour toutes : nom, SIREN, adresse, capital, date de clôture
+   (`30/09`) et régime de TVA. Sans ça, rien ne se calcule (le parcours te le dit en premier).
+
+   ```bash
+   freeflow company set-profile --name "Lumen Conseil" --legal-form SASU --siren 901265322 \
+     --street "8 rue des Capucins" --postal-code 69001 --city Lyon --country FR \
+     --share-capital 1000 --fiscal-year-end 30/09 --vat-regime real_normal_monthly
+   ```
+
+2. **Recopie le dernier bilan du cabinet** (le bilan d'ouverture), compte par compte, daté du
+   premier jour de ton exercice. Les numéros de compte sont sur le document du cabinet ; il n'y en
+   a souvent que trois ou quatre. Le total de la colonne « débit » doit être égal au total
+   « crédit », sinon FreeFlow refuse.
+
+   ```bash
+   freeflow year opening set --opens-on 2025-10-01 --source "bilan au 30/09/2025, cabinet X" \
+     --line "101000:Capital social:C:1000.00" \
+     --line "110000:Report à nouveau:C:2400.00" \
+     --line "512000:Banque:D:3400.00"
+   ```
+
+   Dans la fenêtre : écran `cloture`, bouton « bilan d'ouverture ». Si le cabinet t'a laissé un
+   déficit reportable (case 870 du dernier 2033-D), ajoute `--tax-losses <montant>`.
+
+3. **Au fil de l'année, saisis tes dépenses depuis ton relevé bancaire.** Importe le relevé
+   (CSV ou OFX exporté de ta banque), puis crée chaque dépense *depuis* la ligne du relevé : la
+   date et le montant sont repris, tu n'ajoutes que la catégorie, la TVA et le justificatif.
+
+   ```bash
+   freeflow bank import --format csv releve.csv
+   freeflow bank list --unmatched                       # les lignes qu'il reste à expliquer
+   freeflow expense record --transaction <id> --label "Honoraires cabinet" --category fees \
+     --vat-rate standard --vat-deductible 120 --receipt facture-cabinet.pdf
+   freeflow expense record --transaction <id> --label "Frais de tenue de compte" \
+     --category bank_charges --vat-rate zero --vat-deductible 0
+   ```
+
+   Une dépense saisie avant l'import se rapproche après coup (`freeflow expense reconcile
+   <libellé> --transaction <id>`), à condition que le montant soit exactement celui du relevé.
+   Dans la fenêtre : écran `depenses`, bloc « débits du relevé à rapprocher », bouton
+   « + dépense » (le formulaire arrive pré-rempli).
+
+4. **Le 1er octobre, demande le parcours.** C'est la seule commande à retenir : elle te dit où
+   tu en es, ce qui bloque, ce qui mérite un coup d'œil, et **la commande exacte à taper ensuite**.
+
+   ```bash
+   freeflow year checklist 2026
+   ```
+
+   Dans notre scénario, il ne signale qu'une chose : une dépense sans justificatif. Tu joins la
+   pièce (`freeflow expense edit "frais de tenue" --receipt releve-frais.pdf`) et tout passe au
+   vert. Il t'annonce aussi le résultat : −816 € (les honoraires, un logiciel, les frais
+   bancaires), aucun impôt, et une perte de 816 € mise de côté pour réduire l'impôt de l'an
+   prochain. Le bilan dérivé, lui, est déjà consultable (`freeflow year balance 2026`) : tu peux
+   vérifier que la ligne « banque » est bien ton solde au 30 septembre — c'est le meilleur test
+   que tu n'as rien oublié.
+
+5. **Clos.** Le résultat est figé, l'affectation enregistrée en projet (ici : rien à affecter,
+   la perte vient diminuer le report à nouveau, 2 400 − 816 = 1 584 €).
+
+   ```bash
+   freeflow year close --period 2026
+   ```
+
+6. **Approuve tes comptes** — en SASU, c'est une décision que tu prends seul, par écrit, dans
+   les six mois de la clôture (avant le 30 mars 2027). FreeFlow rédige le procès-verbal.
+
+   ```bash
+   freeflow year approve 2026 --approved-on 2026-12-15
+   freeflow year render 2026 minutes --out pv-2026.pdf          # le PV de ta décision
+   freeflow year render 2026 appropriation --out affectation-2026.pdf
+   freeflow year render 2026 synthesis --out compte-de-resultat-2026.pdf
+   freeflow year render 2026 balance-sheet --out bilan-2026.pdf
+   freeflow year render 2026 liasse --out liasse-2026.json
+   freeflow fec export 2026 --out .                              # 901265322FEC20260930.txt
+   ```
+
+7. **Déclare et dépose** — trois démarches hors de l'app, que le parcours date pour toi :
+   - la **déclaration de résultat** (liasse : 2065 + tableaux 2033) sur impots.gouv.fr, espace
+     professionnel, **dans les trois mois** de la clôture (ici avant le 30 décembre 2026). La
+     télétransmission passe par le mode EDI-TDFC : un expert-comptable, ou un « partenaire EDI »
+     en ligne, à qui tu donnes le JSON de la liasse et le FEC ;
+   - le **solde d'IS** (relevé 2572, télépaiement sur impots.gouv.fr) le 15 du quatrième mois
+     après la clôture (15 janvier 2027) — ici zéro, rien à payer ;
+   - le **dépôt des comptes au greffe** (bilan, compte de résultat, PV, décision d'affectation)
+     sur le guichet unique des formalités d'entreprises (procedures.inpi.fr), dans le mois qui
+     suit l'approbation (ici avant le 15 janvier 2027 ; deux mois par voie électronique).
+
+### Année 2 (exercice 2027) : l'activité reprend
+
+Tu factures comme d'habitude (écrans `facturation`/`devis`, ou `freeflow invoice emit`), tu
+importes le relevé et tu rapproches chaque virement reçu d'une facture (`freeflow bank reconcile
+--transaction <id> --invoice <id>` — l'import du relevé et ce rapprochement-là restent en CLI ou
+en MCP, la fenêtre affiche ensuite la facture « payée ») et chaque débit d'une dépense (là, la
+fenêtre le fait). Dans le scénario : 12 000 € HT facturés, 796 € HT de charges, une facture de septembre
+pas encore payée au 30 septembre.
+
+Le parcours du 10 octobre 2027 (`freeflow year checklist 2027`) montre ce que l'année
+précédente lui a transmis (report à nouveau 1 584 €, perte reportable 816 €), signale la facture
+non encaissée (sans effet sur l'impôt : l'IS se calcule sur ce que tu as *facturé*, pas encaissé
+— mais relance ou enregistre le paiement avant de clore, sinon ton bilan « clients » sera faux),
+puis chiffre :
+
+| | |
+|---|---|
+| Résultat avant impôt | 11 204,00 € |
+| Perte de l'an dernier déduite | − 816,00 € |
+| Résultat imposable | 10 388,00 € |
+| IS à 15 % | 1 558,20 € |
+| Résultat net | 9 645,80 € |
+| Réserve légale minimale (5 %, plafonnée à 10 % du capital) | 100,00 € |
+
+Il te propose la commande de clôture avec cette réserve pré-remplie ; tu décides des dividendes :
+
+```bash
+freeflow year close --period 2027 --legal-reserve 100 --dividends 3000
+freeflow year approve 2027 --approved-on 2027-12-10
+```
+
+Le bilan au 30 septembre 2027 s'ouvre tout seul sur celui de l'année 1 (banque 11 104 €,
+client 4 800 €, TVA à récupérer 284 € ; en face capital, report à nouveau, résultat, TVA
+collectée 2 400 € et IS dû 1 558,20 €) : 16 188 € des deux côtés. Puis les mêmes trois
+démarches qu'en année 1 — cette fois avec un solde d'IS de 1 558,20 € à payer avant le
+15 janvier 2028, une liasse avant le 30 décembre 2027 et un dépôt au greffe avant le
+10 janvier 2028. Le parcours de l'exercice 2028 démarre déjà avec le report à nouveau à jour
+(8 129,80 €) et la réserve légale (100 €).
+
+**Ce qui reste du ressort d'un professionnel.** FreeFlow dérive un bilan simplifié des faits
+qu'il connaît (factures, encaissements, dépenses, relevé) : il ne sait pas amortir un ordinateur,
+provisionner un litige ni rattacher une charge à cheval sur deux exercices, et il ne liquide pas
+la TVA (les comptes de TVA restent bruts au bilan). Pour une SASU de prestation intellectuelle
+sans immobilisation, c'est en général tout ce qu'il faut ; dès qu'un de ces cas se présente,
+fais relire le bilan et la liasse avant le dépôt — c'est précisément pour ça que l'export FEC
+existe.
+
 ## Limites connues de cette première version
 
 - **Statut fiscal** : pensé pour une SASU/EURL française à l'IS avec TVA au réel. D'autres statuts
@@ -472,6 +661,11 @@ distribués prêts à l'emploi — voir la checklist ci-dessous.
       déclarer et déposer), avec la dotation minimale à la réserve légale (art. L232-10) et les
       échéances d'AG, de liasse, de solde d'IS et de dépôt au greffe — voir « Dépenses &
       obligations fiscales ».
+- [x] Scénario de preuve de bout en bout « clôturer seul » : une SASU préexistante, clôture au
+      30 septembre, un exercice sans CA puis un exercice bénéficiaire, rejoués par la CLI avec
+      tous les chiffres attendus posés à la main (`crates/freeflow-cli/tests/closing_scenario.rs`),
+      guide pas à pas pour non-comptable et lexique de la clôture dans les trois façades — voir
+      « Clôturer seul son exercice, pas à pas ».
 - [ ] Tableau de bord de rentabilité par client sur la durée (au-delà de la mission en cours).
 - [ ] Chiffrement additionnel des pièces jointes de justificatifs de dépenses sur disque (au-delà
       du hash d'intégrité SHA-256 déjà en place).
