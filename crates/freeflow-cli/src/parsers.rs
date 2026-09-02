@@ -7,7 +7,7 @@
 use std::time::Duration;
 
 use freeflow_core::app::Actor;
-use freeflow_core::domain::{self, LossReason, Money, Siren, VatNumber};
+use freeflow_core::domain::{self, LossReason, Money, OpeningBalanceLine, Siren, VatNumber};
 use time::Date;
 
 /// # Errors
@@ -28,6 +28,14 @@ pub fn parse_date(s: &str) -> Result<Date, String> {
 /// # Errors
 pub fn parse_money(s: &str) -> Result<Money, String> {
     Money::parse_decimal(s).map_err(|e| e.to_string())
+}
+
+/// Une ligne de bilan d'ouverture, `compte:libellé:D|C:montant` — le parseur du domaine
+/// (`OpeningBalanceLine: FromStr`), partagé avec la fenêtre et le serveur MCP.
+///
+/// # Errors
+pub fn parse_opening_line(s: &str) -> Result<OpeningBalanceLine, String> {
+    s.parse::<OpeningBalanceLine>().map_err(|e| e.to_string())
 }
 
 /// # Errors

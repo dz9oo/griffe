@@ -14,6 +14,9 @@ use freeflow_core::clients::{DeleteClient, DeleteContact};
 use freeflow_core::expenses::DeleteExpense;
 use freeflow_core::fiscal_year::{ApproveFiscalYear, CloseFiscalYear, DeleteFiscalYear};
 use freeflow_core::missions::{DeleteMission, DeleteTimeEntry};
+use freeflow_core::opening_balance::{
+    DeleteOpeningBalance, RecordOpeningBalance, UpdateOpeningBalance,
+};
 use freeflow_core::prospection::{DeleteInteraction, DeleteOpportunity};
 use freeflow_core::store::Store;
 
@@ -110,6 +113,15 @@ pub fn confirm(store: &mut Store, id: PendingActionId, json: bool) -> Result<Str
         Ok(format_outcome(&outcome, json))
     } else if action.command_name == UnreconcileTransaction::NAME {
         let outcome = Executor::new(store).confirm::<UnreconcileTransaction>(id)?;
+        Ok(format_outcome(&outcome, json))
+    } else if action.command_name == RecordOpeningBalance::NAME {
+        let outcome = Executor::new(store).confirm::<RecordOpeningBalance>(id)?;
+        Ok(format_outcome(&outcome, json))
+    } else if action.command_name == UpdateOpeningBalance::NAME {
+        let outcome = Executor::new(store).confirm::<UpdateOpeningBalance>(id)?;
+        Ok(format_outcome(&outcome, json))
+    } else if action.command_name == DeleteOpeningBalance::NAME {
+        let outcome = Executor::new(store).confirm::<DeleteOpeningBalance>(id)?;
         Ok(format_outcome(&outcome, json))
     } else {
         Err(CliError::UnknownConfirmableCommand(action.command_name))

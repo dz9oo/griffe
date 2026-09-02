@@ -29,6 +29,8 @@ const EXPENSES_COLLECTION_URI: &str = "freeflow://expenses";
 const EXPENSE_DETAIL_PREFIX: &str = "freeflow://expenses/";
 const FISCAL_YEARS_COLLECTION_URI: &str = "freeflow://fiscal-years";
 const COMPANY_URI: &str = "freeflow://company";
+const OPENING_BALANCE_URI: &str = "freeflow://opening-balance";
+const BALANCE_SHEET_PREFIX: &str = "freeflow://balance-sheet/";
 
 pub(crate) fn list() -> ListResourcesResult {
     ListResourcesResult::with_all_items(vec![
@@ -69,6 +71,12 @@ pub(crate) fn list() -> ListResourcesResult {
                  aucun profil n'est défini — voir company.set_profile.",
             )
             .with_mime_type("application/json"),
+        Resource::new(OPENING_BALANCE_URI, "opening-balance")
+            .with_description(
+                "Bilan d'ouverture (reprise du dernier bilan tenu avant FreeFlow) : lignes, \
+                 totaux, capitaux propres repris — ou null s'il n'est pas enregistré.",
+            )
+            .with_mime_type("application/json"),
     ])
 }
 
@@ -103,6 +111,13 @@ pub(crate) fn list_templates() -> ListResourceTemplatesResult {
             .with_mime_type("application/json"),
         ResourceTemplate::new(format!("{EXPENSE_DETAIL_PREFIX}{{reference}}"), "expense")
             .with_description("Fiche d'une dépense (UUID, préfixe d'UUID, ou libellé).")
+            .with_mime_type("application/json"),
+        ResourceTemplate::new(format!("{BALANCE_SHEET_PREFIX}{{period}}"), "balance-sheet")
+            .with_description(
+                "Balance des comptes et bilan simplifié (2033-A) dérivés du grand livre de \
+                 l'exercice clos dans cette année civile (clos ou non) — même vue que \
+                 fiscal.balance_sheet.",
+            )
             .with_mime_type("application/json"),
     ])
 }
@@ -253,6 +268,31 @@ pub(crate) fn read(store: &Store, uri: &str) -> Result<ReadResourceResult, McpEr
         );
     }
 
+    if uri == OPENING_BALANCE_URI {
+        let opening = freeflow_core::opening_balance::opening_balance(store.connection())
+            .map_err(|e| McpError::resource_not_found(e.to_string(), None))?;
+        return json_contents(
+            uri,
+            opening
+                .as_ref()
+                .map_or(serde_json::Value::Null, crate::tools::fiscal::opening_json),
+        );
+    }
+
+    if let Some(period) = uri.strip_prefix(BALANCE_SHEET_PREFIX) {
+        let period: i32 = period.parse().map_err(|_| {
+            McpError::resource_not_found(
+                format!("période invalide : {period} (attendu AAAA)"),
+                None,
+            )
+        })?;
+        let (_, ledger) = freeflow_core::ledger::ledger_ending_in(store.connection(), period)
+            .map_err(|e| McpError::resource_not_found(e.to_string(), None))?;
+        return json_contents(
+            uri,
+            freeflow_core::ledger::balance_json(&ledger.trial_balance(), &ledger.balance_sheet()),
+        );
+    }
     if uri == COMPANY_URI {
         let today = time::OffsetDateTime::now_utc().date();
         let profile =

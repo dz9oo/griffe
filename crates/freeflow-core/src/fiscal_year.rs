@@ -75,6 +75,13 @@ pub enum FiscalYearError {
         approved_on: String,
         ends_on: String,
     },
+
+    #[error(
+        "le bilan d'ouverture est daté du {opens_on} : le premier exercice clos dans \
+         l'application doit commencer ce jour-là, pas le {starts_on} (corrigez la période, ou le \
+         bilan d'ouverture)"
+    )]
+    OpeningBalanceMismatch { opens_on: String, starts_on: String },
 }
 
 impl From<FiscalYearError> for AppError {
@@ -163,6 +170,12 @@ fn validate_appropriation(
 
 /// Report à nouveau et réserve légale cumulés des exercices clos **avant** `starts_on` — la
 /// chaîne dont hérite l'exercice qui commence à cette date.
+///
+/// Le bilan d'ouverture (lot 30) en est le maillon zéro : pour le **premier** exercice clos ici,
+/// le report à nouveau est celui des capitaux propres repris (et il doit ouvrir ce jour-là —
+/// une reprise datée d'un autre jour est une incohérence refusée, jamais ignorée en silence) ;
+/// pour les suivants, le report vient du snapshot du précédent, qui l'a déjà intégré. La réserve
+/// légale reprise, elle, s'ajoute toujours : aucun snapshot ne la porte.
 fn prior_chain(conn: &Connection, starts_on: Date) -> Result<(Money, Money), AppError> {
     let retained: Option<i64> = conn
         .query_row(
@@ -177,10 +190,26 @@ fn prior_chain(conn: &Connection, starts_on: Date) -> Result<(Money, Money), App
         [format_date(starts_on)],
         |row| row.get(0),
     )?;
-    Ok((
-        Money::from_cents(retained.unwrap_or(0)),
-        Money::from_cents(reserve),
-    ))
+    let opening =
+        crate::opening_balance::opening_balance(conn)?.map(|r| (r.balance.opens_on, r.equity()));
+    let (retained, opening_reserve) = match (retained, opening) {
+        (Some(from_chain), Some((_, equity))) => {
+            (Money::from_cents(from_chain), equity.legal_reserve)
+        }
+        (Some(from_chain), None) => (Money::from_cents(from_chain), Money::ZERO),
+        (None, Some((opens_on, equity))) => {
+            if opens_on != starts_on {
+                return Err(FiscalYearError::OpeningBalanceMismatch {
+                    opens_on: format_date(opens_on),
+                    starts_on: format_date(starts_on),
+                }
+                .into());
+            }
+            (equity.retained_earnings, equity.legal_reserve)
+        }
+        (None, None) => (Money::ZERO, Money::ZERO),
+    };
+    Ok((retained, Money::from_cents(reserve) + opening_reserve))
 }
 
 /// Report à nouveau hérité par un exercice commençant à `starts_on` : celui du dernier exercice
@@ -965,5 +994,142 @@ mod tests {
             list_fiscal_years(store.connection()).unwrap().is_empty(),
             "rien n'est écrit tant qu'un humain n'a pas confirmé"
         );
+    }
+
+    fn record_opening(store: &mut Store, opens_on: Date, specs: &[&str]) {
+        let cmd = crate::opening_balance::RecordOpeningBalance {
+            opens_on,
+            source: Some("bilan repris".to_string()),
+            lines: specs.iter().map(|s| s.parse().unwrap()).collect(),
+        };
+        Executor::new(store).execute(&cmd, &human()).unwrap();
+    }
+
+    #[test]
+    fn the_first_closed_year_inherits_the_opening_balance_equity() {
+        let mut store = test_store("opening-chain");
+        // Capital 1 000 € → plafond de réserve légale 100 €, dont 60 € déjà constitués.
+        set_profile(&mut store, Some(100_000));
+        record_opening(
+            &mut store,
+            date(2026, TimeMonth::January, 1),
+            &[
+                "101000:Capital social:C:1000.00",
+                "106100:Réserve légale:C:60.00",
+                "110000:Report à nouveau:C:250.00",
+                "512000:Banque:D:1310.00",
+            ],
+        );
+        seed_activity(&mut store, 2026);
+
+        // 50 € de réserve dépasseraient le plafond une fois les 60 € repris comptés.
+        let too_much = CloseFiscalYear {
+            starts_on: date(2026, TimeMonth::January, 1),
+            ends_on: date(2026, TimeMonth::December, 31),
+            legal_reserve: Money::from_cents(5_000),
+            dividends: Money::ZERO,
+        };
+        let err = Executor::new(&mut store)
+            .execute(&too_much, &human())
+            .unwrap_err();
+        assert!(matches!(err, AppError::Domain(msg) if msg.contains("réserve légale cumulée")));
+
+        // 40 € passent ; report = 250 (repris) + 4 568,75 − 40 = 4 778,75 €.
+        let id = close_2026(&mut store, 4_000, 0);
+        let record = fiscal_year_by_id(store.connection(), id).unwrap().unwrap();
+        assert_eq!(record.retained_earnings, Money::from_cents(477_875));
+
+        // Le bilan d'ouverture est désormais figé par ce snapshot.
+        let delete = crate::opening_balance::DeleteOpeningBalance { revision: 1 };
+        let err = Executor::new(&mut store)
+            .execute(&delete, &human())
+            .unwrap_err();
+        assert!(matches!(err, AppError::Domain(msg) if msg.contains("déjà clos")));
+
+        // Et l'exercice suivant enchaîne sur le snapshot, en comptant toujours la réserve reprise
+        // (60 + 40 = 100 € : plus un centime de dotation possible).
+        seed_activity(&mut store, 2027);
+        let next = CloseFiscalYear {
+            starts_on: date(2027, TimeMonth::January, 1),
+            ends_on: date(2027, TimeMonth::December, 31),
+            legal_reserve: Money::from_cents(1),
+            dividends: Money::ZERO,
+        };
+        let err = Executor::new(&mut store)
+            .execute(&next, &human())
+            .unwrap_err();
+        assert!(matches!(err, AppError::Domain(msg) if msg.contains("réserve légale cumulée")));
+    }
+
+    #[test]
+    fn a_first_year_not_starting_on_the_opening_date_is_refused() {
+        let mut store = test_store("opening-mismatch");
+        set_profile(&mut store, None);
+        record_opening(
+            &mut store,
+            date(2025, TimeMonth::October, 1),
+            &["101000:Capital:C:10.00", "512000:Banque:D:10.00"],
+        );
+        seed_activity(&mut store, 2026);
+        let cmd = CloseFiscalYear {
+            starts_on: date(2026, TimeMonth::January, 1),
+            ends_on: date(2026, TimeMonth::December, 31),
+            legal_reserve: Money::ZERO,
+            dividends: Money::ZERO,
+        };
+        let err = Executor::new(&mut store)
+            .execute(&cmd, &human())
+            .unwrap_err();
+        assert!(matches!(err, AppError::Domain(msg) if msg.contains("2025-10-01")));
+    }
+
+    #[test]
+    fn a_loss_year_carries_a_negative_retained_earnings_and_allows_no_appropriation() {
+        let mut store = test_store("loss");
+        set_profile(&mut store, Some(100_000));
+        record_opening(
+            &mut store,
+            date(2026, TimeMonth::January, 1),
+            &[
+                "101000:Capital:C:1000.00",
+                "110000:Report à nouveau:C:300.00",
+                "512000:Banque:D:1300.00",
+            ],
+        );
+        // Une seule dépense, aucune facture : perte de 800 € nets.
+        Executor::new(&mut store)
+            .execute(
+                &RecordExpense {
+                    label: "Honoraires".to_string(),
+                    category: ExpenseCategory::Professional,
+                    amount: Money::from_cents(96_000),
+                    vat_rate: VatRate::Standard,
+                    vat_deductible: Money::from_cents(16_000),
+                    incurred_on: date(2026, TimeMonth::March, 5),
+                    receipt_hash: None,
+                    receipt_filename: None,
+                },
+                &human(),
+            )
+            .unwrap();
+
+        let with_dividends = CloseFiscalYear {
+            starts_on: date(2026, TimeMonth::January, 1),
+            ends_on: date(2026, TimeMonth::December, 31),
+            legal_reserve: Money::ZERO,
+            dividends: Money::from_cents(100),
+        };
+        let err = Executor::new(&mut store)
+            .execute(&with_dividends, &human())
+            .unwrap_err();
+        assert!(matches!(err, AppError::Domain(msg) if msg.contains("distribuables")));
+
+        let id = close_2026(&mut store, 0, 0);
+        let record = fiscal_year_by_id(store.connection(), id).unwrap().unwrap();
+        assert_eq!(record.revenue_ht, Money::ZERO);
+        assert_eq!(record.corporate_tax, Money::ZERO);
+        assert_eq!(record.net_result, Money::from_cents(-80_000));
+        // 300 € repris − 800 € de perte : report à nouveau débiteur de 500 €.
+        assert_eq!(record.retained_earnings, Money::from_cents(-50_000));
     }
 }

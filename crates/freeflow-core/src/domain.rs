@@ -8,6 +8,7 @@ mod interaction;
 mod invoice;
 mod mission;
 mod money;
+mod opening;
 mod opportunity;
 mod payment;
 mod period;
@@ -31,6 +32,10 @@ pub use interaction::{Interaction, InteractionKind, UnknownInteractionKind};
 pub use invoice::{Invoice, InvoiceLine, InvoiceStatus};
 pub use mission::{Milestone, MilestoneParseError, Mission, MissionKind};
 pub use money::{Money, MoneyParseError};
+pub use opening::{
+    AccountCode, AccountCodeError, OpeningBalance, OpeningBalanceError, OpeningBalanceLine,
+    OpeningBalanceLineParseError, OpeningEquity, Side, UnknownSide,
+};
 pub use opportunity::{
     LossReason, Opportunity, OpportunityStage, Probability, ProbabilityError, UnknownStage,
 };

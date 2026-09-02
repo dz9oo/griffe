@@ -13,10 +13,13 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderValue, header};
 use axum::response::{Html, IntoResponse, Response};
 use freeflow_core::app::{AppError, Executor, Outcome};
-use freeflow_core::domain::{FiscalYearId, Money};
+use freeflow_core::domain::{FiscalYearId, Money, OpeningBalanceLine, format_date};
 use freeflow_core::fiscal_year::{
     self, ApproveFiscalYear, CloseFiscalYear, DeleteFiscalYear, FiscalYearRecord,
     UpdateFiscalYearAppropriation,
+};
+use freeflow_core::opening_balance::{
+    self, DeleteOpeningBalance, OpeningBalanceRecord, RecordOpeningBalance, UpdateOpeningBalance,
 };
 use maud::html;
 use serde::Deserialize;
@@ -24,7 +27,9 @@ use time::OffsetDateTime;
 
 use crate::state::AppState;
 use crate::views;
-use crate::views::cloture::{AmendFormValues, CloseFormErrors, CloseFormValues};
+use crate::views::cloture::{
+    AmendFormValues, CloseFormErrors, CloseFormValues, OpeningFormErrors, OpeningFormValues,
+};
 
 fn locked_fragment() -> Html<String> {
     Html(
@@ -432,6 +437,58 @@ pub async fn fec(State(state): State<AppState>, Query(query): Query<FecQuery>) -
     }
 }
 
+/// `GET /cloture/balance?period=AAAA` : balance des comptes et bilan 2033-A dérivés du grand
+/// livre (`freeflow_core::ledger`), dans le panneau — exercice clos ou non, comme le FEC.
+pub async fn balance_panel(
+    State(state): State<AppState>,
+    Query(query): Query<FecQuery>,
+) -> Html<String> {
+    let built = state
+        .with_store(|store| {
+            freeflow_core::ledger::ledger_ending_in(store.connection(), query.period)
+        })
+        .await;
+    match built {
+        None => locked_fragment(),
+        Some(Err(e)) => message_fragment(&e.to_string()),
+        Some(Ok((_, ledger))) => Html(
+            views::cloture::balance_panel(
+                query.period,
+                &ledger.trial_balance(),
+                &ledger.balance_sheet(),
+            )
+            .into_string(),
+        ),
+    }
+}
+
+/// `GET /cloture/balance.pdf?period=AAAA` : le même bilan et la même balance en PDF
+/// (`freeflow_docs::render_balance_sheet`), en téléchargement.
+pub async fn balance_pdf(State(state): State<AppState>, Query(query): Query<FecQuery>) -> Response {
+    let built = state
+        .with_store(|store| {
+            freeflow_core::ledger::ledger_ending_in(store.connection(), query.period)
+        })
+        .await;
+    let (profile, ledger) = match built {
+        None => return locked_fragment().into_response(),
+        Some(Err(e)) => return message_fragment(&e.to_string()).into_response(),
+        Some(Ok(pair)) => pair,
+    };
+    match freeflow_docs::render_balance_sheet(
+        &profile,
+        &ledger.balance_sheet(),
+        &ledger.trial_balance(),
+    ) {
+        Ok(pdf) => document_response(
+            pdf,
+            "application/pdf",
+            &format!("bilan-{}.pdf", ledger.exercise.end().year()),
+        ),
+        Err(e) => message_fragment(&e.to_string()).into_response(),
+    }
+}
+
 // -- Documents -----------------------------------------------------------------------------
 
 fn document_response(bytes: Vec<u8>, content_type: &'static str, filename: &str) -> Response {
@@ -462,23 +519,31 @@ pub async fn document(
             let record = fiscal_year::fiscal_year_by_id(store.connection(), id)?;
             let profile = freeflow_core::company::company_profile(store.connection())?;
             let years = fiscal_year::list_fiscal_years(store.connection())?;
-            Ok((record, profile, years))
+            // Le bilan 2033-A de la liasse est dérivé du grand livre (lot 31).
+            let sheet = match (&record, &profile) {
+                (Some(r), Some(_)) => Some(
+                    freeflow_core::ledger::build_ledger(store.connection(), r.period())?
+                        .balance_sheet(),
+                ),
+                _ => None,
+            };
+            Ok((record, profile, years, sheet))
         })
         .await;
-    let (record, profile, years) = match loaded {
+    let (record, profile, years, sheet) = match loaded {
         None => return locked_fragment().into_response(),
         Some(Err(e)) => return message_fragment(&e.to_string()).into_response(),
-        Some(Ok((None, _, _))) => {
+        Some(Ok((None, _, _, _))) => {
             return message_fragment("exercice introuvable").into_response();
         }
-        Some(Ok((_, None, _))) => {
+        Some(Ok((_, None, _, _))) => {
             return message_fragment(
                 "aucun profil d'entreprise défini — configurez-le d'abord (console : `company \
                  set-profile`)",
             )
             .into_response();
         }
-        Some(Ok((Some(record), Some(profile), years))) => (record, profile, years),
+        Some(Ok((Some(record), Some(profile), years, sheet))) => (record, profile, years, sheet),
     };
     let year_label = record.ends_on.year();
     let result = match kind.as_str() {
@@ -520,7 +585,7 @@ pub async fn document(
             })
         }
         "liasse" => {
-            let export = freeflow_docs::liasse_export(&profile, &record);
+            let export = freeflow_docs::liasse_export(&profile, &record, sheet.as_ref());
             return match serde_json::to_vec_pretty(&export) {
                 Ok(json) => document_response(
                     json,
@@ -537,5 +602,236 @@ pub async fn document(
     match result {
         Ok(response) => response,
         Err(e) => message_fragment(&e.to_string()).into_response(),
+    }
+}
+
+// -- Bilan d'ouverture (lot 30) -------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct OpeningForm {
+    #[serde(default)]
+    revision: Option<String>,
+    #[serde(default)]
+    opens_on: String,
+    #[serde(default)]
+    source: String,
+    #[serde(default)]
+    lines: String,
+}
+
+impl From<&OpeningForm> for OpeningFormValues {
+    fn from(f: &OpeningForm) -> Self {
+        Self {
+            opens_on: f.opens_on.clone(),
+            source: f.source.clone(),
+            lines: f.lines.clone(),
+        }
+    }
+}
+
+type OpeningState = Option<Result<Option<OpeningBalanceRecord>, AppError>>;
+
+async fn current_opening(state: &AppState) -> OpeningState {
+    state
+        .with_store(|store| opening_balance::opening_balance(store.connection()))
+        .await
+}
+
+/// La période du premier exercice clos, si un exercice existe : le bilan est alors figé — la
+/// même règle que le cœur (`opening_balance::require_no_fiscal_year`), relue pour l'affichage.
+fn frozen_by(store: &freeflow_core::store::Store) -> Option<String> {
+    fiscal_year::list_fiscal_years(store.connection())
+        .ok()?
+        .first()
+        .map(|y| format!("{} → {}", format_date(y.starts_on), format_date(y.ends_on)))
+}
+
+pub async fn opening_panel(State(state): State<AppState>) -> Html<String> {
+    match state
+        .with_store(|store| {
+            opening_balance::opening_balance(store.connection())
+                .map(|record| record.map(|r| (frozen_by(store), r)))
+        })
+        .await
+    {
+        None => locked_fragment(),
+        Some(Err(e)) => message_fragment(&e.to_string()),
+        Some(Ok(None)) => Html(
+            views::cloture::opening_form_panel(
+                &OpeningFormValues::default(),
+                &OpeningFormErrors::default(),
+                None,
+            )
+            .into_string(),
+        ),
+        Some(Ok(Some((frozen, record)))) => {
+            Html(views::cloture::opening_detail_panel(&record, frozen.as_deref()).into_string())
+        }
+    }
+}
+
+pub async fn opening_edit_panel(State(state): State<AppState>) -> Html<String> {
+    match current_opening(&state).await {
+        None => locked_fragment(),
+        Some(Err(e)) => message_fragment(&e.to_string()),
+        Some(Ok(None)) => message_fragment("aucun bilan d'ouverture enregistré"),
+        Some(Ok(Some(record))) => Html(
+            views::cloture::opening_form_panel(
+                &OpeningFormValues::from(&record),
+                &OpeningFormErrors::default(),
+                Some(record.revision),
+            )
+            .into_string(),
+        ),
+    }
+}
+
+struct ParsedOpeningForm {
+    opens_on: time::Date,
+    source: Option<String>,
+    lines: Vec<OpeningBalanceLine>,
+}
+
+fn parse_opening_form(form: &OpeningForm) -> Result<ParsedOpeningForm, Box<OpeningFormErrors>> {
+    let mut errors = OpeningFormErrors::default();
+    let opens_on = match freeflow_core::domain::parse_date(form.opens_on.trim()) {
+        Ok(d) => Some(d),
+        Err(_) => {
+            errors.opens_on = Some("date invalide (AAAA-MM-JJ)".to_string());
+            None
+        }
+    };
+    let mut lines = Vec::new();
+    for raw in form
+        .lines
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+    {
+        match raw.parse::<OpeningBalanceLine>() {
+            Ok(line) => lines.push(line),
+            Err(e) => {
+                errors.lines = Some(e.to_string());
+                break;
+            }
+        }
+    }
+    let source = form.source.trim();
+    match opens_on {
+        Some(opens_on) if errors.lines.is_none() => Ok(ParsedOpeningForm {
+            opens_on,
+            source: (!source.is_empty()).then(|| source.to_string()),
+            lines,
+        }),
+        _ => Err(Box::new(errors)),
+    }
+}
+
+fn opening_error_banner(e: &AppError, reload_hx_get: &str) -> OpeningFormErrors {
+    match e {
+        AppError::Conflict { .. } => OpeningFormErrors {
+            conflict: Some((e.to_string(), reload_hx_get.to_string())),
+            ..Default::default()
+        },
+        other => OpeningFormErrors {
+            banner: Some(other.to_string()),
+            ..Default::default()
+        },
+    }
+}
+
+/// Enregistre ou remplace : la présence d'un bilan en base décide de la commande (état complet
+/// dans les deux cas), le champ caché `revision` protège le remplacement.
+pub async fn opening_save(
+    State(state): State<AppState>,
+    Form(form): Form<OpeningForm>,
+) -> Response {
+    let revision: Option<i64> = form.revision.as_deref().and_then(|s| s.parse().ok());
+    let values = OpeningFormValues::from(&form);
+    let parsed = match parse_opening_form(&form) {
+        Ok(p) => p,
+        Err(errors) => {
+            return Html(
+                views::cloture::opening_form_panel(&values, &errors, revision).into_string(),
+            )
+            .into_response();
+        }
+    };
+    let existing = match current_opening(&state).await {
+        None => return locked_fragment().into_response(),
+        Some(Err(e)) => return message_fragment(&e.to_string()).into_response(),
+        Some(Ok(existing)) => existing,
+    };
+    let result = match existing {
+        Some(existing) => {
+            execute(
+                &state,
+                UpdateOpeningBalance {
+                    // Sans révision dans le formulaire (soumission « nouveau » alors qu'un bilan
+                    // vient d'être créé ailleurs), on force le conflit plutôt que d'écraser.
+                    revision: revision.unwrap_or(existing.revision.wrapping_neg()),
+                    opens_on: parsed.opens_on,
+                    source: parsed.source,
+                    lines: parsed.lines,
+                },
+            )
+            .await
+            .map(|r| r.map(|_| ()))
+        }
+        None => execute(
+            &state,
+            RecordOpeningBalance {
+                opens_on: parsed.opens_on,
+                source: parsed.source,
+                lines: parsed.lines,
+            },
+        )
+        .await
+        .map(|r| r.map(|_| ())),
+    };
+    match result {
+        None => locked_fragment().into_response(),
+        Some(Ok(())) => saved(),
+        Some(Err(e)) => {
+            let errors = opening_error_banner(&e, "/cloture/opening/edit");
+            Html(views::cloture::opening_form_panel(&values, &errors, revision).into_string())
+                .into_response()
+        }
+    }
+}
+
+pub async fn opening_delete_panel(State(state): State<AppState>) -> Html<String> {
+    match current_opening(&state).await {
+        None => locked_fragment(),
+        Some(Err(e)) => message_fragment(&e.to_string()),
+        Some(Ok(None)) => message_fragment("aucun bilan d'ouverture enregistré"),
+        Some(Ok(Some(record))) => Html(views::cloture::opening_delete_panel(&record).into_string()),
+    }
+}
+
+pub async fn opening_delete(State(state): State<AppState>) -> Response {
+    // Révision relue au moment du clic — même raison que la suppression d'un exercice.
+    let record = match current_opening(&state).await {
+        None => return locked_fragment().into_response(),
+        Some(Err(e)) => return message_fragment(&e.to_string()).into_response(),
+        Some(Ok(None)) => {
+            return message_fragment("aucun bilan d'ouverture enregistré").into_response();
+        }
+        Some(Ok(Some(record))) => record,
+    };
+    match execute(
+        &state,
+        DeleteOpeningBalance {
+            revision: record.revision,
+        },
+    )
+    .await
+    {
+        None => locked_fragment().into_response(),
+        Some(Ok(_)) => saved(),
+        Some(Err(e)) => {
+            Html(views::cloture::opening_detail_panel(&record, Some(&e.to_string())).into_string())
+                .into_response()
+        }
     }
 }

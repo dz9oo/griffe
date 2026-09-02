@@ -20,6 +20,11 @@ use freeflow_core::fiscal_year::{
     ApproveFiscalYear, CloseFiscalYear, DeleteFiscalYear, FiscalYearRecord,
     UpdateFiscalYearAppropriation, fiscal_year_ending_in, list_fiscal_years,
 };
+use freeflow_core::ledger::{balance_json, build_ledger, ledger_ending_in};
+use freeflow_core::opening_balance::{
+    DeleteOpeningBalance, OpeningBalanceRecord, RecordOpeningBalance, UpdateOpeningBalance,
+    opening_balance,
+};
 use freeflow_core::store::Store;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
@@ -94,6 +99,28 @@ pub(crate) struct CloseYearArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct SetOpeningBalanceArgs {
+    /// Premier jour de l'exercice qui s'ouvre sur ce bilan (`AAAA-MM-JJ`), lendemain de la
+    /// clôture reprise.
+    opens_on: String,
+    /// Provenance, libre (ex. « bilan au 30/09/2025, cabinet X »).
+    source: Option<String>,
+    /// Lignes de la balance, une par compte, au format `compte:libellé:D|C:montant` — ex.
+    /// `["101000:Capital social:C:1000.00", "512000:Banque:D:1000.00"]`. Comptes de bilan
+    /// (classes 1 à 5) seulement ; total débit = total crédit.
+    lines: Vec<String>,
+    /// N'écrit rien, montre ce qui serait fait (défaut : faux).
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct OpeningBalanceMutationArgs {
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct FiscalDeadlinesArgs {
     /// Date du jour, au format `AAAA-MM-JJ`.
     today: String,
@@ -140,7 +167,8 @@ pub(crate) struct RenderYearArgs {
     /// Année civile de la clôture (ex. `2026`).
     period: i32,
     /// `minutes` (PV d'AG), `appropriation` (affectation), `synthesis` (compte de résultat
-    /// simplifié) — PDF — ou `liasse` (cases 2065/2033 en JSON).
+    /// simplifié), `balance_sheet` (bilan 2033-A et balance des comptes dérivés du grand livre,
+    /// exercice clos ou non) — PDF — ou `liasse` (cases 2065/2033 en JSON).
     doc: String,
     /// Chemin du fichier à écrire — refusé s'il existe déjà.
     out: String,
@@ -167,8 +195,137 @@ pub(crate) fn year_json(r: &FiscalYearRecord) -> serde_json::Value {
     })
 }
 
+pub(crate) fn opening_json(r: &OpeningBalanceRecord) -> serde_json::Value {
+    let equity = r.equity();
+    json!({
+        "opens_on": format_date(r.balance.opens_on),
+        "source": r.balance.source,
+        "lines": r.balance.lines.iter().map(|l| json!({
+            "account": l.account.as_str(),
+            "label": l.label,
+            "side": l.side.as_str(),
+            "amount_cents": l.amount.cents(),
+        })).collect::<Vec<_>>(),
+        "total_debit_cents": r.balance.total_debit().cents(),
+        "total_credit_cents": r.balance.total_credit().cents(),
+        "equity": {
+            "share_capital_cents": equity.share_capital.cents(),
+            "legal_reserve_cents": equity.legal_reserve.cents(),
+            "retained_earnings_cents": equity.retained_earnings.cents(),
+        },
+        "revision": r.revision,
+    })
+}
+
 #[tool_router(router = fiscal_router, vis = "pub(crate)")]
 impl FreeflowServer {
+    /// Le bilan d'ouverture (reprise du dernier bilan tenu avant FreeFlow) : lignes, totaux,
+    /// capitaux propres repris — ou `null` s'il n'est pas enregistré. Voir aussi la ressource
+    /// `freeflow://opening-balance`.
+    #[tool(
+        name = "fiscal.opening_balance",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    async fn fiscal_opening_balance(&self) -> CallToolResult {
+        let store = self.store.lock().await;
+        match opening_balance(store.connection()) {
+            Ok(Some(record)) => ok_json(opening_json(&record)),
+            Ok(None) => ok_json(serde_json::Value::Null),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
+    /// Enregistre le bilan d'ouverture, ou le remplace en entier s'il existe déjà (état
+    /// complet, jamais un patch). Refusé dès qu'un exercice est clos dans l'application. Fait
+    /// comptable fondateur : l'appel dépose une action en attente qu'un humain doit confirmer
+    /// (`freeflow confirm <id>`), jamais un effet direct.
+    #[tool(
+        name = "fiscal.set_opening_balance",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true
+        )
+    )]
+    async fn fiscal_set_opening_balance(
+        &self,
+        Parameters(args): Parameters<SetOpeningBalanceArgs>,
+    ) -> CallToolResult {
+        let opens_on = ok_or_return!(
+            "opens_on",
+            freeflow_core::domain::parse_date(&args.opens_on)
+        );
+        let mut lines = Vec::with_capacity(args.lines.len());
+        for spec in &args.lines {
+            lines.push(ok_or_return!(
+                "lines",
+                spec.parse::<freeflow_core::domain::OpeningBalanceLine>()
+            ));
+        }
+        let mut store = self.store.lock().await;
+        let existing = match opening_balance(store.connection()) {
+            Ok(existing) => existing,
+            Err(e) => return err_text(e.to_string()),
+        };
+        let ctx = self.ctx(args.dry_run);
+        let result = match existing {
+            Some(existing) => Executor::new(&mut store)
+                .execute(
+                    &UpdateOpeningBalance {
+                        revision: existing.revision,
+                        opens_on,
+                        source: args.source,
+                        lines,
+                    },
+                    &ctx,
+                )
+                .map(|o| outcome_json(&o)),
+            None => Executor::new(&mut store)
+                .execute(
+                    &RecordOpeningBalance {
+                        opens_on,
+                        source: args.source,
+                        lines,
+                    },
+                    &ctx,
+                )
+                .map(|o| outcome_json(&o)),
+        };
+        match result {
+            Ok(value) => ok_json(value),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
+    /// Supprime le bilan d'ouverture — tant qu'aucun exercice n'est clos. Derrière confirmation
+    /// humaine, comme les autres suppressions.
+    #[tool(
+        name = "fiscal.delete_opening_balance",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false
+        )
+    )]
+    async fn fiscal_delete_opening_balance(
+        &self,
+        Parameters(args): Parameters<OpeningBalanceMutationArgs>,
+    ) -> CallToolResult {
+        let mut store = self.store.lock().await;
+        let existing = match opening_balance(store.connection()) {
+            Ok(Some(existing)) => existing,
+            Ok(None) => return err_text("aucun bilan d'ouverture enregistré"),
+            Err(e) => return err_text(e.to_string()),
+        };
+        let cmd = DeleteOpeningBalance {
+            revision: existing.revision,
+        };
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
+            Ok(outcome) => ok_json(outcome_json(&outcome)),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
     /// Calendrier fiscal et social chiffré sur 12 mois (TVA, acomptes et solde d'IS, liasse, AG,
     /// dépôt au greffe, DSN) — dates et montants indicatifs, voir `freeflow_core::fiscal`.
     #[tool(
@@ -408,6 +565,28 @@ impl FreeflowServer {
         }
     }
 
+    /// Balance des comptes et bilan simplifié (2033-A) dérivés du grand livre de l'exercice clos
+    /// dans `period` — clos ou non : à-nouveaux (bilan d'ouverture, ou bilan de clôture dérivé
+    /// de l'exercice clos précédent), ventes, achats, banque, opérations de clôture
+    /// (rémunération du dirigeant, IS, affectation du résultat). Montants en centimes.
+    #[tool(
+        name = "fiscal.balance_sheet",
+        annotations(read_only_hint = true, idempotent_hint = true)
+    )]
+    async fn fiscal_balance_sheet(
+        &self,
+        Parameters(args): Parameters<YearRefArgs>,
+    ) -> CallToolResult {
+        let store = self.store.lock().await;
+        match ledger_ending_in(store.connection(), args.period) {
+            Ok((_, ledger)) => ok_json(balance_json(
+                &ledger.trial_balance(),
+                &ledger.balance_sheet(),
+            )),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
     /// Rend un document de clôture (PDF, ou JSON pour la liasse) dans `out` — refuse d'écraser
     /// un fichier existant. Le document reflète le snapshot figé à la clôture, pas un recalcul
     /// vivant.
@@ -424,6 +603,23 @@ impl FreeflowServer {
         Parameters(args): Parameters<RenderYearArgs>,
     ) -> CallToolResult {
         let store = self.store.lock().await;
+        if args.doc == "balance_sheet" {
+            // Dérivé du grand livre : pas besoin d'un exercice clos, comme `fec.export`.
+            let (profile, ledger) =
+                ok_or_return!("ledger", ledger_ending_in(store.connection(), args.period));
+            let bytes = ok_or_return!(
+                "balance_sheet",
+                freeflow_docs::render_balance_sheet(
+                    &profile,
+                    &ledger.balance_sheet(),
+                    &ledger.trial_balance()
+                )
+            );
+            return match write_new_document(&args.out, &bytes) {
+                Ok(msg) => ok_json(json!({ "written": msg })),
+                Err(e) => err_text(e),
+            };
+        }
         let record = match require_year(&store, args.period) {
             Ok(r) => r,
             Err(e) => return err_text(e),
@@ -475,7 +671,10 @@ impl FreeflowServer {
                 )
             }
             "liasse" => {
-                let export = freeflow_docs::liasse_export(&profile, &record);
+                let sheet =
+                    ok_or_return!("ledger", build_ledger(store.connection(), record.period()))
+                        .balance_sheet();
+                let export = freeflow_docs::liasse_export(&profile, &record, Some(&sheet));
                 let mut bytes = ok_or_return!("liasse", serde_json::to_vec_pretty(&export));
                 bytes.push(b'\n');
                 bytes
@@ -483,7 +682,7 @@ impl FreeflowServer {
             other => {
                 return err_text(format!(
                     "document inconnu : {other} (attendu : minutes, appropriation, synthesis, \
-                     liasse)"
+                     balance_sheet, liasse)"
                 ));
             }
         };

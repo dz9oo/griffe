@@ -1,40 +1,28 @@
 //! Export du **Fichier des Écritures Comptables** (FEC) d'un exercice — art. A. 47 A-1 du livre
 //! des procédures fiscales (lot 28).
 //!
-//! `FreeFlow` ne tient pas de grand livre : le FEC est *dérivé* des faits du domaine, qui sont déjà
-//! immuables ou contre-écrits (factures et avoirs, encaissements et leurs annulations, dépenses),
-//! selon un plan de comptes PCG minimal et fixe (voir [`accounts`]). Trois journaux : `VE`
-//! (ventes), `AC` (achats), `BQ` (banque). Chaque écriture est équilibrée par construction — une
-//! ligne porte un montant *signé* (débit positif, crédit négatif) et l'écriture est la somme
-//! nulle de ses lignes ; un avoir, dont les lignes sont négatives, se retourne donc tout seul.
+//! Depuis le lot 31, ce module n'est plus que le **format** : les écritures viennent du grand
+//! livre dérivé de [`crate::ledger`] (journaux `AN`, `VE`, `AC`, `BQ`, `OD`), qui porte aussi la
+//! balance et le bilan. Le format suit le BOI-CF-IOR-60-40-20 : 18 colonnes dans l'ordre imposé,
+//! séparateur `|`, dates en `AAAAMMJJ`, montants avec la virgule décimale et sans séparateur de
+//! milliers, encodage UTF-8, nom de fichier `<SIREN>FEC<AAAAMMJJ>.txt` daté de la clôture. Les
+//! colonnes de lettrage et de devise restent vides (euro seul ; le lettrage n'est pas modélisé).
 //!
-//! Le format suit le BOI-CF-IOR-60-40-20 : 18 colonnes dans l'ordre imposé, séparateur `|`,
-//! dates en `AAAAMMJJ`, montants avec la virgule décimale et sans séparateur de milliers,
-//! encodage UTF-8, nom de fichier `<SIREN>FEC<AAAAMMJJ>.txt` daté de la clôture. Les colonnes de
-//! lettrage et de devise restent vides (euro seul ; le lettrage n'est pas modélisé).
-//!
-//! Limites assumées, dites dans le fichier lui-même par les libellés : les dépenses sont réputées
-//! payées à leur date (le domaine enregistre un « montant TTC réellement payé », il n'y a pas de
-//! compte fournisseur), l'équipement est passé en charge (606300) sans seuil d'immobilisation, la
-//! rémunération du dirigeant et l'IS ne sont pas des écritures (ils ne sont pas saisis comme
-//! faits datés). Le FEC produit est un **export pour l'expert-comptable**, qui reste maître des
-//! écritures définitives.
-
-use std::collections::HashMap;
+//! Limites assumées, dites dans le fichier lui-même par les libellés — voir le commentaire de
+//! module de `crate::ledger`. Le FEC produit est un **export pour l'expert-comptable**, qui reste
+//! maître des écritures définitives.
 
 use rusqlite::Connection;
 use time::Date;
 
 use crate::app::AppError;
-use crate::billing::{compute_totals, list_invoices, list_payments};
-use crate::clients::list_clients;
-use crate::company::{CompanyProfile, company_profile};
-use crate::domain::{
-    Client, Expense, ExpenseCategory, FiscalYear, FiscalYearEnd, Invoice, Money, Payment,
-    PaymentMethod, Siren,
+use crate::company::CompanyProfile;
+use crate::domain::{Client, Expense, FiscalYear, Invoice, Money, OpeningBalance, Payment, Siren};
+use crate::ledger::ledger_ending_in;
+pub use crate::ledger::{
+    Account, AuxAccount, Journal, Ledger, LedgerEntry as FecEntry, LedgerFacts,
+    LedgerLine as FecLine, OpeningLines, accounts, charge_account, exercise_ending_in,
 };
-use crate::expenses::list_expenses;
-use crate::fiscal_year::fiscal_year_ending_in;
 
 /// Séparateur de champs — l'un des deux admis (`|` ou tabulation).
 pub const SEPARATOR: char = '|';
@@ -62,177 +50,6 @@ pub const HEADER: [&str; 18] = [
     "Idevise",
 ];
 
-/// Journal comptable — l'ordre des variantes est l'ordre de tri à date égale.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Journal {
-    /// `VE` : factures et avoirs.
-    Sales,
-    /// `AC` : dépenses.
-    Purchases,
-    /// `BQ` : encaissements et leurs annulations.
-    Bank,
-}
-
-impl Journal {
-    #[must_use]
-    pub const fn code(self) -> &'static str {
-        match self {
-            Self::Sales => "VE",
-            Self::Purchases => "AC",
-            Self::Bank => "BQ",
-        }
-    }
-
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Sales => "Ventes",
-            Self::Purchases => "Achats",
-            Self::Bank => "Banque",
-        }
-    }
-}
-
-/// Un compte du plan comptable général, numéro et libellé.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-pub struct Account {
-    pub number: &'static str,
-    pub label: &'static str,
-}
-
-/// Le plan de comptes minimal du FEC — fixe, sans paramétrage : un compte par fait du domaine.
-pub mod accounts {
-    use super::Account;
-
-    pub const CLIENTS: Account = Account {
-        number: "411000",
-        label: "Clients",
-    };
-    pub const BANK: Account = Account {
-        number: "512000",
-        label: "Banque",
-    };
-    pub const SERVICES: Account = Account {
-        number: "706000",
-        label: "Prestations de services",
-    };
-    pub const VAT_COLLECTED: Account = Account {
-        number: "445710",
-        label: "TVA collectée",
-    };
-    pub const VAT_DEDUCTIBLE: Account = Account {
-        number: "445660",
-        label: "TVA déductible sur autres biens et services",
-    };
-    pub const SOFTWARE: Account = Account {
-        number: "651000",
-        label: "Redevances pour logiciels et licences",
-    };
-    pub const SMALL_EQUIPMENT: Account = Account {
-        number: "606300",
-        label: "Fournitures d'entretien et de petit équipement",
-    };
-    pub const TRAVEL: Account = Account {
-        number: "625100",
-        label: "Voyages et déplacements",
-    };
-    pub const MEALS: Account = Account {
-        number: "625600",
-        label: "Missions",
-    };
-    pub const OFFICE: Account = Account {
-        number: "606400",
-        label: "Fournitures administratives",
-    };
-    pub const PROFESSIONAL: Account = Account {
-        number: "618000",
-        label: "Divers : formation, documentation, cotisations",
-    };
-    pub const OTHER: Account = Account {
-        number: "658000",
-        label: "Charges diverses de gestion courante",
-    };
-}
-
-/// Le compte de charge d'une catégorie de dépense.
-#[must_use]
-pub const fn charge_account(category: ExpenseCategory) -> Account {
-    match category {
-        ExpenseCategory::Software => accounts::SOFTWARE,
-        ExpenseCategory::Equipment => accounts::SMALL_EQUIPMENT,
-        ExpenseCategory::Travel => accounts::TRAVEL,
-        ExpenseCategory::Meals => accounts::MEALS,
-        ExpenseCategory::Office => accounts::OFFICE,
-        ExpenseCategory::Professional => accounts::PROFESSIONAL,
-        ExpenseCategory::Other => accounts::OTHER,
-    }
-}
-
-/// Compte auxiliaire (tiers) d'une ligne — ici toujours un client sous 411.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct AuxAccount {
-    /// Code stable et court : `C` suivi des huit premiers caractères hexadécimaux de l'UUID du
-    /// client (la même idée qu'un hash git court, ou qu'un préfixe de référence CLI).
-    pub number: String,
-    pub label: String,
-}
-
-impl AuxAccount {
-    fn for_client(client: &Client) -> Self {
-        let hex: String = client
-            .id
-            .as_uuid()
-            .simple()
-            .to_string()
-            .chars()
-            .take(8)
-            .collect::<String>()
-            .to_ascii_uppercase();
-        Self {
-            number: format!("C{hex}"),
-            label: client.name.clone(),
-        }
-    }
-}
-
-/// Une ligne d'écriture : `amount` positif au débit, négatif au crédit.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct FecLine {
-    pub account: Account,
-    pub aux: Option<AuxAccount>,
-    pub amount: Money,
-}
-
-/// Une écriture : ses lignes somment à zéro (voir [`FecEntry::is_balanced`]).
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct FecEntry {
-    pub journal: Journal,
-    /// Numéro séquentiel continu *par journal*, attribué après tri chronologique.
-    pub number: u32,
-    pub date: Date,
-    pub piece_ref: String,
-    pub piece_date: Date,
-    pub label: String,
-    pub lines: Vec<FecLine>,
-}
-
-impl FecEntry {
-    #[must_use]
-    pub fn is_balanced(&self) -> bool {
-        self.lines.iter().map(|l| l.amount).sum::<Money>() == Money::ZERO
-    }
-
-    #[must_use]
-    pub fn total_debit(&self) -> Money {
-        self.lines
-            .iter()
-            .filter(|l| !l.amount.is_negative())
-            .map(|l| l.amount)
-            .sum()
-    }
-}
-
 /// Le FEC d'un exercice : identité, période, écritures triées et numérotées.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Fec {
@@ -254,201 +71,21 @@ pub struct FecSummary {
     pub total_credit_cents: i64,
 }
 
-fn method_label(method: PaymentMethod) -> &'static str {
-    match method {
-        PaymentMethod::BankTransfer => "virement",
-        PaymentMethod::Check => "chèque",
-        PaymentMethod::Card => "carte",
-        PaymentMethod::Other => "autre",
-    }
-}
-
-fn short_id(id: impl std::fmt::Display) -> String {
-    id.to_string().chars().take(8).collect::<String>()
-}
-
-/// Ligne signée sur un compte général, sans tiers.
-fn line(account: Account, amount: Money) -> FecLine {
-    FecLine {
-        account,
-        aux: None,
-        amount,
-    }
-}
-
-/// Les faits déjà indexés, partagés par les constructeurs d'écritures.
-struct Facts<'a> {
-    exercise: FiscalYear,
-    clients_by_id: HashMap<crate::domain::ClientId, &'a Client>,
-    invoices_by_id: HashMap<crate::domain::InvoiceId, &'a Invoice>,
-}
-
-impl Facts<'_> {
-    fn aux_of(&self, client_id: crate::domain::ClientId) -> AuxAccount {
-        self.clients_by_id.get(&client_id).map_or_else(
-            || AuxAccount {
-                number: format!("C{}", short_id(client_id).to_ascii_uppercase()),
-                label: "Client inconnu".to_string(),
-            },
-            |c| AuxAccount::for_client(c),
-        )
-    }
-
-    fn client_name(&self, client_id: crate::domain::ClientId) -> &str {
-        self.clients_by_id
-            .get(&client_id)
-            .map_or("client inconnu", |c| c.name.as_str())
-    }
-
-    fn invoice_number(&self, id: crate::domain::InvoiceId) -> String {
-        self.invoices_by_id
-            .get(&id)
-            .map_or_else(|| short_id(id), |i| i.number.clone())
-    }
-
-    /// Ventes : une écriture par facture ou avoir émis dans l'exercice — 411 au TTC, 706 au HT,
-    /// 445710 par taux ; les lignes négatives d'un avoir inversent les côtés d'elles-mêmes.
-    fn sales_entries(&self, invoices: &[Invoice]) -> Vec<FecEntry> {
-        let mut entries = Vec::new();
-        for invoice in invoices
-            .iter()
-            .filter(|i| self.exercise.contains(i.issued_on))
-        {
-            let totals = compute_totals(&invoice.lines);
-            let ttc = totals.subtotal_ht + totals.total_vat;
-            let mut lines = vec![FecLine {
-                account: accounts::CLIENTS,
-                aux: Some(self.aux_of(invoice.client_id)),
-                amount: ttc,
-            }];
-            lines.push(line(accounts::SERVICES, -totals.subtotal_ht));
-            for vat in &totals.vat_breakdown {
-                lines.push(line(accounts::VAT_COLLECTED, -vat.vat_amount));
-            }
-            lines.retain(|l| !l.amount.is_zero());
-            if lines.is_empty() {
-                continue;
-            }
-            let label = match invoice.credited_invoice_id {
-                Some(original) => format!(
-                    "Avoir {} sur {} — {}",
-                    invoice.number,
-                    self.invoice_number(original),
-                    self.client_name(invoice.client_id)
-                ),
-                None => format!(
-                    "Facture {} — {}",
-                    invoice.number,
-                    self.client_name(invoice.client_id)
-                ),
-            };
-            entries.push(FecEntry {
-                journal: Journal::Sales,
-                number: 0,
-                date: invoice.issued_on,
-                piece_ref: invoice.number.clone(),
-                piece_date: invoice.issued_on,
-                label,
-                lines,
-            });
-        }
-        entries
-    }
-
-    /// Banque : un encaissement (512 / 411) daté de sa réception, et l'extourne d'un
-    /// encaissement annulé (411 / 512) datée de son annulation — deux écritures distinctes, qui
-    /// peuvent tomber dans deux exercices.
-    fn bank_entries(&self, payments: &[Payment]) -> Vec<FecEntry> {
-        let mut entries = Vec::new();
-        for payment in payments.iter().filter(|p| !p.amount.is_zero()) {
-            let number = self.invoice_number(payment.invoice_id);
-            let client_id = self
-                .invoices_by_id
-                .get(&payment.invoice_id)
-                .map(|i| i.client_id);
-            let client_line = |amount| FecLine {
-                account: accounts::CLIENTS,
-                aux: client_id.map(|id| self.aux_of(id)),
-                amount,
-            };
-            if self.exercise.contains(payment.received_on) {
-                entries.push(FecEntry {
-                    journal: Journal::Bank,
-                    number: 0,
-                    date: payment.received_on,
-                    piece_ref: number.clone(),
-                    piece_date: payment.received_on,
-                    label: format!("Règlement {number} ({})", method_label(payment.method)),
-                    lines: vec![
-                        line(accounts::BANK, payment.amount),
-                        client_line(-payment.amount),
-                    ],
-                });
-            }
-            let Some(voided_on) = payment.voided_at.map(time::OffsetDateTime::date) else {
-                continue;
-            };
-            if self.exercise.contains(voided_on) {
-                entries.push(FecEntry {
-                    journal: Journal::Bank,
-                    number: 0,
-                    date: voided_on,
-                    piece_ref: number.clone(),
-                    piece_date: voided_on,
-                    label: format!(
-                        "Annulation du règlement {number} du {}",
-                        crate::domain::format_date(payment.received_on)
-                    ),
-                    lines: vec![
-                        client_line(payment.amount),
-                        line(accounts::BANK, -payment.amount),
-                    ],
-                });
-            }
-        }
-        entries
-    }
-
-    /// Achats : une dépense est réputée payée à sa date (le domaine enregistre un montant TTC
-    /// réellement payé) — charge HT (TTC − TVA déductible) et 445660 contre 512.
-    fn purchase_entries(&self, expenses: &[Expense]) -> Vec<FecEntry> {
-        let mut entries = Vec::new();
-        for expense in expenses
-            .iter()
-            .filter(|e| self.exercise.contains(e.incurred_on))
-        {
-            let charge = expense.amount - expense.vat_deductible;
-            let mut lines = vec![
-                line(charge_account(expense.category), charge),
-                line(accounts::VAT_DEDUCTIBLE, expense.vat_deductible),
-                line(accounts::BANK, -expense.amount),
-            ];
-            lines.retain(|l| !l.amount.is_zero());
-            if lines.is_empty() {
-                continue;
-            }
-            entries.push(FecEntry {
-                journal: Journal::Purchases,
-                number: 0,
-                date: expense.incurred_on,
-                piece_ref: expense.receipt_filename.clone().unwrap_or_else(|| {
-                    format!("DEP-{}", short_id(expense.id).to_ascii_uppercase())
-                }),
-                piece_date: expense.incurred_on,
-                label: expense.label.clone(),
-                lines,
-            });
-        }
-        entries
-    }
-}
-
 impl Fec {
+    /// Le FEC d'un grand livre déjà dérivé.
+    #[must_use]
+    pub fn from_ledger(siren: Siren, ledger: Ledger) -> Self {
+        Self {
+            siren,
+            exercise: ledger.exercise,
+            entries: ledger.entries,
+        }
+    }
+
     /// Construit le FEC d'un exercice à partir des faits du domaine — fonction pure, testable
-    /// sans base. Seuls les faits *datés dans l'exercice* sont retenus : une facture par sa date
-    /// d'émission, un encaissement par sa date de réception, son annulation par sa date
-    /// d'annulation (les deux peuvent tomber dans des exercices différents — chacune est une
-    /// écriture à part entière), une dépense par sa date d'engagement.
+    /// sans base. Le bilan d'ouverture (lot 30) fournit les à-nouveaux si, et seulement si, il
+    /// ouvre cet exercice ; sans exercice clos enregistré, l'IS et la rémunération du dirigeant
+    /// sont recalculés depuis le profil (voir [`Ledger::build`]).
     #[must_use]
     pub fn build(
         profile: &CompanyProfile,
@@ -457,38 +94,22 @@ impl Fec {
         clients: &[Client],
         payments: &[Payment],
         expenses: &[Expense],
+        opening: Option<&OpeningBalance>,
     ) -> Self {
-        let facts = Facts {
+        let ledger = Ledger::build(LedgerFacts {
+            profile,
             exercise,
-            clients_by_id: clients.iter().map(|c| (c.id, c)).collect(),
-            invoices_by_id: invoices.iter().map(|i| (i.id, i)).collect(),
-        };
-        let mut entries = facts.sales_entries(invoices);
-        entries.extend(facts.bank_entries(payments));
-        entries.extend(facts.purchase_entries(expenses));
-
-        // Ordre chronologique (exigé), puis journal et pièce pour un ordre total reproductible ;
-        // numérotation continue par journal une fois l'ordre fixé.
-        entries.sort_by(|a, b| {
-            (a.date, a.journal, &a.piece_ref, &a.label).cmp(&(
-                b.date,
-                b.journal,
-                &b.piece_ref,
-                &b.label,
-            ))
+            invoices,
+            clients,
+            payments,
+            expenses,
+            opening: opening
+                .filter(|o| o.opens_on == exercise.start())
+                .map(OpeningLines::from_opening_balance),
+            snapshot: None,
+            appropriations: &[],
         });
-        let mut counters: HashMap<Journal, u32> = HashMap::new();
-        for entry in &mut entries {
-            let n = counters.entry(entry.journal).or_insert(0);
-            *n += 1;
-            entry.number = *n;
-        }
-
-        Self {
-            siren: profile.siren,
-            exercise,
-            entries,
-        }
+        Self::from_ledger(profile.siren, ledger)
     }
 
     /// `<SIREN>FEC<AAAAMMJJ>.txt`, daté de la clôture de l'exercice — le nom imposé.
@@ -550,8 +171,8 @@ impl Fec {
                     entry.journal.label(),
                     &entry.number.to_string(),
                     &date,
-                    l.account.number,
-                    l.account.label,
+                    l.account.number.as_ref(),
+                    l.account.label.as_ref(),
                     aux_num,
                     aux_lib,
                     &entry.piece_ref,
@@ -610,49 +231,17 @@ fn push_record(out: &mut String, fields: &[&str; 18]) {
     out.push('\n');
 }
 
-/// L'exercice dont la clôture tombe dans l'année civile `period` — les dates de l'exercice clos
-/// enregistré s'il existe (la date de clôture du profil a pu changer depuis), sinon dérivées de
-/// la date de clôture du profil (année civile à défaut). Même désignation que `year show`.
-///
-/// # Errors
-///
-/// Erreur de lecture SQLite.
-pub fn exercise_ending_in(
-    conn: &Connection,
-    profile: &CompanyProfile,
-    period: i32,
-) -> Result<FiscalYear, AppError> {
-    if let Some(record) = fiscal_year_ending_in(conn, period)? {
-        return Ok(record.period());
-    }
-    let fye = profile.fiscal_year_end.unwrap_or(FiscalYearEnd::CALENDAR);
-    Ok(fye.containing(fye.end_in_year(period)))
-}
-
 /// Construit le FEC de l'exercice clos en `period` depuis la base — la requête que les trois
-/// façades partagent.
+/// façades partagent, par-dessus le grand livre dérivé ([`crate::ledger::ledger_ending_in`]) :
+/// à-nouveaux chaînés d'un exercice clos sur l'autre, opérations de clôture comprises.
 ///
 /// # Errors
 ///
 /// `AppError::Domain` sans profil d'entreprise (le SIREN nomme le fichier) ; erreur de lecture
 /// SQLite sinon.
 pub fn build_fec(conn: &Connection, period: i32) -> Result<Fec, AppError> {
-    let profile = company_profile(conn)?.ok_or_else(|| {
-        AppError::Domain(
-            "aucun profil d'entreprise défini : le SIREN est nécessaire pour nommer le FEC \
-             (company set-profile)"
-                .to_string(),
-        )
-    })?;
-    let exercise = exercise_ending_in(conn, &profile, period)?;
-    Ok(Fec::build(
-        &profile,
-        exercise,
-        &list_invoices(conn)?,
-        &list_clients(conn)?,
-        &list_payments(conn)?,
-        &list_expenses(conn)?,
-    ))
+    let (profile, ledger) = ledger_ending_in(conn, period)?;
+    Ok(Fec::from_ledger(profile.siren, ledger))
 }
 
 #[cfg(test)]
@@ -664,6 +253,7 @@ mod tests {
     use crate::domain::{
         Address, ClientId, InvoiceId, InvoiceLine, InvoiceStatus, PaymentId, VatRate,
     };
+    use crate::domain::{ExpenseCategory, FiscalYearEnd, PaymentMethod};
     use crate::expenses::RecordExpense;
     use crate::store::{Passphrase, Store};
     use proptest::prelude::*;
@@ -791,6 +381,56 @@ mod tests {
     }
 
     #[test]
+    fn the_opening_balance_becomes_an_an_entry_on_the_first_day_of_its_exercise_only() {
+        let opening = OpeningBalance {
+            opens_on: date(2026, TimeMonth::January, 1),
+            source: Some("bilan au 31/12/2025, cabinet X".to_string()),
+            lines: vec![
+                "101000:Capital social:C:1000.00".parse().unwrap(),
+                "110000:Report à nouveau:C:500.00".parse().unwrap(),
+                "512000:Banque:D:1500.00".parse().unwrap(),
+            ],
+        };
+        let fec = Fec::build(
+            &profile(),
+            FiscalYear::calendar(2026),
+            &[],
+            &[],
+            &[],
+            &[],
+            Some(&opening),
+        );
+        assert_eq!(fec.entries.len(), 1);
+        let an = &fec.entries[0];
+        assert_eq!(an.journal, Journal::Opening);
+        assert_eq!(an.number, 1);
+        assert_eq!(an.date, date(2026, TimeMonth::January, 1));
+        assert!(an.is_balanced());
+        assert_eq!(an.lines.len(), 3);
+        assert_eq!(an.lines[0].account.number, "101000");
+        assert_eq!(an.lines[0].account.label, "Capital social");
+        assert_eq!(an.lines[0].amount, Money::from_cents(-100_000));
+        assert_eq!(an.lines[2].amount, Money::from_cents(150_000));
+        let rendered = fec.render();
+        let first = rendered.lines().nth(1).unwrap();
+        assert!(first.starts_with("AN|À-nouveaux|1|20260101|101000|Capital social|||AN|20260101|À-nouveaux — bilan au 31/12/2025, cabinet X|0,00|1000,00|"), "{first}");
+        assert_eq!(fec.total_debit(), Money::from_cents(150_000));
+        assert_eq!(fec.total_credit(), Money::from_cents(150_000));
+
+        // L'exercice suivant s'ouvre sur la clôture du précédent, pas sur ce bilan : aucun AN.
+        let next = Fec::build(
+            &profile(),
+            FiscalYear::calendar(2027),
+            &[],
+            &[],
+            &[],
+            &[],
+            Some(&opening),
+        );
+        assert!(next.entries.is_empty());
+    }
+
+    #[test]
     #[allow(clippy::too_many_lines)]
     fn the_rendered_file_is_the_dgfip_layout_with_balanced_entries() {
         let client_id: ClientId = "01900000-0000-7000-8000-00000000abcd".parse().unwrap();
@@ -836,6 +476,7 @@ mod tests {
             &clients,
             &payments,
             &expenses,
+            None,
         );
         assert_eq!(fec.file_name(), "552100554FEC20261231.txt");
         assert!(fec.entries.iter().all(FecEntry::is_balanced));
@@ -942,6 +583,7 @@ mod tests {
             &[client(client_id, "Acme")],
             &payments,
             &expenses,
+            None,
         );
         assert_eq!(fec.entries.len(), 1, "{:?}", fec.entries);
         let void = &fec.entries[0];
@@ -963,9 +605,17 @@ mod tests {
             &[client(client_id, "Acme")],
             &payments,
             &expenses,
+            None,
         );
+        // Facture et règlement, puis l'IS de clôture sur le bénéfice de 1 000 € (150 €) en OD
+        // (lot 31).
         let kinds: Vec<_> = fec_2025.entries.iter().map(|e| e.journal).collect();
-        assert_eq!(kinds, vec![Journal::Sales, Journal::Bank]);
+        assert_eq!(kinds, vec![Journal::Sales, Journal::Bank, Journal::Misc]);
+        assert_eq!(fec_2025.entries[2].piece_ref, "OD-IS");
+        assert_eq!(
+            fec_2025.entries[2].lines[0].amount,
+            Money::from_cents(15_000)
+        );
         assert!(
             fec_2025.entries[1].label.starts_with("Règlement"),
             "l'encaissement lui-même reste au FEC 2025"
@@ -1003,6 +653,7 @@ mod tests {
                 800,
                 date(2026, TimeMonth::May, 5),
             )],
+            None,
         );
         let entry = &fec.entries[0];
         assert_eq!(entry.lines[0].account, accounts::MEALS);
@@ -1058,6 +709,7 @@ mod tests {
                 &[client(client_id, "Acme")],
                 &payments,
                 &expenses,
+                None,
             );
             prop_assert!(fec.entries.iter().all(FecEntry::is_balanced));
             prop_assert_eq!(fec.total_debit(), fec.total_credit());

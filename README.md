@@ -125,12 +125,38 @@ implémentation.
   télédéclaration dérivée du profil (`vat_filing`).
 - Prévisionnel de trésorerie sur 12 mois (factures émises non payées + missions signées non
   facturées + pipeline pondéré − charges connues).
+- **Grand livre dérivé, balance et bilan** : FreeFlow ne tient pas de comptabilité, il *dérive*
+  les écritures de ses faits — bilan d'ouverture (journal `AN`), factures et avoirs (`VE`),
+  encaissements et annulations (`BQ`), dépenses (`AC`), puis les opérations de clôture (`OD`) :
+  rémunération du dirigeant (641/645 contre 421/431, réputée due), IS (695 contre 444) et
+  affectation du résultat de l'exercice précédent (120/129 vers 1061, 457, 110/119, datée de
+  l'AG ou du premier jour de l'exercice tant que la décision est un projet). Les exercices
+  s'enchaînent : ceux qui suivent un exercice clos dans l'application s'ouvrent sur son bilan de
+  clôture dérivé. `freeflow year balance 2026` (ou `--json`), outil MCP `fiscal.balance_sheet`,
+  ressource `freeflow://balance-sheet/{année}`, bouton « bilan » de l'écran `cloture` : la
+  **balance des comptes** et le **bilan simplifié** dans la présentation du tableau
+  **2033-A-SD** (actif brut / amortissements / net, passif par rubriques, cases 010 à 180),
+  équilibré par construction — pour un exercice clos ou non, c'est ce qu'on regarde *avant* de
+  clore. En PDF : `freeflow year render 2026 balance-sheet --out bilan.pdf`, `fiscal.render_year`
+  avec `balance_sheet`, lien « bilan et balance (PDF) » de la fenêtre. La liasse JSON gagne les
+  cases 2033-A.
 - **Export FEC** (Fichier des Écritures Comptables, art. A. 47 A-1 LPF) d'un exercice, clos ou
   non, pour l'expert-comptable : `freeflow fec export 2026 --out <répertoire|fichier>`, outil MCP
-  `fec.export`, bouton « FEC » de l'écran `cloture`. Dérivé des factures et avoirs (journal VE),
-  encaissements et annulations (BQ) et dépenses (AC) sur un plan de comptes PCG minimal, écritures
-  équilibrées par construction, format DGFiP (18 colonnes, `|`, `AAAAMMJJ`, virgule décimale,
-  nom `<SIREN>FEC<AAAAMMJJ>.txt`).
+  `fec.export`, bouton « FEC » de l'écran `cloture`. Le format DGFiP (18 colonnes, `|`,
+  `AAAAMMJJ`, virgule décimale, nom `<SIREN>FEC<AAAAMMJJ>.txt`) du grand livre dérivé ci-dessus,
+  journaux `AN`/`VE`/`AC`/`BQ`/`OD`, écritures équilibrées par construction.
+- **Bilan d'ouverture** : la reprise, compte par compte, du dernier bilan tenu avant FreeFlow
+  (typiquement par l'expert-comptable), à saisir **avant** toute clôture dans l'application.
+  `freeflow year opening set --opens-on 2025-10-01 --line "101000:Capital social:C:1000.00"
+  --line "512000:Banque:D:1000.00"` (ou `--lines-file`, une ligne par compte, même syntaxe
+  `compte:libellé:D|C:montant`), `year opening show|rm` ; outils MCP `fiscal.opening_balance`/
+  `fiscal.set_opening_balance`/`fiscal.delete_opening_balance` et ressource
+  `freeflow://opening-balance` ; bouton « bilan d'ouverture » de l'écran `cloture`. Comptes de
+  bilan seulement (classes 1 à 5), total débit = total crédit, une ligne par compte. Il fournit
+  le report à nouveau (110/119, et un 120/129 réputé affecté en report) et la réserve légale
+  (1061) dont hérite le premier exercice clos ici — qui doit commencer le jour même de la
+  reprise — et les **à-nouveaux** (journal `AN`) du grand livre de ce premier exercice. Figé dès
+  qu'un exercice est clos : corriger se fait en supprimant d'abord le projet de clôture.
 
 ### Sécurité & fiabilité
 - Chiffrement SQLCipher par une **clé maître aléatoire** (modèle LUKS) : la passphrase ne sert
@@ -293,10 +319,13 @@ distribués prêts à l'emploi — voir la checklist ci-dessous.
   impots.gouv.fr. La date de la CA3 suit la grille officielle et le régime réel simplifié est
   modélisé (acomptes 3514, CA12), mais la base des acomptes est la TVA nette de l'exercice
   précédent — le domaine ne distingue pas la TVA sur immobilisations, que la règle légale exclut.
-- **FEC dérivé, pas une comptabilité tenue** : les dépenses sont réputées payées à leur date
-  (pas de compte fournisseur), l'équipement passe en charge sans seuil d'immobilisation, la
-  rémunération du dirigeant et l'IS ne sont pas des écritures, lettrage et devise restent vides.
-  L'expert-comptable reste maître des écritures définitives.
+- **Grand livre dérivé, pas une comptabilité tenue** : les dépenses sont réputées payées à leur
+  date (pas de compte fournisseur), l'équipement passe en charge sans seuil d'immobilisation, la
+  rémunération du dirigeant est réputée due et non décaissée (aucun fait de paie), la TVA n'est
+  jamais liquidée (445660/445710 restent bruts au bilan), pas d'amortissement de l'exercice, de
+  provision ni de régularisation ; lettrage et devise du FEC restent vides. Un exercice qui suit
+  un exercice **non** clos dans l'application n'a pas d'à-nouveaux. L'expert-comptable reste
+  maître des écritures définitives et du bilan déposé.
 - **`.dmg` macOS** : pas encore construit/testé (nécessite une machine macOS réelle).
 - **`.AppImage` Linux** : le bundling bute sur une incompatibilité d'environnement documentée dans
   `CLAUDE.md` (chemin `gdk-pixbuf` non-FHS sur certaines distributions type NixOS/Nix-sur-Arch).
@@ -363,6 +392,15 @@ distribués prêts à l'emploi — voir la checklist ci-dessous.
       `.eml` actuels.
 - [x] Export comptable : FEC d'un exercice (CLI, MCP, fenêtre), dérivé des faits du domaine — voir
       « Dépenses & obligations fiscales » et les limites ci-dessus.
+- [x] Bilan d'ouverture (reprise du bilan de l'expert-comptable) chaîné dans la clôture et le FEC —
+      voir « Dépenses & obligations fiscales » ci-dessus.
+- [x] Grand livre dérivé complet et **bilan de clôture** (actif/passif, tableau 2033-A) :
+      à-nouveaux chaînés d'un exercice clos sur le suivant, opérations de clôture (rémunération,
+      IS, affectation) en écritures `OD`, balance des comptes et bilan 2033-A en CLI/MCP/fenêtre
+      et en PDF, cases 2033-A dans la liasse — voir « Dépenses & obligations fiscales ».
+- [ ] Déficit fiscal reportable (art. 209 I CGI) et option de report en arrière : aujourd'hui un
+      exercice déficitaire ne porte qu'un report à nouveau comptable, jamais réimputé sur l'IS
+      suivant.
 - [ ] Tableau de bord de rentabilité par client sur la durée (au-delà de la mission en cours).
 - [ ] Chiffrement additionnel des pièces jointes de justificatifs de dépenses sur disque (au-delà
       du hash d'intégrité SHA-256 déjà en place).

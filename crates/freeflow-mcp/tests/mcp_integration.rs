@@ -153,6 +153,10 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "fiscal.approve_year",
         "fiscal.delete_year",
         "fiscal.render_year",
+        "fiscal.opening_balance",
+        "fiscal.set_opening_balance",
+        "fiscal.delete_opening_balance",
+        "fiscal.balance_sheet",
         "fec.export",
     ] {
         assert!(names.contains(expected), "outil manquant : {expected}");
@@ -181,6 +185,8 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "fiscal.deadlines",
         "fiscal.years",
         "fiscal.year_show",
+        "fiscal.opening_balance",
+        "fiscal.balance_sheet",
     ] {
         assert_eq!(
             by_name(read_only)
@@ -1377,6 +1383,25 @@ async fn a_fiscal_year_can_be_shown_and_amended_but_approval_and_deletion_need_a
     assert_eq!(record["ends_on"], "2025-12-31");
     assert!(record["approved_on"].is_null());
 
+    // Lot 31 : balance et bilan dérivés du grand livre — outil et ressource partagent la vue.
+    let sheet = call(&client, "fiscal.balance_sheet", json!({"period": 2025})).await;
+    assert_eq!(sheet.is_error, Some(false));
+    let sheet = json_of(&sheet);
+    assert_eq!(sheet["balance_sheet"]["balanced"], true);
+    assert_eq!(sheet["ends_on"], "2025-12-31");
+    let resource = client
+        .read_resource(ReadResourceRequestParams::new(
+            "freeflow://balance-sheet/2025",
+        ))
+        .await
+        .unwrap();
+    let text = match &resource.contents[0] {
+        rmcp::model::ResourceContents::TextResourceContents { text, .. } => text.clone(),
+        other => panic!("contenu inattendu : {other:?}"),
+    };
+    let via_resource: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(via_resource, sheet);
+
     let amended = call(
         &client,
         "fiscal.amend_year",
@@ -1503,8 +1528,9 @@ async fn exporting_the_fec_writes_the_regulatory_file_and_never_overwrites() {
     assert_eq!(exported.is_error, Some(false), "{exported:?}");
     let result = json_of(&exported);
     assert_eq!(result["summary"]["file_name"], "552100554FEC20261231.txt");
-    assert_eq!(result["summary"]["entries"], 1);
-    assert_eq!(result["summary"]["total_debit_cents"], 240_000);
+    // La facture, puis l'IS de clôture en OD (lot 31) : 15 % de 2 000 € = 300 €.
+    assert_eq!(result["summary"]["entries"], 2);
+    assert_eq!(result["summary"]["total_debit_cents"], 270_000);
     let path = dir.join("552100554FEC20261231.txt");
     assert_eq!(result["path"], path.to_str().unwrap());
     let content = std::fs::read_to_string(&path).unwrap();
@@ -1587,4 +1613,52 @@ async fn rendering_an_invoice_writes_a_facturx_pdf() {
     assert!(bytes.starts_with(b"%PDF"), "le fichier écrit est un PDF");
 
     client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn an_agent_setting_the_opening_balance_only_deposits_a_pending_action() {
+    let db_path = test_db_path("opening-gate");
+    let mut store = Store::create(&db_path, &Passphrase::from("s3cret")).unwrap();
+    set_company_profile(&mut store);
+    let client = spawn_client(store).await;
+
+    // Rien d'enregistré : outil et ressource répondent null.
+    let none = call(&client, "fiscal.opening_balance", json!({})).await;
+    assert_eq!(none.is_error, Some(false));
+    assert!(json_of(&none).is_null());
+
+    let set = call(
+        &client,
+        "fiscal.set_opening_balance",
+        json!({
+            "opens_on": "2026-01-01",
+            "source": "bilan au 31/12/2025",
+            "lines": ["101000:Capital social:C:1000.00", "512000:Banque:D:1000.00"],
+        }),
+    )
+    .await;
+    assert_eq!(set.is_error, Some(false));
+    assert_eq!(json_of(&set)["status"], "pending_confirmation");
+    let still_none = call(&client, "fiscal.opening_balance", json!({})).await;
+    assert!(json_of(&still_none).is_null());
+    let read = client
+        .read_resource(ReadResourceRequestParams::new("freeflow://opening-balance"))
+        .await
+        .unwrap();
+    let text = match &read.contents[0] {
+        rmcp::model::ResourceContents::TextResourceContents { text, .. } => text.clone(),
+        other => panic!("expected text contents, got {other:?}"),
+    };
+    assert_eq!(text.trim(), "null");
+
+    // Une ligne mal formée ou un bilan déséquilibré sont refusés avant tout dépôt d'action.
+    let malformed = call(
+        &client,
+        "fiscal.set_opening_balance",
+        json!({"opens_on": "2026-01-01", "lines": ["101000:Capital"]}),
+    )
+    .await;
+    assert_eq!(malformed.is_error, Some(true));
+    let deleted = call(&client, "fiscal.delete_opening_balance", json!({})).await;
+    assert_eq!(deleted.is_error, Some(true), "rien à supprimer");
 }

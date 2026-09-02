@@ -185,6 +185,15 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/cloture/table", get(cloture::table))
         .route("/cloture/new", get(cloture::new_panel))
+        .route(
+            "/cloture/opening",
+            get(cloture::opening_panel).post(cloture::opening_save),
+        )
+        .route("/cloture/opening/edit", get(cloture::opening_edit_panel))
+        .route(
+            "/cloture/opening/delete",
+            get(cloture::opening_delete_panel).post(cloture::opening_delete),
+        )
         .route("/cloture", post(cloture::create))
         .route(
             "/cloture/{id}",
@@ -201,6 +210,8 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/cloture/{id}/doc/{kind}", get(cloture::document))
         .route("/cloture/fec", get(cloture::fec))
+        .route("/cloture/balance", get(cloture::balance_panel))
+        .route("/cloture/balance.pdf", get(cloture::balance_pdf))
         .route("/session/touch", post(unlock::touch))
         .route("/lock", post(unlock::lock))
         .route("/unlock", get(unlock::show).post(unlock::submit))

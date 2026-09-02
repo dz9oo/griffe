@@ -2,10 +2,11 @@
 //! synthèse comptable — rendus en PDF via Typst, sur le patron de `freeflow-invoice` — et
 //! export des données de liasse (2065/2033) en structure JSON. Comme `freeflow-invoice`, ce
 //! crate est l'« adaptateur documentaire » : il reçoit des données du domaine déjà lues
-//! (`CompanyProfile`, `FiscalYearRecord`, `AccountingResult`), ne touche jamais la base, et
-//! c'est lui qui fait l'IO process vers le binaire `typst`.
+//! (`CompanyProfile`, `FiscalYearRecord`, `AccountingResult`, `BalanceSheet`), ne touche jamais
+//! la base, et c'est lui qui fait l'IO process vers le binaire `typst`.
 
 mod appropriation;
+mod balance_sheet;
 mod error;
 mod liasse;
 mod minutes;
@@ -13,6 +14,7 @@ mod synthesis;
 mod typst;
 
 pub use appropriation::render_appropriation_decision;
+pub use balance_sheet::render_balance_sheet;
 pub use error::DocsError;
 pub use liasse::{LiasseEntry, LiasseExport, liasse_export};
 pub use minutes::render_approval_minutes;

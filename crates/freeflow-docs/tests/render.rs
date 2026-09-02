@@ -7,8 +7,10 @@ use freeflow_core::accounting::AccountingResult;
 use freeflow_core::company::CompanyProfile;
 use freeflow_core::domain::{Address, FiscalYear, FiscalYearId, Money, Siren};
 use freeflow_core::fiscal_year::FiscalYearRecord;
+use freeflow_core::ledger::{Ledger, LedgerFacts, LiabilityRubric, OpeningLines};
 use freeflow_docs::{
-    liasse_export, render_appropriation_decision, render_approval_minutes, render_synthesis,
+    liasse_export, render_appropriation_decision, render_approval_minutes, render_balance_sheet,
+    render_synthesis,
 };
 use time::{Date, Month, OffsetDateTime};
 
@@ -111,7 +113,7 @@ fn hostile_company_name_does_not_break_typst_markup() {
 fn liasse_export_serializes_with_the_expected_cases() {
     let profile = profile("Argon Digital");
     let year = record(true);
-    let export = liasse_export(&profile, &year);
+    let export = liasse_export(&profile, &year, None);
 
     assert!(export.approved);
     assert_eq!(export.siren, "552100554");
@@ -125,4 +127,61 @@ fn liasse_export_serializes_with_the_expected_cases() {
     let json = serde_json::to_string_pretty(&export).unwrap();
     assert!(json.contains("2033-B"));
     assert!(json.contains("EDI-TDFC"));
+}
+
+/// Un grand livre minimal : bilan d'ouverture (capital contre banque) et rien d'autre — le
+/// rendu ne dépend d'aucune base.
+fn ledger(profile: &CompanyProfile) -> Ledger {
+    Ledger::build(LedgerFacts {
+        profile,
+        exercise: FiscalYear::calendar(2026),
+        invoices: &[],
+        clients: &[],
+        payments: &[],
+        expenses: &[],
+        opening: Some(OpeningLines::from_opening_balance(
+            &freeflow_core::domain::OpeningBalance {
+                opens_on: date(2026, Month::January, 1),
+                source: None,
+                lines: vec![
+                    "101000:Capital social:C:1000.00".parse().unwrap(),
+                    "455000:Compte courant d'associé:C:200.00".parse().unwrap(),
+                    "512000:Banque:D:1200.00".parse().unwrap(),
+                ],
+            },
+        )),
+        snapshot: None,
+        appropriations: &[],
+    })
+}
+
+#[test]
+fn the_balance_sheet_renders_to_pdf_and_feeds_the_2033a_cases_of_the_liasse() {
+    let profile = profile("Argon \"#quote\" Digital");
+    let ledger = ledger(&profile);
+    let sheet = ledger.balance_sheet();
+    let pdf = render_balance_sheet(&profile, &sheet, &ledger.trial_balance()).unwrap();
+    assert_is_pdf(&pdf, "bilan");
+
+    let export = liasse_export(&profile, &record(false), Some(&sheet));
+    let case = |c: &str| {
+        export
+            .entries
+            .iter()
+            .find(|e| e.form == "2033-A" && e.case == c)
+            .map(|e| e.amount_cents)
+    };
+    assert_eq!(case("084"), Some(120_000), "disponibilités");
+    assert_eq!(case("120"), Some(100_000), "capital");
+    assert_eq!(case("172"), Some(20_000), "autres dettes");
+    assert_eq!(
+        case("169"),
+        Some(20_000),
+        "dont comptes courants d'associés"
+    );
+    assert_eq!(case("112"), Some(120_000));
+    assert_eq!(case("180"), Some(120_000));
+    assert_eq!(case("136"), None, "résultat nul : case omise");
+    assert_eq!(sheet.liability(LiabilityRubric::Result), Money::ZERO);
+    assert!(export.note.contains("2033-A"));
 }

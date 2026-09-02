@@ -1942,6 +1942,58 @@ async fn closing_a_year_from_the_window_then_downloading_its_documents() {
     );
     let liasse_body = body_text(liasse).await;
     assert!(liasse_body.contains("2065"));
+    assert!(
+        liasse_body.contains("2033-A"),
+        "le bilan dérivé alimente la liasse (lot 31)"
+    );
+
+    // Le panneau « bilan » et son PDF, dérivés du grand livre (lot 31).
+    let balance = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/cloture/balance?period=2026")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(balance.status(), StatusCode::OK);
+    let balance_body = body_text(balance).await;
+    assert!(
+        balance_body.contains("Bilan au 2026-12-31"),
+        "{balance_body}"
+    );
+    assert!(balance_body.contains("équilibré"), "{balance_body}");
+    assert!(
+        balance_body.contains("Balance des comptes"),
+        "{balance_body}"
+    );
+    assert!(balance_body.contains("/cloture/balance.pdf?period=2026"));
+    let balance_pdf = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/cloture/balance.pdf?period=2026")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        balance_pdf
+            .headers()
+            .get("content-type")
+            .map(|v| v.to_str().unwrap()),
+        Some("application/pdf")
+    );
+    assert_eq!(
+        balance_pdf
+            .headers()
+            .get("content-disposition")
+            .map(|v| v.to_str().unwrap()),
+        Some("attachment; filename=\"bilan-2026.pdf\"")
+    );
 
     // Le FEC de l'exercice se télécharge sous son nom réglementaire, en texte brut — le même
     // fichier que `freeflow fec export 2026` (lot 28).
@@ -2779,4 +2831,153 @@ async fn voiding_a_payment_through_the_invoice_panel_restores_the_unpaid_status(
         .unwrap();
     assert!(!again.headers().contains_key("HX-Trigger"));
     assert!(body_text(again).await.contains("déjà annulé"));
+}
+
+#[tokio::test]
+async fn the_opening_balance_panel_records_shows_and_freezes_after_a_close() {
+    let db_path = test_db_path("opening-panel");
+    let state = unlocked_state_with_activity(&db_path).await;
+    let router = freeflow_web::router(state);
+
+    // Sans bilan : le panneau est le formulaire de saisie.
+    let empty = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/cloture/opening")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let empty_body = body_text(empty).await;
+    assert!(
+        empty_body.contains("Enregistrer le bilan d'ouverture"),
+        "{empty_body}"
+    );
+
+    // Un bilan déséquilibré re-rend le formulaire avec le refus du cœur en bandeau.
+    let unbalanced = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/cloture/opening")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(
+                    "opens_on=2026-01-01&source=&lines=101000%3ACapital%3AC%3A10.00%0A512000%3ABanque%3AD%3A9.00",
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unbalanced.status(), StatusCode::OK);
+    assert!(unbalanced.headers().get("HX-Trigger").is_none());
+    let unbalanced_body = body_text(unbalanced).await;
+    assert!(
+        unbalanced_body.contains("déséquilibré"),
+        "{unbalanced_body}"
+    );
+
+    // Un bilan valide s'enregistre : réponse vide + rafraîchissement.
+    let saved = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/cloture/opening")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(
+                    "opens_on=2026-01-01&source=bilan+2025&lines=101000%3ACapital+social%3AC%3A1000.00%0A110000%3AReport+%C3%A0+nouveau%3AC%3A250.00%0A512000%3ABanque%3AD%3A1250.00",
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(saved.status(), StatusCode::OK);
+    assert_eq!(
+        saved
+            .headers()
+            .get("HX-Trigger")
+            .map(|v| v.to_str().unwrap()),
+        Some("freeflow:saved")
+    );
+    let detail = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/cloture/opening")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(detail.contains("Capital social"), "{detail}");
+    assert!(detail.contains("modifiable"), "{detail}");
+    assert!(detail.contains("250,00"), "{detail}");
+
+    // Le formulaire de modification est pré-rempli avec la syntaxe texte et la révision.
+    let edit = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/cloture/opening/edit")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(edit.contains("101000:Capital social:C:1000.00"), "{edit}");
+    assert!(edit.contains("name=\"revision\" value=\"1\""), "{edit}");
+
+    // Clore 2026 fige le bilan : la fiche le dit, la suppression est refusée.
+    let closed = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/cloture")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(
+                    "starts_on=2026-01-01&ends_on=2026-12-31&legal_reserve=0&dividends=0",
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(closed.status(), StatusCode::OK);
+    let frozen = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/cloture/opening")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(frozen.contains("figé"), "{frozen}");
+    let refused = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/cloture/opening/delete")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(refused.headers().get("HX-Trigger").is_none());
+    let refused_body = body_text(refused).await;
+    assert!(refused_body.contains("déjà clos"), "{refused_body}");
 }

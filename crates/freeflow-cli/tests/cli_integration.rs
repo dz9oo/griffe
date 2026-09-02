@@ -1245,8 +1245,14 @@ fn fec_export_writes_the_regulatory_file_for_the_exercise() {
         "JournalCode|JournalLib|EcritureNum|EcritureDate|CompteNum|CompteLib|CompAuxNum|CompAuxLib|PieceRef|PieceDate|EcritureLib|Debit|Credit|EcritureLet|DateLet|ValidDate|Montantdevise|Idevise"
     );
     let body: Vec<&str> = records.collect();
-    // Facture : 411 / 706 / 445710 ; dépense : 651 / 445660 / 512.
-    assert_eq!(body.len(), 6, "{content}");
+    // Facture : 411 / 706 / 445710 ; dépense : 651 / 445660 / 512 ; puis l'IS de clôture en OD
+    // (lot 31) : 15 % du bénéfice de 1 900 € = 285 €, 695 / 444.
+    assert_eq!(body.len(), 8, "{content}");
+    assert!(
+        body[6].starts_with("OD|Opérations diverses|1|20261231|695000|"),
+        "{content}"
+    );
+    assert!(body[6].ends_with("|285,00|0,00|||20261231||"), "{content}");
     assert!(
         body[0].starts_with("VE|Ventes|1|20260310|411000|Clients|"),
         "{content}"
@@ -1276,10 +1282,10 @@ fn fec_export_writes_the_regulatory_file_for_the_exercise() {
     let shown = json_result(&out);
     assert_eq!(shown["path"], file.to_str().unwrap());
     assert_eq!(shown["summary"]["file_name"], "552100554FEC20261231.txt");
-    assert_eq!(shown["summary"]["entries"], 2);
-    assert_eq!(shown["summary"]["lines"], 6);
-    assert_eq!(shown["summary"]["total_debit_cents"], 252_000);
-    assert_eq!(shown["summary"]["total_credit_cents"], 252_000);
+    assert_eq!(shown["summary"]["entries"], 3);
+    assert_eq!(shown["summary"]["lines"], 8);
+    assert_eq!(shown["summary"]["total_debit_cents"], 280_500);
+    assert_eq!(shown["summary"]["total_credit_cents"], 280_500);
     assert!(file.exists());
 }
 
@@ -1873,4 +1879,213 @@ fn payment_corrections_from_reconciliation_to_unreconcile_and_void() {
             .all(|p| !p["voided_at"].is_null()),
         "les deux encaissements sont annulés"
     );
+}
+
+#[test]
+fn year_opening_balance_set_show_then_chains_into_the_first_close() {
+    let db = temp_db("year-opening");
+    provision(&db);
+    set_company_profile(&db);
+
+    // Un agent ne pose pas un bilan d'ouverture seul : action en attente, puis confirmation.
+    let lines_file = db.with_extension("balance.txt");
+    std::fs::write(
+        &lines_file,
+        "# bilan repris\n101000:Capital social:C:1000.00\n106100:Réserve légale:C:60.00\n\n",
+    )
+    .unwrap();
+    let pending_out = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "--json",
+            "--actor",
+            "agent:test-session",
+            "year",
+            "opening",
+            "set",
+            "--opens-on",
+            "2026-01-01",
+            "--source",
+            "bilan au 31/12/2025, cabinet X",
+            "--line",
+            "110000:Report à nouveau:C:250.00",
+            "--line",
+            "512000:Banque:D:1310.00",
+            "--lines-file",
+        ])
+        .arg(&lines_file)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let pending = json_result(&pending_out);
+    assert_eq!(pending["status"], "pending_confirmation");
+    let pending_id = pending["pending_action_id"].as_str().unwrap().to_string();
+    let none_out = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--json", "year", "opening", "show"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert!(json_result(&none_out).is_null());
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["confirm", "--id", &pending_id])
+        .assert()
+        .success();
+
+    let show_out = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--json", "year", "opening", "show"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let opening = json_result(&show_out);
+    assert_eq!(opening["opens_on"], "2026-01-01");
+    assert_eq!(opening["lines"].as_array().unwrap().len(), 4);
+    assert_eq!(opening["total_debit_cents"], 131_000);
+    assert_eq!(opening["total_credit_cents"], 131_000);
+    assert_eq!(opening["equity"]["legal_reserve_cents"], 6_000);
+    assert_eq!(opening["equity"]["retained_earnings_cents"], 25_000);
+    assert_eq!(opening["revision"], 1);
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["year", "opening", "show"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Capital social"))
+        .stdout(predicate::str::contains("report à nouveau 250,00\u{a0}€"));
+
+    // Un bilan déséquilibré est refusé par le cœur, avant toute écriture.
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "year",
+            "opening",
+            "set",
+            "--opens-on",
+            "2026-01-01",
+            "--line",
+            "101000:Capital:C:10.00",
+            "--line",
+            "512000:Banque:D:9.00",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("déséquilibré"));
+
+    // La clôture du premier exercice hérite du report repris : CA 6 175 € HT, IS 926,25 €,
+    // net 5 248,75 € ; report = 250 + 5 248,75 = 5 498,75 €.
+    let client_id = create_client(&db, "Kappa Software");
+    let lines =
+        r#"[{"description":"Prestation","quantity":9.5,"unit_price":65000,"vat_rate":"Standard"}]"#;
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "invoice",
+            "emit",
+            "--client",
+            &client_id,
+            "--lines",
+            lines,
+            "--issued-on",
+            "2026-09-30",
+        ])
+        .assert()
+        .success();
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["year", "close", "--period", "2026"])
+        .assert()
+        .success();
+    let year_out = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--json", "year", "show", "2026"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(json_result(&year_out)["retained_earnings_cents"], 549_875);
+
+    // Le bilan est figé par ce snapshot ; le FEC de l'exercice porte ses à-nouveaux.
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["year", "opening", "rm"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("déjà clos"));
+    let out_dir = db.parent().unwrap().join("fec");
+    std::fs::create_dir_all(&out_dir).unwrap();
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["fec", "export", "2026", "--out"])
+        .arg(&out_dir)
+        .assert()
+        .success();
+    let fec = std::fs::read_to_string(out_dir.join("552100554FEC20261231.txt")).unwrap();
+    assert!(
+        fec.contains("AN|À-nouveaux|1|20260101|101000|Capital social|"),
+        "{fec}"
+    );
+    // Lot 31 : l'IS de clôture est une écriture OD du FEC, et le bilan dérivé est équilibré —
+    // actif = clients 7 410 + banque 1 310 = 8 720 € ; passif = capitaux propres repris + résultat
+    // net 5 248,75 + TVA collectée 1 235 + IS dû 926,25.
+    assert!(
+        fec.contains("OD|Opérations diverses|1|20261231|695000|Impôts sur les bénéfices|||OD-IS|20261231|Impôt sur les sociétés de l'exercice|926,25|0,00|"),
+        "{fec}"
+    );
+    let balance_out = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--json", "year", "balance", "2026"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let balance = json_result(&balance_out);
+    assert_eq!(balance["balance_sheet"]["balanced"], true);
+    assert_eq!(balance["balance_sheet"]["total_assets_net_cents"], 872_000);
+    assert_eq!(balance["balance_sheet"]["result_cents"], 524_875);
+    let rows = balance["trial_balance"]["rows"].as_array().unwrap();
+    assert!(
+        rows.iter()
+            .any(|r| r["account"] == "444000" && r["balance_cents"] == -92_625)
+    );
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["year", "balance", "2026"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("présentation 2033-A"))
+        .stdout(predicate::str::contains("Clients et comptes rattachés"));
+    let bilan = db.parent().unwrap().join("bilan-2026.pdf");
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["year", "render", "2026", "balance-sheet", "--out"])
+        .arg(&bilan)
+        .assert()
+        .success();
+    assert!(std::fs::read(&bilan).unwrap().starts_with(b"%PDF-"));
+    let liasse = db.parent().unwrap().join("liasse-2026.json");
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["year", "render", "2026", "liasse", "--out"])
+        .arg(&liasse)
+        .assert()
+        .success();
+    let liasse: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&liasse).unwrap()).unwrap();
+    let case_180 = liasse["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["form"] == "2033-A" && e["case"] == "180")
+        .expect("total général du passif");
+    assert_eq!(case_180["amount_cents"], 872_000);
 }

@@ -73,14 +73,23 @@ fn months_in(period: FiscalYear) -> u32 {
     u32::try_from(months.max(0)).unwrap_or(0)
 }
 
+/// Rémunération brute du président sur `period` : brut mensuel × nombre de mois entiers de
+/// l'exercice — `None` s'il n'est pas rémunéré. Partagée avec le grand livre dérivé
+/// (`crate::ledger`), qui sépare le brut (641) des cotisations patronales (645).
+#[must_use]
+pub fn director_gross(profile: &CompanyProfile, period: FiscalYear) -> Option<Money> {
+    let gross = profile.director_monthly_gross?;
+    let months = months_in(period);
+    Some(gross.multiply_by_quantity(f64::from(months)))
+}
+
 /// Coût employeur indicatif de la rémunération du président sur `period` : brut mensuel × nombre
 /// de mois, majoré des cotisations patronales estimées par le ratio du profil.
-fn director_cost(profile: &CompanyProfile, period: FiscalYear) -> Money {
-    let Some(gross) = profile.director_monthly_gross else {
+#[must_use]
+pub fn director_cost(profile: &CompanyProfile, period: FiscalYear) -> Money {
+    let Some(gross_annual) = director_gross(profile, period) else {
         return Money::ZERO;
     };
-    let months = months_in(period);
-    let gross_annual = gross.multiply_by_quantity(f64::from(months));
     match profile.director_charge_ratio_bps {
         Some(ratio_bps) => gross_annual + gross_annual.apply_rate_bps(ratio_bps),
         None => gross_annual,
