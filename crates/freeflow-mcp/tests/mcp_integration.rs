@@ -1237,6 +1237,10 @@ async fn the_company_profile_roundtrips_through_set_profile_show_and_the_company
     let profile = json_of(&shown);
     assert_eq!(profile["name"], "Lumen Conseil");
     assert_eq!(profile["siren"], "552100554");
+    // La règle de télédéclaration dérivée : SASU parisienne au SIREN 55… → le 23 du mois, en
+    // trimestriel puisque c'est le régime déclaré.
+    assert_eq!(profile["vat_filing"]["rule"]["day"], 23);
+    assert_eq!(profile["vat_filing"]["scheme"], "ca3_quarterly");
 
     let read = client
         .read_resource(ReadResourceRequestParams::new("freeflow://company"))
@@ -1248,6 +1252,7 @@ async fn the_company_profile_roundtrips_through_set_profile_show_and_the_company
     };
     let resource: Value = serde_json::from_str(&text).unwrap();
     assert_eq!(resource["name"], "Lumen Conseil");
+    assert_eq!(resource["vat_filing"]["scheme"], "ca3_quarterly");
 
     let bad = call(
         &client,

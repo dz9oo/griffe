@@ -111,7 +111,13 @@ implémentation.
   de la CA3 suit toutefois la **grille officielle** (BOFIP BOI-TVA-DECLA-20-20-10-10) : zone du
   siège (Paris/92/93/94 ou autres départements), forme juridique (EI, société, SA/SAS) et deux
   premiers chiffres du SIREN, périodicité mensuelle ou trimestrielle selon le régime déclaré, et
-  report au jour ouvré suivant quand la date tombe un week-end ou un jour férié.
+  report au jour ouvré suivant quand la date tombe un week-end ou un jour férié. Au **réel
+  simplifié**, le calendrier produit à la place les deux acomptes semestriels (formulaire 3514,
+  juillet 55 % / décembre 40 % de la TVA de l'exercice précédent, dispense sous 1 000 €) et la
+  CA12 annuelle (ou CA12 E pour un exercice décalé), en tenant compte de la suppression de ce
+  régime pour les exercices ouverts à compter du 1er janvier 2027 (loi de finances pour 2025),
+  après quoi il bascule en CA3 trimestrielle. `freeflow company show` affiche la règle de
+  télédéclaration dérivée du profil (`vat_filing`).
 - Prévisionnel de trésorerie sur 12 mois (factures émises non payées + missions signées non
   facturées + pipeline pondéré − charges connues).
 
@@ -273,9 +279,9 @@ distribués prêts à l'emploi — voir la checklist ci-dessous.
 - **Devise** : euro uniquement — cohérent avec le statut fiscal visé, mais pas adapté à une
   activité facturée dans une autre devise.
 - **Échéances fiscales indicatives, pas une source de vérité légale** — toujours vérifier sur
-  impots.gouv.fr. La date de la CA3 suit la grille officielle, mais le régime réel simplifié
-  (CA12 annuelle et acomptes semestriels) n'est pas modélisé : aucune échéance de TVA n'est
-  produite pour ce régime.
+  impots.gouv.fr. La date de la CA3 suit la grille officielle et le régime réel simplifié est
+  modélisé (acomptes 3514, CA12), mais la base des acomptes est la TVA nette de l'exercice
+  précédent — le domaine ne distingue pas la TVA sur immobilisations, que la règle légale exclut.
 - **`.dmg` macOS** : pas encore construit/testé (nécessite une machine macOS réelle).
 - **`.AppImage` Linux** : le bundling bute sur une incompatibilité d'environnement documentée dans
   `CLAUDE.md` (chemin `gdk-pixbuf` non-FHS sur certaines distributions type NixOS/Nix-sur-Arch).
@@ -334,8 +340,10 @@ distribués prêts à l'emploi — voir la checklist ci-dessous.
 - [ ] Support multi-devise.
 - [x] Échéance CA3 exacte : la règle officielle ne dépend pas du dernier chiffre du SIREN (l'idée
       de départ de cet item) mais de la zone du siège, de la catégorie de redevable et des deux
-      premiers chiffres du SIREN — voir « Dépenses & obligations fiscales » ci-dessus. Reste hors
-      périmètre : la CA12 et les acomptes du régime réel simplifié.
+      premiers chiffres du SIREN — voir « Dépenses & obligations fiscales » ci-dessus.
+- [x] Régime réel simplifié de TVA : acomptes semestriels 3514 et CA12/CA12 E, avec la fin du
+      régime pour les exercices ouverts à compter de 2027 ; règle de télédéclaration dérivée
+      affichée par `company show`.
 - [ ] Relances de paiement configurables (cadences, modèles de message) au-delà des brouillons
       `.eml` actuels.
 - [ ] Export comptable (FEC ou format équivalent) pour transmission à un expert-comptable.

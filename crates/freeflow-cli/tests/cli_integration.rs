@@ -1054,6 +1054,31 @@ fn set_company_profile(db: &Path) {
 }
 
 #[test]
+fn company_show_reports_the_derived_vat_filing_rule() {
+    let db = temp_db("company-show");
+    provision(&db);
+    set_company_profile(&db);
+    let out = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--json", "company", "show"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let shown = json_result(&out);
+    // Les champs du profil restent au premier niveau : le contrat n'est qu'enrichi.
+    assert_eq!(shown["name"], "Argon Digital");
+    assert_eq!(shown["siren"], "552100554");
+    // SASU parisienne au SIREN 55… : le 23 du mois ; régime non renseigné → mensuel supposé.
+    assert_eq!(shown["vat_filing"]["rule"]["day"], 23);
+    assert_eq!(shown["vat_filing"]["scheme"], "ca3_monthly");
+    let note = shown["vat_filing"]["note"].as_str().unwrap();
+    assert!(note.contains("le 23 du mois"), "{note}");
+    assert!(note.contains("mensuel supposé"), "{note}");
+}
+
+#[test]
 fn year_lifecycle_close_amend_approve_then_immutable() {
     let db = temp_db("year-lifecycle");
     provision(&db);

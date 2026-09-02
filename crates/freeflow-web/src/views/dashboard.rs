@@ -21,6 +21,8 @@ use crate::layout::{ViewId, view_head};
 fn deadline_label(kind: FiscalDeadlineKind) -> &'static str {
     match kind {
         FiscalDeadlineKind::Ca3 => "TVA (CA3)",
+        FiscalDeadlineKind::VatInstalment => "Acompte de TVA (3514)",
+        FiscalDeadlineKind::Ca12 => "TVA (CA12)",
         FiscalDeadlineKind::IsAcompte => "Acompte d'IS",
         FiscalDeadlineKind::IsSolde => "Solde d'IS",
         FiscalDeadlineKind::Cfe => "CFE",

@@ -19,7 +19,8 @@ pub enum FiscalCommand {
         today: Date,
     },
     /// Calendrier fiscal et social complet **chiffré** sur 12 mois, dérivé de la date de clôture
-    /// d'exercice du profil : TVA à reverser, acomptes et solde d'IS, liasse, AG, dépôt, DSN.
+    /// d'exercice du profil : TVA à reverser (CA3, ou acomptes 3514 + CA12 au réel simplifié),
+    /// acomptes et solde d'IS, liasse, AG, dépôt, DSN.
     Calendar {
         #[arg(long, value_parser = parse_date)]
         today: Date,

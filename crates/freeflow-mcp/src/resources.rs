@@ -254,8 +254,10 @@ pub(crate) fn read(store: &Store, uri: &str) -> Result<ReadResourceResult, McpEr
     }
 
     if uri == COMPANY_URI {
-        let profile = freeflow_core::company::company_profile(store.connection())
-            .map_err(|e| McpError::resource_not_found(e.to_string(), None))?;
+        let today = time::OffsetDateTime::now_utc().date();
+        let profile =
+            freeflow_core::fiscal::company_profile_with_vat_filing(store.connection(), today)
+                .map_err(|e| McpError::resource_not_found(e.to_string(), None))?;
         return json_contents(uri, profile);
     }
 

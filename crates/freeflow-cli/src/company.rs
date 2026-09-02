@@ -2,8 +2,9 @@
 
 use clap::{Args, Subcommand};
 use freeflow_core::app::{ExecutionContext, Executor};
-use freeflow_core::company::{self, company_profile};
+use freeflow_core::company;
 use freeflow_core::domain::{Address, FiscalYearEnd, Money, Siren, VatNumber, VatRegime};
+use freeflow_core::fiscal::company_profile_with_vat_filing;
 use freeflow_core::store::Store;
 
 use crate::error::CliError;
@@ -98,7 +99,8 @@ pub enum CompanyCommand {
     /// Définit (ou remplace) l'identité légale de l'émetteur — nécessaire aux mentions
     /// obligatoires d'une facture (`freeflow invoice render`).
     SetProfile(Box<SetProfileArgs>),
-    /// Affiche l'identité légale actuellement configurée.
+    /// Affiche l'identité légale actuellement configurée, et la règle de télédéclaration de TVA
+    /// qui en découle (`vat_filing` : schéma déclaratif, jour de la grille officielle).
     Show,
 }
 
@@ -133,7 +135,8 @@ pub fn run(
             format_outcome(&outcome, json)
         }
         CompanyCommand::Show => {
-            let profile = company_profile(store.connection())?;
+            let today = time::OffsetDateTime::now_utc().date();
+            let profile = company_profile_with_vat_filing(store.connection(), today)?;
             format_value(&profile, json)
         }
     };

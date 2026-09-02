@@ -6,7 +6,11 @@
 //! à défaut, l'année civile est supposée. La date limite de télédéclaration CA3 suit la grille
 //! officielle (zone du siège, catégorie de redevable, deux premiers chiffres du SIREN — voir
 //! [`crate::domain::Ca3FilingRule`]) et la périodicité du régime de TVA déclaré, avec report au
-//! jour ouvré suivant (lot 26) ; les échéances de la liasse, du dépôt des comptes et de l'AG
+//! jour ouvré suivant (lot 26) ; un redevable au **réel simplifié** reçoit à la place ses deux
+//! acomptes semestriels (formulaire 3514, juillet 55 % / décembre 40 %) et sa CA12 annuelle, tant
+//! que ce régime existe — il est supprimé pour les exercices ouverts à compter du 1er janvier
+//! 2027, au-delà desquels il bascule en CA3 trimestrielle (lot 27, voir
+//! [`SIMPLIFIED_REGIME_REPEAL`]) ; les échéances de la liasse, du dépôt des comptes et de l'AG
 //! sont des règles générales approchées. Les montants (TVA à reverser, IS, cotisations DSN) sont
 //! calculés à partir des données saisies et restent indicatifs : ils ne remplacent ni la
 //! télédéclaration sur impots.gouv.fr, ni le travail de l'expert-comptable.
@@ -22,9 +26,10 @@ use time::Date;
 
 use crate::accounting::{compute_result, vat_due_for_period};
 use crate::app::AppError;
-use crate::company::company_profile;
+use crate::company::{CompanyProfile, company_profile};
 use crate::domain::{
-    Ca3FilingRule, FiscalYearEnd, Money, Month, VatRegime, next_french_business_day_on_or_after,
+    Ca3FilingRule, FiscalYear, FiscalYearEnd, Money, Month, VatRegime, is_french_business_day,
+    next_french_business_day_on_or_after,
 };
 
 /// Seuil de dispense des acomptes d'IS : aucun acompte n'est dû si l'IS de l'exercice précédent
@@ -35,6 +40,11 @@ const IS_ACOMPTE_DISPENSATION: Money = Money::from_cents(300_000);
 pub enum FiscalDeadlineKind {
     /// Déclaration de TVA (CA3) — périodicité pilotée par le régime de TVA.
     Ca3,
+    /// Acompte semestriel de TVA du régime simplifié (formulaire 3514, juillet ou décembre).
+    VatInstalment,
+    /// Déclaration annuelle de régularisation de TVA du régime simplifié (CA12, ou CA12 E pour un
+    /// exercice décalé).
+    Ca12,
     /// Acompte trimestriel d'impôt sur les sociétés (formulaire 2571).
     IsAcompte,
     /// Solde d'impôt sur les sociétés (formulaire 2572).
@@ -56,6 +66,8 @@ impl FiscalDeadlineKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Ca3 => "ca3",
+            Self::VatInstalment => "vat_acompte",
+            Self::Ca12 => "ca12",
             Self::IsAcompte => "is_acompte",
             Self::IsSolde => "is_solde",
             Self::Cfe => "cfe",
@@ -85,7 +97,7 @@ fn nth_of_month(month: Month, day: u8) -> Date {
         time::Month::try_from(month.month()).expect("le mois est garanti valide"),
         day,
     )
-    .expect("les jours utilisés ici (15 à 28) sont valides dans tous les mois")
+    .expect("les jours utilisés ici (1, et 15 à 28) sont valides dans tous les mois")
 }
 
 /// Périodicité de la déclaration CA3, pilotée par le régime de TVA du profil.
@@ -99,9 +111,10 @@ pub enum Ca3Periodicity {
 }
 
 impl Ca3Periodicity {
-    /// `None` quand le régime ne donne lieu à aucune CA3 : réel simplifié (CA12 annuelle et
-    /// acomptes semestriels, non modélisés) ou franchise en base (aucune TVA collectée). Un régime
-    /// non renseigné est supposé mensuel — la périodicité la plus exigeante, donc jamais en retard.
+    /// `None` quand le régime ne donne lieu à aucune CA3 *par lui-même* : réel simplifié (acomptes
+    /// semestriels et CA12 annuelle, voir [`VatFilingScheme`] qui tient aussi compte de la
+    /// suppression de ce régime) ou franchise en base (aucune TVA collectée). Un régime non
+    /// renseigné est supposé mensuel — la périodicité la plus exigeante, donc jamais en retard.
     #[must_use]
     pub const fn from_regime(regime: Option<VatRegime>) -> Option<Self> {
         match regime {
@@ -149,17 +162,36 @@ pub struct Ca3Filing {
 /// le mois courant est valide par construction.
 #[must_use]
 pub fn next_ca3_filing(today: Date, periodicity: Ca3Periodicity, day: u8) -> Ca3Filing {
+    next_ca3_filing_from(today, periodicity, day, None)
+}
+
+/// Comme [`next_ca3_filing`], mais en ne retenant qu'une CA3 dont la période déclarée commence à
+/// `earliest_period` ou après — le cas d'un redevable qui *entre* dans le réel normal : les mois
+/// antérieurs relevaient d'un autre régime (CA12 du réel simplifié) et ne se déclarent pas en CA3.
+///
+/// # Panics
+///
+/// Ne panique jamais en pratique : mêmes bornes que [`next_ca3_filing`].
+#[must_use]
+pub fn next_ca3_filing_from(
+    today: Date,
+    periodicity: Ca3Periodicity,
+    day: u8,
+    earliest_period: Option<Month>,
+) -> Ca3Filing {
     let day = day.clamp(Ca3FilingRule::EARLIEST_DAY, 24);
     let mut filing_month =
         Month::new(today.year(), u8::from(today.month())).expect("mois courant valide");
-    // Termine en au plus quatre itérations : chaque trimestre contient un mois de dépôt.
+    // Termine en un nombre borné d'itérations : chaque trimestre contient un mois de dépôt, et
+    // `earliest_period` est une borne fixe que `filing_month` finit toujours par dépasser.
     loop {
         if periodicity.files_in(filing_month) {
+            let period_start = periodicity.period_start(filing_month);
             let nominal_due_on = nth_of_month(filing_month, day);
             let due_on = next_french_business_day_on_or_after(nominal_due_on);
-            if due_on >= today {
+            if due_on >= today && earliest_period.is_none_or(|earliest| period_start >= earliest) {
                 return Ca3Filing {
-                    period_start: periodicity.period_start(filing_month),
+                    period_start,
                     period_end: filing_month.pred(),
                     nominal_due_on,
                     due_on,
@@ -168,6 +200,310 @@ pub fn next_ca3_filing(today: Date, periodicity: Ca3Periodicity, day: u8) -> Ca3
         }
         filing_month = filing_month.succ();
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Régime simplifié d'imposition (RSI) de TVA : acomptes semestriels (3514) et CA12 annuelle.
+// ---------------------------------------------------------------------------------------------
+
+/// Premier jour à partir duquel un exercice ne relève plus du régime simplifié de TVA.
+///
+/// L'art. 38 de la loi n° 2025-127 du 14 février 2025 (loi de finances pour 2025) supprime le
+/// régime simplifié d'imposition à compter du 1er janvier 2027 ; pour un exercice qui ne coïncide
+/// pas avec l'année civile, il prend fin à compter de l'exercice ouvert après le 31 décembre 2026
+/// (rappelé par le rescrit BOI-RES-TVA-000253). Au-delà, l'entreprise relève du réel normal, en
+/// déclaration trimestrielle sauf option pour le mensuel — c'est la bascule que
+/// [`VatFilingScheme::for_exercise`] applique.
+pub const SIMPLIFIED_REGIME_REPEAL: Date =
+    match Date::from_calendar_date(2027, time::Month::January, 1) {
+        Ok(date) => date,
+        Err(_) => panic!("le 1er janvier 2027 est une date valide"),
+    };
+
+/// Seuil de dispense des acomptes de TVA du régime simplifié : aucun acompte n'est dû si la TVA
+/// due au titre de l'exercice précédent est inférieure à 1 000 € (art. 287, 3 du CGI).
+pub const VAT_INSTALMENT_DISPENSATION: Money = Money::from_cents(100_000);
+
+/// Un exercice relève-t-il encore du régime simplifié ? Oui s'il s'ouvre avant le
+/// [`SIMPLIFIED_REGIME_REPEAL`] — ce qui inclut l'exercice décalé ouvert en 2026 et clos en 2027.
+#[must_use]
+pub fn simplified_regime_applies_to(exercise: FiscalYear) -> bool {
+    exercise.start() < SIMPLIFIED_REGIME_REPEAL
+}
+
+/// Les deux acomptes semestriels du régime simplifié (formulaire 3514).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VatInstalment {
+    July,
+    December,
+}
+
+impl VatInstalment {
+    pub const ALL: [Self; 2] = [Self::July, Self::December];
+
+    /// L'acompte payable au cours de ce mois calendaire (`1..=12`), s'il y en a un.
+    #[must_use]
+    pub const fn from_month(month: u8) -> Option<Self> {
+        match month {
+            7 => Some(Self::July),
+            12 => Some(Self::December),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn month(self) -> u8 {
+        match self {
+            Self::July => 7,
+            Self::December => 12,
+        }
+    }
+
+    /// Part de la TVA due au titre de l'exercice précédent : 55 % en juillet, 40 % en décembre
+    /// (art. 287, 3 du CGI), en dix-millièmes.
+    #[must_use]
+    pub const fn rate_bps(self) -> u32 {
+        match self {
+            Self::July => 5_500,
+            Self::December => 4_000,
+        }
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::July => "juillet",
+            Self::December => "décembre",
+        }
+    }
+}
+
+/// Montant d'un acompte semestriel à partir de la TVA due au titre de l'exercice précédent —
+/// `None` si l'entreprise en est dispensée (base inférieure à 1 000 €, crédit de TVA compris).
+///
+/// La base légale est la TVA due *avant déduction de la TVA sur immobilisations* ; le domaine ne
+/// distingue pas les immobilisations des autres dépenses, la base retenue est donc la TVA nette
+/// de l'exercice — indicatif, comme tout ce module.
+#[must_use]
+pub fn vat_instalment_amount(
+    instalment: VatInstalment,
+    previous_exercise_vat: Money,
+) -> Option<Money> {
+    if previous_exercise_vat < VAT_INSTALMENT_DISPENSATION {
+        None
+    } else {
+        Some(previous_exercise_vat.apply_rate_bps(instalment.rate_bps()))
+    }
+}
+
+/// Le deuxième jour ouvré *strictement* après `date`.
+fn second_business_day_after(date: Date) -> Date {
+    let mut candidate = date;
+    let mut seen = 0;
+    loop {
+        candidate = candidate
+            .next_day()
+            .expect("aucune date du calendrier fiscal n'approche la borne de `time::Date`");
+        if is_french_business_day(candidate) {
+            seen += 1;
+            if seen == 2 {
+                return candidate;
+            }
+        }
+    }
+}
+
+/// Date limite de dépôt de la CA12 d'un exercice : le deuxième jour ouvré suivant le 1er mai de
+/// l'année qui suit une clôture au 31 décembre ; pour un exercice décalé (CA12 E), dans les trois
+/// mois suivant la clôture — le même quantième trois mois plus tard, ou le dernier jour du
+/// troisième mois quand la clôture tombe elle-même un dernier jour de mois (un 28 février donne
+/// le 31 mai, pas le 28), reporté au jour ouvré suivant s'il tombe un samedi, un dimanche ou un
+/// jour férié.
+///
+/// # Panics
+///
+/// Ne panique jamais en pratique : les dates construites sont le 1er mai d'une année et un
+/// jour rogné dans les bornes réelles de son mois, tous deux valides ; seul un exercice clos aux
+/// confins de `time::Date` (année 9999) n'aurait pas de lendemain.
+#[must_use]
+pub fn ca12_due_on(exercise: FiscalYear) -> Date {
+    let end = exercise.end();
+    if end.month() == time::Month::December && end.day() == 31 {
+        let may_first = nth_of_month(
+            Month::new(end.year() + 1, 5).expect("mai est un mois valide"),
+            1,
+        );
+        second_business_day_after(may_first)
+    } else {
+        let end_month =
+            Month::new(end.year(), u8::from(end.month())).expect("mois de clôture valide");
+        let closes_on_month_end = end == end_month.last_day();
+        let mut nominal = add_months(end, 3);
+        if closes_on_month_end {
+            let target = Month::new(nominal.year(), u8::from(nominal.month()))
+                .expect("un mois obtenu par `add_months` est valide");
+            nominal = target.last_day();
+        }
+        next_french_business_day_on_or_after(nominal)
+    }
+}
+
+/// Ce qu'un redevable déclare en matière de TVA pour un exercice donné — le régime déclaré, vu à
+/// travers la suppression du réel simplifié.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VatFilingScheme {
+    /// Une CA3 par mois.
+    Ca3Monthly,
+    /// Une CA3 par trimestre civil — réel normal trimestriel, ou ancien réel simplifié pour un
+    /// exercice ouvert à compter du [`SIMPLIFIED_REGIME_REPEAL`].
+    Ca3Quarterly,
+    /// Réel simplifié encore en vigueur : acomptes 3514 en juillet et décembre, CA12 annuelle.
+    Simplified,
+    /// Franchise en base : aucune déclaration périodique de TVA.
+    NoFiling,
+}
+
+impl VatFilingScheme {
+    /// Le schéma déclaratif d'un exercice. Un régime non renseigné est supposé mensuel (jamais en
+    /// retard) ; le réel simplifié ne vaut que pour un exercice ouvert avant sa suppression.
+    #[must_use]
+    pub fn for_exercise(regime: Option<VatRegime>, exercise: FiscalYear) -> Self {
+        match regime {
+            None | Some(VatRegime::RealNormalMonthly) => Self::Ca3Monthly,
+            Some(VatRegime::RealNormalQuarterly) => Self::Ca3Quarterly,
+            Some(VatRegime::RealSimplified) => {
+                if simplified_regime_applies_to(exercise) {
+                    Self::Simplified
+                } else {
+                    Self::Ca3Quarterly
+                }
+            }
+            Some(VatRegime::Franchise) => Self::NoFiling,
+        }
+    }
+
+    #[must_use]
+    pub const fn ca3_periodicity(self) -> Option<Ca3Periodicity> {
+        match self {
+            Self::Ca3Monthly => Some(Ca3Periodicity::Monthly),
+            Self::Ca3Quarterly => Some(Ca3Periodicity::Quarterly),
+            Self::Simplified | Self::NoFiling => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ca3Monthly => "ca3_monthly",
+            Self::Ca3Quarterly => "ca3_quarterly",
+            Self::Simplified => "simplified",
+            Self::NoFiling => "none",
+        }
+    }
+}
+
+const REPEAL_NOTE: &str = "régime simplifié supprimé pour les exercices ouverts à compter du \
+                           1er janvier 2027 (art. 38, loi de finances pour 2025) : CA3 \
+                           trimestrielle au-delà";
+
+/// Règle de télédéclaration de TVA dérivée du profil d'entreprise — ce que `company show`
+/// affiche à côté du régime déclaré, pour que l'utilisateur voie la grille appliquée sans
+/// attendre l'échéance au calendrier.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct VatFilingSummary {
+    /// Le régime tel que déclaré dans le profil (`None` : non renseigné, mensuel supposé).
+    pub regime: Option<VatRegime>,
+    /// Le schéma déclaratif de l'exercice en cours à la date d'observation.
+    pub scheme: VatFilingScheme,
+    /// La cellule de la grille officielle (zone, catégorie, SIREN, jour du mois) — elle vaut pour
+    /// la CA3 comme pour les acomptes 3514, déposés aux mêmes dates limites.
+    pub rule: Ca3FilingRule,
+    /// Phrase lisible reprenant le tout.
+    pub note: String,
+}
+
+/// Dérive la règle de télédéclaration de TVA du profil, pour l'exercice en cours à `today`.
+#[must_use]
+pub fn vat_filing_summary(profile: &CompanyProfile, today: Date) -> VatFilingSummary {
+    use std::fmt::Write as _;
+    let fye = profile.fiscal_year_end.unwrap_or(FiscalYearEnd::CALENDAR);
+    let current = fye.current(today);
+    let rule = Ca3FilingRule::derive(
+        &profile.legal_form,
+        &profile.name,
+        profile.siren,
+        &profile.address.postal_code,
+    );
+    let scheme = VatFilingScheme::for_exercise(profile.vat_regime, current);
+    let grid = format!(
+        "le {} du mois ({}, {}, SIREN {:02}…), reporté au jour ouvré suivant si samedi, \
+         dimanche ou férié",
+        rule.day,
+        rule.category.as_str(),
+        rule.zone.as_str(),
+        rule.siren_leading_pair
+    );
+    // Écrire dans une `String` est infaillible : le `Result` de `write!` est ignoré à dessein.
+    let mut note = match scheme {
+        VatFilingScheme::Ca3Monthly => format!("CA3 mensuelle, {grid}"),
+        VatFilingScheme::Ca3Quarterly => {
+            format!("CA3 trimestrielle (janvier, avril, juillet, octobre), {grid}")
+        }
+        VatFilingScheme::Simplified => {
+            let ca12 = if fye.month() == 12 {
+                "le 2e jour ouvré suivant le 1er mai"
+            } else {
+                "dans les 3 mois suivant la clôture (CA12 E)"
+            };
+            format!(
+                "réel simplifié : acomptes 3514 en juillet (55 %) et décembre (40 %) de la TVA de \
+                 l'exercice précédent, {grid} ; CA12 {ca12}"
+            )
+        }
+        VatFilingScheme::NoFiling => "franchise en base : aucune déclaration de TVA".to_string(),
+    };
+    if profile.vat_regime.is_none() {
+        note.push_str(" ; régime de TVA non renseigné, mensuel supposé");
+    }
+    if profile.vat_regime == Some(VatRegime::RealSimplified) {
+        let _ = write!(note, " ; {REPEAL_NOTE}");
+    }
+    VatFilingSummary {
+        regime: profile.vat_regime,
+        scheme,
+        rule,
+        note,
+    }
+}
+
+/// Le profil d'entreprise et la règle de TVA qui en découle, tels que `company show` les affiche
+/// (CLI, MCP et ressource `freeflow://company` partagent cette vue). Les champs du profil restent
+/// au premier niveau du JSON : le contrat antérieur n'est qu'enrichi d'une clé `vat_filing`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct CompanyProfileWithVatFiling {
+    #[serde(flatten)]
+    pub profile: CompanyProfile,
+    pub vat_filing: VatFilingSummary,
+}
+
+/// Lit le profil et y adjoint la règle de télédéclaration dérivée pour l'exercice en cours à
+/// `today` ; `None` si aucun profil n'est défini.
+///
+/// # Errors
+///
+/// Erreur de lecture SQLite.
+pub fn company_profile_with_vat_filing(
+    conn: &Connection,
+    today: Date,
+) -> Result<Option<CompanyProfileWithVatFiling>, AppError> {
+    Ok(
+        company_profile(conn)?.map(|profile| CompanyProfileWithVatFiling {
+            vat_filing: vat_filing_summary(&profile, today),
+            profile,
+        }),
+    )
 }
 
 /// Note lisible d'une échéance CA3 : période déclarée, règle de date appliquée et report éventuel.
@@ -296,6 +632,130 @@ fn add_months(date: Date, months: u32) -> Date {
     nth_of_month(month, day)
 }
 
+/// Fenêtre d'observation des échéances du réel simplifié (paramètres de
+/// [`push_simplified_vat_deadlines`], regroupés pour rester lisibles).
+#[derive(Debug, Clone, Copy)]
+struct SimplifiedVatWindow {
+    today: Date,
+    horizon: Date,
+    fye: FiscalYearEnd,
+    previous: FiscalYear,
+    current: FiscalYear,
+    /// Jour de la grille officielle (celui de la CA3, qui vaut aussi pour le 3514).
+    day: u8,
+}
+
+/// Acomptes 3514 (juillet, décembre) et CA12 des exercices encore placés sous le régime simplifié,
+/// dans `[today, horizon]`. La base d'un acompte est la TVA nette de l'exercice qui précède celui
+/// au cours duquel il est payé ; la CA12 d'un exercice régularise sa TVA nette des deux acomptes
+/// versés à son titre.
+fn push_simplified_vat_deadlines(
+    conn: &Connection,
+    deadlines: &mut Vec<FiscalDeadline>,
+    window: SimplifiedVatWindow,
+) -> Result<(), AppError> {
+    use std::fmt::Write as _;
+    let SimplifiedVatWindow {
+        today,
+        horizon,
+        fye,
+        previous,
+        current,
+        day,
+    } = window;
+    let day = day.clamp(Ca3FilingRule::EARLIEST_DAY, 24);
+    let vat_of = |exercise: FiscalYear| -> Result<Money, AppError> {
+        Ok(vat_due_for_period(conn, exercise.start(), exercise.end())?.due)
+    };
+
+    // --- Acomptes : chaque juillet et décembre de l'horizon tombant dans un exercice RSI. ---
+    let mut month = Month::new(today.year(), u8::from(today.month())).expect("mois courant valide");
+    while month.first_day() <= horizon {
+        if let Some(instalment) = VatInstalment::from_month(month.month()) {
+            let nominal = nth_of_month(month, day);
+            let due_on = next_french_business_day_on_or_after(nominal);
+            let exercise = fye.containing(nominal);
+            if due_on >= today && due_on <= horizon && simplified_regime_applies_to(exercise) {
+                let base_exercise = fye.previous(exercise);
+                let base = vat_of(base_exercise)?;
+                let amount = vat_instalment_amount(instalment, base);
+                // Écrire dans une `String` est infaillible : le `Result` de `write!` est ignoré.
+                let mut note = match amount {
+                    Some(_) => format!(
+                        "acompte de TVA de {} (3514) : {} % de la TVA due au titre de l'exercice \
+                         {} – {} ({base}, hors TVA sur immobilisations non distinguée) ; le {day} \
+                         du mois (grille CA3)",
+                        instalment.as_str(),
+                        instalment.rate_bps() / 100,
+                        base_exercise.start(),
+                        base_exercise.end(),
+                    ),
+                    None => format!(
+                        "acompte de TVA de {} (3514) : dispense, TVA due au titre de l'exercice \
+                         {} – {} ({base}) inférieure à 1 000 €",
+                        instalment.as_str(),
+                        base_exercise.start(),
+                        base_exercise.end(),
+                    ),
+                };
+                if due_on != nominal {
+                    let _ = write!(note, ", reporté du {nominal} au jour ouvré suivant");
+                }
+                deadlines.push(FiscalDeadline {
+                    kind: FiscalDeadlineKind::VatInstalment,
+                    due_on,
+                    amount,
+                    note: Some(note),
+                });
+            }
+        }
+        month = month.succ();
+    }
+
+    // --- CA12 : régularisation annuelle de l'exercice clos et de l'exercice en cours (l'échéance
+    // d'un exercice ultérieur tombe toujours au-delà d'un horizon de 12 mois). ---
+    for exercise in [previous, current] {
+        if !simplified_regime_applies_to(exercise) {
+            continue;
+        }
+        let due_on = ca12_due_on(exercise);
+        if due_on < today || due_on > horizon {
+            continue;
+        }
+        let vat = vat_of(exercise)?;
+        let base = vat_of(fye.previous(exercise))?;
+        let instalments: Money = VatInstalment::ALL
+            .iter()
+            .filter_map(|i| vat_instalment_amount(*i, base))
+            .sum();
+        let mut note = format!(
+            "CA12 : TVA due au titre de l'exercice {} – {} ({vat}) − acomptes de juillet et \
+             décembre ({instalments}) ; {}",
+            exercise.start(),
+            exercise.end(),
+            if exercise.end().month() == time::Month::December && exercise.end().day() == 31 {
+                "le 2e jour ouvré suivant le 1er mai"
+            } else {
+                "dans les 3 mois suivant la clôture (CA12 E)"
+            },
+        );
+        if exercise.end() >= today {
+            note.push_str(" ; exercice en cours, montant partiel");
+        }
+        let successor = fye.containing(add_months(exercise.end(), 1));
+        if !simplified_regime_applies_to(successor) {
+            let _ = write!(note, " ; dernière CA12 — {REPEAL_NOTE}");
+        }
+        deadlines.push(FiscalDeadline {
+            kind: FiscalDeadlineKind::Ca12,
+            due_on,
+            amount: Some(vat - instalments),
+            note: Some(note),
+        });
+    }
+    Ok(())
+}
+
 /// Calendrier fiscal et social chiffré sur les 12 prochains mois à partir de `today`, dérivé de la
 /// date de clôture d'exercice du profil (année civile à défaut) et enrichi des montants
 /// calculables. Chaque échéance retournée a `due_on >= today`.
@@ -323,25 +783,67 @@ pub fn fiscal_calendar(conn: &Connection, today: Date) -> Result<Vec<FiscalDeadl
 
     let mut deadlines: Vec<FiscalDeadline> = Vec::new();
 
-    // --- TVA (CA3) : périodicité du régime, jour de la grille officielle dérivé du profil
-    // (zone du siège, forme juridique, deux premiers chiffres du SIREN), report au jour ouvré. ---
-    if let Some(periodicity) = Ca3Periodicity::from_regime(vat_regime) {
-        let rule = profile.as_ref().map(|p| {
-            Ca3FilingRule::derive(&p.legal_form, &p.name, p.siren, &p.address.postal_code)
-        });
-        let day = rule.map_or(Ca3FilingRule::EARLIEST_DAY, |r| r.day);
-        let filing = next_ca3_filing(today, periodicity, day);
-        let vat = vat_due_for_period(
+    // --- TVA : jour de la grille officielle dérivé du profil (zone du siège, forme juridique,
+    // deux premiers chiffres du SIREN), report au jour ouvré — la même cellule vaut pour la CA3
+    // et pour les acomptes 3514 du réel simplifié. ---
+    let rule = profile
+        .as_ref()
+        .map(|p| Ca3FilingRule::derive(&p.legal_form, &p.name, p.siren, &p.address.postal_code));
+    let day = rule.map_or(Ca3FilingRule::EARLIEST_DAY, |r| r.day);
+
+    // Réel simplifié : acomptes et CA12 des exercices encore sous ce régime.
+    if vat_regime == Some(VatRegime::RealSimplified) {
+        push_simplified_vat_deadlines(
             conn,
-            filing.period_start.first_day(),
-            filing.period_end.last_day(),
+            &mut deadlines,
+            SimplifiedVatWindow {
+                today,
+                horizon,
+                fye,
+                previous,
+                current,
+                day,
+            },
         )?;
-        deadlines.push(FiscalDeadline {
-            kind: FiscalDeadlineKind::Ca3,
-            due_on: filing.due_on,
-            amount: Some(vat.due),
-            note: Some(ca3_note(&filing, periodicity, rule, vat_regime.is_none())),
-        });
+    }
+
+    // CA3 : dès maintenant au réel normal ; pour un ancien réel simplifié, seulement à partir du
+    // premier exercice ouvert après la suppression du régime (ses mois antérieurs relèvent de la
+    // CA12), s'il commence dans l'horizon.
+    let scheme = VatFilingScheme::for_exercise(vat_regime, current);
+    let ca3 = match scheme.ca3_periodicity() {
+        Some(periodicity) => Some((periodicity, None)),
+        None if scheme == VatFilingScheme::Simplified => {
+            let next = fye.containing(add_months(current.end(), 1));
+            (!simplified_regime_applies_to(next)).then(|| {
+                let start = next.start();
+                let earliest = Month::new(start.year(), u8::from(start.month()))
+                    .expect("un début d'exercice a un mois valide");
+                (Ca3Periodicity::Quarterly, Some(earliest))
+            })
+        }
+        None => None,
+    };
+    if let Some((periodicity, earliest_period)) = ca3 {
+        let filing = next_ca3_filing_from(today, periodicity, day, earliest_period);
+        if filing.due_on <= horizon {
+            let vat = vat_due_for_period(
+                conn,
+                filing.period_start.first_day(),
+                filing.period_end.last_day(),
+            )?;
+            let mut note = ca3_note(&filing, periodicity, rule, vat_regime.is_none());
+            if vat_regime == Some(VatRegime::RealSimplified) {
+                note.push_str(" ; ");
+                note.push_str(REPEAL_NOTE);
+            }
+            deadlines.push(FiscalDeadline {
+                kind: FiscalDeadlineKind::Ca3,
+                due_on: filing.due_on,
+                amount: Some(vat.due),
+                note: Some(note),
+            });
+        }
     }
 
     // --- IS : solde de l'exercice clos + acomptes de l'exercice en cours, montants tirés du
@@ -813,16 +1315,346 @@ mod tests {
         );
     }
 
+    // --- Réel simplifié (lot 27) : acomptes 3514, CA12, suppression du régime en 2027. ---
+
+    fn exercise(start: Date, end: Date) -> FiscalYear {
+        FiscalYear::new(start, end)
+    }
+
     #[test]
-    fn a_simplified_regime_files_no_ca3() {
-        let (mut store, _) = fresh_store("simplified");
+    fn the_ca12_of_a_calendar_year_is_due_the_second_business_day_after_may_1st() {
+        // 2027 : 1er mai un samedi ; lundi 3 (1er jour ouvré), mardi 4 (2e).
+        assert_eq!(
+            ca12_due_on(FiscalYear::calendar(2026)),
+            date(2027, TimeMonth::May, 4)
+        );
+        // 2026 : 1er mai un vendredi (férié) ; lundi 4, mardi 5.
+        assert_eq!(
+            ca12_due_on(FiscalYear::calendar(2025)),
+            date(2026, TimeMonth::May, 5)
+        );
+    }
+
+    #[test]
+    fn the_ca12e_of_an_offset_year_is_due_three_months_after_close_on_a_business_day() {
+        // Clôture au 30 juin 2026 → 30 septembre 2026, un mercredi.
+        assert_eq!(
+            ca12_due_on(exercise(
+                date(2025, TimeMonth::July, 1),
+                date(2026, TimeMonth::June, 30)
+            )),
+            date(2026, TimeMonth::September, 30)
+        );
+        // Clôture au 28 février 2026 → 31 mai 2026, un dimanche → lundi 1er juin.
+        assert_eq!(
+            ca12_due_on(exercise(
+                date(2025, TimeMonth::March, 1),
+                date(2026, TimeMonth::February, 28)
+            )),
+            date(2026, TimeMonth::June, 1)
+        );
+    }
+
+    #[test]
+    fn the_simplified_regime_ends_with_exercises_opened_from_2027() {
+        assert!(simplified_regime_applies_to(FiscalYear::calendar(2026)));
+        assert!(
+            simplified_regime_applies_to(exercise(
+                date(2026, TimeMonth::July, 1),
+                date(2027, TimeMonth::June, 30)
+            )),
+            "un exercice décalé ouvert en 2026 reste au réel simplifié jusqu'à sa clôture"
+        );
+        assert!(!simplified_regime_applies_to(FiscalYear::calendar(2027)));
+        let simplified = Some(VatRegime::RealSimplified);
+        assert_eq!(
+            VatFilingScheme::for_exercise(simplified, FiscalYear::calendar(2026)),
+            VatFilingScheme::Simplified
+        );
+        assert_eq!(
+            VatFilingScheme::for_exercise(simplified, FiscalYear::calendar(2027)),
+            VatFilingScheme::Ca3Quarterly
+        );
+        assert_eq!(
+            VatFilingScheme::for_exercise(Some(VatRegime::Franchise), FiscalYear::calendar(2027)),
+            VatFilingScheme::NoFiling
+        );
+        assert_eq!(
+            VatFilingScheme::for_exercise(None, FiscalYear::calendar(2027)),
+            VatFilingScheme::Ca3Monthly
+        );
+    }
+
+    #[test]
+    fn vat_instalments_are_55_and_40_percent_unless_the_base_is_under_1000_euros() {
+        let base = Money::from_cents(400_000);
+        assert_eq!(
+            vat_instalment_amount(VatInstalment::July, base),
+            Some(Money::from_cents(220_000))
+        );
+        assert_eq!(
+            vat_instalment_amount(VatInstalment::December, base),
+            Some(Money::from_cents(160_000))
+        );
+        assert_eq!(
+            vat_instalment_amount(VatInstalment::July, Money::from_cents(99_999)),
+            None
+        );
+        assert_eq!(
+            vat_instalment_amount(VatInstalment::December, Money::from_cents(-50_000)),
+            None,
+            "un crédit de TVA dispense aussi"
+        );
+    }
+
+    #[test]
+    fn a_ca3_bounded_by_an_earliest_period_skips_the_quarters_before_it() {
+        // Au 5 janvier 2027, la CA3 de janvier déclarerait le T4 2026 — qui relevait de la CA12
+        // si le réel normal ne commence qu'avec l'exercice 2027.
+        let filing = next_ca3_filing_from(
+            date(2027, TimeMonth::January, 5),
+            Ca3Periodicity::Quarterly,
+            23,
+            Some(month(2027, 1)),
+        );
+        assert_eq!(filing.period_start, month(2027, 1));
+        assert_eq!(filing.period_end, month(2027, 3));
+        assert_eq!(filing.due_on, date(2027, TimeMonth::April, 23));
+    }
+
+    proptest! {
+        #[test]
+        fn a_ca12_is_always_due_on_a_business_day_after_the_exercise_closes(
+            year in 2020i32..2040,
+            end_month in 1u8..=12,
+        ) {
+            let fye = FiscalYearEnd::new(end_month, 31).unwrap();
+            let exercise = fye.containing(date(year, TimeMonth::June, 15));
+            let due = ca12_due_on(exercise);
+            prop_assert!(due > exercise.end());
+            prop_assert!(crate::domain::is_french_business_day(due));
+            // Au plus 3 mois + quelques jours de report après la clôture (5 mois pour l'exercice
+            // civil, dont la CA12 attend mai).
+            let max_lag = if end_month == 12 { 130 } else { 100 };
+            prop_assert!((due - exercise.end()).whole_days() <= max_lag);
+        }
+    }
+
+    #[test]
+    fn the_vat_filing_summary_reflects_the_grid_and_the_repeal() {
+        let set = calendar_profile();
+        let mut profile = CompanyProfile {
+            name: set.name,
+            legal_form: set.legal_form,
+            siren: set.siren,
+            vat_number: None,
+            address: set.address,
+            share_capital: set.share_capital,
+            rcs_city: set.rcs_city,
+            iban: None,
+            fiscal_year_end: set.fiscal_year_end,
+            vat_regime: set.vat_regime,
+            director_monthly_gross: None,
+            director_charge_ratio_bps: None,
+        };
+        let today = date(2026, TimeMonth::September, 2);
+
+        let monthly = vat_filing_summary(&profile, today);
+        assert_eq!(monthly.scheme, VatFilingScheme::Ca3Monthly);
+        assert_eq!(monthly.rule.day, 23);
+        assert!(
+            monthly.note.contains("CA3 mensuelle, le 23 du mois"),
+            "{}",
+            monthly.note
+        );
+        assert!(!monthly.note.contains("supprimé"), "{}", monthly.note);
+
+        profile.vat_regime = Some(VatRegime::RealSimplified);
+        let simplified = vat_filing_summary(&profile, today);
+        assert_eq!(simplified.scheme, VatFilingScheme::Simplified);
+        assert!(
+            simplified.note.contains("acomptes 3514"),
+            "{}",
+            simplified.note
+        );
+        assert!(
+            simplified.note.contains("2e jour ouvré suivant le 1er mai"),
+            "{}",
+            simplified.note
+        );
+        assert!(
+            simplified.note.contains("1er janvier 2027"),
+            "{}",
+            simplified.note
+        );
+
+        let after = vat_filing_summary(&profile, date(2027, TimeMonth::January, 5));
+        assert_eq!(after.scheme, VatFilingScheme::Ca3Quarterly);
+        assert!(
+            after.note.starts_with("CA3 trimestrielle"),
+            "{}",
+            after.note
+        );
+
+        profile.vat_regime = None;
+        let unknown = vat_filing_summary(&profile, today);
+        assert_eq!(unknown.scheme, VatFilingScheme::Ca3Monthly);
+        assert!(unknown.note.contains("mensuel supposé"), "{}", unknown.note);
+    }
+
+    #[test]
+    fn a_simplified_filer_gets_its_3514_instalment_the_ca12_and_then_quarterly_ca3s() {
+        let (mut store, client_id) = fresh_store("simplified");
         let mut profile = calendar_profile();
         profile.vat_regime = Some(VatRegime::RealSimplified);
         Executor::new(&mut store)
             .execute(&profile, &ExecutionContext::new(Actor::Human, false))
             .unwrap();
+        // 2025 : 20 000 € HT → 4 000 € de TVA, base des acomptes 2026.
+        emit(
+            &mut store,
+            client_id,
+            2_000_000,
+            1.0,
+            date(2025, TimeMonth::March, 1),
+        );
+        // 2026 : 5 000 € HT → 1 000 € de TVA, régularisée par la CA12 de mai 2027.
+        emit(
+            &mut store,
+            client_id,
+            500_000,
+            1.0,
+            date(2026, TimeMonth::February, 1),
+        );
+
         let calendar =
-            fiscal_calendar(store.connection(), date(2026, TimeMonth::September, 1)).unwrap();
+            fiscal_calendar(store.connection(), date(2026, TimeMonth::September, 2)).unwrap();
+        for pair in calendar.windows(2) {
+            assert!(pair[0].due_on <= pair[1].due_on);
+        }
+
+        // Un seul acompte dans l'horizon : décembre 2026. Juillet 2027 n'existe plus, l'exercice
+        // 2027 n'étant plus au réel simplifié.
+        let instalments: Vec<_> = calendar
+            .iter()
+            .filter(|d| d.kind == FiscalDeadlineKind::VatInstalment)
+            .collect();
+        assert_eq!(instalments.len(), 1, "{instalments:?}");
+        let december = instalments[0];
+        assert_eq!(december.due_on, date(2026, TimeMonth::December, 23));
+        assert_eq!(december.amount, Some(Money::from_cents(160_000)));
+        let note = december.note.as_deref().unwrap();
+        assert!(note.contains("40 %"), "{note}");
+        assert!(note.contains("2025-01-01 – 2025-12-31"), "{note}");
+
+        // CA12 de 2026 : 1 000 € − (2 200 + 1 600) = crédit de 2 800 €, le 4 mai 2027.
+        let ca12 = calendar
+            .iter()
+            .find(|d| d.kind == FiscalDeadlineKind::Ca12)
+            .expect("la CA12 de l'exercice en cours doit figurer au calendrier");
+        assert_eq!(ca12.due_on, date(2027, TimeMonth::May, 4));
+        assert_eq!(ca12.amount, Some(Money::from_cents(-280_000)));
+        let note = ca12.note.as_deref().unwrap();
+        assert!(note.contains("exercice en cours"), "{note}");
+        assert!(note.contains("dernière CA12"), "{note}");
+
+        // Première CA3 trimestrielle du réel normal : T1 2027, déposée le 23 avril 2027 — jamais
+        // une CA3 sur une période encore couverte par la CA12.
+        let quarterly: Vec<_> = calendar
+            .iter()
+            .filter(|d| d.kind == FiscalDeadlineKind::Ca3)
+            .collect();
+        assert_eq!(quarterly.len(), 1, "{quarterly:?}");
+        assert_eq!(quarterly[0].due_on, date(2027, TimeMonth::April, 23));
+        let note = quarterly[0].note.as_deref().unwrap();
+        assert!(note.contains("TVA de 2027-01 à 2027-03"), "{note}");
+        assert!(note.contains("supprimé"), "{note}");
+    }
+
+    #[test]
+    fn a_simplified_filer_with_little_vat_is_dispensed_from_instalments() {
+        let (mut store, client_id) = fresh_store("dispensed");
+        let mut profile = calendar_profile();
+        profile.vat_regime = Some(VatRegime::RealSimplified);
+        Executor::new(&mut store)
+            .execute(&profile, &ExecutionContext::new(Actor::Human, false))
+            .unwrap();
+        // 2025 : 500 € HT → 100 € de TVA, sous le seuil de 1 000 €.
+        emit(
+            &mut store,
+            client_id,
+            50_000,
+            1.0,
+            date(2025, TimeMonth::March, 1),
+        );
+        emit(
+            &mut store,
+            client_id,
+            500_000,
+            1.0,
+            date(2026, TimeMonth::February, 1),
+        );
+        let calendar =
+            fiscal_calendar(store.connection(), date(2026, TimeMonth::September, 2)).unwrap();
+        let december = calendar
+            .iter()
+            .find(|d| d.kind == FiscalDeadlineKind::VatInstalment)
+            .unwrap();
+        assert_eq!(december.amount, None);
+        assert!(
+            december.note.as_deref().unwrap().contains("dispense"),
+            "{:?}",
+            december.note
+        );
+        // Sans acompte versé, la CA12 régularise toute la TVA de l'exercice.
+        let ca12 = calendar
+            .iter()
+            .find(|d| d.kind == FiscalDeadlineKind::Ca12)
+            .unwrap();
+        assert_eq!(ca12.amount, Some(Money::from_cents(100_000)));
+    }
+
+    #[test]
+    fn an_offset_simplified_exercise_opened_in_2026_still_files_a_ca12e_and_no_ca3_yet() {
+        let (mut store, client_id) = fresh_store("offset-simplified");
+        let mut profile = calendar_profile();
+        profile.vat_regime = Some(VatRegime::RealSimplified);
+        profile.fiscal_year_end = Some(FiscalYearEnd::new(6, 30).unwrap());
+        Executor::new(&mut store)
+            .execute(&profile, &ExecutionContext::new(Actor::Human, false))
+            .unwrap();
+        // Exercice clos 2025-07 → 2026-06 : 10 000 € HT → 2 000 € de TVA.
+        emit(
+            &mut store,
+            client_id,
+            1_000_000,
+            1.0,
+            date(2026, TimeMonth::January, 15),
+        );
+
+        let calendar =
+            fiscal_calendar(store.connection(), date(2026, TimeMonth::September, 2)).unwrap();
+        // CA12 E de l'exercice clos au 30 juin 2026 : le 30 septembre 2026, 2 000 € moins les
+        // acomptes (base = exercice 2024-25, vide → dispense).
+        let ca12 = calendar
+            .iter()
+            .find(|d| d.kind == FiscalDeadlineKind::Ca12)
+            .expect("la CA12 E de l'exercice clos doit figurer au calendrier");
+        assert_eq!(ca12.due_on, date(2026, TimeMonth::September, 30));
+        assert_eq!(ca12.amount, Some(Money::from_cents(200_000)));
+        let note = ca12.note.as_deref().unwrap();
+        assert!(note.contains("CA12 E"), "{note}");
+        assert!(!note.contains("dernière CA12"), "{note}");
+        // Acompte de décembre 2026 : l'exercice 2026-27, ouvert avant 2027, reste au réel
+        // simplifié ; base = exercice 2025-26 (2 000 €) → 40 % = 800 €.
+        let december = calendar
+            .iter()
+            .find(|d| d.kind == FiscalDeadlineKind::VatInstalment)
+            .unwrap();
+        assert_eq!(december.due_on, date(2026, TimeMonth::December, 23));
+        assert_eq!(december.amount, Some(Money::from_cents(80_000)));
+        // Aucune CA3 : le réel normal ne commence qu'avec l'exercice ouvert le 1er juillet 2027,
+        // dont la première CA3 (octobre 2027) dépasse l'horizon.
         assert!(calendar.iter().all(|d| d.kind != FiscalDeadlineKind::Ca3));
     }
 }

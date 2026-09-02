@@ -3,8 +3,9 @@
 //! `company.show` lit tout — voir aussi la ressource `freeflow://company`.
 
 use freeflow_core::app::Executor;
-use freeflow_core::company::{self, company_profile};
+use freeflow_core::company;
 use freeflow_core::domain::{Address, FiscalYearEnd, Money, Siren, VatNumber, VatRegime};
+use freeflow_core::fiscal::company_profile_with_vat_filing;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
 use rmcp::{tool, tool_router};
@@ -68,15 +69,17 @@ pub(crate) struct SetProfileArgs {
 
 #[tool_router(router = company_router, vis = "pub(crate)")]
 impl FreeflowServer {
-    /// Affiche l'identité légale de l'émetteur (mentions obligatoires des factures), ou `null`
-    /// si aucun profil n'est encore défini.
+    /// Affiche l'identité légale de l'émetteur (mentions obligatoires des factures) et la règle
+    /// de télédéclaration de TVA qui en découle (`vat_filing` : schéma déclaratif, jour de la
+    /// grille officielle), ou `null` si aucun profil n'est encore défini.
     #[tool(
         name = "company.show",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn company_show(&self) -> CallToolResult {
+        let today = time::OffsetDateTime::now_utc().date();
         let store = self.store.lock().await;
-        match company_profile(store.connection()) {
+        match company_profile_with_vat_filing(store.connection(), today) {
             Ok(profile) => ok_json(profile),
             Err(e) => err_text(e.to_string()),
         }
