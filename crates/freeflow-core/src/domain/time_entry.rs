@@ -53,6 +53,7 @@ impl std::str::FromStr for TimeCategory {
 pub struct TimeEntry {
     pub id: TimeEntryId,
     pub mission_id: MissionId,
+    #[serde(with = "crate::domain::serde_date::date")]
     pub worked_on: Date,
     /// Fraction de jour (ex. `0.5` pour une demi-journée).
     pub days: f64,

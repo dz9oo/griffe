@@ -12,7 +12,7 @@ use freeflow_core::store::Store;
 use serde_json::json;
 
 use crate::error::CliError;
-use crate::output::format_value;
+use crate::output::format_json;
 
 #[derive(Debug, Subcommand)]
 pub enum FecCommand {
@@ -51,9 +51,8 @@ pub fn run(cmd: FecCommand, store: &mut Store, json: bool) -> Result<String, Cli
             })?;
             let summary = fec.summary();
             if json {
-                Ok(format_value(
+                Ok(format_json(
                     &json!({ "path": path.display().to_string(), "summary": summary }),
-                    true,
                 ))
             } else {
                 Ok(format!(

@@ -23,7 +23,6 @@ use freeflow_core::opening_balance::{
 };
 use maud::html;
 use serde::Deserialize;
-use time::OffsetDateTime;
 
 use crate::state::AppState;
 use crate::views;
@@ -95,7 +94,11 @@ fn is_editable(store: &freeflow_core::store::Store, record: &FiscalYearRecord) -
 // -- Liste ---------------------------------------------------------------------------------
 
 pub async fn table(State(state): State<AppState>) -> Html<String> {
-    match state.with_store(views::cloture::list_fragment).await {
+    let today = state.today();
+    match state
+        .with_store(|store| views::cloture::list_fragment(store, today))
+        .await
+    {
         None => locked_fragment(),
         Some(Ok(markup)) => Html(markup.into_string()),
         Some(Err(e)) => message_fragment(&e.to_string()),
@@ -179,6 +182,7 @@ fn parse_close_form(form: &CloseForm) -> Result<ParsedCloseForm, Box<CloseFormEr
                     legal_reserve,
                     dividends,
                     carry_back: form.carry_back.is_some(),
+                    today: None,
                 },
             })
         }
@@ -202,7 +206,7 @@ pub async fn new_panel(
     State(state): State<AppState>,
     Query(query): Query<NewCloseQuery>,
 ) -> Html<String> {
-    let today = OffsetDateTime::now_utc().date();
+    let today = state.today();
     let mut values = state
         .with_store(|store| views::cloture::default_close_values(store, today))
         .await
@@ -220,13 +224,16 @@ pub async fn new_panel(
 }
 
 pub async fn create(State(state): State<AppState>, Form(form): Form<CloseForm>) -> Response {
-    let parsed = match parse_close_form(&form) {
+    let mut parsed = match parse_close_form(&form) {
         Ok(p) => p,
         Err(errors) => {
             return Html(views::cloture::new_panel(&(&form).into(), &errors).into_string())
                 .into_response();
         }
     };
+    // La date du jour vient de cet adaptateur (lot 36) : le cœur refuse un exercice pas encore
+    // écoulé, et le refus s'affiche en bandeau comme n'importe quelle autre règle.
+    parsed.cmd.today = Some(state.today());
     match execute(&state, parsed.cmd).await {
         None => locked_fragment().into_response(),
         Some(Ok(_)) => saved(),
@@ -353,9 +360,9 @@ pub async fn approve_panel(State(state): State<AppState>, Path(id): Path<String>
         None => locked_fragment(),
         Some(Err(e)) => message_fragment(&e.to_string()),
         Some(Ok(None)) => message_fragment("exercice introuvable"),
-        Some(Ok(Some(record))) => Html(
-            views::cloture::approve_panel(&record, OffsetDateTime::now_utc().date()).into_string(),
-        ),
+        Some(Ok(Some(record))) => {
+            Html(views::cloture::approve_panel(&record, state.today()).into_string())
+        }
     }
 }
 
@@ -387,15 +394,71 @@ pub async fn approve(
         id,
         revision: record.revision,
         approved_on,
+        today: Some(state.today()),
+    };
+    // Sauvegarde préalable obligatoire (lot 36), comme `freeflow year approve` : l'approbation
+    // rend l'exercice immuable, la sauvegarde est le seul retour en arrière. Son échec abandonne
+    // l'approbation. IO d'adaptateur, jamais dans la commande.
+    let backup = match state
+        .with_store(|store| pre_approve_backup(store, record.ends_on.year()))
+        .await
+    {
+        None => return locked_fragment().into_response(),
+        Some(Err(message)) => {
+            return Html(views::cloture::detail_panel(&record, true, Some(&message)).into_string())
+                .into_response();
+        }
+        Some(Ok(path)) => path,
     };
     match execute(&state, cmd).await {
         None => locked_fragment().into_response(),
+        Some(Ok(Outcome::Applied(approval))) => {
+            // Succès, mais avec quelque chose à dire (sauvegarde, retard) : le panneau reste
+            // ouvert sur ce compte rendu, et la liste se rafraîchit quand même.
+            let mut response = Html(
+                views::cloture::approved_panel(&record, &backup, approval.late_by_days)
+                    .into_string(),
+            )
+            .into_response();
+            response
+                .headers_mut()
+                .insert("HX-Trigger", HeaderValue::from_static("freeflow:saved"));
+            response
+        }
         Some(Ok(_)) => saved(),
         Some(Err(e)) => {
             Html(views::cloture::detail_panel(&record, true, Some(&e.to_string())).into_string())
                 .into_response()
         }
     }
+}
+
+/// `backups/pre-approve-<période>-<horodatage>.db` à côté du coffre — le même nom que la CLI,
+/// pour qu'un utilisateur retrouve ses sauvegardes au même endroit quel que soit l'adaptateur.
+fn pre_approve_backup(
+    store: &freeflow_core::store::Store,
+    period: i32,
+) -> Result<std::path::PathBuf, String> {
+    let stamp = time::OffsetDateTime::now_utc()
+        .format(&time::macros::format_description!(
+            "[year][month][day]T[hour][minute][second]Z"
+        ))
+        .map_err(|e| e.to_string())?;
+    let dest = store
+        .db_path()
+        .with_file_name("backups")
+        .join(format!("pre-approve-{period}-{stamp}.db"));
+    let failed = |e: &dyn std::fmt::Display| {
+        format!(
+            "sauvegarde préalable impossible ({}) : {e} — approbation abandonnée",
+            dest.display()
+        )
+    };
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| failed(&e))?;
+    }
+    store.backup_to(&dest).map_err(|e| failed(&e))?;
+    Ok(dest)
 }
 
 pub async fn delete_confirm_panel(
@@ -473,7 +536,7 @@ pub async fn checklist_panel(
     State(state): State<AppState>,
     Query(query): Query<FecQuery>,
 ) -> Html<String> {
-    let today = OffsetDateTime::now_utc().date();
+    let today = state.today();
     let built = state
         .with_store(|store| {
             freeflow_core::closing::closing_checklist(store.connection(), query.period, today)
@@ -597,7 +660,7 @@ pub async fn document(
     let year_label = record.ends_on.year();
     let result = match kind.as_str() {
         "minutes" => {
-            let today = OffsetDateTime::now_utc().date();
+            let today = state.today();
             freeflow_docs::render_approval_minutes(&profile, &record, today).map(|pdf| {
                 document_response(pdf, "application/pdf", &format!("pv-{year_label}.pdf"))
             })

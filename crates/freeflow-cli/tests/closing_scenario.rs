@@ -474,7 +474,7 @@ fn a_preexisting_sasu_closes_two_exercises_alone_from_the_cli() {
     // ---------------------------------------------------------------------------------------
     freeflow()
         .env("FREEFLOW_DB", &db)
-        .args(["year", "close", "--period", "2026"])
+        .args(["year", "close", "--period", "2026", "--today", "2026-10-05"])
         .assert()
         .success();
     let closed = year_show(&db, "2026");
@@ -496,7 +496,15 @@ fn a_preexisting_sasu_closes_two_exercises_alone_from_the_cli() {
 
     freeflow()
         .env("FREEFLOW_DB", &db)
-        .args(["year", "approve", "2026", "--approved-on", "2026-12-15"])
+        .args([
+            "year",
+            "approve",
+            "2026",
+            "--approved-on",
+            "2026-12-15",
+            "--today",
+            "2026-12-15",
+        ])
         .assert()
         .success();
     let approved = checklist(&db, "2026", "2026-12-20");
@@ -729,6 +737,8 @@ fn a_preexisting_sasu_closes_two_exercises_alone_from_the_cli() {
             "100",
             "--dividends",
             "3000",
+            "--today",
+            "2027-10-10",
         ])
         .assert()
         .success();
@@ -767,7 +777,15 @@ fn a_preexisting_sasu_closes_two_exercises_alone_from_the_cli() {
 
     freeflow()
         .env("FREEFLOW_DB", &db)
-        .args(["year", "approve", "2027", "--approved-on", "2027-12-10"])
+        .args([
+            "year",
+            "approve",
+            "2027",
+            "--approved-on",
+            "2027-12-10",
+            "--today",
+            "2027-12-10",
+        ])
         .assert()
         .success();
     let approved = checklist(&db, "2027", "2027-12-15");

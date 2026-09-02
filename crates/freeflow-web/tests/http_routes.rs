@@ -1879,6 +1879,9 @@ fn fiscal_year_id(db_path: &Path) -> freeflow_core::domain::FiscalYearId {
 async fn closing_a_year_from_the_window_then_downloading_its_documents() {
     let db_path = test_db_path("cloture-e2e");
     let state = unlocked_state_with_activity(&db_path).await;
+    // Lot 36 : la fenêtre passe la date du jour au cœur, qui refuse de clore un exercice pas
+    // encore écoulé — le scénario se rejoue depuis 2027, une fois 2026 écoulé.
+    let state = state.with_today(time::macros::date!(2027 - 06 - 01));
     let router = freeflow_web::router(state);
 
     // Lot 32 : le report en arrière coché sur un exercice bénéficiaire est refusé par le cœur —
@@ -1906,14 +1909,15 @@ async fn closing_a_year_from_the_window_then_downloading_its_documents() {
         "{refused_body}"
     );
 
-    // Lot 34 : le parcours de clôture, avant la clôture — l'exercice 2026 court encore (le
-    // panneau lit la date du jour), donc le geste de clôture est bloqué et son bouton absent.
+    // Lot 34 : le parcours de clôture d'un exercice qui court encore — 2027, vu le 1er juin
+    // 2027 (la date du jour de la fenêtre, lot 36) : le geste de clôture est bloqué et son
+    // bouton absent.
     let journey = body_text(
         router
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/cloture/checklist?period=2026")
+                    .uri("/cloture/checklist?period=2027")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1921,7 +1925,7 @@ async fn closing_a_year_from_the_window_then_downloading_its_documents() {
             .unwrap(),
     )
     .await;
-    assert!(journey.contains("Parcours de clôture 2026"), "{journey}");
+    assert!(journey.contains("Parcours de clôture 2027"), "{journey}");
     assert!(journey.contains("exercice en cours"), "{journey}");
     assert!(journey.contains("Exercice écoulé"), "{journey}");
     assert!(journey.contains("Profil d'entreprise"), "{journey}");
@@ -3201,6 +3205,9 @@ async fn voiding_a_payment_through_the_invoice_panel_restores_the_unpaid_status(
 async fn the_opening_balance_panel_records_shows_and_freezes_after_a_close() {
     let db_path = test_db_path("opening-panel");
     let state = unlocked_state_with_activity(&db_path).await;
+    // Lot 36 : la fenêtre passe la date du jour au cœur, qui refuse de clore un exercice pas
+    // encore écoulé — le scénario se rejoue depuis 2027, une fois 2026 écoulé.
+    let state = state.with_today(time::macros::date!(2027 - 06 - 01));
     let router = freeflow_web::router(state);
 
     // Sans bilan : le panneau est le formulaire de saisie.
@@ -3354,4 +3361,71 @@ async fn the_opening_balance_panel_records_shows_and_freezes_after_a_close() {
     assert!(refused.headers().get("HX-Trigger").is_none());
     let refused_body = body_text(refused).await;
     assert!(refused_body.contains("déjà clos"), "{refused_body}");
+}
+
+/// Lot 36 : la fenêtre passe la date du jour au cœur — clore un exercice pas encore écoulé
+/// se solde par un bandeau dans le panneau, sans `freeflow:saved`, rien n'est clos.
+#[tokio::test]
+async fn closing_an_unfinished_year_from_the_window_shows_a_banner_and_closes_nothing() {
+    let db_path = test_db_path("cloture-premature");
+    let state = unlocked_state_with_activity(&db_path)
+        .await
+        .with_today(time::macros::date!(2026 - 12 - 03));
+    let router = freeflow_web::router(state);
+
+    let refused = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/cloture")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(
+                    "starts_on=2026-01-01&ends_on=2026-12-31&legal_reserve=0&dividends=0",
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), StatusCode::OK);
+    assert!(refused.headers().get("HX-Trigger").is_none());
+    let body = body_text(refused).await;
+    assert!(body.contains("court jusqu'au 2026-12-31"), "{body}");
+
+    let list = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/cloture/table")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(list.contains("aucun exercice clos"), "{list}");
+    // La barre propose partout le dernier exercice **écoulé** (2025), jamais celui en cours.
+    assert!(list.contains("name=\"period\" value=\"2025\""), "{list}");
+    assert!(!list.contains("name=\"period\" value=\"2026\""), "{list}");
+
+    // Le formulaire d'approbation borne la date au jour même.
+    let approve_form_present = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/cloture/new")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        approve_form_present.contains("value=\"2025-01-01\""),
+        "{approve_form_present}"
+    );
 }

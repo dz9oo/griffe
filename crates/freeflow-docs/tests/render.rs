@@ -151,6 +151,7 @@ fn ledger(profile: &CompanyProfile) -> Ledger {
         prior_losses: freeflow_core::domain::Money::ZERO,
         appropriations: &[],
     })
+    .unwrap()
 }
 
 #[test]

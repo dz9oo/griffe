@@ -17,7 +17,8 @@
 use std::path::{Path, PathBuf};
 
 use clap::{Subcommand, ValueEnum};
-use freeflow_core::app::{ExecutionContext, Executor};
+use freeflow_core::app::{Actor, ExecutionContext, Executor};
+use freeflow_core::clock::today_local;
 use freeflow_core::closing::{
     ClosingChecklist, ClosingPhase, ClosingStep, ClosingStepKey, GLOSSARY, StepStatus,
     checklist_json, closing_checklist, glossary_json,
@@ -40,7 +41,7 @@ use serde_json::json;
 use time::Date;
 
 use crate::error::CliError;
-use crate::output::{format_outcome, format_value};
+use crate::output::{format_json, format_outcome, format_outcome_as};
 use crate::parsers::{parse_date, parse_money, parse_opening_line};
 use crate::table;
 
@@ -85,6 +86,10 @@ pub enum YearCommand {
         /// net. Refusé sans déficit, sans exercice précédent ou sans bénéfice d'imputation.
         #[arg(long)]
         carry_back: bool,
+        /// Date du jour (défaut : aujourd'hui, heure locale) — la clôture est refusée tant que
+        /// l'exercice n'est pas écoulé.
+        #[arg(long, value_parser = parse_date)]
+        today: Option<Date>,
     },
     /// Liste les exercices clos, du plus ancien au plus récent.
     List,
@@ -101,12 +106,18 @@ pub enum YearCommand {
         #[arg(long, value_parser = parse_money)]
         dividends: Option<Money>,
     },
-    /// Approuve un exercice (date de l'AG) — il devient immuable. Nécessite confirmation
-    /// humaine quand `--actor agent:...`.
+    /// Approuve un exercice (date de l'AG) — il devient immuable. Une sauvegarde du coffre est
+    /// écrite juste avant (`backups/pre-approve-<période>-<horodatage>.db`) : c'est le seul
+    /// filet, une approbation ne se défait pas. Nécessite confirmation humaine quand
+    /// `--actor agent:...`.
     Approve {
         period: i32,
+        /// Date de la décision d'approbation — ni avant la clôture, ni dans le futur.
         #[arg(long, value_parser = parse_date)]
         approved_on: Date,
+        /// Date du jour (défaut : aujourd'hui, heure locale).
+        #[arg(long, value_parser = parse_date)]
+        today: Option<Date>,
     },
     /// Supprime un exercice encore en projet (clos par erreur).
     Rm { period: i32 },
@@ -257,9 +268,9 @@ fn run_opening(
 ) -> Result<String, CliError> {
     let output = match cmd {
         OpeningCommand::Show => match opening_balance(store.connection())? {
-            Some(record) if json => format_value(&opening_json(&record), true),
+            Some(record) if json => format_json(&opening_json(&record)),
             Some(record) => opening_human(&record),
-            None if json => format_value(&serde_json::Value::Null, true),
+            None if json => format_json(&serde_json::Value::Null),
             None => "aucun bilan d'ouverture — `freeflow year opening set`".to_string(),
         },
         OpeningCommand::Set {
@@ -295,7 +306,9 @@ fn run_opening(
                     ctx,
                 )?,
             };
-            format_outcome(&outcome, json)
+            format_outcome_as(&outcome, json, |revision| {
+                format!("bilan d'ouverture enregistré (révision {revision})")
+            })
         }
         OpeningCommand::Rm => {
             let existing = opening_balance(store.connection())?.ok_or_else(|| {
@@ -307,7 +320,9 @@ fn run_opening(
                 },
                 ctx,
             )?;
-            format_outcome(&outcome, json)
+            format_outcome_as(&outcome, json, |()| {
+                "bilan d'ouverture supprimé".to_string()
+            })
         }
     };
     Ok(output)
@@ -372,6 +387,62 @@ fn resolve_close_period(
         _ => Err(CliError::Domain(
             "précisez soit --period, soit --starts-on et --ends-on".into(),
         )),
+    }
+}
+
+/// La sauvegarde écrite avant une approbation : `backups/pre-approve-<période>-<horodatage>.db`
+/// à côté du coffre, chiffrée comme lui. Partagée par `year approve` et `freeflow confirm`.
+///
+/// # Errors
+///
+/// L'échec de la sauvegarde — l'appelant abandonne alors l'approbation.
+pub(crate) fn pre_approve_backup(store: &Store, period: i32) -> Result<PathBuf, CliError> {
+    let stamp = time::OffsetDateTime::now_utc()
+        .format(&time::macros::format_description!(
+            "[year][month][day]T[hour][minute][second]Z"
+        ))
+        .map_err(|e| CliError::Unexpected(e.to_string()))?;
+    let dest = store
+        .db_path()
+        .with_file_name("backups")
+        .join(format!("pre-approve-{period}-{stamp}.db"));
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            CliError::Unexpected(format!(
+                "sauvegarde préalable impossible ({}) : {e} — approbation abandonnée",
+                parent.display()
+            ))
+        })?;
+    }
+    store.backup_to(&dest).map_err(|e| {
+        CliError::Unexpected(format!(
+            "sauvegarde préalable impossible ({}) : {e} — approbation abandonnée",
+            dest.display()
+        ))
+    })?;
+    Ok(dest)
+}
+
+/// La sauvegarde préalable d'une approbation confirmée après coup (`freeflow confirm`) : la
+/// période se relit dans l'action en attente.
+pub(crate) fn pre_approve_backup_for_action(
+    store: &Store,
+    command_json: &str,
+) -> Result<PathBuf, CliError> {
+    let cmd: ApproveFiscalYear = serde_json::from_str(command_json)
+        .map_err(|e| CliError::Unexpected(format!("action en attente illisible : {e}")))?;
+    let period = freeflow_core::fiscal_year::fiscal_year_by_id(store.connection(), cmd.id)?
+        .map_or(0, |r| r.ends_on.year());
+    pre_approve_backup(store, period)
+}
+
+/// Ajoute au texte rendu l'emplacement de la sauvegarde préalable (jamais au JSON, dont le
+/// contrat ne change pas).
+pub(crate) fn with_backup_note(rendered: String, backup: &Path, json: bool) -> String {
+    if json {
+        rendered
+    } else {
+        format!("{rendered}\nSauvegarde préalable : {}", backup.display())
     }
 }
 
@@ -634,6 +705,18 @@ fn render(
                 .map_err(|e| CliError::Unexpected(e.to_string()))?
         }
         DocKind::Liasse => {
+            // La liasse est un JSON : une extension `.pdf` demandée par erreur produirait un
+            // fichier que rien n'ouvre (lot 36).
+            if out
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
+            {
+                return Err(CliError::Domain(
+                    "la liasse est un fichier JSON, pas un PDF : donnez une extension `.json` \
+                     (les PDF sont minutes, appropriation, synthesis, balance-sheet)"
+                        .into(),
+                ));
+            }
             let sheet = build_ledger(store.connection(), record.period())?.balance_sheet();
             let export = freeflow_docs::liasse_export(&profile, &record, Some(&sheet));
             let mut bytes = serde_json::to_vec_pretty(&export)
@@ -659,6 +742,7 @@ pub fn run(
             legal_reserve,
             dividends,
             carry_back,
+            today,
         } => {
             let (starts_on, ends_on) = resolve_close_period(store, period, starts_on, ends_on)?;
             let command = CloseFiscalYear {
@@ -667,14 +751,20 @@ pub fn run(
                 legal_reserve,
                 dividends,
                 carry_back,
+                today: Some(today.unwrap_or_else(today_local)),
             };
             let outcome = Executor::new(store).execute(&command, ctx)?;
-            format_outcome(&outcome, json)
+            format_outcome_as(&outcome, json, |id| {
+                format!(
+                    "exercice clos en projet ({id}) — `freeflow year show {}`",
+                    ends_on.year()
+                )
+            })
         }
         YearCommand::List => {
             let years = list_fiscal_years(store.connection())?;
             if json {
-                format_value(&years.iter().map(year_json).collect::<Vec<_>>(), true)
+                format_json(&years.iter().map(year_json).collect::<Vec<_>>())
             } else {
                 let rows: Vec<Vec<String>> = years
                     .iter()
@@ -708,7 +798,7 @@ pub fn run(
         YearCommand::Show { period } => {
             let record = require_year(store, period)?;
             if json {
-                format_value(&year_json(&record), true)
+                format_json(&year_json(&record))
             } else {
                 let status = record.approved_on.map_or_else(
                     || "projet (non approuvé)".to_string(),
@@ -763,38 +853,53 @@ pub fn run(
         YearCommand::Approve {
             period,
             approved_on,
+            today,
         } => {
             let record = require_year(store, period)?;
             let command = ApproveFiscalYear {
                 id: record.id,
                 revision: record.revision,
                 approved_on,
+                today: Some(today.unwrap_or_else(today_local)),
+            };
+            // Sauvegarde préalable obligatoire (lot 36) : l'approbation rend l'exercice
+            // immuable, une sauvegarde est le seul retour en arrière possible. Son échec
+            // abandonne l'approbation ; en dry-run ou pour un agent (action en attente), rien
+            // n'est encore approuvé — la sauvegarde se fait alors à la confirmation.
+            let backup = if ctx.dry_run || !matches!(ctx.actor, Actor::Human) {
+                None
+            } else {
+                Some(pre_approve_backup(store, period)?)
             };
             let outcome = Executor::new(store).execute(&command, ctx)?;
-            format_outcome(&outcome, json)
+            let rendered = format_outcome(&outcome, json);
+            match backup {
+                Some(b) => with_backup_note(rendered, &b, json),
+                None => rendered,
+            }
         }
         YearCommand::Opening(cmd) => return run_opening(cmd, store, ctx, json),
         YearCommand::Balance { period } => {
             let (_, ledger) = ledger_ending_in(store.connection(), period)?;
             let (balance, sheet) = (ledger.trial_balance(), ledger.balance_sheet());
             if json {
-                format_value(&balance_json(&balance, &sheet), true)
+                format_json(&balance_json(&balance, &sheet))
             } else {
                 balance_human(&balance, &sheet)
             }
         }
         YearCommand::Checklist { period, today } => {
-            let today = today.unwrap_or_else(|| time::OffsetDateTime::now_utc().date());
+            let today = today.unwrap_or_else(today_local);
             let checklist = closing_checklist(store.connection(), period, today)?;
             if json {
-                format_value(&checklist_json(&checklist), true)
+                format_json(&checklist_json(&checklist))
             } else {
                 checklist_human(&checklist)
             }
         }
         YearCommand::Glossary => {
             if json {
-                format_value(&glossary_json(), true)
+                format_json(&glossary_json())
             } else {
                 glossary_human()
             }
@@ -806,7 +911,9 @@ pub fn run(
                 revision: record.revision,
             };
             let outcome = Executor::new(store).execute(&command, ctx)?;
-            format_outcome(&outcome, json)
+            format_outcome_as(&outcome, json, |()| {
+                "projet de clôture supprimé".to_string()
+            })
         }
         YearCommand::Render {
             period,

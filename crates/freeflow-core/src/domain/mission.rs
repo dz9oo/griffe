@@ -24,6 +24,7 @@ pub struct Milestone {
     pub label: String,
     /// Part du budget total en dix-millièmes (`10_000` = 100 %).
     pub share_bps: u32,
+    #[serde(with = "crate::domain::serde_date::date::option")]
     pub due_on: Option<Date>,
 }
 
@@ -91,13 +92,16 @@ pub struct Mission {
     pub name: String,
     pub kind: MissionKind,
     pub milestones: Vec<Milestone>,
+    #[serde(with = "crate::domain::serde_date::date")]
     pub started_on: Date,
+    #[serde(with = "crate::domain::serde_date::date::option")]
     pub ended_on: Option<Date>,
     /// Révision optimiste (lot 16) — voir `crate::app::revision`.
     pub revision: i64,
     /// Retirée des listes actives sans prétendre à une date de fin — distinct de `ended_on`
     /// (lot 16) : clore une mission est un fait métier daté (TJM effectif, historique), archiver
     /// est un classement. C'est l'échappatoire pour une mission déjà facturée, donc indélébile.
+    #[serde(with = "crate::domain::serde_date::datetime::option")]
     pub archived_at: Option<time::OffsetDateTime>,
 }
 

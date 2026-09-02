@@ -24,6 +24,8 @@ mod year;
 
 use std::path::{Path, PathBuf};
 
+pub use freeflow_core::clock::today_local as today;
+
 use clap::{Parser, Subcommand};
 use freeflow_core::app::{Actor, ExecutionContext, PendingActionId};
 use freeflow_core::store::Store;
@@ -109,8 +111,12 @@ enum TopCommand {
     Audit(pending::AuditCommand),
     /// Confirme une action en attente : retrouve son type de commande et l'applique.
     Confirm {
-        #[arg(long, value_parser = clap::value_parser!(PendingActionId))]
-        id: PendingActionId,
+        /// Identifiant de l'action (voir `freeflow pending list`).
+        #[arg(value_name = "ID", value_parser = clap::value_parser!(PendingActionId), required_unless_present = "id_flag")]
+        id: Option<PendingActionId>,
+        /// Ancienne forme `--id <ID>` (lot 36 : conservée un lot comme alias, puis retirée).
+        #[arg(long = "id", hide = true, value_parser = clap::value_parser!(PendingActionId), conflicts_with = "id")]
+        id_flag: Option<PendingActionId>,
     },
     /// Dépenses professionnelles et TVA déductible.
     #[command(subcommand)]
@@ -342,7 +348,12 @@ fn run_command(
         TopCommand::Bank(cmd) => invoice::run_bank(cmd, store, ctx, json),
         TopCommand::Pending(cmd) => pending::run_pending(cmd, store, json),
         TopCommand::Audit(cmd) => pending::run_audit(cmd, store, json),
-        TopCommand::Confirm { id } => pending::confirm(store, id, json),
+        TopCommand::Confirm { id, id_flag } => {
+            let id = id
+                .or(id_flag)
+                .expect("clap exige l'un des deux (required_unless_present)");
+            pending::confirm(store, id, json)
+        }
         TopCommand::Expense(cmd) => expense::run(cmd, store, ctx, json),
         TopCommand::Fiscal(cmd) => fiscal::run(cmd, store, json),
         TopCommand::Forecast(cmd) => forecast::run(cmd, store, json),

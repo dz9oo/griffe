@@ -83,6 +83,7 @@ impl FiscalDeadlineKind {
 pub struct FiscalDeadline {
     pub kind: FiscalDeadlineKind,
     /// Toujours `>= today` : ce sont les *prochaines* échéances, jamais des échéances passées.
+    #[serde(with = "crate::domain::serde_date::date")]
     pub due_on: Date,
     /// Montant estimé quand le domaine peut le calculer (TVA à reverser, IS, cotisations),
     /// `None` pour une échéance purement calendaire (liasse, AG, dépôt, CFE).

@@ -31,7 +31,8 @@ use crate::fiscal::{
     accounts_filing_due_on, approval_meeting_due_on, is_solde_due_on, liasse_due_on,
 };
 use crate::fiscal_year::{
-    FiscalYearRecord, fiscal_year_ending_in, list_fiscal_years, minimum_legal_reserve, prior_chain,
+    FiscalYearRecord, PriorChain, fiscal_year_ending_in, list_fiscal_years, minimum_legal_reserve,
+    prior_chain,
 };
 use crate::ledger::build_ledger;
 use crate::opening_balance::opening_balance;
@@ -197,6 +198,7 @@ pub struct ClosingStep {
     /// Une ou deux phrases : le constat, et ce qu'il implique.
     pub detail: String,
     /// Échéance associée (AG, dépôt, liasse, solde d'IS), quand il y en a une.
+    #[serde(with = "crate::domain::serde_date::date::option")]
     pub due_on: Option<Date>,
     /// Montant associé (solde d'IS, dotation minimale), quand il y en a un.
     pub amount: Option<Money>,
@@ -272,6 +274,7 @@ pub struct ClosingChecklist {
     /// Année civile de la clôture (désignation de l'exercice, comme `year show`).
     pub period: i32,
     pub exercise: FiscalYear,
+    #[serde(with = "crate::domain::serde_date::date")]
     pub today: Date,
     pub stage: ClosingStage,
     /// L'exercice clos dans l'application, s'il l'est.
@@ -388,7 +391,8 @@ pub fn closing_checklist(
     steps.push(period_ended_step(&facts, today));
     let opening = opening_balance(conn)?.map(|r| r.balance);
     steps.push(opening_balance_step(&facts, opening.as_ref()));
-    steps.push(previous_year_step(&facts));
+    let chain = prior_chain(conn, exercise.start()).ok();
+    steps.push(previous_year_step(&facts, chain.as_ref()));
     steps.push(invoices_step(conn, &facts, today)?);
     steps.push(expenses_step(conn, &facts)?);
     steps.push(bank_step(conn, &facts)?);
@@ -400,7 +404,6 @@ pub fn closing_checklist(
         (None, Some(profile)) => Some(compute_result(conn, exercise, profile)?),
         (None, None) => None,
     };
-    let chain = prior_chain(conn, exercise.start()).ok();
     let minimum_reserve = match (&result, &chain, &facts.profile) {
         (Some(result), Some(chain), Some(profile)) => Some(minimum_legal_reserve(
             result.net_result,
@@ -506,9 +509,12 @@ fn profile_step(facts: &Facts) -> ClosingStep {
     }
 }
 
+/// Lot 36 : un exercice clos prématurément dans l'application (avant ce lot, la commande le
+/// permettait) reste « non écoulé » jusqu'à sa date — l'étape ne se laisse plus convaincre par
+/// la seule existence du snapshot, sinon le parcours cautionnerait un résultat incomplet.
 fn period_ended_step(facts: &Facts, today: Date) -> ClosingStep {
     let end = facts.exercise.end();
-    if facts.record.is_some() || today > end {
+    if today > end {
         ClosingStep::new(
             ClosingStepKey::PeriodEnded,
             StepStatus::Done,
@@ -588,7 +594,7 @@ fn opening_balance_step(
     }
 }
 
-fn previous_year_step(facts: &Facts) -> ClosingStep {
+fn previous_year_step(facts: &Facts, chain: Option<&PriorChain>) -> ClosingStep {
     let start = facts.exercise.start();
     let Some(previous) = facts.previous() else {
         return ClosingStep::new(
@@ -615,9 +621,12 @@ fn previous_year_step(facts: &Facts) -> ClosingStep {
             ),
         );
     }
+    // La réserve légale *cumulée* vient de la chaîne (bilan d'ouverture + toutes les dotations),
+    // pas de la seule dotation du dernier exercice — lot 36, relevé par l'audit.
+    let reserve = chain.map_or(previous.legal_reserve, |c| c.reserve);
     let inherited = format!(
         "report à nouveau {}, réserve légale cumulée {}, déficits reportables {}",
-        previous.retained_earnings, previous.legal_reserve, previous.losses_carried_forward
+        previous.retained_earnings, reserve, previous.losses_carried_forward
     );
     if previous.is_approved() {
         ClosingStep::new(
@@ -988,7 +997,9 @@ fn approve_step(facts: &Facts, today: Date) -> ClosingStep {
                 format_date(approved_on)
             ),
         )
-        .due(approved_on);
+        // L'échéance reste la date légale, même dépassée : c'est elle que le lecteur compare à
+        // la date d'approbation (lot 36).
+        .due(due);
     }
     if today > due {
         ClosingStep::new(
@@ -1505,6 +1516,7 @@ mod tests {
             legal_reserve: Money::from_cents(legal_reserve),
             dividends: Money::ZERO,
             carry_back: false,
+            today: None,
         };
         let Outcome::Applied(id) = Executor::new(store).execute(&cmd, &human()).unwrap() else {
             panic!("expected Applied")
@@ -1779,6 +1791,7 @@ mod tests {
                 legal_reserve: Money::ZERO,
                 dividends: Money::ZERO,
                 carry_back: false,
+                today: None,
             },
             &human(),
         );
@@ -1906,6 +1919,7 @@ mod tests {
                     id,
                     revision: record.revision,
                     approved_on: date(2027, TimeMonth::April, 15),
+                    today: None,
                 },
                 &human(),
             )

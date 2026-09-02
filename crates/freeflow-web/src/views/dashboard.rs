@@ -13,7 +13,6 @@ use freeflow_core::missions::{effective_daily_rate, list_active_missions, monthl
 use freeflow_core::prospection::{late_actions, pipeline_by_stage, weighted_pipeline};
 use freeflow_core::store::Store;
 use maud::{Markup, html};
-use time::OffsetDateTime;
 
 use crate::layout::{ViewId, view_head};
 
@@ -34,7 +33,7 @@ fn deadline_label(kind: FiscalDeadlineKind) -> &'static str {
 }
 
 fn today() -> time::Date {
-    OffsetDateTime::now_utc().date()
+    freeflow_core::clock::today_local()
 }
 
 fn current_month() -> freeflow_core::domain::Month {

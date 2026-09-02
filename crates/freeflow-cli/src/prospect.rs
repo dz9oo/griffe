@@ -13,7 +13,58 @@ use freeflow_core::store::Store;
 use time::{Date, OffsetDateTime};
 
 use crate::error::CliError;
-use crate::output::{format_outcome, format_value};
+use crate::output::{HumanRender, format_json, format_outcome, format_value, key_values, or_dash};
+
+impl HumanRender for freeflow_core::domain::Opportunity {
+    fn render_human(&self) -> String {
+        let loss = self.loss_reason.as_ref().map(|r| format!("{r:?}"));
+        key_values(&[
+            ("Opportunité", self.name.clone()),
+            ("id", self.id.to_string()),
+            ("client", self.client_id.to_string()),
+            ("étape", self.stage.as_str().to_string()),
+            ("montant", self.amount.to_string()),
+            ("probabilité", format!("{} %", self.probability.percent())),
+            (
+                "prochaine action",
+                or_dash(self.next_action_at.map(freeflow_core::domain::format_date)),
+            ),
+            ("source", or_dash(self.source.as_deref())),
+            ("motif de perte", or_dash(loss)),
+            (
+                "statut",
+                if self.archived_at.is_some() {
+                    "archivée"
+                } else {
+                    "active"
+                }
+                .to_string(),
+            ),
+            ("révision", self.revision.to_string()),
+        ])
+    }
+}
+
+impl HumanRender for freeflow_core::prospection::OpportunityReferences {
+    fn render_human(&self) -> String {
+        format!(
+            "{} devis, {} mission(s){}",
+            self.quotes,
+            self.missions,
+            if self.is_empty() {
+                " — supprimable"
+            } else {
+                " — non supprimable (archivable)"
+            }
+        )
+    }
+}
+
+impl HumanRender for Vec<freeflow_core::domain::Opportunity> {
+    fn render_human(&self) -> String {
+        opportunity_table(self)
+    }
+}
 use crate::parsers::{parse_date, parse_loss_reason, parse_money, parse_probability};
 use crate::refs;
 
@@ -129,8 +180,9 @@ pub enum ProspectCommand {
     Interaction(InteractionCommand),
     /// Opportunités ouvertes dont la prochaine action est en retard.
     Late {
+        /// Date du jour (défaut : aujourd'hui, heure locale).
         #[arg(long, value_parser = parse_date)]
-        today: Date,
+        today: Option<Date>,
     },
     /// Opportunités ouvertes sans prochaine action (filet de sécurité).
     Orphans,
@@ -258,7 +310,7 @@ pub fn run(
             };
             let opportunities = list_opportunities_with(store.connection(), filter)?;
             if json {
-                format_value(&opportunities, json)
+                format_json(&opportunities)
             } else {
                 opportunity_table(&opportunities)
             }
@@ -383,6 +435,7 @@ pub fn run(
         }
         ProspectCommand::Interaction(cmd) => run_interaction(cmd, store, ctx, json)?,
         ProspectCommand::Late { today } => {
+            let today = today.unwrap_or_else(freeflow_core::clock::today_local);
             let opportunities = late_actions(store.connection(), today)?;
             format_value(&opportunities, json)
         }
@@ -393,15 +446,31 @@ pub fn run(
         ProspectCommand::Pipeline => {
             let weighted = weighted_pipeline(store.connection())?;
             let by_stage = pipeline_by_stage(store.connection())?;
-            let payload = serde_json::json!({
-                "weighted_total_cents": weighted.cents(),
-                "by_stage": by_stage.iter().map(|s| serde_json::json!({
-                    "stage": s.stage.as_str(),
-                    "count": s.count,
-                    "weighted_amount_cents": s.weighted_amount.cents(),
-                })).collect::<Vec<_>>(),
-            });
-            format_value(&payload, json)
+            if json {
+                format_json(&serde_json::json!({
+                    "weighted_total_cents": weighted.cents(),
+                    "by_stage": by_stage.iter().map(|s| serde_json::json!({
+                        "stage": s.stage.as_str(),
+                        "count": s.count,
+                        "weighted_amount_cents": s.weighted_amount.cents(),
+                    })).collect::<Vec<_>>(),
+                }))
+            } else {
+                let rows: Vec<Vec<String>> = by_stage
+                    .iter()
+                    .map(|s| {
+                        vec![
+                            s.stage.as_str().to_string(),
+                            s.count.to_string(),
+                            s.weighted_amount.to_string(),
+                        ]
+                    })
+                    .collect();
+                format!(
+                    "{}\nTotal pondéré : {weighted}",
+                    crate::table::render(&["Étape", "Nombre", "Montant pondéré"], &rows)
+                )
+            }
         }
     };
     Ok(output)
@@ -426,7 +495,7 @@ fn run_interaction(
             let opportunity_id = refs::resolve_opportunity(store, &reference)?;
             let interactions = prospection::list_interactions(store.connection(), opportunity_id)?;
             if json {
-                format_value(&interactions, json)
+                format_json(&interactions)
             } else {
                 interaction_table(&interactions)
             }

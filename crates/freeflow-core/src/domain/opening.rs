@@ -220,6 +220,7 @@ impl fmt::Display for OpeningBalanceLine {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpeningBalance {
     /// Premier jour de l'exercice qui s'ouvre sur ce bilan (lendemain de la clôture reprise).
+    #[serde(with = "crate::domain::serde_date::date")]
     pub opens_on: Date,
     /// Provenance, libre — ex. « bilan au 30/09/2025 établi par le cabinet X ».
     pub source: Option<String>,

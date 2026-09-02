@@ -813,6 +813,14 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), StoreError> {
 #[cfg(unix)]
 fn sync_dir(dir: Option<&Path>) -> io::Result<()> {
     if let Some(dir) = dir {
+        // `Path::new("nom.db").parent()` vaut `Some("")` : un chemin nu désigne le répertoire
+        // courant, que `File::open("")` ne sait pas ouvrir (lot 36 — `freeflow init --db nom.db`
+        // laissait un sidecar orphelin après cet échec).
+        let dir = if dir.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            dir
+        };
         fs::File::open(dir)?.sync_all()?;
     }
     Ok(())

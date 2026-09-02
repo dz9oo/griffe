@@ -151,7 +151,25 @@ impl Store {
             return Err(StoreError::VaultAlreadyExists(db_path.to_path_buf()));
         }
         let (sidecar, key) = kdf::create(db_path, passphrase)?;
-        Self::open_with_key(db_path, key, sidecar.vault_id)
+        // Atomique vu de l'extérieur (lot 36) : si la base ne peut pas être créée (répertoire
+        // non inscriptible, disque plein), le sidecar déjà écrit est retiré avec ce qui a pu
+        // l'être — sinon un `.kdf` orphelin faisait croire à un coffre existant, et bloquait
+        // toute nouvelle tentative au même chemin.
+        Self::open_with_key(db_path, key, sidecar.vault_id).inspect_err(|_| {
+            let mut candidates = vec![db_path.to_path_buf(), kdf::sidecar_path(db_path)];
+            for suffix in ["-wal", "-shm", "-journal"] {
+                let mut name = db_path.as_os_str().to_owned();
+                name.push(suffix);
+                candidates.push(PathBuf::from(name));
+            }
+            for path in candidates {
+                // Seulement ce que cette création a pu écrire : jamais un lien symbolique ou
+                // un répertoire préexistant à cet emplacement.
+                if fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_file()) {
+                    let _ = fs::remove_file(path);
+                }
+            }
+        })
     }
 
     /// Ouvre un coffre **existant**. Ne crée jamais rien — contrairement au comportement
@@ -1791,6 +1809,43 @@ mod tests {
         assert_eq!(
             crate::app::verify_chain(store.connection()).unwrap(),
             crate::app::ChainStatus::Intact
+        );
+    }
+
+    /// Lot 36 : si la base ne peut pas être créée après l'écriture du sidecar, rien ne reste —
+    /// un `.kdf` orphelin faisait croire à un coffre existant et bloquait toute nouvelle
+    /// tentative. Le cas est reproduit avec un lien symbolique vers un répertoire **non
+    /// inscriptible** : le sidecar (à côté du lien) s'écrit, la base (derrière le lien) ne peut
+    /// pas être créée.
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_creation_leaves_no_orphan_sidecar_behind() {
+        use std::os::unix::fs::PermissionsExt;
+        let db_path = temp_db_path("atomic-create");
+        let dir = db_path.parent().unwrap();
+        let read_only = dir.join("read-only");
+        fs::create_dir_all(&read_only).unwrap();
+        fs::set_permissions(&read_only, fs::Permissions::from_mode(0o500)).unwrap();
+        if fs::File::create(read_only.join("probe")).is_ok() {
+            // root ignore les permissions : le scénario n'est pas reproductible ici.
+            return;
+        }
+        std::os::unix::fs::symlink(read_only.join("vault.db"), &db_path).unwrap();
+
+        let err = Store::create(&db_path, &Passphrase::from("s3cret")).unwrap_err();
+        assert!(
+            !matches!(err, StoreError::VaultAlreadyExists(_)),
+            "l'échec vient de la base, pas d'un coffre existant : {err}"
+        );
+        assert!(
+            !kdf::sidecar_path(&db_path).exists(),
+            "le sidecar écrit avant l'échec doit avoir été retiré"
+        );
+        // Une seconde tentative échoue pour la même raison — jamais « coffre existant ».
+        let again = Store::create(&db_path, &Passphrase::from("s3cret")).unwrap_err();
+        assert!(
+            !matches!(again, StoreError::VaultAlreadyExists(_)),
+            "{again}"
         );
     }
 }

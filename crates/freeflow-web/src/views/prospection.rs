@@ -14,7 +14,6 @@ use freeflow_core::prospection::{
 };
 use freeflow_core::store::Store;
 use maud::{Markup, html};
-use time::OffsetDateTime;
 
 use crate::layout::{ViewId, view_head};
 use crate::views::{form, panel};
@@ -404,7 +403,7 @@ pub fn list_fragment(store: &Store, filter: OpportunityFilter) -> Result<Markup,
                         }
                         @for o in &opportunities {
                             @let name = client_name(store, o.client_id);
-                            @let today = OffsetDateTime::now_utc().date();
+                            @let today = freeflow_core::clock::today_local();
                             @let is_late = o.next_action_at.is_some_and(|d| d < today);
                             tr class="row-clickable" hx-get=(format!("/prospection/{}", o.id)) hx-target="#panel" hx-swap="innerHTML" {
                                 td style="padding-left:18px" { (name) " — " (o.name) }

@@ -10,6 +10,7 @@ use crate::domain;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ParsedTransaction {
+    #[serde(with = "crate::domain::serde_date::date")]
     pub occurred_on: Date,
     /// Positif pour une entrée d'argent, négatif pour une sortie.
     pub amount_cents: i64,

@@ -27,7 +27,7 @@ fn message_fragment(message: &str) -> Html<String> {
 }
 
 fn today() -> time::Date {
-    time::OffsetDateTime::now_utc().date()
+    freeflow_core::clock::today_local()
 }
 
 async fn execute<C: freeflow_core::app::Command>(

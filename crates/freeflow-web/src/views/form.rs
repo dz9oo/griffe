@@ -39,6 +39,20 @@ pub fn date(name: &str, label: &str, value: &str, error: Option<&str>) -> Markup
     }
 }
 
+/// Champ date borné (`max`) : le navigateur refuse une date au-delà — première barrière, le
+/// cœur en tenant une seconde (lot 36 : une approbation ne se date pas dans le futur).
+pub fn date_max(name: &str, label: &str, value: &str, max: &str, error: Option<&str>) -> Markup {
+    html! {
+        div class="field" {
+            label for=(name) { (label) }
+            input id=(name) name=(name) type="date" value=(value) max=(max) aria-invalid[error.is_some()];
+            @if let Some(e) = error {
+                div class="field-error" { (e) }
+            }
+        }
+    }
+}
+
 /// Champ numérique (`<input type="number">`) — `step` porte la granularité attendue (`"1"` pour
 /// un pourcentage, `"0.25"` pour un nombre de jours).
 pub fn number(name: &str, label: &str, value: &str, step: &str, error: Option<&str>) -> Markup {

@@ -68,6 +68,7 @@ pub struct CreateOpportunity {
     pub name: String,
     pub amount: Money,
     pub probability: Probability,
+    #[serde(with = "crate::domain::serde_date::date")]
     pub next_action_at: Date,
     pub source: Option<String>,
 }
@@ -106,6 +107,7 @@ pub struct UpdateOpportunity {
     pub name: String,
     pub amount: Money,
     pub probability: Probability,
+    #[serde(with = "crate::domain::serde_date::date::option")]
     pub next_action_at: Option<Date>,
     pub source: Option<String>,
 }
@@ -242,6 +244,7 @@ pub struct AdvanceOpportunity {
     pub to: OpportunityStage,
     /// La prochaine action reste obligatoire à chaque étape ouverte : avancer sans en fournir
     /// une nouvelle n'est pas permis par ce contrat de type.
+    #[serde(with = "crate::domain::serde_date::date")]
     pub next_action_at: Date,
 }
 
@@ -274,6 +277,7 @@ impl Command for AdvanceOpportunity {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WinOpportunity {
     pub opportunity_id: OpportunityId,
+    #[serde(with = "crate::domain::serde_date::date")]
     pub started_on: Date,
 }
 
@@ -346,6 +350,7 @@ pub struct LogInteraction {
     /// pourrait dater une interaction, ce que `LogInteraction` ne pourrait alors jamais faire
     /// rétroactivement.
     #[serde(default)]
+    #[serde(with = "crate::domain::serde_date::datetime::option")]
     pub occurred_at: Option<OffsetDateTime>,
 }
 
@@ -378,6 +383,7 @@ pub struct UpdateInteraction {
     pub revision: i64,
     pub kind: InteractionKind,
     pub note: String,
+    #[serde(with = "crate::domain::serde_date::datetime")]
     pub occurred_at: OffsetDateTime,
 }
 

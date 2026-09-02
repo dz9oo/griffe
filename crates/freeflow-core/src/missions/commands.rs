@@ -95,6 +95,7 @@ pub struct CreateMission {
     pub name: String,
     pub kind: MissionKind,
     pub milestones: Vec<Milestone>,
+    #[serde(with = "crate::domain::serde_date::date")]
     pub started_on: Date,
 }
 
@@ -133,6 +134,7 @@ pub struct UpdateMission {
     pub name: String,
     pub kind: MissionKind,
     pub milestones: Vec<Milestone>,
+    #[serde(with = "crate::domain::serde_date::date")]
     pub started_on: Date,
     /// Doit rester égal à la valeur actuelle — voir le commentaire de module.
     pub quote_id: Option<QuoteId>,
@@ -170,6 +172,7 @@ impl Command for UpdateMission {
 pub struct CloseMission {
     pub id: MissionId,
     pub revision: i64,
+    #[serde(with = "crate::domain::serde_date::date")]
     pub ended_on: Date,
 }
 
@@ -308,6 +311,7 @@ impl Command for DeleteMission {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogTime {
     pub mission_id: MissionId,
+    #[serde(with = "crate::domain::serde_date::date")]
     pub worked_on: Date,
     /// Fraction de jour (ex. `0.5` pour une demi-journée).
     pub days: f64,
@@ -344,6 +348,7 @@ impl Command for LogTime {
 pub struct UpdateTimeEntry {
     pub id: TimeEntryId,
     pub revision: i64,
+    #[serde(with = "crate::domain::serde_date::date")]
     pub worked_on: Date,
     pub days: f64,
     pub category: TimeCategory,

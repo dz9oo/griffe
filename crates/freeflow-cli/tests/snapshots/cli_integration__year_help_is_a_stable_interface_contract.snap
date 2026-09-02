@@ -11,7 +11,7 @@ Commands:
   list       Liste les exercices clos, du plus ancien au plus récent
   show       Détail d'un exercice clos (snapshot, affectation, approbation)
   amend      Révise l'affectation d'un exercice encore en projet (le snapshot reste figé)
-  approve    Approuve un exercice (date de l'AG) — il devient immuable. Nécessite confirmation humaine quand `--actor agent:...`
+  approve    Approuve un exercice (date de l'AG) — il devient immuable. Une sauvegarde du coffre est écrite juste avant (`backups/pre-approve-<période>-<horodatage>.db`) : c'est le seul filet, une approbation ne se défait pas. Nécessite confirmation humaine quand `--actor agent:...`
   rm         Supprime un exercice encore en projet (clos par erreur)
   checklist  Parcours de clôture guidé de l'exercice clos dans PERIOD : où en est la clôture, ce qui la bloque, ce qui mérite attention, et ce qui reste à faire après (approbation, documents, solde d'IS, liasse, dépôt au greffe). Lecture seule
   glossary   Lexique de la clôture : les mots du parcours et des documents (bilan, à-nouveaux, report à nouveau, réserve légale, liasse, FEC…) expliqués sans jargon

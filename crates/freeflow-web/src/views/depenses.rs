@@ -393,14 +393,24 @@ pub fn load(store: &Store, id: ExpenseId) -> Result<Option<ExpenseDetail>, AppEr
 }
 
 /// Les débits restant à rapprocher au montant exact d'une dépense (lot 33).
+/// Les débits du relevé rapprochables d'une dépense : même montant (la seule garde que le cœur
+/// accepte), **le plus proche de la date de la dépense en premier** (lot 36) — c'est lui que le
+/// `<select>` présélectionne, puisque `reconcile_panel` prend le premier candidat.
 pub fn reconcile_candidates(
     store: &Store,
-    amount: Money,
+    expense: &Expense,
 ) -> Result<Vec<BankTransaction>, AppError> {
-    Ok(unmatched_debits(store.connection())?
+    let mut candidates: Vec<BankTransaction> = unmatched_debits(store.connection())?
         .into_iter()
-        .filter(|tx| Money::from_cents(-tx.amount_cents) == amount)
-        .collect())
+        .filter(|tx| Money::from_cents(-tx.amount_cents) == expense.amount)
+        .collect();
+    candidates.sort_by_key(|tx| {
+        (
+            (tx.occurred_on - expense.incurred_on).whole_days().abs(),
+            tx.occurred_on,
+        )
+    });
+    Ok(candidates)
 }
 
 /// Sélectionne le taux par défaut du formulaire de création — le taux normal, celui de

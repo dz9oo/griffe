@@ -54,6 +54,26 @@ use time::Date;
 
 use crate::accounting::{corporate_income_tax, director_gross, impute_prior_losses};
 use crate::app::AppError;
+
+/// Ce que la construction du grand livre peut refuser (lot 36).
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum LedgerError {
+    /// La somme des montants en valeur absolue dépasse `i64::MAX` centimes : aucune somme
+    /// partielle (balance, bilan, totaux) ne pourrait être calculée sans déborder. Hors
+    /// d'atteinte avec des montants bornés par `Money::MAX_INPUT`, sauf données de base
+    /// altérées — refusé explicitement plutôt qu'une panique.
+    #[error(
+        "les montants du grand livre sont trop grands pour être totalisés sans déborder — \
+         vérifiez les montants saisis (une ligne de bilan ou une facture aberrante)"
+    )]
+    Overflow,
+}
+
+impl From<LedgerError> for AppError {
+    fn from(e: LedgerError) -> Self {
+        Self::Domain(e.to_string())
+    }
+}
 use crate::billing::{compute_totals, list_bank_transactions, list_invoices, list_payments};
 use crate::clients::list_clients;
 use crate::company::{CompanyProfile, company_profile};
@@ -246,8 +266,10 @@ pub struct LedgerEntry {
     pub journal: Journal,
     /// Numéro séquentiel continu *par journal*, attribué après tri chronologique.
     pub number: u32,
+    #[serde(with = "crate::domain::serde_date::date")]
     pub date: Date,
     pub piece_ref: String,
+    #[serde(with = "crate::domain::serde_date::date")]
     pub piece_date: Date,
     pub label: String,
     pub lines: Vec<LedgerLine>,
@@ -715,8 +737,15 @@ impl Ledger {
     /// par sa date d'émission, un encaissement par sa date de réception, son annulation par sa
     /// date d'annulation, une dépense par sa date d'engagement et son décaissement rapproché
     /// par la date du relevé ; les opérations de clôture sont datées du dernier jour.
-    #[must_use]
-    pub fn build(facts: LedgerFacts<'_>) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// [`LedgerError::Overflow`] si la somme des montants en valeur absolue dépasse
+    /// `i64::MAX` centimes — la seule condition sous laquelle une somme partielle pourrait
+    /// déborder ensuite (balance, bilan, totaux). Vérifiée ici une fois pour toutes, en
+    /// arithmétique large, pour que tout le reste du module puisse sommer sans se poser la
+    /// question.
+    pub fn build(facts: LedgerFacts<'_>) -> Result<Self, LedgerError> {
         let index = Facts {
             exercise: facts.exercise,
             clients_by_id: facts.clients.iter().map(|c| (c.id, c)).collect(),
@@ -762,10 +791,19 @@ impl Ledger {
             e.number = *n;
         }
 
-        Self {
+        let magnitude: u128 = entries
+            .iter()
+            .flat_map(|e| e.lines.iter())
+            .map(|l| u128::from(l.amount.cents().unsigned_abs()))
+            .sum();
+        if magnitude > u128::from(i64::MAX.unsigned_abs()) {
+            return Err(LedgerError::Overflow);
+        }
+
+        Ok(Self {
             exercise: facts.exercise,
             entries,
-        }
+        })
     }
 
     #[must_use]
@@ -1480,7 +1518,7 @@ impl Loaded {
 
     /// Le grand livre d'un exercice, ses à-nouveaux dérivés récursivement de l'exercice clos
     /// précédent quand il y en a un (voir le commentaire de module).
-    fn ledger(&self, exercise: FiscalYear) -> Ledger {
+    fn ledger(&self, exercise: FiscalYear) -> Result<Ledger, AppError> {
         let previous = self
             .fiscal_years
             .iter()
@@ -1499,7 +1537,7 @@ impl Loaded {
                     .position(|r| r.id == previous.id)
                     .map_or(0, |i| i + 1);
                 (
-                    Some(self.ledger(previous.period()).closing_opening_lines()),
+                    Some(self.ledger(previous.period())?.closing_opening_lines()),
                     &self.fiscal_years[..chain_end],
                 )
             }
@@ -1526,7 +1564,7 @@ impl Loaded {
                 },
                 |r| r.losses_carried_forward,
             );
-        Ledger::build(LedgerFacts {
+        Ok(Ledger::build(LedgerFacts {
             profile: &self.profile,
             exercise,
             invoices: &self.invoices,
@@ -1538,7 +1576,7 @@ impl Loaded {
             snapshot,
             appropriations,
             prior_losses,
-        })
+        })?)
     }
 }
 
@@ -1547,9 +1585,10 @@ impl Loaded {
 ///
 /// # Errors
 ///
-/// `AppError::Domain` sans profil d'entreprise ; erreur de lecture SQLite sinon.
+/// `AppError::Domain` sans profil d'entreprise ou si les montants débordent
+/// ([`LedgerError::Overflow`]) ; erreur de lecture SQLite sinon.
 pub fn build_ledger(conn: &Connection, exercise: FiscalYear) -> Result<Ledger, AppError> {
-    Ok(Loaded::read(conn)?.ledger(exercise))
+    Loaded::read(conn)?.ledger(exercise)
 }
 
 /// Le grand livre de l'exercice clos dans l'année civile `period` (voir
@@ -1564,7 +1603,7 @@ pub fn ledger_ending_in(
 ) -> Result<(CompanyProfile, Ledger), AppError> {
     let loaded = Loaded::read(conn)?;
     let exercise = exercise_ending_in(conn, &loaded.profile, period)?;
-    let ledger = loaded.ledger(exercise);
+    let ledger = loaded.ledger(exercise)?;
     Ok((loaded.profile, ledger))
 }
 
@@ -1733,7 +1772,8 @@ mod tests {
             &[],
             &expenses,
             Some(OpeningLines::from_opening_balance(&opening_2026())),
-        ));
+        ))
+        .unwrap();
 
         // AN + AC, aucune OD : pas d'IS sur une perte, pas de rémunération.
         let journals: Vec<Journal> = ledger.entries.iter().map(|e| e.journal).collect();
@@ -1818,7 +1858,8 @@ mod tests {
             &invoices,
             &[],
             Some(OpeningLines::from_opening_balance(&opening_2026())),
-        ));
+        ))
+        .unwrap();
         let journals: Vec<Journal> = ledger.entries.iter().map(|e| e.journal).collect();
         assert_eq!(
             journals,
@@ -1888,7 +1929,8 @@ mod tests {
             snapshot: None,
             prior_losses: Money::ZERO,
             appropriations: &chain,
-        });
+        })
+        .unwrap();
         let an = &next.entries[0];
         assert_eq!(an.journal, Journal::Opening);
         assert!(an.is_balanced());
@@ -1967,7 +2009,8 @@ mod tests {
             snapshot: None,
             prior_losses: Money::ZERO,
             appropriations: &chain,
-        });
+        })
+        .unwrap();
         let appropriation = &next.entries[1];
         assert_eq!(appropriation.date, date(2027, TimeMonth::January, 1));
         assert!(appropriation.label.contains("projet non approuvé"));
@@ -2003,7 +2046,8 @@ mod tests {
             snapshot: Some(&snapshot),
             prior_losses: Money::ZERO,
             ..facts(&p, exercise, &invoices, &[], None)
-        });
+        })
+        .unwrap();
         let tax = ledger
             .entries
             .iter()
@@ -2026,7 +2070,8 @@ mod tests {
         let ledger = Ledger::build(LedgerFacts {
             prior_losses: Money::from_cents(400_000),
             ..facts(&p, exercise, &invoices, &[], None)
-        });
+        })
+        .unwrap();
         let tax = ledger
             .entries
             .iter()
@@ -2055,7 +2100,8 @@ mod tests {
         let ledger = Ledger::build(LedgerFacts {
             snapshot: Some(&snapshot),
             ..facts(&p, exercise, &[], &expenses, None)
-        });
+        })
+        .unwrap();
         let credit = ledger
             .entries
             .iter()
@@ -2190,7 +2236,7 @@ mod tests {
                 &invoices,
                 &expenses,
                 Some(OpeningLines { label: "AN".to_string(), lines }),
-            ));
+            )).unwrap();
             prop_assert!(ledger.entries.iter().all(LedgerEntry::is_balanced));
             let balance = ledger.trial_balance();
             prop_assert_eq!(balance.total_debit, balance.total_credit);
@@ -2299,6 +2345,7 @@ mod tests {
                     legal_reserve: Money::from_cents(5_000),
                     dividends: Money::ZERO,
                     carry_back: false,
+                    today: None,
                 },
                 &human,
             )
@@ -2352,7 +2399,8 @@ mod tests {
         let y2026 = Ledger::build(LedgerFacts {
             bank_transactions: &debits,
             ..facts(&p, FiscalYear::calendar(2026), &[], &expenses, None)
-        });
+        })
+        .unwrap();
         let purchases: Vec<&LedgerEntry> = y2026
             .entries
             .iter()
@@ -2393,7 +2441,8 @@ mod tests {
         let y2027 = Ledger::build(LedgerFacts {
             bank_transactions: &debits,
             ..facts(&p, FiscalYear::calendar(2027), &[], &expenses, None)
-        });
+        })
+        .unwrap();
         assert!(
             y2027
                 .entries
@@ -2425,5 +2474,28 @@ mod tests {
         for category in ExpenseCategory::ALL {
             assert_eq!(charge_account(category).class(), 6);
         }
+    }
+
+    /// Lot 36 : des montants dont la somme absolue dépasse `i64::MAX` centimes sont refusés à
+    /// la construction, plutôt que de faire paniquer la première balance.
+    #[test]
+    fn a_ledger_whose_amounts_cannot_be_totalled_is_refused() {
+        let p = profile(None, None);
+        let exercise = FiscalYear::new(
+            Date::from_calendar_date(2026, TimeMonth::January, 1).unwrap(),
+            Date::from_calendar_date(2026, TimeMonth::December, 31).unwrap(),
+        );
+        let huge = Money::from_cents(i64::MAX / 2 + 1);
+        let opening = OpeningLines {
+            label: "AN".to_string(),
+            lines: vec![
+                line(Account::fixed("512000", "Banque"), huge),
+                line(Account::fixed("101000", "Capital"), -huge),
+            ],
+        };
+        assert_eq!(
+            Ledger::build(facts(&p, exercise, &[], &[], Some(opening))).unwrap_err(),
+            LedgerError::Overflow
+        );
     }
 }

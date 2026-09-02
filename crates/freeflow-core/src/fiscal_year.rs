@@ -55,6 +55,20 @@ pub enum FiscalYearError {
     #[error("période invalide : {starts_on} n'est pas antérieur à {ends_on}")]
     InvalidPeriod { starts_on: String, ends_on: String },
 
+    #[error(
+        "l'exercice court jusqu'au {ends_on} : le clore le {today} figerait un résultat \
+         incomplet (les factures et dépenses à venir n'y entreraient pas) — attendez le \
+         lendemain de la clôture"
+    )]
+    PeriodNotEnded { ends_on: String, today: String },
+
+    #[error(
+        "période trop longue : du {starts_on} au {ends_on} fait plus de 24 mois — un exercice \
+         dure douze mois (art. L123-12 du Code de commerce), exceptionnellement moins ou plus \
+         lors du premier exercice ou d'un changement de date de clôture"
+    )]
+    PeriodTooLong { starts_on: String, ends_on: String },
+
     #[error("la période chevauche un exercice déjà clos ({0})")]
     Overlaps(String),
 
@@ -90,6 +104,13 @@ pub enum FiscalYearError {
         approved_on: String,
         ends_on: String,
     },
+
+    #[error(
+        "la date d'approbation ({approved_on}) est dans le futur (nous sommes le {today}) : une \
+         décision d'associé unique se date du jour où elle est prise, et l'exercice approuvé \
+         devient immuable — approuvez le jour venu"
+    )]
+    ApprovalInFuture { approved_on: String, today: String },
 
     #[error(
         "le bilan d'ouverture est daté du {opens_on} : le premier exercice clos dans \
@@ -132,7 +153,9 @@ impl From<FiscalYearError> for AppError {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FiscalYearRecord {
     pub id: FiscalYearId,
+    #[serde(with = "crate::domain::serde_date::date")]
     pub starts_on: Date,
+    #[serde(with = "crate::domain::serde_date::date")]
     pub ends_on: Date,
     pub revenue_ht: Money,
     pub expenses: Money,
@@ -157,8 +180,10 @@ pub struct FiscalYearRecord {
     /// dérivés de la chaîne à la lecture, jamais stockés.
     pub losses_carried_forward: Money,
     /// Date de l'AG d'approbation — `None` tant que l'exercice est un projet éditable.
+    #[serde(with = "crate::domain::serde_date::date::option")]
     pub approved_on: Option<Date>,
     pub revision: i64,
+    #[serde(with = "crate::domain::serde_date::datetime")]
     pub created_at: OffsetDateTime,
 }
 
@@ -432,7 +457,9 @@ pub fn previous_year(
 /// résultant est `report antérieur + résultat net − réserve légale − dividendes`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CloseFiscalYear {
+    #[serde(with = "crate::domain::serde_date::date")]
     pub starts_on: Date,
+    #[serde(with = "crate::domain::serde_date::date")]
     pub ends_on: Date,
     pub legal_reserve: Money,
     pub dividends: Money,
@@ -443,6 +470,15 @@ pub struct CloseFiscalYear {
     /// nouveau. `false` par défaut (entrées d'audit antérieures comprises).
     #[serde(default)]
     pub carry_back: bool,
+    /// La date du jour, fournie par l'adaptateur (lot 36) : avec `Some`, la commande refuse
+    /// de clore un exercice **pas encore écoulé** (`ends_on > today`,
+    /// [`FiscalYearError::PeriodNotEnded`]) — le seul geste irréversible relevé par l'audit,
+    /// puisqu'un exercice clos prématurément puis approuvé ne se rouvre plus. `None` = pas de
+    /// garde, réservé aux rejouages internes ; les trois façades passent toujours `Some`.
+    /// `default` pour que les actions en attente et entrées d'audit antérieures restent
+    /// lisibles.
+    #[serde(default, with = "crate::domain::serde_date::date::option")]
+    pub today: Option<Date>,
 }
 
 impl Command for CloseFiscalYear {
@@ -459,6 +495,25 @@ impl Command for CloseFiscalYear {
             return Err(FiscalYearError::InvalidPeriod {
                 starts_on: format_date(self.starts_on),
                 ends_on: format_date(self.ends_on),
+            }
+            .into());
+        }
+        // Plus de 24 mois : un exercice dure douze mois, la tolérance couvre un premier
+        // exercice ou un changement de date de clôture — au-delà, c'est une faute de saisie
+        // (une période de dix ans « clôturait » sans broncher avant ce lot).
+        if self.ends_on >= crate::fiscal::add_months(self.starts_on, 24) {
+            return Err(FiscalYearError::PeriodTooLong {
+                starts_on: format_date(self.starts_on),
+                ends_on: format_date(self.ends_on),
+            }
+            .into());
+        }
+        if let Some(today) = self.today
+            && self.ends_on > today
+        {
+            return Err(FiscalYearError::PeriodNotEnded {
+                ends_on: format_date(self.ends_on),
+                today: format_date(today),
             }
             .into());
         }
@@ -624,11 +679,28 @@ pub struct ApproveFiscalYear {
     pub id: FiscalYearId,
     pub revision: i64,
     /// Date de l'AG d'approbation — au plus tôt le jour de la clôture.
+    #[serde(with = "crate::domain::serde_date::date")]
     pub approved_on: Date,
+    /// La date du jour, fournie par l'adaptateur (lot 36) : avec `Some`, une approbation
+    /// datée dans le futur est refusée ([`FiscalYearError::ApprovalInFuture`]) — l'exercice
+    /// approuvé étant immuable, une date d'AG anticipée par erreur ne se corrigerait plus.
+    /// `None` = pas de garde (rejouages internes).
+    #[serde(default, with = "crate::domain::serde_date::date::option")]
+    pub today: Option<Date>,
+}
+
+/// Ce que rend [`ApproveFiscalYear`] : la révision résultante et, si la décision est prise
+/// au-delà des six mois de l'art. L225-100 du Code de commerce (sur renvoi de l'art. L227-9),
+/// le retard en jours — l'approbation tardive n'est **pas** refusée (la décision existe, elle
+/// est simplement en retard, et le greffe l'accepte), mais chaque façade l'affiche.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Approval {
+    pub revision: i64,
+    pub late_by_days: Option<u32>,
 }
 
 impl Command for ApproveFiscalYear {
-    type Output = i64;
+    type Output = Approval;
     const NAME: &'static str = "fiscal.approve_year";
 
     /// Le geste qui scelle un acte juridique : jamais appliqué par un agent sans humain.
@@ -648,6 +720,15 @@ impl Command for ApproveFiscalYear {
             }
             .into());
         }
+        if let Some(today) = self.today
+            && self.approved_on > today
+        {
+            return Err(FiscalYearError::ApprovalInFuture {
+                approved_on: format_date(self.approved_on),
+                today: format_date(today),
+            }
+            .into());
+        }
         let new_revision = require_fiscal_year_revision(conn, self.id, self.revision)?;
         conn.execute(
             "UPDATE fiscal_years SET approved_on = ?1, revision = ?2
@@ -659,8 +740,21 @@ impl Command for ApproveFiscalYear {
                 self.revision,
             ],
         )?;
-        Ok(new_revision)
+        Ok(Approval {
+            revision: new_revision,
+            late_by_days: approval_delay_days(record.ends_on, self.approved_on),
+        })
     }
+}
+
+/// Le retard d'une approbation datée `approved_on` sur l'échéance légale (six mois après la
+/// clôture, [`crate::fiscal::approval_meeting_due_on`]), en jours — `None` dans les délais.
+#[must_use]
+pub fn approval_delay_days(ends_on: Date, approved_on: Date) -> Option<u32> {
+    let due = crate::fiscal::approval_meeting_due_on(ends_on);
+    u32::try_from((approved_on - due).whole_days())
+        .ok()
+        .filter(|days| *days > 0)
 }
 
 /// Supprime un exercice encore en **projet** (clos par erreur, par exemple). Un exercice
@@ -941,6 +1035,7 @@ mod tests {
             legal_reserve: Money::from_cents(legal_reserve),
             dividends: Money::from_cents(dividends),
             carry_back: false,
+            today: None,
         };
         let Outcome::Applied(id) = Executor::new(store).execute(&cmd, &human()).unwrap() else {
             panic!("expected Applied")
@@ -994,6 +1089,7 @@ mod tests {
             legal_reserve: Money::ZERO,
             dividends: Money::ZERO,
             carry_back: false,
+            today: None,
         };
         let err = Executor::new(&mut store)
             .execute(&cmd, &human())
@@ -1014,6 +1110,7 @@ mod tests {
             legal_reserve: Money::ZERO,
             dividends: Money::ZERO,
             carry_back: false,
+            today: None,
         };
         let err = Executor::new(&mut store)
             .execute(&overlapping, &human())
@@ -1034,6 +1131,7 @@ mod tests {
             legal_reserve: Money::ZERO,
             dividends: Money::from_cents(500_000),
             carry_back: false,
+            today: None,
         };
         let err = Executor::new(&mut store)
             .execute(&cmd, &human())
@@ -1054,6 +1152,7 @@ mod tests {
             legal_reserve: Money::from_cents(20_000),
             dividends: Money::ZERO,
             carry_back: false,
+            today: None,
         };
         let err = Executor::new(&mut store)
             .execute(&cmd, &human())
@@ -1133,6 +1232,7 @@ mod tests {
                     id,
                     revision: 1,
                     approved_on: date(2027, TimeMonth::May, 15),
+                    today: None,
                 },
                 &human(),
             )
@@ -1191,6 +1291,7 @@ mod tests {
                     id,
                     revision: 1,
                     approved_on: date(2026, TimeMonth::June, 1),
+                    today: None,
                 },
                 &human(),
             )
@@ -1211,6 +1312,7 @@ mod tests {
             legal_reserve: Money::ZERO,
             dividends: Money::ZERO,
             carry_back: false,
+            today: None,
         };
         Executor::new(&mut store).execute(&cmd, &human()).unwrap();
 
@@ -1264,6 +1366,7 @@ mod tests {
             legal_reserve: Money::ZERO,
             dividends: Money::ZERO,
             carry_back: false,
+            today: None,
         };
         let agent = ExecutionContext::new(
             Actor::Agent {
@@ -1313,6 +1416,7 @@ mod tests {
             legal_reserve: Money::from_cents(5_000),
             dividends: Money::ZERO,
             carry_back: false,
+            today: None,
         };
         let err = Executor::new(&mut store)
             .execute(&too_much, &human())
@@ -1340,6 +1444,7 @@ mod tests {
             legal_reserve: Money::from_cents(1),
             dividends: Money::ZERO,
             carry_back: false,
+            today: None,
         };
         let err = Executor::new(&mut store)
             .execute(&next, &human())
@@ -1363,6 +1468,7 @@ mod tests {
             legal_reserve: Money::ZERO,
             dividends: Money::ZERO,
             carry_back: false,
+            today: None,
         };
         let err = Executor::new(&mut store)
             .execute(&cmd, &human())
@@ -1407,6 +1513,7 @@ mod tests {
             legal_reserve: Money::ZERO,
             dividends: Money::from_cents(100),
             carry_back: false,
+            today: None,
         };
         let err = Executor::new(&mut store)
             .execute(&with_dividends, &human())
@@ -1457,6 +1564,7 @@ mod tests {
             legal_reserve: Money::ZERO,
             dividends: Money::ZERO,
             carry_back,
+            today: None,
         };
         let Outcome::Applied(id) = Executor::new(store).execute(&cmd, &human()).unwrap() else {
             panic!("expected Applied")
@@ -1591,6 +1699,7 @@ mod tests {
             legal_reserve: Money::ZERO,
             dividends: Money::ZERO,
             carry_back: true,
+            today: None,
         };
         let err = Executor::new(&mut store)
             .execute(&cmd, &human())
@@ -1610,6 +1719,7 @@ mod tests {
             legal_reserve: Money::ZERO,
             dividends: Money::ZERO,
             carry_back: true,
+            today: None,
         };
         let err = Executor::new(&mut store)
             .execute(&cmd, &human())
@@ -1620,6 +1730,7 @@ mod tests {
         );
         let cmd = CloseFiscalYear {
             carry_back: false,
+            today: None,
             ..cmd
         };
         Executor::new(&mut store).execute(&cmd, &human()).unwrap();
@@ -1636,6 +1747,7 @@ mod tests {
             legal_reserve: Money::ZERO,
             dividends: Money::ZERO,
             carry_back: true,
+            today: None,
         };
         let err = Executor::new(&mut store)
             .execute(&cmd, &human())
@@ -1644,5 +1756,156 @@ mod tests {
             matches!(&err, AppError::Domain(msg) if msg.contains("bénéfice d'imputation")),
             "{err}"
         );
+    }
+
+    /// Lot 36 : avec `today`, clore un exercice pas encore écoulé est refusé (J−28), accepté le
+    /// lendemain de la clôture (J+1) ; sans `today`, aucune garde (rejouage interne).
+    #[test]
+    fn closing_before_the_period_has_ended_is_refused_until_the_day_after() {
+        let mut store = test_store("premature-close");
+        set_profile(&mut store, Some(100_000));
+        seed_activity(&mut store, 2026);
+        let close_on = |store: &mut Store, today: Date| {
+            Executor::new(store).execute(
+                &CloseFiscalYear {
+                    starts_on: date(2026, TimeMonth::January, 1),
+                    ends_on: date(2026, TimeMonth::December, 31),
+                    legal_reserve: Money::ZERO,
+                    dividends: Money::ZERO,
+                    carry_back: false,
+                    today: Some(today),
+                },
+                &human(),
+            )
+        };
+        let err = close_on(&mut store, date(2026, TimeMonth::December, 3)).unwrap_err();
+        assert!(
+            err.to_string().contains("court jusqu'au 2026-12-31"),
+            "{err}"
+        );
+        assert!(list_fiscal_years(store.connection()).unwrap().is_empty());
+        // Le jour même de la clôture est encore « en cours » (`ends_on > today` est faux le
+        // 31 : le dernier jour compte, la commande passe dès le 31 au soir comme le lendemain).
+        assert!(matches!(
+            close_on(&mut store, date(2027, TimeMonth::January, 1)).unwrap(),
+            Outcome::Applied(_)
+        ));
+    }
+
+    #[test]
+    fn a_period_longer_than_twenty_four_months_is_refused() {
+        let mut store = test_store("too-long");
+        set_profile(&mut store, Some(100_000));
+        let err = Executor::new(&mut store)
+            .execute(
+                &CloseFiscalYear {
+                    starts_on: date(2016, TimeMonth::January, 1),
+                    ends_on: date(2026, TimeMonth::December, 31),
+                    legal_reserve: Money::ZERO,
+                    dividends: Money::ZERO,
+                    carry_back: false,
+                    today: None,
+                },
+                &human(),
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("plus de 24 mois"), "{err}");
+        // Exactement 24 mois (premier exercice long) passe encore.
+        let ok = Executor::new(&mut store)
+            .execute(
+                &CloseFiscalYear {
+                    starts_on: date(2025, TimeMonth::January, 1),
+                    ends_on: date(2026, TimeMonth::December, 31),
+                    legal_reserve: Money::ZERO,
+                    dividends: Money::ZERO,
+                    carry_back: false,
+                    today: None,
+                },
+                &human(),
+            )
+            .unwrap();
+        assert!(matches!(ok, Outcome::Applied(_)));
+    }
+
+    /// Lot 36 : une approbation datée dans le futur est refusée ; une approbation tardive
+    /// (au-delà des six mois) est acceptée mais rapporte son retard en jours.
+    #[test]
+    fn approving_in_the_future_is_refused_and_a_late_approval_reports_its_delay() {
+        let mut store = test_store("approve-today");
+        set_profile(&mut store, Some(100_000));
+        seed_activity(&mut store, 2026);
+        let id = close_2026(&mut store, 0, 0);
+        let approve = |store: &mut Store, approved_on: Date, today: Option<Date>| {
+            Executor::new(store).execute(
+                &ApproveFiscalYear {
+                    id,
+                    revision: 1,
+                    approved_on,
+                    today,
+                },
+                &human(),
+            )
+        };
+        let err = approve(
+            &mut store,
+            date(2027, TimeMonth::June, 15),
+            Some(date(2027, TimeMonth::March, 1)),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("dans le futur"), "{err}");
+        assert!(
+            !fiscal_year_by_id(store.connection(), id)
+                .unwrap()
+                .unwrap()
+                .is_approved()
+        );
+
+        // Échéance légale : 30 juin 2027 ; approuvé le 20 juillet = 20 jours de retard.
+        assert_eq!(
+            approval_delay_days(
+                date(2026, TimeMonth::December, 31),
+                date(2027, TimeMonth::June, 30)
+            ),
+            None
+        );
+        assert_eq!(
+            approval_delay_days(
+                date(2026, TimeMonth::December, 31),
+                date(2027, TimeMonth::July, 20)
+            ),
+            Some(20)
+        );
+        let Outcome::Applied(approval) = approve(
+            &mut store,
+            date(2027, TimeMonth::July, 20),
+            Some(date(2027, TimeMonth::July, 20)),
+        )
+        .unwrap() else {
+            panic!("expected Applied")
+        };
+        assert_eq!(approval.revision, 2);
+        assert_eq!(approval.late_by_days, Some(20));
+        assert!(
+            fiscal_year_by_id(store.connection(), id)
+                .unwrap()
+                .unwrap()
+                .is_approved()
+        );
+    }
+
+    /// Une action en attente déposée avant le lot 36 (sans `today`, dates en tableau) reste
+    /// rejouable : `today` retombe sur `None`, et la date se relit.
+    #[test]
+    fn a_close_command_serialized_before_lot_36_still_deserializes() {
+        let legacy =
+            r#"{"starts_on":[2026,1],"ends_on":[2026,365],"legal_reserve":0,"dividends":0}"#;
+        let cmd: CloseFiscalYear = serde_json::from_str(legacy).unwrap();
+        assert_eq!(cmd.starts_on, date(2026, TimeMonth::January, 1));
+        assert_eq!(cmd.ends_on, date(2026, TimeMonth::December, 31));
+        assert_eq!(cmd.today, None);
+        assert!(!cmd.carry_back);
+        // Et ce qui s'écrit désormais est lisible par un humain.
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert!(json.contains("\"starts_on\":\"2026-01-01\""), "{json}");
     }
 }

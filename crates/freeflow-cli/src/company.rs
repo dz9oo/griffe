@@ -4,12 +4,60 @@ use clap::{Args, Subcommand};
 use freeflow_core::app::{ExecutionContext, Executor};
 use freeflow_core::company;
 use freeflow_core::domain::{Address, FiscalYearEnd, Money, Siren, VatNumber, VatRegime};
-use freeflow_core::fiscal::company_profile_with_vat_filing;
+use freeflow_core::fiscal::{CompanyProfileWithVatFiling, company_profile_with_vat_filing};
 use freeflow_core::store::Store;
 
 use crate::error::CliError;
-use crate::output::{format_outcome, format_value};
+use crate::output::{HumanRender, format_outcome_as, format_value, key_values, or_dash};
 use crate::parsers::{parse_money, parse_siren, parse_vat_number};
+
+impl HumanRender for CompanyProfileWithVatFiling {
+    fn render_human(&self) -> String {
+        let p = &self.profile;
+        let director = match (p.director_monthly_gross, p.director_charge_ratio_bps) {
+            (None, _) => "non rémunéré".to_string(),
+            (Some(gross), ratio) => format!(
+                "{gross} brut / mois{}",
+                ratio.map_or(String::new(), |r| format!(
+                    ", charges {},{:02} %",
+                    r / 100,
+                    r % 100
+                ))
+            ),
+        };
+        key_values(&[
+            ("Dénomination", format!("{} ({})", p.name, p.legal_form)),
+            ("SIREN", p.siren.to_string()),
+            ("TVA intracom.", or_dash(p.vat_number.as_ref())),
+            (
+                "Adresse",
+                format!(
+                    "{}, {} {}, {}",
+                    p.address.street, p.address.postal_code, p.address.city, p.address.country
+                ),
+            ),
+            ("Capital social", or_dash(p.share_capital)),
+            ("RCS", or_dash(p.rcs_city.as_deref())),
+            ("IBAN", or_dash(p.iban.as_deref())),
+            (
+                "Clôture d'exercice",
+                p.fiscal_year_end.map_or_else(
+                    || "non renseignée (année civile supposée)".to_string(),
+                    |f| format!("{:02}/{:02}", f.day(), f.month()),
+                ),
+            ),
+            (
+                "Régime de TVA",
+                p.vat_regime.map_or_else(
+                    || "non renseigné (mensuel supposé)".to_string(),
+                    |r| r.to_string(),
+                ),
+            ),
+            ("Dirigeant", director),
+            ("Télédéclaration TVA", self.vat_filing.note.clone()),
+        ])
+    }
+}
 
 /// Analyse une date de clôture récurrente au format `JJ/MM` (ex. `31/12`).
 fn parse_fiscal_year_end(s: &str) -> Result<FiscalYearEnd, String> {
@@ -132,11 +180,13 @@ pub fn run(
                 director_charge_ratio_bps: args.director_charge_ratio,
             };
             let outcome = Executor::new(store).execute(&command, ctx)?;
-            format_outcome(&outcome, json)
+            format_outcome_as(&outcome, json, |()| "profil enregistré".to_string())
         }
         CompanyCommand::Show => {
-            let today = time::OffsetDateTime::now_utc().date();
-            let profile = company_profile_with_vat_filing(store.connection(), today)?;
+            let profile = company_profile_with_vat_filing(
+                store.connection(),
+                freeflow_core::clock::today_local(),
+            )?;
             format_value(&profile, json)
         }
     };

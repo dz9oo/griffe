@@ -22,6 +22,7 @@ pub struct Client {
     pub siren: Option<Siren>,
     pub vat_number: Option<VatNumber>,
     pub address: Option<Address>,
+    #[serde(with = "crate::domain::serde_date::datetime")]
     pub created_at: OffsetDateTime,
     /// Incrémentée à chaque modification — portée par `UpdateClient`/`ArchiveClient`/
     /// `DeleteClient` pour détecter une écriture concurrente (GUI, CLI et serveur MCP peuvent
@@ -30,6 +31,7 @@ pub struct Client {
     /// Un client déjà référencé par une facture, un devis ou une mission ne peut pas être
     /// supprimé (voir les triggers d'immuabilité de la facturation et des devis) : il se
     /// retire des listes actives par archivage plutôt que par suppression.
+    #[serde(with = "crate::domain::serde_date::datetime::option")]
     pub archived_at: Option<OffsetDateTime>,
 }
 

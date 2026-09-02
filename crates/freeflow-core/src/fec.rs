@@ -63,7 +63,9 @@ pub struct Fec {
 pub struct FecSummary {
     pub file_name: String,
     pub siren: Siren,
+    #[serde(with = "crate::domain::serde_date::date")]
     pub starts_on: Date,
+    #[serde(with = "crate::domain::serde_date::date")]
     pub ends_on: Date,
     pub entries: usize,
     pub lines: usize,
@@ -86,7 +88,10 @@ impl Fec {
     /// sans base. Le bilan d'ouverture (lot 30) fournit les à-nouveaux si, et seulement si, il
     /// ouvre cet exercice ; sans exercice clos enregistré, l'IS et la rémunération du dirigeant
     /// sont recalculés depuis le profil (voir [`Ledger::build`]).
-    #[must_use]
+    ///
+    /// # Errors
+    ///
+    /// Voir [`Ledger::build`].
     pub fn build(
         profile: &CompanyProfile,
         exercise: FiscalYear,
@@ -95,7 +100,7 @@ impl Fec {
         payments: &[Payment],
         expenses: &[Expense],
         opening: Option<&OpeningBalance>,
-    ) -> Self {
+    ) -> Result<Self, crate::ledger::LedgerError> {
         let ledger = Ledger::build(LedgerFacts {
             profile,
             exercise,
@@ -110,8 +115,8 @@ impl Fec {
             snapshot: None,
             prior_losses: Money::ZERO,
             appropriations: &[],
-        });
-        Self::from_ledger(profile.siren, ledger)
+        })?;
+        Ok(Self::from_ledger(profile.siren, ledger))
     }
 
     /// `<SIREN>FEC<AAAAMMJJ>.txt`, daté de la clôture de l'exercice — le nom imposé.
@@ -402,7 +407,8 @@ mod tests {
             &[],
             &[],
             Some(&opening),
-        );
+        )
+        .unwrap();
         assert_eq!(fec.entries.len(), 1);
         let an = &fec.entries[0];
         assert_eq!(an.journal, Journal::Opening);
@@ -429,7 +435,8 @@ mod tests {
             &[],
             &[],
             Some(&opening),
-        );
+        )
+        .unwrap();
         assert!(next.entries.is_empty());
     }
 
@@ -480,7 +487,8 @@ mod tests {
             &payments,
             &expenses,
             None,
-        );
+        )
+        .unwrap();
         assert_eq!(fec.file_name(), "552100554FEC20261231.txt");
         assert!(fec.entries.iter().all(FecEntry::is_balanced));
         assert_eq!(fec.total_debit(), fec.total_credit());
@@ -587,7 +595,8 @@ mod tests {
             &payments,
             &expenses,
             None,
-        );
+        )
+        .unwrap();
         assert_eq!(fec.entries.len(), 1, "{:?}", fec.entries);
         let void = &fec.entries[0];
         assert_eq!(void.journal, Journal::Bank);
@@ -609,7 +618,8 @@ mod tests {
             &payments,
             &expenses,
             None,
-        );
+        )
+        .unwrap();
         // Facture et règlement, puis l'IS de clôture sur le bénéfice de 1 000 € (150 €) en OD
         // (lot 31).
         let kinds: Vec<_> = fec_2025.entries.iter().map(|e| e.journal).collect();
@@ -657,7 +667,8 @@ mod tests {
                 date(2026, TimeMonth::May, 5),
             )],
             None,
-        );
+        )
+        .unwrap();
         let entry = &fec.entries[0];
         assert_eq!(entry.lines[0].account, accounts::MEALS);
         assert_eq!(entry.lines[0].amount, Money::from_cents(11_200));
@@ -713,7 +724,7 @@ mod tests {
                 &payments,
                 &expenses,
                 None,
-            );
+            ).unwrap();
             prop_assert!(fec.entries.iter().all(FecEntry::is_balanced));
             prop_assert_eq!(fec.total_debit(), fec.total_credit());
             let rendered = fec.render();

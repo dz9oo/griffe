@@ -92,6 +92,7 @@ pub struct Expense {
     /// restauration au-delà d'un barème, etc.). Explicite plutôt que recalculé, pour ne jamais
     /// prêter au domaine une règle fiscale qu'il ne connaît pas.
     pub vat_deductible: Money,
+    #[serde(with = "crate::domain::serde_date::date")]
     pub incurred_on: Date,
     /// Hash SHA-256 du contenu du justificatif attaché, et son nom de fichier d'origine — la
     /// preuve d'intégrité, pas une copie : le stockage adressé par contenu (répertoire
@@ -99,6 +100,7 @@ pub struct Expense {
     /// construire la commande (voir `freeflow-cli::expense::archive_receipt`).
     pub receipt_hash: Option<String>,
     pub receipt_filename: Option<String>,
+    #[serde(with = "crate::domain::serde_date::datetime")]
     pub created_at: OffsetDateTime,
     /// Révision optimiste (lot 21) — voir `crate::app::revision`. La colonne SQL existait depuis
     /// la migration `0008` (posée par anticipation) ; elle n'est lue et écrite que depuis que

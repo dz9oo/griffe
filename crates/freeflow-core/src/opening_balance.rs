@@ -63,6 +63,7 @@ pub struct OpeningBalanceRecord {
     #[serde(flatten)]
     pub balance: OpeningBalance,
     pub revision: i64,
+    #[serde(with = "crate::domain::serde_date::datetime")]
     pub created_at: OffsetDateTime,
 }
 
@@ -128,6 +129,7 @@ fn write_lines(conn: &Connection, lines: &[OpeningBalanceLine]) -> Result<(), Ap
 /// Enregistre le bilan d'ouverture — une seule fois par coffre, avant toute clôture.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecordOpeningBalance {
+    #[serde(with = "crate::domain::serde_date::date")]
     pub opens_on: Date,
     pub source: Option<String>,
     pub lines: Vec<OpeningBalanceLine>,
@@ -190,6 +192,7 @@ impl Command for RecordOpeningBalance {
 pub struct UpdateOpeningBalance {
     /// Révision lue avant modification — écriture concurrente ⇒ [`AppError::Conflict`].
     pub revision: i64,
+    #[serde(with = "crate::domain::serde_date::date")]
     pub opens_on: Date,
     pub source: Option<String>,
     pub lines: Vec<OpeningBalanceLine>,

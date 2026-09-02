@@ -22,7 +22,7 @@ use serde::Serialize;
 use time::Date;
 
 use crate::error::CliError;
-use crate::output::{format_outcome, format_value};
+use crate::output::{HumanRender, format_json, format_outcome, format_value, key_values, or_dash};
 use crate::parsers::{parse_date, parse_money};
 use crate::refs;
 
@@ -189,7 +189,7 @@ pub fn run(
         QuoteCommand::List => {
             let all = list_quotes(store.connection())?;
             if json {
-                format_value(&all, json)
+                format_json(&all)
             } else {
                 quote_table(store, &all)?
             }
@@ -205,6 +205,48 @@ pub fn run(
                 quote: Quote,
                 total_net_ht: Money,
                 references: quotes::QuoteReferences,
+            }
+            impl HumanRender for QuoteView {
+                fn render_human(&self) -> String {
+                    let q = &self.quote;
+                    let discount = match q.discount {
+                        None => "—".to_string(),
+                        Some(freeflow_core::domain::Discount::Percentage(bps)) => {
+                            format!("{},{:02} %", bps / 100, bps % 100)
+                        }
+                        Some(freeflow_core::domain::Discount::FixedAmount(m)) => m.to_string(),
+                    };
+                    let lines = q
+                        .lines
+                        .iter()
+                        .map(|l| format!("  - {l}"))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    format!(
+                        "{}\nLignes :\n{lines}",
+                        key_values(&[
+                            ("Devis", format!("{} (version {})", q.id, q.version)),
+                            ("lignée", q.root_id.to_string()),
+                            ("client", q.client_id.to_string()),
+                            ("opportunité", or_dash(q.opportunity_id)),
+                            ("statut", q.status.as_str().to_string()),
+                            ("remise", discount),
+                            ("total net HT", self.total_net_ht.to_string()),
+                            (
+                                "valable jusqu'au",
+                                freeflow_core::domain::format_date(q.valid_until),
+                            ),
+                            ("conditions", or_dash(q.terms.as_deref())),
+                            (
+                                "références",
+                                format!(
+                                    "{} mission(s), {} version(s) dans la lignée",
+                                    self.references.missions, self.references.versions
+                                ),
+                            ),
+                        ])
+                    )
+                }
             }
             format_value(
                 &QuoteView {

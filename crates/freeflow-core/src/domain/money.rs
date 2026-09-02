@@ -20,6 +20,14 @@ impl Money {
     /// Le montant nul.
     pub const ZERO: Self = Self(0);
 
+    /// Borne d'un montant **saisi** (lot 36) : cent milliards d'euros, soit 10^13 centimes.
+    /// Aucune facture, dépense ou ligne de bilan d'un indépendant n'approche ce chiffre ; en
+    /// revanche une valeur proche de `i64::MAX` acceptée par [`Self::parse_decimal`] faisait
+    /// déborder la première somme du grand livre. Bornée à l'entrée, l'arithmétique interne
+    /// (sommes, `split_equally`, prorata) reste hors d'atteinte du débordement pour tout volume
+    /// réaliste — et le grand livre vérifie de son côté que ses totaux tiennent.
+    pub const MAX_INPUT: Self = Self(10_000_000_000_000);
+
     /// Construit un montant à partir d'un nombre entier de centimes.
     #[must_use]
     pub const fn from_cents(cents: i64) -> Self {
@@ -212,7 +220,8 @@ impl Money {
     ///
     /// # Errors
     ///
-    /// Retourne une erreur si `s` n'est pas un nombre décimal valide.
+    /// Retourne une erreur si `s` n'est pas un nombre décimal valide, ou s'il dépasse
+    /// [`Self::MAX_INPUT`] en valeur absolue.
     pub fn parse_decimal(s: &str) -> Result<Self, MoneyParseError> {
         let normalized = s.replace(',', ".");
         let (sign, unsigned): (i64, &str) = match normalized.strip_prefix('-') {
@@ -253,6 +262,9 @@ impl Money {
             .and_then(|c| c.checked_add(fractional_cents))
             .and_then(|c| c.checked_mul(sign))
             .ok_or_else(|| MoneyParseError(s.to_string()))?;
+        if cents.abs() > Self::MAX_INPUT.0 {
+            return Err(MoneyParseError(s.to_string()));
+        }
         Ok(Self(cents))
     }
 }
@@ -306,6 +318,20 @@ impl fmt::Display for Money {
         let grouped: String = grouped.chars().rev().collect();
 
         write!(f, "{sign}{grouped},{cents:02}\u{a0}€")
+    }
+}
+
+impl Money {
+    /// Addition vérifiée : `None` en cas de débordement, là où `+` paniquerait (les
+    /// `overflow-checks` sont actifs en release depuis le lot 17). Réservée aux sommes de
+    /// volume non borné par construction (grand livre) ; l'arithmétique ordinaire du domaine
+    /// travaille sur des montants bornés par [`Self::MAX_INPUT`].
+    #[must_use]
+    pub const fn checked_add(self, rhs: Self) -> Option<Self> {
+        match self.0.checked_add(rhs.0) {
+            Some(cents) => Some(Self(cents)),
+            None => None,
+        }
     }
 }
 
@@ -412,24 +438,34 @@ mod tests {
     }
 
     #[test]
-    fn parse_decimal_rejects_amounts_that_overflow_i64_cents() {
-        // 92233720368547758,07 € == i64::MAX centimes pile : la dernière valeur acceptable.
+    fn parse_decimal_rejects_amounts_beyond_the_input_bound() {
+        // 100 000 000 000,00 € == `Money::MAX_INPUT` pile : la dernière valeur acceptable.
         assert_eq!(
-            Money::parse_decimal("92233720368547758.07"),
-            Ok(Money::from_cents(i64::MAX))
+            Money::parse_decimal("100000000000.00"),
+            Ok(Money::MAX_INPUT)
         );
-        // Un centime de plus déborde : refus explicite plutôt que panique/enroulement.
+        assert_eq!(Money::parse_decimal("-100000000000"), Ok(-Money::MAX_INPUT));
+        // Un centime de plus est refusé : ni panique, ni enroulement, ni débordement plus loin
+        // dans le grand livre (lot 36).
         assert!(
-            Money::parse_decimal("92233720368547758.08").is_err(),
-            "un montant hors des bornes de i64 doit être rejeté, pas enroulé"
+            Money::parse_decimal("100000000000.01").is_err(),
+            "un montant au-delà de MAX_INPUT doit être rejeté"
         );
-        assert!(
-            Money::parse_decimal("92233720368547759").is_err(),
-            "partie entière seule au-delà des bornes"
-        );
+        // Et ce qui déborde i64 lui-même l'est a fortiori.
+        assert!(Money::parse_decimal("92233720368547758.08").is_err());
         assert!(
             Money::parse_decimal("99999999999999999999.99").is_err(),
             "très grand nombre de chiffres"
+        );
+    }
+
+    #[test]
+    fn checked_add_reports_overflow_instead_of_panicking() {
+        let max = Money::from_cents(i64::MAX);
+        assert_eq!(max.checked_add(Money::from_cents(1)), None);
+        assert_eq!(
+            Money::from_cents(2).checked_add(Money::from_cents(3)),
+            Some(Money::from_cents(5))
         );
     }
 

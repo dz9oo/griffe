@@ -107,15 +107,18 @@ pub struct Opportunity {
     pub probability: Probability,
     /// Date de la prochaine action de relance. Obligatoire sur une opportunité active — la
     /// couche applicative (lot 3) refuse de créer ou faire avancer une opportunité sans elle.
+    #[serde(with = "crate::domain::serde_date::date::option")]
     pub next_action_at: Option<Date>,
     pub source: Option<String>,
     pub loss_reason: Option<LossReason>,
+    #[serde(with = "crate::domain::serde_date::datetime")]
     pub created_at: OffsetDateTime,
     /// Révision optimiste (lot 16) — voir `crate::app::revision`.
     pub revision: i64,
     /// Retirée des listes actives sans changer d'étape — un axe distinct de `stage = won|lost`
     /// (lot 16) : une opportunité perdue reste dans l'historique de l'entonnoir, une opportunité
     /// archivée en sort. `None` tant qu'elle est active.
+    #[serde(with = "crate::domain::serde_date::datetime::option")]
     pub archived_at: Option<OffsetDateTime>,
 }
 

@@ -26,6 +26,7 @@ pub struct EmitInvoice {
     pub client_id: ClientId,
     pub mission_id: Option<MissionId>,
     pub lines: Vec<InvoiceLine>,
+    #[serde(with = "crate::domain::serde_date::date")]
     pub issued_on: Date,
     pub payment_terms_days: u32,
 }
@@ -86,6 +87,7 @@ impl Command for EmitInvoice {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IssueCreditNote {
     pub invoice_id: InvoiceId,
+    #[serde(with = "crate::domain::serde_date::date")]
     pub issued_on: Date,
 }
 
@@ -155,6 +157,7 @@ impl Command for IssueCreditNote {
 pub struct RecordPayment {
     pub invoice_id: InvoiceId,
     pub amount: Money,
+    #[serde(with = "crate::domain::serde_date::date")]
     pub received_on: Date,
     pub method: PaymentMethod,
 }

@@ -91,7 +91,7 @@ pub async fn missions(State(state): State<AppState>, headers: HeaderMap) -> Html
 pub async fn facturation(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
     let content = state
         .with_store(|store| {
-            views::facturation::render(store, time::OffsetDateTime::now_utc().date())
+            views::facturation::render(store, state.today())
                 .unwrap_or_else(|e| error_markup(ViewId::Facturation, e))
         })
         .await
@@ -131,9 +131,11 @@ pub async fn depenses(State(state): State<AppState>, headers: HeaderMap) -> Html
 }
 
 pub async fn cloture(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
+    let today = state.today();
     let content = state
         .with_store(|store| {
-            views::cloture::render(store).unwrap_or_else(|e| error_markup(ViewId::Cloture, e))
+            views::cloture::render(store, today)
+                .unwrap_or_else(|e| error_markup(ViewId::Cloture, e))
         })
         .await
         .unwrap_or_else(|| locked_markup(ViewId::Cloture));

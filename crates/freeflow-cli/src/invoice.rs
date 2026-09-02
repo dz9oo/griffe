@@ -18,7 +18,7 @@ use freeflow_core::store::Store;
 use time::Date;
 
 use crate::error::CliError;
-use crate::output::{format_outcome, format_value};
+use crate::output::{format_json, format_outcome, format_outcome_as};
 use crate::parsers::{parse_date, parse_money};
 
 fn parse_lines(json: &str) -> Result<Vec<InvoiceLine>, CliError> {
@@ -57,8 +57,9 @@ pub enum InvoiceCommand {
     VerifyChain,
     /// Balance âgée à une date donnée.
     AgedBalance {
+        /// Date du jour (défaut : aujourd'hui, heure locale).
         #[arg(long, value_parser = parse_date)]
-        today: Date,
+        today: Option<Date>,
     },
     /// Rend une facture émise en PDF/A-3b avec le XML CII embarqué (Factur-X). Nécessite un
     /// profil d'entreprise défini (`freeflow company set-profile`).
@@ -164,13 +165,18 @@ pub fn run_invoice(
         }
         InvoiceCommand::VerifyChain => {
             let status = verify_chain(store.connection())?;
-            let payload = match status {
-                billing::ChainStatus::Intact => serde_json::json!({"status": "intact"}),
-                billing::ChainStatus::BrokenAt(id) => {
-                    serde_json::json!({"status": "broken", "broken_at": id.to_string()})
+            let rendered = match &status {
+                billing::ChainStatus::Intact if json => {
+                    format_json(&serde_json::json!({"status": "intact"}))
                 }
+                billing::ChainStatus::Intact => {
+                    "✓ chaîne de factures intacte : chaque facture chaîne la précédente".to_string()
+                }
+                billing::ChainStatus::BrokenAt(id) if json => format_json(
+                    &serde_json::json!({"status": "broken", "broken_at": id.to_string()}),
+                ),
+                billing::ChainStatus::BrokenAt(id) => format!("✗ chaîne rompue à la facture {id}"),
             };
-            let rendered = format_value(&payload, json);
             if matches!(status, billing::ChainStatus::BrokenAt(_)) {
                 return Err(CliError::Domain(format!(
                     "{rendered}\nla chaîne de factures est rompue"
@@ -179,20 +185,53 @@ pub fn run_invoice(
             rendered
         }
         InvoiceCommand::AgedBalance { today } => {
+            let today = today.unwrap_or_else(freeflow_core::clock::today_local);
             let aged = aged_balance(store.connection(), today)?;
-            let payload: Vec<_> = aged
-                .iter()
-                .map(|a| {
-                    serde_json::json!({
-                        "invoice_id": a.invoice_id.to_string(),
-                        "client_id": a.client_id.to_string(),
-                        "outstanding_cents": a.outstanding.cents(),
-                        "days_overdue": a.days_overdue,
-                        "bucket": format!("{:?}", a.bucket),
+            if json {
+                let payload: Vec<_> = aged
+                    .iter()
+                    .map(|a| {
+                        serde_json::json!({
+                            "invoice_id": a.invoice_id.to_string(),
+                            "client_id": a.client_id.to_string(),
+                            "outstanding_cents": a.outstanding.cents(),
+                            "days_overdue": a.days_overdue,
+                            "bucket": format!("{:?}", a.bucket),
+                        })
                     })
-                })
-                .collect();
-            format_value(&payload, json)
+                    .collect();
+                format_json(&payload)
+            } else if aged.is_empty() {
+                "aucune facture en attente d'encaissement".to_string()
+            } else {
+                let bucket = |b: &billing::AgingBucket| match b {
+                    billing::AgingBucket::Current => "non échue",
+                    billing::AgingBucket::Due1To30 => "1 à 30 j",
+                    billing::AgingBucket::Due31To60 => "31 à 60 j",
+                    billing::AgingBucket::Due61To90 => "61 à 90 j",
+                    billing::AgingBucket::Due91Plus => "plus de 90 j",
+                };
+                let rows: Vec<Vec<String>> = aged
+                    .iter()
+                    .map(|a| {
+                        vec![
+                            a.invoice_id.to_string(),
+                            a.client_id.to_string(),
+                            a.outstanding.to_string(),
+                            a.days_overdue.to_string(),
+                            bucket(&a.bucket).to_string(),
+                        ]
+                    })
+                    .collect();
+                let total: freeflow_core::domain::Money = aged.iter().map(|a| a.outstanding).sum();
+                format!(
+                    "{}\nEncours total : {total}",
+                    crate::table::render(
+                        &["Facture", "Client", "Restant dû", "Retard (j)", "Tranche"],
+                        &rows
+                    )
+                )
+            }
         }
         InvoiceCommand::Render { id, out } => {
             let invoice = billing::invoice_by_id(store.connection(), id)?
@@ -246,7 +285,7 @@ pub fn run_payment(
         PaymentCommand::List => {
             let payments = list_payments(store.connection())?;
             if json {
-                format_value(&payments, json)
+                format_json(&payments)
             } else {
                 payment_table(store, &payments)?
             }
@@ -349,7 +388,7 @@ pub fn run_bank(
                 transactions.retain(|t| !t.is_matched());
             }
             if json {
-                format_value(&transactions, json)
+                format_json(&transactions)
             } else {
                 bank_table(&transactions)
             }
@@ -370,7 +409,10 @@ pub fn run_bank(
                 transaction_id: transaction,
             };
             let outcome = Executor::new(store).execute(&command, ctx)?;
-            format_outcome(&outcome, json)
+            format_outcome_as(&outcome, json, |payment| match payment {
+                Some(id) => format!("transaction libérée, encaissement {id} annulé"),
+                None => "transaction libérée".to_string(),
+            })
         }
     };
     Ok(output)

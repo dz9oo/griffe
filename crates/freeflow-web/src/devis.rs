@@ -176,7 +176,7 @@ fn parse_quote_content(form: &QuoteForm) -> Result<ParsedQuoteContent, Box<Quote
 pub async fn new_panel() -> Html<String> {
     // Un mois de validité par défaut — modifiable, mais jamais un champ vide qui obligerait à
     // choisir une date avant même d'avoir saisi une ligne.
-    let valid_until = time::OffsetDateTime::now_utc().date() + time::Duration::days(30);
+    let valid_until = freeflow_core::clock::today_local() + time::Duration::days(30);
     let values = QuoteFormValues {
         valid_until: freeflow_core::domain::format_date(valid_until),
         ..Default::default()

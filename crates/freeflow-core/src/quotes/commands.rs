@@ -20,6 +20,7 @@ pub struct CreateQuote {
     pub lines: Vec<QuoteLine>,
     pub discount: Option<Discount>,
     pub terms: Option<String>,
+    #[serde(with = "crate::domain::serde_date::date")]
     pub valid_until: Date,
 }
 
@@ -58,6 +59,7 @@ pub struct ReviseQuote {
     pub lines: Vec<QuoteLine>,
     pub discount: Option<Discount>,
     pub terms: Option<String>,
+    #[serde(with = "crate::domain::serde_date::date")]
     pub valid_until: Date,
 }
 
@@ -140,6 +142,7 @@ impl Command for DeclineQuote {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AcceptQuote {
     pub quote_id: QuoteId,
+    #[serde(with = "crate::domain::serde_date::date")]
     pub started_on: Date,
 }
 

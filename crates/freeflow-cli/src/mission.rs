@@ -13,7 +13,100 @@ use freeflow_core::store::Store;
 use time::Date;
 
 use crate::error::CliError;
-use crate::output::{format_outcome, format_value};
+use crate::output::{HumanRender, format_json, format_outcome, format_value, key_values, or_dash};
+
+impl HumanRender for freeflow_core::domain::Mission {
+    fn render_human(&self) -> String {
+        let kind = match self.kind {
+            MissionKind::Regie { daily_rate } => format!("régie, {daily_rate} / jour"),
+            MissionKind::Forfait { budget } => format!("forfait, {budget}"),
+            MissionKind::Recurrent { monthly_amount } => {
+                format!("récurrent, {monthly_amount} / mois")
+            }
+        };
+        let milestones = if self.milestones.is_empty() {
+            "—".to_string()
+        } else {
+            self.milestones
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(" ; ")
+        };
+        key_values(&[
+            ("Mission", self.name.clone()),
+            ("id", self.id.to_string()),
+            ("client", self.client_id.to_string()),
+            ("type", kind),
+            ("jalons", milestones),
+            (
+                "démarrée",
+                freeflow_core::domain::format_date(self.started_on),
+            ),
+            (
+                "terminée",
+                or_dash(self.ended_on.map(freeflow_core::domain::format_date)),
+            ),
+            ("devis", or_dash(self.quote_id)),
+            ("opportunité", or_dash(self.opportunity_id)),
+            (
+                "statut",
+                if self.archived_at.is_some() {
+                    "archivée"
+                } else {
+                    "active"
+                }
+                .to_string(),
+            ),
+            ("révision", self.revision.to_string()),
+        ])
+    }
+}
+
+impl HumanRender for freeflow_core::missions::MissionReferences {
+    fn render_human(&self) -> String {
+        format!(
+            "{} facture(s), {} saisie(s) de temps{}",
+            self.invoices,
+            self.time_entries,
+            if self.is_empty() {
+                " — supprimable"
+            } else {
+                " — non supprimable (archivable)"
+            }
+        )
+    }
+}
+
+/// L'échéancier de facturation en texte.
+fn schedule_human(schedule: &missions::BillingSchedule) -> String {
+    match schedule {
+        missions::BillingSchedule::Regie { daily_rate } => {
+            format!("régie : {daily_rate} par jour facturé")
+        }
+        missions::BillingSchedule::Recurrent { monthly_amount } => {
+            format!("récurrent : {monthly_amount} par mois")
+        }
+        missions::BillingSchedule::Forfait { installments } => {
+            let rows: Vec<Vec<String>> = installments
+                .iter()
+                .map(|(m, amount)| {
+                    vec![
+                        m.label.clone(),
+                        format!("{},{:02} %", m.share_bps / 100, m.share_bps % 100),
+                        or_dash(m.due_on.map(freeflow_core::domain::format_date)),
+                        amount.to_string(),
+                    ]
+                })
+                .collect();
+            format!(
+                "forfait, {} jalon(s)\n{}",
+                installments.len(),
+                crate::table::render(&["Jalon", "Part", "Échéance", "Montant"], &rows)
+            )
+        }
+    }
+}
 use crate::parsers::{parse_date, parse_money};
 use crate::refs;
 
@@ -327,7 +420,7 @@ pub fn run(
             };
             let missions = list_missions_with(store.connection(), filter)?;
             if json {
-                format_value(&missions, json)
+                format_json(&missions)
             } else {
                 mission_table(&missions)
             }
@@ -424,7 +517,11 @@ pub fn run(
         MissionCommand::Schedule { reference } => {
             let current = mission_or_not_found(store, &reference)?;
             let schedule = missions::billing_schedule(&current);
-            format_value(&schedule_json(&schedule), json)
+            if json {
+                format_json(&schedule_json(&schedule))
+            } else {
+                schedule_human(&schedule)
+            }
         }
         MissionCommand::LogTime {
             reference,
@@ -448,18 +545,34 @@ pub fn run(
         MissionCommand::Rate { reference } => {
             let mission = mission_or_not_found(store, &reference)?;
             let rate = effective_daily_rate(store.connection(), mission.id)?;
-            format_value(&rate.map(freeflow_core::domain::Money::cents), json)
+            if json {
+                format_json(&rate.map(freeflow_core::domain::Money::cents))
+            } else {
+                rate.map_or_else(
+                    || "aucun temps saisi : TJM effectif indéterminé".to_string(),
+                    |r| format!("TJM effectif : {r} par jour"),
+                )
+            }
         }
         MissionCommand::Capacity { month } => {
             let month = parse_month(&month)?;
             let capacity = monthly_capacity(store.connection(), month)?;
-            let payload = serde_json::json!({
-                "month": month.to_string(),
-                "available_business_days": capacity.available_business_days,
-                "billable_days": capacity.billable_days,
-                "utilization_percent": capacity.utilization_percent(),
-            });
-            format_value(&payload, json)
+            if json {
+                format_json(&serde_json::json!({
+                    "month": month.to_string(),
+                    "available_business_days": capacity.available_business_days,
+                    "billable_days": capacity.billable_days,
+                    "utilization_percent": capacity.utilization_percent(),
+                }))
+            } else {
+                format!(
+                    "{month} : {:.1} jour(s) facturé(s) sur {} jour(s) ouvré(s), soit {:.0} % \
+                     d'occupation",
+                    capacity.billable_days,
+                    capacity.available_business_days,
+                    capacity.utilization_percent()
+                )
+            }
         }
     };
     Ok(output)
@@ -498,7 +611,7 @@ fn run_time(
             let mission_id = refs::resolve_mission(store, &reference)?;
             let entries = missions::list_time_entries(store.connection(), mission_id)?;
             if json {
-                format_value(&entries, json)
+                format_json(&entries)
             } else {
                 time_entry_table(&entries)
             }

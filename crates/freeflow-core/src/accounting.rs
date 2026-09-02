@@ -336,7 +336,9 @@ pub fn compute_result_with_losses(
 /// sur les dépenses, et le solde à reverser (positif) ou le crédit de TVA (négatif).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct VatReturn {
+    #[serde(with = "crate::domain::serde_date::date")]
     pub period_start: time::Date,
+    #[serde(with = "crate::domain::serde_date::date")]
     pub period_end: time::Date,
     pub collected: Money,
     pub deductible: Money,

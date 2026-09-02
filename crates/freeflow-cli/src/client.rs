@@ -12,7 +12,35 @@ use freeflow_core::domain::{Address, ContactId, Siren, VatNumber};
 use freeflow_core::store::Store;
 
 use crate::error::CliError;
-use crate::output::{format_outcome, format_value};
+use crate::output::{HumanRender, format_json, format_outcome, format_value, key_values, or_dash};
+
+impl HumanRender for freeflow_core::domain::Client {
+    fn render_human(&self) -> String {
+        key_values(&[
+            ("Client", self.name.clone()),
+            ("id", self.id.to_string()),
+            ("SIREN", or_dash(self.siren.as_ref())),
+            ("TVA intracom.", or_dash(self.vat_number.as_ref())),
+            (
+                "adresse",
+                self.address.as_ref().map_or_else(
+                    || "—".to_string(),
+                    |a| format!("{}, {} {}, {}", a.street, a.postal_code, a.city, a.country),
+                ),
+            ),
+            (
+                "statut",
+                if self.archived_at.is_some() {
+                    "archivé"
+                } else {
+                    "actif"
+                }
+                .to_string(),
+            ),
+            ("révision", self.revision.to_string()),
+        ])
+    }
+}
 use crate::parsers::{parse_siren, parse_vat_number};
 use crate::refs;
 
@@ -253,7 +281,7 @@ pub fn run(
             };
             let clients = list_clients_with(store.connection(), filter)?;
             if json {
-                format_value(&clients, json)
+                format_json(&clients)
             } else {
                 client_table(&clients)
             }
@@ -369,7 +397,7 @@ fn run_contact(
             let client_id = refs::resolve_client(store, &client)?;
             let contacts = list_contacts(store.connection(), client_id)?;
             if json {
-                format_value(&contacts, json)
+                format_json(&contacts)
             } else {
                 contact_table(&contacts)
             }

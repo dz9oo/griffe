@@ -1003,7 +1003,7 @@ async fn an_agent_closing_a_fiscal_year_only_deposits_a_pending_action() {
     let closed = call(
         &client,
         "fiscal.close_year",
-        json!({"period": 2026, "carry_back": true}),
+        json!({"period": 2026, "carry_back": true, "today": "2027-01-05"}),
     )
     .await;
     assert_eq!(closed.is_error, Some(false));
@@ -1143,8 +1143,8 @@ async fn expense_reconciliation_over_mcp_needs_a_human() {
     let shown = call(&client, "expense.show", json!({"expense": "expert"})).await;
     let expense = json_of(&shown);
     assert_eq!(expense["amount"], 96_000);
-    // `time::Date` se sérialise en (année, jour ordinal) : le 7 septembre 2026 est le 250e.
-    assert_eq!(expense["incurred_on"], json!([2026, 250]));
+    // Lot 36 : les dates sortent en ISO 8601, plus jamais en `[année, jour ordinal]`.
+    assert_eq!(expense["incurred_on"], json!("2026-09-07"));
     assert_eq!(expense["bank_transaction"]["id"], fees_tx);
 
     // Sans débit, `amount_cents`/`incurred_on` restent requis — et une dépense ordinaire ne
@@ -1502,6 +1502,7 @@ async fn a_fiscal_year_can_be_shown_and_amended_but_approval_and_deletion_need_a
                 legal_reserve: Money::from_cents(0),
                 dividends: Money::from_cents(0),
                 carry_back: false,
+                today: None,
             },
             &human,
         )

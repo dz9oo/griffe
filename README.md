@@ -480,14 +480,20 @@ Le reste du vocabulaire est expliqué au fil de l'app : `freeflow year glossary`
    que tu n'as rien oublié.
 
 5. **Clos.** Le résultat est figé, l'affectation enregistrée en projet (ici : rien à affecter,
-   la perte vient diminuer le report à nouveau, 2 400 − 816 = 1 584 €).
+   la perte vient diminuer le report à nouveau, 2 400 − 816 = 1 584 €). FreeFlow **refuse** de
+   clore tant que l'exercice n'est pas écoulé (le 2 septembre, il répond que l'exercice court
+   jusqu'au 30 septembre) : un exercice clos trop tôt puis approuvé ne se rouvrirait plus.
 
    ```bash
    freeflow year close --period 2026
    ```
 
 6. **Approuve tes comptes** — en SASU, c'est une décision que tu prends seul, par écrit, dans
-   les six mois de la clôture (avant le 30 mars 2027). FreeFlow rédige le procès-verbal.
+   les six mois de la clôture (avant le 30 mars 2027). FreeFlow rédige le procès-verbal. La
+   date de la décision ne peut pas être dans le futur, et une **sauvegarde du coffre est
+   écrite juste avant** (`backups/pre-approve-2026-<horodatage>.db`, chiffrée comme lui) :
+   l'exercice approuvé est immuable, cette sauvegarde est le seul retour en arrière. Une
+   approbation tardive (au-delà des six mois) passe, mais te le dit.
 
    ```bash
    freeflow year approve 2026 --approved-on 2026-12-15
@@ -575,6 +581,10 @@ existe.
   provision ni de régularisation ; lettrage et devise du FEC restent vides. Un exercice qui suit
   un exercice **non** clos dans l'application n'a pas d'à-nouveaux. L'expert-comptable reste
   maître des écritures définitives et du bilan déposé.
+- **Contrat JSON, dates** : depuis le lot 36, toute date sort en ISO 8601 (`"2026-09-30"`,
+  instants en RFC 3339) dans `--json`, les outils MCP, la liasse et les actions en attente —
+  plus jamais en `[année, jour de l'année]`. Les entrées d'audit et actions en attente écrites
+  avant restent lisibles (l'ancienne forme est acceptée en lecture).
 - **`.dmg` macOS** : pas encore construit/testé (nécessite une machine macOS réelle).
 - **`.AppImage` Linux** : le bundling bute sur une incompatibilité d'environnement documentée dans
   `CLAUDE.md` (chemin `gdk-pixbuf` non-FHS sur certaines distributions type NixOS/Nix-sur-Arch).

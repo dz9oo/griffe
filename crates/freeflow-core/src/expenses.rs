@@ -66,6 +66,16 @@ pub enum ExpensesError {
     )]
     FiscalYearClosed(String),
 
+    #[error(
+        "la dépense du {incurred_on} est antérieure au bilan d'ouverture ({opens_on}) : ce bilan \
+         reprend déjà tout ce qui s'est passé avant — une pièce datée avant ce jour a été \
+         comptabilisée par le cabinet, pas ici (corrigez la date, ou la date du bilan)"
+    )]
+    BeforeOpeningBalance {
+        incurred_on: String,
+        opens_on: String,
+    },
+
     #[error("transaction bancaire introuvable : {0}")]
     TransactionNotFound(BankTransactionId),
 
@@ -129,6 +139,22 @@ fn ensure_outside_closed_fiscal_year(conn: &Connection, date: time::Date) -> Res
     Ok(())
 }
 
+/// Lot 36 : un fait daté **avant** le bilan d'ouverture contredit ce bilan (qui reprend tout ce
+/// qui précède) — l'audit a montré qu'une telle dépense disparaissait en silence de tout
+/// exercice, sans jamais être signalée. Refusée à la saisie plutôt qu'ignorée au calcul.
+fn ensure_not_before_opening_balance(conn: &Connection, date: time::Date) -> Result<(), AppError> {
+    if let Some(opening) = crate::opening_balance::opening_balance(conn)?
+        && date < opening.balance.opens_on
+    {
+        return Err(ExpensesError::BeforeOpeningBalance {
+            incurred_on: domain::format_date(date),
+            opens_on: domain::format_date(opening.balance.opens_on),
+        }
+        .into());
+    }
+    Ok(())
+}
+
 fn ensure_vat_within_amount(vat_deductible: Money, amount: Money) -> Result<(), AppError> {
     if vat_deductible.cents() > amount.cents() {
         return Err(ExpensesError::VatExceedsAmount.into());
@@ -181,6 +207,7 @@ pub struct RecordExpense {
     pub amount: Money,
     pub vat_rate: VatRate,
     pub vat_deductible: Money,
+    #[serde(with = "crate::domain::serde_date::date")]
     pub incurred_on: time::Date,
     pub receipt_hash: Option<String>,
     pub receipt_filename: Option<String>,
@@ -206,6 +233,7 @@ impl Command for RecordExpense {
     fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
         ensure_vat_within_amount(self.vat_deductible, self.amount)?;
         ensure_outside_closed_fiscal_year(conn, self.incurred_on)?;
+        ensure_not_before_opening_balance(conn, self.incurred_on)?;
         if let Some(transaction_id) = self.bank_transaction_id {
             rapprochable_debit(conn, transaction_id, self.amount)?;
         }
@@ -278,6 +306,7 @@ pub struct UpdateExpense {
     pub amount: Money,
     pub vat_rate: VatRate,
     pub vat_deductible: Money,
+    #[serde(with = "crate::domain::serde_date::date")]
     pub incurred_on: time::Date,
     pub receipt_hash: Option<String>,
     pub receipt_filename: Option<String>,
@@ -295,6 +324,9 @@ impl Command for UpdateExpense {
         // viderait autant que d'en faire entrer une (nouvelle date).
         ensure_outside_closed_fiscal_year(conn, current.incurred_on)?;
         ensure_outside_closed_fiscal_year(conn, self.incurred_on)?;
+        // Seule la nouvelle date compte ici : une dépense saisie avant que le bilan
+        // d'ouverture existe doit rester corrigeable (vers une date valide).
+        ensure_not_before_opening_balance(conn, self.incurred_on)?;
         // Une dépense rapprochée garde le montant de son débit : le relevé fait foi (lot 33).
         if self.amount != current.amount
             && billing::bank_transaction_for_expense(conn, self.id)?.is_some()
@@ -1055,6 +1087,67 @@ mod tests {
         assert_eq!(
             "bank_charges".parse::<ExpenseCategory>(),
             Ok(ExpenseCategory::BankCharges)
+        );
+    }
+
+    /// Lot 36 : une dépense datée avant le bilan d'ouverture contredit ce bilan — refusée à
+    /// la saisie (création et changement de date), au lieu de disparaître en silence.
+    #[test]
+    fn an_expense_dated_before_the_opening_balance_is_refused() {
+        use crate::domain::OpeningBalanceLine;
+        use crate::opening_balance::RecordOpeningBalance;
+        let mut store = test_store("before-opening");
+        Executor::new(&mut store)
+            .execute(
+                &RecordOpeningBalance {
+                    opens_on: date(2025, Month::October, 1),
+                    source: None,
+                    lines: vec![
+                        "101000:Capital:C:1000.00"
+                            .parse::<OpeningBalanceLine>()
+                            .unwrap(),
+                        "512000:Banque:D:1000.00"
+                            .parse::<OpeningBalanceLine>()
+                            .unwrap(),
+                    ],
+                    tax_losses: Money::ZERO,
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+        let before = RecordExpense {
+            incurred_on: date(2025, Month::September, 30),
+            ..sample()
+        };
+        let err = Executor::new(&mut store)
+            .execute(&before, &human_ctx())
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("antérieure au bilan d'ouverture (2025-10-01)"),
+            "{err}"
+        );
+        assert!(list_expenses(store.connection()).unwrap().is_empty());
+
+        // Le jour même passe ; le déplacer avant le bilan est refusé de la même façon.
+        let id = record(
+            &mut store,
+            &RecordExpense {
+                incurred_on: date(2025, Month::October, 1),
+                ..sample()
+            },
+        );
+        let current = expense_by_id(store.connection(), id).unwrap().unwrap();
+        let moved = UpdateExpense {
+            incurred_on: date(2025, Month::September, 1),
+            ..update_from(&current)
+        };
+        let err = Executor::new(&mut store)
+            .execute(&moved, &human_ctx())
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("antérieure au bilan d'ouverture"),
+            "{err}"
         );
     }
 }

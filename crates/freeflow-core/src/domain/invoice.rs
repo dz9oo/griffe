@@ -35,7 +35,9 @@ pub struct Invoice {
     pub mission_id: Option<MissionId>,
     pub lines: Vec<InvoiceLine>,
     pub status: InvoiceStatus,
+    #[serde(with = "crate::domain::serde_date::date")]
     pub issued_on: Date,
+    #[serde(with = "crate::domain::serde_date::date")]
     pub due_on: Date,
     /// Hash SHA-256 de la facture précédente dans la chaîne globale (`None` pour la toute
     /// première facture jamais émise).

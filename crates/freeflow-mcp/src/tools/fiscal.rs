@@ -99,6 +99,9 @@ pub(crate) struct CloseYearArgs {
     /// d'imputation (défaut : faux).
     #[serde(default)]
     carry_back: bool,
+    /// Date du jour (`AAAA-MM-JJ`, défaut : aujourd'hui, heure locale) : la clôture est refusée
+    /// tant que l'exercice n'est pas écoulé.
+    today: Option<String>,
     /// N'écrit rien, montre ce qui serait fait (défaut : faux).
     #[serde(default)]
     dry_run: bool,
@@ -176,8 +179,11 @@ pub(crate) struct AmendYearArgs {
 pub(crate) struct ApproveYearArgs {
     /// Année civile de la clôture (ex. `2026`).
     period: i32,
-    /// Date de l'AG d'approbation, au format `AAAA-MM-JJ`.
+    /// Date de l'AG d'approbation, au format `AAAA-MM-JJ` — ni avant la clôture, ni dans le
+    /// futur.
     approved_on: String,
+    /// Date du jour (`AAAA-MM-JJ`, défaut : aujourd'hui, heure locale).
+    today: Option<String>,
     #[serde(default)]
     dry_run: bool,
 }
@@ -442,12 +448,17 @@ impl FreeflowServer {
                 );
             }
         };
+        let today = match args.today.as_deref() {
+            None => freeflow_core::clock::today_local(),
+            Some(raw) => ok_or_return!("today", freeflow_core::domain::parse_date(raw)),
+        };
         let cmd = CloseFiscalYear {
             starts_on,
             ends_on,
             legal_reserve: Money::from_cents(args.legal_reserve_cents),
             dividends: Money::from_cents(args.dividends_cents),
             carry_back: args.carry_back,
+            today: Some(today),
         };
         match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
@@ -531,8 +542,11 @@ impl FreeflowServer {
         }
     }
 
-    /// Approuve un exercice (date de l'AG) — il devient immuable. Acte à portée juridique :
-    /// l'appel dépose une action en attente qu'un humain doit confirmer, jamais un effet direct.
+    /// Approuve un exercice (date de l'AG, ni avant la clôture ni dans le futur) — il devient
+    /// immuable ; une approbation au-delà des six mois légaux est acceptée mais rapportée
+    /// (`late_by_days`). Acte à portée juridique : l'appel dépose une action en attente qu'un
+    /// humain doit confirmer (`freeflow confirm <id>`, qui écrit d'abord une sauvegarde du
+    /// coffre), jamais un effet direct.
     #[tool(
         name = "fiscal.approve_year",
         annotations(
@@ -554,10 +568,15 @@ impl FreeflowServer {
             Ok(r) => r,
             Err(e) => return err_text(e),
         };
+        let today = match args.today.as_deref() {
+            None => freeflow_core::clock::today_local(),
+            Some(raw) => ok_or_return!("today", freeflow_core::domain::parse_date(raw)),
+        };
         let cmd = ApproveFiscalYear {
             id: record.id,
             revision: record.revision,
             approved_on,
+            today: Some(today),
         };
         match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
@@ -613,7 +632,7 @@ impl FreeflowServer {
         Parameters(args): Parameters<ChecklistArgs>,
     ) -> CallToolResult {
         let today = match args.today.as_deref() {
-            None => time::OffsetDateTime::now_utc().date(),
+            None => freeflow_core::clock::today_local(),
             Some(raw) => ok_or_return!("today", freeflow_core::domain::parse_date(raw)),
         };
         let store = self.store.lock().await;

@@ -13,6 +13,7 @@ mod opportunity;
 mod payment;
 mod period;
 mod quote;
+pub mod serde_date;
 mod siren;
 mod time_entry;
 mod vat;

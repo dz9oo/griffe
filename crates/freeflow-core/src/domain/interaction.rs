@@ -49,6 +49,7 @@ pub struct Interaction {
     pub opportunity_id: OpportunityId,
     pub kind: InteractionKind,
     pub note: String,
+    #[serde(with = "crate::domain::serde_date::datetime")]
     pub occurred_at: OffsetDateTime,
     /// Révision optimiste (lot 16) — voir `crate::app::revision`.
     pub revision: i64,

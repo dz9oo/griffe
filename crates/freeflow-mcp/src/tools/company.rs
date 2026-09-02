@@ -77,7 +77,7 @@ impl FreeflowServer {
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn company_show(&self) -> CallToolResult {
-        let today = time::OffsetDateTime::now_utc().date();
+        let today = freeflow_core::clock::today_local();
         let store = self.store.lock().await;
         match company_profile_with_vat_filing(store.connection(), today) {
             Ok(profile) => ok_json(profile),

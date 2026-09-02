@@ -16,6 +16,7 @@ use freeflow_core::domain::{FiscalYearEnd, format_date};
 use freeflow_core::fiscal_year::{FiscalYearRecord, list_fiscal_years};
 use freeflow_core::ledger::{BalanceSheet, TrialBalance};
 use freeflow_core::opening_balance::OpeningBalanceRecord;
+use freeflow_core::opening_balance::opening_balance;
 use freeflow_core::store::Store;
 use maud::{Markup, html};
 
@@ -43,20 +44,50 @@ pub struct CloseFormErrors {
     pub conflict: Option<(String, String)>,
 }
 
-/// Pré-remplit la période avec le dernier exercice **écoulé** d'après la clôture récurrente du
-/// profil (année civile à défaut) : le geste le plus probable est de clore l'exercice qui vient
-/// de se terminer, pas celui en cours.
-pub fn default_close_values(store: &Store, today: time::Date) -> CloseFormValues {
-    let fiscal_year_end = freeflow_core::company::company_profile(store.connection())
+/// La clôture récurrente du profil, année civile à défaut.
+fn fiscal_year_end_of(store: &Store) -> FiscalYearEnd {
+    freeflow_core::company::company_profile(store.connection())
         .ok()
         .flatten()
         .and_then(|p| p.fiscal_year_end)
-        .unwrap_or(FiscalYearEnd::CALENDAR);
-    let current = fiscal_year_end.current(today);
-    let previous = fiscal_year_end.previous(current);
+        .unwrap_or(FiscalYearEnd::CALENDAR)
+}
+
+/// Pré-remplit la période à clore (lot 36) : celle qui **suit le dernier exercice clos** dans
+/// l'application (lendemain de sa fin, un an moins un jour), sinon celle qui **s'ouvre sur le
+/// bilan d'ouverture** (à sa date, jusqu'à la clôture récurrente suivante), sinon le dernier
+/// exercice écoulé d'après le profil — le geste le plus probable est de clore l'exercice qui
+/// vient de se terminer, pas celui en cours, et jamais un exercice qui laisserait un trou.
+pub fn default_close_values(store: &Store, today: time::Date) -> CloseFormValues {
+    let fiscal_year_end = fiscal_year_end_of(store);
+    let after_last_closed = list_fiscal_years(store.connection())
+        .ok()
+        .and_then(|years| years.iter().map(|y| y.ends_on).max())
+        .and_then(|end| end.next_day())
+        .map(|start| {
+            let end = fiscal_year_end.containing(start).end();
+            let end = if end <= start {
+                fiscal_year_end
+                    .containing(start.saturating_add(time::Duration::days(1)))
+                    .end()
+            } else {
+                end
+            };
+            (start, end)
+        });
+    let from_opening = || {
+        opening_balance(store.connection()).ok().flatten().map(|o| {
+            let start = o.balance.opens_on;
+            (start, fiscal_year_end.containing(start).end())
+        })
+    };
+    let (starts_on, ends_on) = after_last_closed.or_else(from_opening).unwrap_or_else(|| {
+        let previous = fiscal_year_end.previous(fiscal_year_end.current(today));
+        (previous.start(), previous.end())
+    });
     CloseFormValues {
-        starts_on: format_date(previous.start()),
-        ends_on: format_date(previous.end()),
+        starts_on: format_date(starts_on),
+        ends_on: format_date(ends_on),
         legal_reserve: "0".to_string(),
         dividends: "0".to_string(),
         carry_back: false,
@@ -146,18 +177,53 @@ pub fn edit_panel(
 }
 
 pub fn approve_panel(record: &FiscalYearRecord, today: time::Date) -> Markup {
+    let today = format_date(today);
     let body = html! {
         form hx-post=(format!("/cloture/{}/approve", record.id)) hx-target="#panel" hx-swap="innerHTML" {
-            (form::date("approved_on", "Date de l'AG d'approbation", &format_date(today), None))
+            (form::date_max("approved_on", "Date de la décision d'approbation", &today, &today, None))
             (form::field_help(
-                "Une fois approuvé, l'exercice devient immuable : la décision d'AG fait foi. \
-                 Générez et faites signer le PV avant d'approuver ici."
+                "Une fois approuvé, l'exercice devient immuable : la décision de l'associé \
+                 unique fait foi, et elle se date du jour où elle est prise (jamais dans le \
+                 futur). Une sauvegarde du coffre est écrite juste avant — c'est le seul retour \
+                 en arrière possible. Générez et signez le PV avant d'approuver ici."
             ))
             (form::actions("Approuver l'exercice"))
         }
     };
     panel::sheet(
         &format!("Approuver — exercice {}", record.ends_on.year()),
+        body,
+    )
+}
+
+/// Ce que la fenêtre montre après une approbation réussie (lot 36) : où est la sauvegarde
+/// préalable, et le retard éventuel sur l'échéance légale — des informations qu'un panneau
+/// vide (la convention « succès → `200` vide ») ne pourrait pas porter.
+pub fn approved_panel(
+    record: &FiscalYearRecord,
+    backup: &std::path::Path,
+    late_by_days: Option<u32>,
+) -> Markup {
+    let body = html! {
+        @if let Some(days) = late_by_days {
+            (form::error_banner(&format!(
+                "Approbation {days} jour(s) après l'échéance légale de six mois : le dépôt des \
+                 comptes au greffe est lui aussi en retard, faites-le sans attendre."
+            )))
+        }
+        div class="detail-note" {
+            "Exercice du " (format_date(record.starts_on)) " au " (format_date(record.ends_on))
+            " approuvé : il est désormais immuable."
+        }
+        div class="detail-note" {
+            "Sauvegarde préalable : " code { (backup.display()) }
+        }
+        div class="form-actions" {
+            button class="btn" hx-get=(format!("/cloture/{}", record.id)) hx-target="#panel" hx-swap="innerHTML" { "voir l'exercice et ses documents" }
+        }
+    };
+    panel::sheet(
+        &format!("Exercice {} approuvé", record.ends_on.year()),
         body,
     )
 }
@@ -257,15 +323,11 @@ pub fn detail_panel(record: &FiscalYearRecord, editable: bool, error: Option<&st
     panel::sheet(&format!("Exercice {}", record.ends_on.year()), body)
 }
 
-/// L'année proposée par défaut pour le parcours : celle de la clôture du dernier exercice
-/// **écoulé** d'après le profil — le geste le plus probable, comme `default_close_values`.
-fn default_checklist_period(store: &Store) -> i32 {
-    let fiscal_year_end = freeflow_core::company::company_profile(store.connection())
-        .ok()
-        .flatten()
-        .and_then(|p| p.fiscal_year_end)
-        .unwrap_or(FiscalYearEnd::CALENDAR);
-    let today = time::OffsetDateTime::now_utc().date();
+/// L'année proposée par défaut partout dans la barre (parcours, bilan, FEC — lot 36) : celle de
+/// la clôture du dernier exercice **écoulé** d'après le profil — le geste le plus probable,
+/// et jamais un exercice en cours dont le bilan serait incomplet.
+fn default_period(store: &Store, today: time::Date) -> i32 {
+    let fiscal_year_end = fiscal_year_end_of(store);
     fiscal_year_end
         .previous(fiscal_year_end.current(today))
         .end()
@@ -274,8 +336,9 @@ fn default_checklist_period(store: &Store) -> i32 {
 
 /// La liste, avec son rafraîchissement automatique sur `freeflow:saved` — même convention que
 /// les autres écrans.
-pub fn list_fragment(store: &Store) -> Result<Markup, AppError> {
+pub fn list_fragment(store: &Store, today: time::Date) -> Result<Markup, AppError> {
     let years = list_fiscal_years(store.connection())?;
+    let period = default_period(store, today);
     Ok(html! {
         div id="cloture-list"
             hx-get="/cloture/table"
@@ -287,17 +350,17 @@ pub fn list_fragment(store: &Store) -> Result<Markup, AppError> {
                 button class="btn" hx-get="/cloture/opening" hx-target="#panel" hx-swap="innerHTML" title="Reprise du dernier bilan tenu avant FreeFlow (expert-comptable)" { "bilan d'ouverture" }
                 form hx-get="/cloture/checklist" hx-target="#panel" hx-swap="innerHTML" style="display:inline-flex;gap:6px;align-items:center;margin-left:auto" title="Parcours de clôture guidé : ce qui bloque, ce qui mérite attention, ce qui reste à faire" {
                     label { "parcours de l'exercice clos en " }
-                    input type="number" name="period" value=(default_checklist_period(store)) min="2000" max="2100" style="width:6em" {}
+                    input type="number" name="period" value=(period) min="2000" max="2100" style="width:6em" {}
                     button class="btn small primary" type="submit" { "parcours" }
                 }
                 form hx-get="/cloture/balance" hx-target="#panel" hx-swap="innerHTML" style="display:inline-flex;gap:6px;align-items:center" title="Balance des comptes et bilan 2033-A dérivés du grand livre de l'exercice clos dans cette année civile (clos ou non)" {
                     label { "exercice clos en " }
-                    input type="number" name="period" value=(time::OffsetDateTime::now_utc().year()) min="2000" max="2100" style="width:6em" {}
+                    input type="number" name="period" value=(period) min="2000" max="2100" style="width:6em" {}
                     button class="btn small" type="submit" { "bilan" }
                 }
                 form method="get" action="/cloture/fec" target="_blank" style="display:inline-flex;gap:6px;align-items:center" title="Fichier des Écritures Comptables de l'exercice clos dans cette année civile (clos ou non)" {
                     label { "FEC de l'exercice clos en " }
-                    input type="number" name="period" value=(time::OffsetDateTime::now_utc().year()) min="2000" max="2100" style="width:6em" {}
+                    input type="number" name="period" value=(period) min="2000" max="2100" style="width:6em" {}
                     button class="btn small" type="submit" { "exporter" }
                 }
             }
@@ -329,11 +392,11 @@ pub fn list_fragment(store: &Store) -> Result<Markup, AppError> {
     })
 }
 
-pub fn render(store: &Store) -> Result<Markup, AppError> {
+pub fn render(store: &Store, today: time::Date) -> Result<Markup, AppError> {
     let count = list_fiscal_years(store.connection())?.len();
     Ok(html! {
         (view_head(ViewId::Cloture, &format!("{count} exercice(s) clos")))
-        (list_fragment(store)?)
+        (list_fragment(store, today)?)
     })
 }
 

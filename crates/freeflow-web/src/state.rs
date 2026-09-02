@@ -42,6 +42,8 @@ pub struct AppState {
     session: Arc<Mutex<VaultSession>>,
     db_path: Arc<PathBuf>,
     idle_timeout: Duration,
+    /// Date du jour figée (tests) ; `None` = l'horloge locale de la machine (lot 36).
+    fixed_today: Option<time::Date>,
 }
 
 /// Instantané de l'état du coffre pour le rendu et le middleware — ne donne jamais accès au
@@ -66,7 +68,27 @@ impl AppState {
             session: Arc::new(Mutex::new(VaultSession::Locked)),
             db_path: Arc::new(db_path),
             idle_timeout: DEFAULT_IDLE_TIMEOUT,
+            fixed_today: None,
         }
+    }
+
+    /// Fige la date du jour que la fenêtre transmet au cœur (clôture, approbation, parcours,
+    /// calendrier) — pour les tests, qui rejouent des exercices à des dates choisies. En
+    /// production, `today` est l'horloge locale ([`freeflow_core::clock::today_local`]).
+    #[must_use]
+    pub fn with_today(self, today: time::Date) -> Self {
+        Self {
+            fixed_today: Some(today),
+            ..self
+        }
+    }
+
+    /// La date du jour, fournie par cet adaptateur à toute requête ou commande du cœur qui en
+    /// dépend — jamais lue par le cœur lui-même.
+    #[must_use]
+    pub fn today(&self) -> time::Date {
+        self.fixed_today
+            .unwrap_or_else(freeflow_core::clock::today_local)
     }
 
     /// Comme [`Self::new`], avec un délai d'inactivité explicite plutôt que le défaut de 15

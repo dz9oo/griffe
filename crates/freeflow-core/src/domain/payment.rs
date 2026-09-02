@@ -49,6 +49,7 @@ pub struct Payment {
     pub id: PaymentId,
     pub invoice_id: InvoiceId,
     pub amount: Money,
+    #[serde(with = "crate::domain::serde_date::date")]
     pub received_on: Date,
     pub method: PaymentMethod,
     /// Lignée du rapprochement bancaire dont cet encaissement est issu (lot 22, migration
@@ -58,6 +59,7 @@ pub struct Payment {
     /// Contre-écriture (lot 22) : un encaissement saisi à tort ne se supprime pas, il s'annule —
     /// il reste visible dans l'historique mais sort de tous les calculs (balance âgée,
     /// prévisionnel, statut payé). La colonne existait depuis `0008`, posée par anticipation.
+    #[serde(with = "crate::domain::serde_date::datetime::option")]
     pub voided_at: Option<OffsetDateTime>,
 }
 
@@ -73,6 +75,7 @@ impl Payment {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BankTransaction {
     pub id: BankTransactionId,
+    #[serde(with = "crate::domain::serde_date::date")]
     pub occurred_on: Date,
     /// Positif pour une entrée d'argent, négatif pour une sortie.
     pub amount_cents: i64,

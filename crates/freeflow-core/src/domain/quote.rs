@@ -190,7 +190,9 @@ pub struct Quote {
     pub lines: Vec<QuoteLine>,
     pub discount: Option<Discount>,
     pub terms: Option<String>,
+    #[serde(with = "crate::domain::serde_date::date")]
     pub valid_until: Date,
+    #[serde(with = "crate::domain::serde_date::datetime")]
     pub created_at: OffsetDateTime,
 }
 

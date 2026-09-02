@@ -1257,6 +1257,8 @@ fn year_lifecycle_close_amend_approve_then_immutable() {
             "2026",
             "--dividends",
             "1000",
+            "--today",
+            "2027-01-05",
         ])
         .assert()
         .success()
@@ -1325,7 +1327,15 @@ fn year_lifecycle_close_amend_approve_then_immutable() {
     // Approbation, puis l'exercice est immuable : amender ou supprimer échoue en erreur métier.
     freeflow()
         .env("FREEFLOW_DB", &db)
-        .args(["year", "approve", "2026", "--approved-on", "2027-05-15"])
+        .args([
+            "year",
+            "approve",
+            "2026",
+            "--approved-on",
+            "2027-05-15",
+            "--today",
+            "2027-05-15",
+        ])
         .assert()
         .success();
     freeflow()
@@ -1359,6 +1369,8 @@ fn year_close_by_an_agent_stays_pending_until_a_human_confirms() {
             "close",
             "--period",
             "2026",
+            "--today",
+            "2027-01-05",
         ])
         .assert()
         .success()
@@ -1552,10 +1564,10 @@ fn expense_reconciliation_with_a_statement_debit_by_cli() {
         .clone();
     let shown = json_result(&show_out);
     assert_eq!(shown["amount"], 96_000, "montant repris du débit");
-    // `time::Date` se sérialise en (année, jour ordinal) : le 7 septembre 2026 est le 250e.
+    // Lot 36 : les dates sortent en ISO 8601, plus jamais en `[année, jour ordinal]`.
     assert_eq!(
         shown["incurred_on"],
-        serde_json::json!([2026, 250]),
+        serde_json::json!("2026-09-07"),
         "date reprise du débit"
     );
     assert_eq!(shown["category"], "Fees");
@@ -2085,14 +2097,22 @@ fn year_deficits_are_carried_forward_then_back_from_the_cli() {
     // Le report en arrière est refusé sur un bénéfice : rien n'est clos.
     freeflow()
         .env("FREEFLOW_DB", &db)
-        .args(["year", "close", "--period", "2026", "--carry-back"])
+        .args([
+            "year",
+            "close",
+            "--period",
+            "2026",
+            "--carry-back",
+            "--today",
+            "2027-01-05",
+        ])
         .assert()
         .failure()
         .code(4)
         .stderr(predicate::str::contains("aucun déficit"));
     freeflow()
         .env("FREEFLOW_DB", &db)
-        .args(["year", "close", "--period", "2026"])
+        .args(["year", "close", "--period", "2026", "--today", "2027-01-05"])
         .assert()
         .success();
     let shown = json_result(
@@ -2137,7 +2157,15 @@ fn year_deficits_are_carried_forward_then_back_from_the_cli() {
         .success();
     freeflow()
         .env("FREEFLOW_DB", &db)
-        .args(["year", "close", "--period", "2027", "--carry-back"])
+        .args([
+            "year",
+            "close",
+            "--period",
+            "2027",
+            "--carry-back",
+            "--today",
+            "2028-01-05",
+        ])
         .assert()
         .success();
     let shown = json_result(
@@ -2372,7 +2400,7 @@ fn year_opening_balance_set_show_then_chains_into_the_first_close() {
 
     freeflow()
         .env("FREEFLOW_DB", &db)
-        .args(["year", "close", "--period", "2026"])
+        .args(["year", "close", "--period", "2026", "--today", "2027-01-05"])
         .assert()
         .success();
     // Clos sans dotation : le parcours signale la dotation insuffisante et le prochain geste.
@@ -2476,4 +2504,306 @@ fn year_opening_balance_set_show_then_chains_into_the_first_close() {
         .find(|e| e["form"] == "2033-A" && e["case"] == "180")
         .expect("total général du passif");
     assert_eq!(case_180["amount_cents"], 872_000);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Lot 36 : garde-fous de clôture, `init` sur un nom nu, sorties lisibles, dates ISO.
+// ---------------------------------------------------------------------------------------------
+
+/// `freeflow init --db nom.db` depuis le répertoire courant laissait un sidecar orphelin
+/// (`sync_dir("")` échouait après l'écriture du `.kdf`) : le coffre doit se créer, et se rouvrir.
+#[test]
+fn init_with_a_bare_file_name_creates_a_usable_vault_in_the_current_directory() {
+    let db = temp_db("init-bare-name");
+    let dir = db.parent().unwrap();
+    std::fs::create_dir_all(dir).unwrap();
+    let pass_file = passphrase_file(&db, "s3cret");
+    freeflow()
+        .current_dir(dir)
+        .args(["--passphrase-file"])
+        .arg(&pass_file)
+        .args(["init", "--db", "nom.db"])
+        .assert()
+        .success();
+    assert!(dir.join("nom.db").exists(), "la base doit exister");
+    assert!(dir.join("nom.db.kdf").exists(), "le sidecar doit exister");
+    freeflow()
+        .current_dir(dir)
+        .args(["--passphrase-file"])
+        .arg(&pass_file)
+        .args(["--db", "nom.db", "vault", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("nom.db"));
+}
+
+/// La clôture d'un exercice pas encore écoulé est refusée (le seul geste irréversible relevé
+/// par l'audit), une approbation datée dans le futur aussi ; une approbation tardive passe,
+/// avec son retard affiché et la sauvegarde préalable nommée.
+#[test]
+fn closing_early_and_approving_in_the_future_are_refused_and_approval_backs_up_first() {
+    let db = temp_db("close-guards");
+    provision(&db);
+    set_company_profile(&db);
+
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["year", "close", "--period", "2026", "--today", "2026-12-03"])
+        .assert()
+        .failure()
+        .code(4)
+        .stderr(predicate::str::contains("court jusqu'au 2026-12-31"));
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["year", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("aucun").or(predicate::str::contains("Clôture")));
+
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["year", "close", "--period", "2026", "--today", "2027-01-05"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("✓ exercice clos en projet"));
+
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "year",
+            "approve",
+            "2026",
+            "--approved-on",
+            "2027-07-20",
+            "--today",
+            "2027-03-01",
+        ])
+        .assert()
+        .failure()
+        .code(4)
+        .stderr(predicate::str::contains("dans le futur"));
+
+    let approved = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "year",
+            "approve",
+            "2026",
+            "--approved-on",
+            "2027-07-20",
+            "--today",
+            "2027-07-20",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "✓ approuvé (révision 2) — ⚠ 20 jour(s)",
+        ))
+        .stdout(predicate::str::contains("Sauvegarde préalable : "))
+        .get_output()
+        .stdout
+        .clone();
+    let backups = db.with_file_name("backups");
+    let pre_approve: Vec<_> = std::fs::read_dir(&backups)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            name.starts_with("pre-approve-2026-") && name.ends_with(".db")
+        })
+        .collect();
+    // Deux sauvegardes (chacune avec son sidecar) : une avant l'approbation refusée — la
+    // sauvegarde précède toujours la commande —, une avant l'approbation réussie.
+    assert_eq!(
+        pre_approve.len(),
+        2,
+        "{}",
+        String::from_utf8_lossy(&approved)
+    );
+
+    // La liasse est un JSON : une extension `.pdf` est refusée avant d'écrire quoi que ce soit.
+    let out = db.with_file_name("liasse.pdf");
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["year", "render", "2026", "liasse", "--out"])
+        .arg(&out)
+        .assert()
+        .failure()
+        .code(4)
+        .stderr(predicate::str::contains("fichier JSON"));
+    assert!(!out.exists());
+
+    // Les dates d'un exercice sortent en ISO 8601.
+    let shown = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--json", "year", "show", "2026"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(json_result(&shown)["approved_on"], "2027-07-20");
+}
+
+/// `freeflow confirm <ID>` positionnel (lot 36) ; l'ancien `--id` reste accepté un lot.
+#[test]
+fn confirm_takes_the_pending_action_id_as_a_positional_argument() {
+    let db = temp_db("confirm-positional");
+    provision(&db);
+    set_company_profile(&db);
+    let pending_out = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "--json",
+            "--actor",
+            "agent:test-session",
+            "year",
+            "close",
+            "--period",
+            "2026",
+            "--today",
+            "2027-01-05",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let pending_id = json_result(&pending_out)["pending_action_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["pending", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("fiscal.close_year"))
+        .stdout(predicate::str::contains(
+            "Confirmer : freeflow confirm <id>",
+        ));
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["confirm", &pending_id])
+        .assert()
+        .success()
+        .stdout(predicate::str::starts_with("✓ "));
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["confirm", &pending_id, "--id", &pending_id])
+        .assert()
+        .failure();
+}
+
+/// Plus aucune sortie texte n'est la structure Rust brute : `company show`, `fiscal calendar`,
+/// `audit verify-chain` et `expense show` parlent français.
+#[test]
+fn human_outputs_are_sentences_and_tables_not_debug_dumps() {
+    let db = temp_db("human-outputs");
+    provision(&db);
+    set_company_profile(&db);
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["company", "show"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Dénomination        : Argon Digital (SASU)",
+        ))
+        .stdout(predicate::str::contains("Télédéclaration TVA"))
+        .stdout(predicate::str::contains("CompanyProfile").not());
+    let calendar = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["fiscal", "calendar", "--today", "2026-10-01"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("FiscalDeadline").not())
+        .get_output()
+        .stdout
+        .clone();
+    insta::assert_snapshot!(String::from_utf8(calendar).unwrap());
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["audit", "verify-chain"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("✓ journal d'audit intact"));
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "expense",
+            "record",
+            "--label",
+            "Hébergement",
+            "--category",
+            "software",
+            "--amount",
+            "120",
+            "--vat-rate",
+            "standard",
+            "--vat-deductible",
+            "20",
+            "--incurred-on",
+            "2026-09-05",
+        ])
+        .assert()
+        .success();
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["expense", "show", "Hébergement"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Dépense        : Hébergement"))
+        .stdout(predicate::str::contains("montant TTC    : 120,00"))
+        .stdout(predicate::str::contains("relevé         : non rapprochée"));
+}
+
+/// Une dépense datée avant le bilan d'ouverture est refusée à la saisie (lot 36).
+#[test]
+fn an_expense_before_the_opening_balance_is_refused_by_the_cli() {
+    let db = temp_db("expense-before-opening");
+    provision(&db);
+    set_company_profile(&db);
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "year",
+            "opening",
+            "set",
+            "--opens-on",
+            "2026-01-01",
+            "--line",
+            "101000:Capital social:C:1000.00",
+            "--line",
+            "512000:Banque:D:1000.00",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "✓ bilan d'ouverture enregistré (révision 1)",
+        ));
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "expense",
+            "record",
+            "--label",
+            "Vieille facture",
+            "--category",
+            "software",
+            "--amount",
+            "120",
+            "--vat-rate",
+            "standard",
+            "--vat-deductible",
+            "20",
+            "--incurred-on",
+            "2025-12-15",
+        ])
+        .assert()
+        .failure()
+        .code(4)
+        .stderr(predicate::str::contains(
+            "antérieure au bilan d'ouverture (2026-01-01)",
+        ));
 }

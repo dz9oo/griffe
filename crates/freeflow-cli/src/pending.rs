@@ -21,7 +21,8 @@ use freeflow_core::prospection::{DeleteInteraction, DeleteOpportunity};
 use freeflow_core::store::Store;
 
 use crate::error::CliError;
-use crate::output::{format_outcome, format_value};
+use crate::output::{format_json, format_outcome};
+use crate::table;
 
 #[derive(Debug, Subcommand)]
 pub enum PendingCommand {
@@ -38,20 +39,45 @@ pub enum AuditCommand {
 pub fn run_pending(cmd: PendingCommand, store: &mut Store, json: bool) -> Result<String, CliError> {
     let PendingCommand::List = cmd;
     let actions = app::list_pending_actions(store.connection())?;
-    Ok(format_value(&actions, json))
+    if json {
+        return Ok(format_json(&actions));
+    }
+    if actions.is_empty() {
+        return Ok("aucune action en attente de confirmation".to_string());
+    }
+    let rows: Vec<Vec<String>> = actions
+        .iter()
+        .map(|a| {
+            vec![
+                a.id.to_string(),
+                a.command_name.clone(),
+                a.actor_session.clone(),
+                a.status.as_str().to_string(),
+            ]
+        })
+        .collect();
+    Ok(format!(
+        "{}\nConfirmer : freeflow confirm <id>",
+        table::render(&["id", "commande", "session", "statut"], &rows)
+    ))
 }
 
 pub fn run_audit(cmd: AuditCommand, store: &mut Store, json: bool) -> Result<String, CliError> {
     let AuditCommand::VerifyChain = cmd;
     let status = app::verify_chain(store.connection())?;
     let broken = matches!(status, app::ChainStatus::BrokenAt(_));
-    let payload = match status {
-        app::ChainStatus::Intact => serde_json::json!({"status": "intact"}),
+    let rendered = match status {
+        app::ChainStatus::Intact if json => format_json(&serde_json::json!({"status": "intact"})),
+        app::ChainStatus::Intact => {
+            "✓ journal d'audit intact : chaque entrée chaîne la précédente".to_string()
+        }
+        app::ChainStatus::BrokenAt(sequence) if json => {
+            format_json(&serde_json::json!({"status": "broken", "broken_at_sequence": sequence}))
+        }
         app::ChainStatus::BrokenAt(sequence) => {
-            serde_json::json!({"status": "broken", "broken_at_sequence": sequence})
+            format!("✗ chaîne rompue à la séquence {sequence}")
         }
     };
-    let rendered = format_value(&payload, json);
     if broken {
         return Err(CliError::Domain(format!(
             "{rendered}\nle journal d'audit est rompu"
@@ -100,8 +126,15 @@ pub fn confirm(store: &mut Store, id: PendingActionId, json: bool) -> Result<Str
         let outcome = Executor::new(store).confirm::<CloseFiscalYear>(id)?;
         Ok(format_outcome(&outcome, json))
     } else if action.command_name == ApproveFiscalYear::NAME {
+        // Même filet que `year approve` : l'approbation rend l'exercice immuable, une sauvegarde
+        // est écrite d'abord (lot 36) — son échec abandonne la confirmation.
+        let backup = crate::year::pre_approve_backup_for_action(store, &action.command_json)?;
         let outcome = Executor::new(store).confirm::<ApproveFiscalYear>(id)?;
-        Ok(format_outcome(&outcome, json))
+        Ok(crate::year::with_backup_note(
+            format_outcome(&outcome, json),
+            &backup,
+            json,
+        ))
     } else if action.command_name == DeleteFiscalYear::NAME {
         let outcome = Executor::new(store).confirm::<DeleteFiscalYear>(id)?;
         Ok(format_outcome(&outcome, json))

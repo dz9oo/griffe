@@ -15,7 +15,49 @@ use freeflow_core::store::Store;
 use time::Date;
 
 use crate::error::CliError;
-use crate::output::{format_outcome, format_value};
+use crate::output::{
+    HumanRender, format_json, format_outcome, format_outcome_as, format_value, key_values,
+};
+
+impl HumanRender for freeflow_core::expenses::ExpenseDetail {
+    fn render_human(&self) -> String {
+        let e = &self.expense;
+        key_values(&[
+            ("Dépense", e.label.clone()),
+            ("id", e.id.to_string()),
+            ("date", freeflow_core::domain::format_date(e.incurred_on)),
+            ("catégorie", e.category.as_str().to_string()),
+            ("montant TTC", e.amount.to_string()),
+            (
+                "TVA déductible",
+                format!("{} (taux {})", e.vat_deductible, e.vat_rate.as_str()),
+            ),
+            (
+                "justificatif",
+                match (&e.receipt_filename, &e.receipt_hash) {
+                    (Some(name), Some(hash)) => format!("{name} ({})", &hash[..hash.len().min(12)]),
+                    (None, Some(hash)) => hash[..hash.len().min(12)].to_string(),
+                    _ => "aucun".to_string(),
+                },
+            ),
+            (
+                "relevé",
+                self.bank_transaction.as_ref().map_or_else(
+                    || "non rapprochée".to_string(),
+                    |t| {
+                        format!(
+                            "débit du {} — {} ({})",
+                            freeflow_core::domain::format_date(t.occurred_on),
+                            t.description,
+                            t.id
+                        )
+                    },
+                ),
+            ),
+            ("révision", e.revision.to_string()),
+        ])
+    }
+}
 use crate::parsers::{parse_date, parse_money};
 use crate::refs;
 
@@ -260,7 +302,7 @@ pub fn run(
         ExpenseCommand::List => {
             let expenses = list_expenses(store.connection())?;
             if json {
-                format_value(&expenses, json)
+                format_json(&expenses)
             } else {
                 let reconciled = reconciled_debits(store.connection())?;
                 expense_table(&expenses, &reconciled)
@@ -335,7 +377,9 @@ pub fn run(
                 expense_id: id,
             };
             let outcome = Executor::new(store).execute(&command, ctx)?;
-            format_outcome(&outcome, json)
+            format_outcome_as(&outcome, json, |()| {
+                format!("dépense {id} rapprochée du débit {transaction}")
+            })
         }
     };
     Ok(output)

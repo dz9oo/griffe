@@ -316,7 +316,7 @@ pub async fn new_panel(
     State(state): State<AppState>,
     Query(query): Query<NewQuery>,
 ) -> Html<String> {
-    let today = time::OffsetDateTime::now_utc().date();
+    let today = state.today();
     let Some(transaction) = query.transaction.as_deref().filter(|t| !t.is_empty()) else {
         return Html(
             views::depenses::new_panel(
@@ -609,7 +609,7 @@ pub async fn reconcile_panel(
             let Some(detail) = views::depenses::load(store, id)? else {
                 return Ok(None);
             };
-            let candidates = views::depenses::reconcile_candidates(store, detail.expense.amount)?;
+            let candidates = views::depenses::reconcile_candidates(store, &detail.expense)?;
             Ok::<_, AppError>(Some((detail, candidates)))
         })
         .await;
