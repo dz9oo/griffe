@@ -7,6 +7,7 @@ pub mod accounting;
 pub mod app;
 pub mod billing;
 pub mod clients;
+pub mod closing;
 pub mod company;
 pub mod domain;
 pub mod expenses;

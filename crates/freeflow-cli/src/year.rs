@@ -5,6 +5,10 @@
 //! dérivé (`freeflow_core::ledger`) : balance des comptes et bilan 2033-A, pour un exercice clos
 //! ou non — comme le FEC, c'est ce qu'on regarde *avant* de clore.
 //!
+//! Depuis le lot 34, `year checklist` affiche le parcours de clôture guidé
+//! (`freeflow_core::closing`) : les étapes viennent du cœur, seule l'*action* suggérée pour
+//! chacune (une commande à taper) est propre à cette façade — voir `cli_hint`.
+//!
 //! Un exercice se désigne par l'**année civile de sa clôture** (`freeflow year show 2026`) :
 //! contrairement aux clients/missions, il n'a pas de nom et sa période dérive du profil — pas
 //! besoin du résolveur de référence générique. Comme pour `invoice render`, l'écriture disque
@@ -14,6 +18,10 @@ use std::path::{Path, PathBuf};
 
 use clap::{Subcommand, ValueEnum};
 use freeflow_core::app::{ExecutionContext, Executor};
+use freeflow_core::closing::{
+    ClosingChecklist, ClosingPhase, ClosingStep, ClosingStepKey, StepStatus, checklist_json,
+    closing_checklist,
+};
 use freeflow_core::company::{CompanyProfile, company_profile};
 use freeflow_core::domain::{FiscalYearEnd, Money, OpeningBalanceLine, format_date};
 use freeflow_core::fiscal_year::{
@@ -102,6 +110,17 @@ pub enum YearCommand {
     },
     /// Supprime un exercice encore en projet (clos par erreur).
     Rm { period: i32 },
+    /// Parcours de clôture guidé de l'exercice clos dans PERIOD : où en est la clôture, ce qui
+    /// la bloque, ce qui mérite attention, et ce qui reste à faire après (approbation,
+    /// documents, solde d'IS, liasse, dépôt au greffe). Lecture seule.
+    Checklist {
+        /// Année civile de la clôture (ex. `2026`) — même désignation que `show`.
+        period: i32,
+        /// Date du jour (défaut : aujourd'hui) — décide si l'exercice est écoulé et des
+        /// échéances dépassées.
+        #[arg(long, value_parser = parse_date)]
+        today: Option<Date>,
+    },
     /// Balance des comptes et bilan (2033-A) dérivés du grand livre de l'exercice clos dans
     /// PERIOD — clos ou non : à-nouveaux, ventes, achats, banque, opérations de clôture.
     Balance {
@@ -362,6 +381,109 @@ fn write_document(out: &Path, bytes: &[u8]) -> Result<String, CliError> {
         out.display(),
         bytes.len()
     ))
+}
+
+/// La commande qui fait avancer une étape du parcours, quand il y en a une — propre à cette
+/// façade (la fenêtre et le serveur MCP ont les leurs), branchée sur la clé stable de l'étape.
+fn cli_hint(checklist: &ClosingChecklist, step: &ClosingStep) -> Option<String> {
+    let period = checklist.period;
+    let reserve = checklist
+        .minimum_legal_reserve
+        .filter(|m| !m.is_zero())
+        .map_or(String::new(), |m| {
+            format!(" --legal-reserve {}", m.to_decimal_string())
+        });
+    let hint = match step.key {
+        ClosingStepKey::Profile => "freeflow company set-profile …".to_string(),
+        ClosingStepKey::PeriodEnded => return None,
+        ClosingStepKey::OpeningBalance => format!(
+            "freeflow year opening set --opens-on {} --line \"compte:libellé:D|C:montant\" …",
+            format_date(checklist.exercise.start())
+        ),
+        ClosingStepKey::PreviousYear => format!(
+            "freeflow year approve {} --approved-on AAAA-MM-JJ (ou year amend / year rm)",
+            period - 1
+        ),
+        ClosingStepKey::Invoices => {
+            "freeflow invoice aged-balance ; freeflow payment record …".to_string()
+        }
+        ClosingStepKey::Expenses => "freeflow expense edit <RÉF> --receipt <fichier>".to_string(),
+        ClosingStepKey::Bank => {
+            "freeflow bank list --unmatched ; bank reconcile / expense reconcile".to_string()
+        }
+        ClosingStepKey::Result | ClosingStepKey::BalanceSheet => {
+            format!("freeflow year balance {period}")
+        }
+        ClosingStepKey::Close => format!(
+            "freeflow year close --period {period}{reserve}{}",
+            if checklist.carry_back_available.is_some() {
+                " [--carry-back]"
+            } else {
+                ""
+            }
+        ),
+        ClosingStepKey::Appropriation => format!(
+            "freeflow year amend {period}{}",
+            if reserve.is_empty() {
+                " --legal-reserve …".to_string()
+            } else {
+                reserve
+            }
+        ),
+        ClosingStepKey::Approve => {
+            format!("freeflow year approve {period} --approved-on AAAA-MM-JJ")
+        }
+        ClosingStepKey::Documents => format!(
+            "freeflow year render {period} <minutes|appropriation|synthesis|balance-sheet|liasse> \
+             --out … ; freeflow fec export {period} --out …"
+        ),
+        ClosingStepKey::Liasse => format!("freeflow year render {period} liasse --out …"),
+        ClosingStepKey::CorporateTax | ClosingStepKey::Filing => return None,
+    };
+    Some(hint)
+}
+
+const fn status_glyph(status: StepStatus) -> &'static str {
+    match status {
+        StepStatus::Done => "✓",
+        StepStatus::Todo => "→",
+        StepStatus::Warning => "!",
+        StepStatus::Blocked => "✗",
+        StepStatus::Info => "·",
+        StepStatus::Later => "○",
+    }
+}
+
+/// Le parcours en texte : une section par phase, une ligne par étape (glyphe de statut, titre,
+/// échéance), son détail en retrait, et la commande suggérée quand l'étape appelle un geste.
+fn checklist_human(checklist: &ClosingChecklist) -> String {
+    use std::fmt::Write as _;
+    let mut out = format!(
+        "Parcours de clôture — exercice du {} au {} (clos en {}), vu le {} : {}\n",
+        format_date(checklist.exercise.start()),
+        format_date(checklist.exercise.end()),
+        checklist.period,
+        format_date(checklist.today),
+        checklist.stage.label().to_uppercase(),
+    );
+    for phase in ClosingPhase::ALL {
+        let _ = writeln!(out, "\n{}", phase.label());
+        for step in checklist.steps_in(phase) {
+            let due = step
+                .due_on
+                .map_or(String::new(), |d| format!(" (échéance {})", format_date(d)));
+            let _ = writeln!(out, "  {} {}{due}", status_glyph(step.status), step.title);
+            let _ = writeln!(out, "      {}", step.detail);
+            if matches!(
+                step.status,
+                StepStatus::Todo | StepStatus::Warning | StepStatus::Blocked
+            ) && let Some(hint) = cli_hint(checklist, step)
+            {
+                let _ = writeln!(out, "      ↳ {hint}");
+            }
+        }
+    }
+    out.trim_end().to_string()
 }
 
 /// Balance des comptes et bilan en texte : les deux tableaux du 2033-A, puis la balance.
@@ -645,6 +767,15 @@ pub fn run(
                 format_value(&balance_json(&balance, &sheet), true)
             } else {
                 balance_human(&balance, &sheet)
+            }
+        }
+        YearCommand::Checklist { period, today } => {
+            let today = today.unwrap_or_else(|| time::OffsetDateTime::now_utc().date());
+            let checklist = closing_checklist(store.connection(), period, today)?;
+            if json {
+                format_value(&checklist_json(&checklist), true)
+            } else {
+                checklist_human(&checklist)
             }
         }
         YearCommand::Rm { period } => {

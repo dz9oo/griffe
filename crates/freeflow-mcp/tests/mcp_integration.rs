@@ -158,6 +158,7 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "fiscal.set_opening_balance",
         "fiscal.delete_opening_balance",
         "fiscal.balance_sheet",
+        "fiscal.checklist",
         "fec.export",
     ] {
         assert!(names.contains(expected), "outil manquant : {expected}");
@@ -188,6 +189,7 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "fiscal.year_show",
         "fiscal.opening_balance",
         "fiscal.balance_sheet",
+        "fiscal.checklist",
     ] {
         assert_eq!(
             by_name(read_only)
@@ -1536,6 +1538,54 @@ async fn a_fiscal_year_can_be_shown_and_amended_but_approval_and_deletion_need_a
     };
     let via_resource: Value = serde_json::from_str(&text).unwrap();
     assert_eq!(via_resource, sheet);
+
+    // Lot 34 : le parcours de clôture — l'exercice 2025 est clos en projet ; vu de mars 2026,
+    // l'approbation est le prochain geste, les dépôts viennent après.
+    let journey = call(
+        &client,
+        "fiscal.checklist",
+        json!({"period": 2025, "today": "2026-03-01"}),
+    )
+    .await;
+    assert_eq!(journey.is_error, Some(false));
+    let journey = json_of(&journey);
+    assert_eq!(journey["stage"], "draft");
+    assert_eq!(journey["today"], "2026-03-01");
+    let steps = journey["steps"].as_array().unwrap();
+    assert_eq!(steps.len(), 16);
+    let step = |key: &str| steps.iter().find(|s| s["key"] == key).unwrap().clone();
+    assert_eq!(step("close")["status"], "done");
+    assert_eq!(step("approve")["status"], "todo");
+    assert_eq!(step("approve")["due_on"], "2026-06-30");
+    assert_eq!(step("filing")["status"], "later");
+    assert_eq!(
+        step("profile")["status"],
+        "warning",
+        "profil sans date de clôture, capital ni régime de TVA"
+    );
+    let bad_date = call(
+        &client,
+        "fiscal.checklist",
+        json!({"period": 2025, "today": "hier"}),
+    )
+    .await;
+    assert_eq!(bad_date.is_error, Some(true));
+    let resource = client
+        .read_resource(ReadResourceRequestParams::new(
+            "freeflow://closing-checklist/2025",
+        ))
+        .await
+        .unwrap();
+    let text = match &resource.contents[0] {
+        rmcp::model::ResourceContents::TextResourceContents { text, .. } => text.clone(),
+        other => panic!("contenu inattendu : {other:?}"),
+    };
+    let via_resource: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        via_resource["stage"], "draft",
+        "même vue, datée du jour réel"
+    );
+    assert_eq!(via_resource["steps"].as_array().unwrap().len(), 16);
 
     let amended = call(
         &client,

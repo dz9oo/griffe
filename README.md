@@ -177,6 +177,24 @@ implémentation.
   qu'un exercice est clos : corriger se fait en supprimant d'abord le projet de clôture. Il
   reprend aussi, hors bilan, les **déficits fiscaux antérieurs** encore reportables
   (`--tax-losses`, case 870 du dernier tableau 2033-D déposé).
+- **Parcours de clôture guidé** : `freeflow year checklist 2026` (ou `--json`, `--today` pour
+  se placer à une autre date), outil MCP `fiscal.checklist`, ressource
+  `freeflow://closing-checklist/{année}`, bouton « parcours » de l'écran `cloture` (et depuis
+  la fiche d'un exercice). Une lecture du coffre, qui n'écrit rien : où en est la clôture de
+  l'exercice (*en cours*, *bloquée*, *prête*, *close en projet*, *approuvée*) et seize étapes en
+  quatre temps — **préparer** (profil d'entreprise complet, exercice écoulé, bilan d'ouverture
+  daté du bon jour, exercice précédent approuvé ou trou dans la chaîne, factures non
+  encaissées, dépenses sans justificatif, mouvements du relevé non rapprochés, résultat et IS
+  prévisionnels ou figés, bilan dérivé équilibré), **clore** (avec la **dotation minimale à la
+  réserve légale** de l'art. L232-10 du Code de commerce — un vingtième du bénéfice diminué des
+  pertes antérieures, jusqu'à 10 % du capital — et le report en arrière possible), **affecter et
+  approuver** (dotation insuffisante signalée, décision de l'associé unique dans les six mois),
+  **déclarer et déposer** (documents, solde d'IS, liasse, dépôt au greffe dans le mois suivant
+  l'approbation, avec leurs échéances). Une étape *bloquante* est un refus que le cœur opposerait
+  à la clôture (ou un résultat qui serait faux) ; une étape *attention* mérite un regard sans rien
+  empêcher. Les étapes viennent du cœur ; chaque façade y branche ses propres gestes (la commande
+  à taper, l'outil à appeler, le bouton du panneau — le formulaire de clôture de la fenêtre
+  arrive pré-rempli avec la période et la dotation minimale).
 - **Déficits fiscaux : report en avant et report en arrière.** Le résultat *fiscal* d'un
   exercice n'est pas son résultat comptable : les déficits des exercices antérieurs (bilan
   d'ouverture, puis chaque exercice déficitaire clos ici) **s'imputent sur le bénéfice avant
@@ -449,6 +467,11 @@ distribués prêts à l'emploi — voir la checklist ci-dessous.
       rapprochement bancaire des dépenses : un débit du relevé importé crée ou rapproche une
       dépense, au montant exact, dans les trois façades ; le grand livre date alors le
       décaissement du relevé (401 puis 512) — voir « Dépenses & obligations fiscales ».
+- [x] Parcours de clôture guidé : `year checklist`, `fiscal.checklist`, panneau « parcours » —
+      l'état de la clôture d'un exercice en seize étapes (préparer, clore, affecter et approuver,
+      déclarer et déposer), avec la dotation minimale à la réserve légale (art. L232-10) et les
+      échéances d'AG, de liasse, de solde d'IS et de dépôt au greffe — voir « Dépenses &
+      obligations fiscales ».
 - [ ] Tableau de bord de rentabilité par client sur la durée (au-delà de la mission en cours).
 - [ ] Chiffrement additionnel des pièces jointes de justificatifs de dépenses sur disque (au-delà
       du hash d'intégrité SHA-256 déjà en place).

@@ -37,6 +37,10 @@ use crate::domain::{FiscalYear, FiscalYearId, Money, format_date, parse_date};
 /// art. L232-10 du Code de commerce), en dix-millièmes.
 const LEGAL_RESERVE_CAP_BPS: u32 = 1_000;
 
+/// Fraction minimale du bénéfice à doter à la réserve légale tant que le plafond n'est pas
+/// atteint (un vingtième, art. L232-10), en dix-millièmes.
+const LEGAL_RESERVE_MINIMUM_BPS: u32 = 500;
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum FiscalYearError {
     #[error("exercice introuvable : {0}")]
@@ -256,13 +260,43 @@ fn validate_appropriation(
 /// Ce dont hérite l'exercice qui commence à une date donnée : la chaîne des exercices clos
 /// avant lui, bilan d'ouverture compris.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct PriorChain {
+pub struct PriorChain {
     /// Report à nouveau comptable.
-    retained: Money,
+    pub retained: Money,
     /// Réserve légale cumulée (dotations en base + réserve reprise).
-    reserve: Money,
+    pub reserve: Money,
     /// Déficits fiscaux encore reportables en avant.
-    tax_losses: Money,
+    pub tax_losses: Money,
+}
+
+/// Dotation **minimale** à la réserve légale (art. L232-10 du Code de commerce) : un vingtième
+/// du bénéfice de l'exercice diminué, le cas échéant, des pertes antérieures (un report à
+/// nouveau débiteur), tant que la réserve cumulée n'atteint pas le dixième du capital social —
+/// au-delà, le prélèvement cesse d'être obligatoire. Une délibération contraire est nulle : le
+/// cœur ne l'impose pas à la clôture (l'utilisateur peut doter davantage, ou avoir une raison
+/// documentée), mais le parcours de clôture ([`crate::closing`]) la propose et signale une
+/// dotation insuffisante. Zéro sur un exercice déficitaire, ou sans capital connu quand la
+/// réserve est déjà au plafond ; sans capital connu, le vingtième plein.
+#[must_use]
+pub fn minimum_legal_reserve(
+    net_result: Money,
+    prior_retained: Money,
+    prior_reserve: Money,
+    share_capital: Option<Money>,
+) -> Money {
+    let base = net_result + prior_retained.min(Money::ZERO);
+    if base <= Money::ZERO {
+        return Money::ZERO;
+    }
+    let twentieth = base.apply_rate_bps(LEGAL_RESERVE_MINIMUM_BPS);
+    match share_capital {
+        Some(capital) => {
+            let headroom =
+                (capital.apply_rate_bps(LEGAL_RESERVE_CAP_BPS) - prior_reserve).max(Money::ZERO);
+            twentieth.min(headroom)
+        }
+        None => twentieth,
+    }
 }
 
 /// Contribution des exercices clos **avant** `before` au stock de déficits reportables : chaque
@@ -289,7 +323,12 @@ fn losses_from_closed_years(conn: &Connection, before: Date) -> Result<Money, Ap
 /// pour les suivants, le report vient du snapshot du précédent, qui l'a déjà intégré. La réserve
 /// légale reprise et les déficits repris, eux, s'ajoutent toujours : aucun snapshot ne les
 /// porte.
-fn prior_chain(conn: &Connection, starts_on: Date) -> Result<PriorChain, AppError> {
+///
+/// # Errors
+///
+/// [`FiscalYearError::OpeningBalanceMismatch`] si le bilan d'ouverture est daté d'un autre jour
+/// que `starts_on` alors qu'aucun exercice n'est encore clos ; erreur de lecture SQLite sinon.
+pub fn prior_chain(conn: &Connection, starts_on: Date) -> Result<PriorChain, AppError> {
     let retained: Option<i64> = conn
         .query_row(
             "SELECT retained_earnings_cents FROM fiscal_years WHERE ends_on < ?1
@@ -363,7 +402,14 @@ pub fn tax_losses_available(conn: &Connection, starts_on: Date) -> Result<Money,
 /// L'exercice clos la veille de `starts_on`, s'il l'est dans l'application — le seul sur
 /// lequel un déficit se reporte en arrière (art. 220 quinquies I CGI : « bénéfice de l'exercice
 /// précédent »).
-fn previous_year(conn: &Connection, starts_on: Date) -> Result<Option<FiscalYearRecord>, AppError> {
+///
+/// # Errors
+///
+/// Erreur de lecture SQLite.
+pub fn previous_year(
+    conn: &Connection,
+    starts_on: Date,
+) -> Result<Option<FiscalYearRecord>, AppError> {
     let Some(ends_on) = starts_on.previous_day() else {
         return Ok(None);
     };

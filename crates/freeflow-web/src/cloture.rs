@@ -186,12 +186,36 @@ fn parse_close_form(form: &CloseForm) -> Result<ParsedCloseForm, Box<CloseFormEr
     }
 }
 
-pub async fn new_panel(State(state): State<AppState>) -> Html<String> {
+/// Pré-remplissage facultatif du formulaire de clôture — ce que le parcours de clôture
+/// (lot 34) propose : la période de l'exercice et la dotation minimale à la réserve légale.
+#[derive(Debug, Default, Deserialize)]
+pub struct NewCloseQuery {
+    #[serde(default)]
+    starts_on: Option<String>,
+    #[serde(default)]
+    ends_on: Option<String>,
+    #[serde(default)]
+    legal_reserve: Option<String>,
+}
+
+pub async fn new_panel(
+    State(state): State<AppState>,
+    Query(query): Query<NewCloseQuery>,
+) -> Html<String> {
     let today = OffsetDateTime::now_utc().date();
-    let values = state
+    let mut values = state
         .with_store(|store| views::cloture::default_close_values(store, today))
         .await
         .unwrap_or_default();
+    if let Some(starts_on) = query.starts_on {
+        values.starts_on = starts_on;
+    }
+    if let Some(ends_on) = query.ends_on {
+        values.ends_on = ends_on;
+    }
+    if let Some(legal_reserve) = query.legal_reserve {
+        values.legal_reserve = legal_reserve;
+    }
     Html(views::cloture::new_panel(&values, &CloseFormErrors::default()).into_string())
 }
 
@@ -439,6 +463,26 @@ pub async fn fec(State(state): State<AppState>, Query(query): Query<FecQuery>) -
             "text/plain; charset=utf-8",
             &fec.file_name(),
         ),
+    }
+}
+
+/// `GET /cloture/checklist?period=AAAA` : le parcours de clôture guidé de l'exercice
+/// (`freeflow_core::closing`), dans le panneau — les étapes viennent du cœur, les boutons qui y
+/// répondent sont propres à cette façade (`views::cloture::checklist_panel`).
+pub async fn checklist_panel(
+    State(state): State<AppState>,
+    Query(query): Query<FecQuery>,
+) -> Html<String> {
+    let today = OffsetDateTime::now_utc().date();
+    let built = state
+        .with_store(|store| {
+            freeflow_core::closing::closing_checklist(store.connection(), query.period, today)
+        })
+        .await;
+    match built {
+        None => locked_fragment(),
+        Some(Err(e)) => message_fragment(&e.to_string()),
+        Some(Ok(checklist)) => Html(views::cloture::checklist_panel(&checklist).into_string()),
     }
 }
 

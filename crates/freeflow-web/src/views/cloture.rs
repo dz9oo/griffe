@@ -2,9 +2,14 @@
 //! liste auto-rafraîchie + panneau latéral pour clore, réviser l'affectation, approuver,
 //! supprimer un projet, et télécharger les documents de clôture (`freeflow-docs`). Depuis le
 //! lot 31, un panneau « bilan » montre la balance des comptes et le bilan 2033-A dérivés du
-//! grand livre, pour un exercice clos ou non.
+//! grand livre, pour un exercice clos ou non. Depuis le lot 34, le panneau « parcours de
+//! clôture » (`checklist_panel`) déroule les étapes calculées par `freeflow_core::closing`, avec
+//! pour chacune le bouton de cette façade qui y répond.
 
 use freeflow_core::app::AppError;
+use freeflow_core::closing::{
+    ClosingChecklist, ClosingPhase, ClosingStep, ClosingStepKey, StepStatus,
+};
 use freeflow_core::domain::Money;
 use freeflow_core::domain::Side;
 use freeflow_core::domain::{FiscalYearEnd, format_date};
@@ -245,10 +250,26 @@ pub fn detail_panel(record: &FiscalYearRecord, editable: bool, error: Option<&st
             }
             div class="detail-actions" {
                 button class="btn small" hx-get=(format!("/cloture/balance?period={}", record.ends_on.year())) hx-target="#panel" hx-swap="innerHTML" { "voir le bilan et la balance" }
+                button class="btn small" hx-get=(format!("/cloture/checklist?period={}", record.ends_on.year())) hx-target="#panel" hx-swap="innerHTML" { "parcours de clôture" }
             }
         }
     };
     panel::sheet(&format!("Exercice {}", record.ends_on.year()), body)
+}
+
+/// L'année proposée par défaut pour le parcours : celle de la clôture du dernier exercice
+/// **écoulé** d'après le profil — le geste le plus probable, comme `default_close_values`.
+fn default_checklist_period(store: &Store) -> i32 {
+    let fiscal_year_end = freeflow_core::company::company_profile(store.connection())
+        .ok()
+        .flatten()
+        .and_then(|p| p.fiscal_year_end)
+        .unwrap_or(FiscalYearEnd::CALENDAR);
+    let today = time::OffsetDateTime::now_utc().date();
+    fiscal_year_end
+        .previous(fiscal_year_end.current(today))
+        .end()
+        .year()
 }
 
 /// La liste, avec son rafraîchissement automatique sur `freeflow:saved` — même convention que
@@ -264,7 +285,12 @@ pub fn list_fragment(store: &Store) -> Result<Markup, AppError> {
             div class="pipe-toolbar" {
                 button class="btn primary" hx-get="/cloture/new" hx-target="#panel" hx-swap="innerHTML" { "+ clore un exercice" }
                 button class="btn" hx-get="/cloture/opening" hx-target="#panel" hx-swap="innerHTML" title="Reprise du dernier bilan tenu avant FreeFlow (expert-comptable)" { "bilan d'ouverture" }
-                form hx-get="/cloture/balance" hx-target="#panel" hx-swap="innerHTML" style="display:inline-flex;gap:6px;align-items:center;margin-left:auto" title="Balance des comptes et bilan 2033-A dérivés du grand livre de l'exercice clos dans cette année civile (clos ou non)" {
+                form hx-get="/cloture/checklist" hx-target="#panel" hx-swap="innerHTML" style="display:inline-flex;gap:6px;align-items:center;margin-left:auto" title="Parcours de clôture guidé : ce qui bloque, ce qui mérite attention, ce qui reste à faire" {
+                    label { "parcours de l'exercice clos en " }
+                    input type="number" name="period" value=(default_checklist_period(store)) min="2000" max="2100" style="width:6em" {}
+                    button class="btn small primary" type="submit" { "parcours" }
+                }
+                form hx-get="/cloture/balance" hx-target="#panel" hx-swap="innerHTML" style="display:inline-flex;gap:6px;align-items:center" title="Balance des comptes et bilan 2033-A dérivés du grand livre de l'exercice clos dans cette année civile (clos ou non)" {
                     label { "exercice clos en " }
                     input type="number" name="period" value=(time::OffsetDateTime::now_utc().year()) min="2000" max="2100" style="width:6em" {}
                     button class="btn small" type="submit" { "bilan" }
@@ -309,6 +335,150 @@ pub fn render(store: &Store) -> Result<Markup, AppError> {
         (view_head(ViewId::Cloture, &format!("{count} exercice(s) clos")))
         (list_fragment(store)?)
     })
+}
+
+// -- Parcours de clôture guidé (lot 34) -----------------------------------------------------
+
+const fn status_badge_class(status: StepStatus) -> &'static str {
+    match status {
+        StepStatus::Done => "badge ok",
+        StepStatus::Todo => "badge",
+        StepStatus::Warning => "badge warn",
+        StepStatus::Blocked => "badge danger",
+        StepStatus::Info => "badge info",
+        StepStatus::Later => "badge muted",
+    }
+}
+
+const fn status_label(status: StepStatus) -> &'static str {
+    match status {
+        StepStatus::Done => "fait",
+        StepStatus::Todo => "à faire",
+        StepStatus::Warning => "attention",
+        StepStatus::Blocked => "bloquant",
+        StepStatus::Info => "info",
+        StepStatus::Later => "plus tard",
+    }
+}
+
+const fn stage_badge_class(stage: freeflow_core::closing::ClosingStage) -> &'static str {
+    use freeflow_core::closing::ClosingStage;
+    match stage {
+        ClosingStage::Approved | ClosingStage::Ready => "badge ok",
+        ClosingStage::Draft | ClosingStage::NotEnded => "badge warn",
+        ClosingStage::Blocked => "badge danger",
+    }
+}
+
+/// Le bouton de cette façade qui répond à une étape, quand il y en a un — l'équivalent de la
+/// commande suggérée par la CLI (`freeflow-cli::year::cli_hint`), branché sur la clé stable.
+fn step_action(checklist: &ClosingChecklist, step: &ClosingStep) -> Markup {
+    let period = checklist.period;
+    let id = checklist.fiscal_year.as_ref().map(|r| r.id);
+    let actionable = matches!(
+        step.status,
+        StepStatus::Todo | StepStatus::Warning | StepStatus::Blocked
+    );
+    if !actionable {
+        return html! {};
+    }
+    let panel_button = |href: String, label: &str| {
+        html! { button class="btn small" hx-get=(href) hx-target="#panel" hx-swap="innerHTML" { (label) } }
+    };
+    let nav_link = |href: &str, label: &str| {
+        html! { a class="btn small" href=(href) { (label) } }
+    };
+    match step.key {
+        ClosingStepKey::Profile => nav_link(
+            "/view/console",
+            "renseigner le profil (console : company set-profile)",
+        ),
+        ClosingStepKey::OpeningBalance => {
+            panel_button("/cloture/opening".to_string(), "bilan d'ouverture")
+        }
+        ClosingStepKey::PreviousYear => nav_link("/view/cloture", "voir les exercices"),
+        ClosingStepKey::Invoices => nav_link("/view/facturation", "facturation"),
+        ClosingStepKey::Expenses | ClosingStepKey::Bank => {
+            nav_link("/view/depenses", "dépenses et relevé")
+        }
+        ClosingStepKey::Result | ClosingStepKey::BalanceSheet => panel_button(
+            format!("/cloture/balance?period={period}"),
+            "bilan et balance",
+        ),
+        ClosingStepKey::Close if step.status == StepStatus::Todo => {
+            let reserve = checklist
+                .minimum_legal_reserve
+                .map_or_else(|| "0".to_string(), euros_input_value);
+            panel_button(
+                format!(
+                    "/cloture/new?starts_on={}&ends_on={}&legal_reserve={reserve}",
+                    format_date(checklist.exercise.start()),
+                    format_date(checklist.exercise.end())
+                ),
+                "clore l'exercice",
+            )
+        }
+        ClosingStepKey::Appropriation => id.map_or_else(
+            || html! {},
+            |id| panel_button(format!("/cloture/{id}/edit"), "réviser l'affectation"),
+        ),
+        ClosingStepKey::Approve => id.map_or_else(
+            || html! {},
+            |id| panel_button(format!("/cloture/{id}/approve"), "approuver"),
+        ),
+        ClosingStepKey::Documents | ClosingStepKey::Liasse => id.map_or_else(
+            || html! {},
+            |id| panel_button(format!("/cloture/{id}"), "documents de l'exercice"),
+        ),
+        ClosingStepKey::Close
+        | ClosingStepKey::PeriodEnded
+        | ClosingStepKey::CorporateTax
+        | ClosingStepKey::Filing => html! {},
+    }
+}
+
+/// Le parcours de clôture : un en-tête (exercice, stade), puis une section par phase et une
+/// ligne par étape — statut, titre, échéance, détail, et le bouton qui y répond.
+pub fn checklist_panel(checklist: &ClosingChecklist) -> Markup {
+    let exercise = checklist.exercise;
+    let body = html! {
+        div class="detail-head" {
+            div class="detail-title" {
+                "Exercice du " (format_date(exercise.start())) " au " (format_date(exercise.end()))
+                " — vu le " (format_date(checklist.today))
+            }
+            span class=(stage_badge_class(checklist.stage)) { (checklist.stage.label()) }
+        }
+        div class="detail-note" {
+            "Les étapes sont calculées depuis le coffre ; rien n'est écrit. « Bloquant » : la \
+             clôture serait refusée ou fausse ; « attention » : à regarder, sans empêcher ; \
+             « plus tard » : pas encore atteignable."
+        }
+        @for phase in ClosingPhase::ALL {
+            div class="detail-section" {
+                div class="detail-section-head" { span { (phase.label()) } }
+                @for step in checklist.steps_in(phase) {
+                    div class="checklist-step" {
+                        div class="checklist-step-head" {
+                            span class=(status_badge_class(step.status)) { (status_label(step.status)) }
+                            strong { (step.title) }
+                            @if let Some(due) = step.due_on {
+                                span class="checklist-due" { "échéance " (format_date(due)) }
+                            }
+                        }
+                        div class="checklist-detail" { (step.detail) }
+                        div class="detail-actions" { (step_action(checklist, step)) }
+                    }
+                }
+            }
+        }
+        @if let Some(id) = checklist.fiscal_year.as_ref().map(|r| r.id) {
+            div class="detail-actions" {
+                button class="btn small" hx-get=(format!("/cloture/{id}")) hx-target="#panel" hx-swap="innerHTML" { "fiche de l'exercice" }
+            }
+        }
+    };
+    panel::sheet(&format!("Parcours de clôture {}", checklist.period), body)
 }
 
 // -- Bilan et balance dérivés (lot 31) -------------------------------------------------------

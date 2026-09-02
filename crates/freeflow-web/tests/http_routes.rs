@@ -1906,6 +1906,48 @@ async fn closing_a_year_from_the_window_then_downloading_its_documents() {
         "{refused_body}"
     );
 
+    // Lot 34 : le parcours de clôture, avant la clôture — l'exercice 2026 court encore (le
+    // panneau lit la date du jour), donc le geste de clôture est bloqué et son bouton absent.
+    let journey = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/cloture/checklist?period=2026")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(journey.contains("Parcours de clôture 2026"), "{journey}");
+    assert!(journey.contains("exercice en cours"), "{journey}");
+    assert!(journey.contains("Exercice écoulé"), "{journey}");
+    assert!(journey.contains("Profil d'entreprise"), "{journey}");
+    assert!(
+        !journey.contains("/cloture/new?"),
+        "pas de bouton « clore » tant qu'un point bloque : {journey}"
+    );
+    // Le formulaire de clôture accepte le pré-remplissage que le parcours lui passe.
+    let prefilled = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(
+                        "/cloture/new?starts_on=2025-07-01&ends_on=2026-06-30&legal_reserve=228.44",
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(prefilled.contains("value=\"2025-07-01\""), "{prefilled}");
+    assert!(prefilled.contains("value=\"228.44\""), "{prefilled}");
+
     // Clore 2026 depuis le formulaire du panneau.
     let closed = router
         .clone()
@@ -1964,6 +2006,32 @@ async fn closing_a_year_from_the_window_then_downloading_its_documents() {
         detail_body.contains("Déficits reportables en avant"),
         "{detail_body}"
     );
+    assert!(
+        detail_body.contains("/cloture/checklist?period=2026"),
+        "{detail_body}"
+    );
+
+    // Lot 34 : une fois clos, le parcours suit l'exercice — en projet, à approuver.
+    let journey = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/cloture/checklist?period=2026")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(journey.contains("clos, en projet"), "{journey}");
+    assert!(journey.contains("Approbation des comptes"), "{journey}");
+    assert!(
+        journey.contains(&format!("/cloture/{id}/approve")),
+        "{journey}"
+    );
+    assert!(journey.contains("Figé à la clôture"), "{journey}");
 
     // Les documents se téléchargent avec le bon type de contenu — liasse JSON et PV PDF (rendu
     // par le vrai binaire typst, comme les tests de freeflow-docs).

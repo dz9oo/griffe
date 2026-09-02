@@ -7,16 +7,17 @@ Clôture d'exercice : snapshot du résultat, affectation, approbation, documents
 Usage: freeflow year [OPTIONS] <COMMAND>
 
 Commands:
-  close    Clôt un exercice : fige le résultat calculé (CA, charges, IS) et enregistre l'affectation (réserve légale, dividendes) en projet, à approuver ensuite. Nécessite confirmation humaine quand `--actor agent:...`
-  list     Liste les exercices clos, du plus ancien au plus récent
-  show     Détail d'un exercice clos (snapshot, affectation, approbation)
-  amend    Révise l'affectation d'un exercice encore en projet (le snapshot reste figé)
-  approve  Approuve un exercice (date de l'AG) — il devient immuable. Nécessite confirmation humaine quand `--actor agent:...`
-  rm       Supprime un exercice encore en projet (clos par erreur)
-  balance  Balance des comptes et bilan (2033-A) dérivés du grand livre de l'exercice clos dans PERIOD — clos ou non : à-nouveaux, ventes, achats, banque, opérations de clôture
-  render   Rend un document de clôture (PDF, ou JSON pour la liasse) dans `--out`
-  opening  Bilan d'ouverture : reprise du dernier bilan tenu avant FreeFlow (expert-comptable), point de départ du report à nouveau, de la réserve légale et des à-nouveaux du FEC
-  help     Print this message or the help of the given subcommand(s)
+  close      Clôt un exercice : fige le résultat calculé (CA, charges, IS) et enregistre l'affectation (réserve légale, dividendes) en projet, à approuver ensuite. Nécessite confirmation humaine quand `--actor agent:...`
+  list       Liste les exercices clos, du plus ancien au plus récent
+  show       Détail d'un exercice clos (snapshot, affectation, approbation)
+  amend      Révise l'affectation d'un exercice encore en projet (le snapshot reste figé)
+  approve    Approuve un exercice (date de l'AG) — il devient immuable. Nécessite confirmation humaine quand `--actor agent:...`
+  rm         Supprime un exercice encore en projet (clos par erreur)
+  checklist  Parcours de clôture guidé de l'exercice clos dans PERIOD : où en est la clôture, ce qui la bloque, ce qui mérite attention, et ce qui reste à faire après (approbation, documents, solde d'IS, liasse, dépôt au greffe). Lecture seule
+  balance    Balance des comptes et bilan (2033-A) dérivés du grand livre de l'exercice clos dans PERIOD — clos ou non : à-nouveaux, ventes, achats, banque, opérations de clôture
+  render     Rend un document de clôture (PDF, ou JSON pour la liasse) dans `--out`
+  opening    Bilan d'ouverture : reprise du dernier bilan tenu avant FreeFlow (expert-comptable), point de départ du report à nouveau, de la réserve légale et des à-nouveaux du FEC
+  help       Print this message or the help of the given subcommand(s)
 
 Options:
       --db <DB>

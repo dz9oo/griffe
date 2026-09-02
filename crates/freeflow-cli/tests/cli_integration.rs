@@ -2377,11 +2377,86 @@ fn year_opening_balance_set_show_then_chains_into_the_first_close() {
         ])
         .assert()
         .success();
+    // Lot 34 : le parcours de clôture, avant de clore. Vu de juin 2026, l'exercice court
+    // encore ; vu de janvier 2027, il est prêt — bilan d'ouverture repris, dotation minimale à
+    // la réserve légale de 40 € (5 % de 5 248,75 € = 262,44 €, plafonnés par les 40 € qu'il
+    // reste avant 10 % du capital de 1 000 €, 60 € étant déjà repris).
+    let running = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "--json",
+            "year",
+            "checklist",
+            "2026",
+            "--today",
+            "2026-06-01",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(json_result(&running)["stage"], "not_ended");
+    let ready = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "--json",
+            "year",
+            "checklist",
+            "2026",
+            "--today",
+            "2027-01-15",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let ready = json_result(&ready);
+    assert_eq!(ready["stage"], "ready");
+    assert_eq!(ready["blocked"], 0);
+    assert_eq!(ready["minimum_legal_reserve_cents"], 4_000);
+    assert_eq!(ready["result"]["net_result_cents"], 524_875);
+    let steps = ready["steps"].as_array().unwrap();
+    assert_eq!(steps.len(), 16);
+    let step = |key: &str| steps.iter().find(|s| s["key"] == key).unwrap().clone();
+    assert_eq!(step("opening_balance")["status"], "done");
+    assert_eq!(step("previous_year")["status"], "info");
+    assert_eq!(step("close")["status"], "todo");
+    assert_eq!(step("close")["amount_cents"], 4_000);
+    assert_eq!(step("approve")["status"], "later");
+    assert_eq!(step("approve")["due_on"], "2027-06-30");
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["year", "checklist", "2026", "--today", "2027-01-15"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PRÊT À CLORE"))
+        .stdout(predicate::str::contains(
+            "freeflow year close --period 2026 --legal-reserve 40.00",
+        ));
+
     freeflow()
         .env("FREEFLOW_DB", &db)
         .args(["year", "close", "--period", "2026"])
         .assert()
         .success();
+    // Clos sans dotation : le parcours signale la dotation insuffisante et le prochain geste.
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["year", "checklist", "2026", "--today", "2027-03-01"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("CLOS, EN PROJET"))
+        .stdout(predicate::str::contains(
+            "Dotation à la réserve légale insuffisante",
+        ))
+        .stdout(predicate::str::contains(
+            "freeflow year amend 2026 --legal-reserve 40.00",
+        ))
+        .stdout(predicate::str::contains(
+            "freeflow year approve 2026 --approved-on AAAA-MM-JJ",
+        ));
     let year_out = freeflow()
         .env("FREEFLOW_DB", &db)
         .args(["--json", "year", "show", "2026"])

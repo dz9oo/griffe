@@ -31,6 +31,7 @@ const FISCAL_YEARS_COLLECTION_URI: &str = "freeflow://fiscal-years";
 const COMPANY_URI: &str = "freeflow://company";
 const OPENING_BALANCE_URI: &str = "freeflow://opening-balance";
 const BALANCE_SHEET_PREFIX: &str = "freeflow://balance-sheet/";
+const CLOSING_CHECKLIST_PREFIX: &str = "freeflow://closing-checklist/";
 
 pub(crate) fn list() -> ListResourcesResult {
     ListResourcesResult::with_all_items(vec![
@@ -119,6 +120,16 @@ pub(crate) fn list_templates() -> ListResourceTemplatesResult {
                  fiscal.balance_sheet.",
             )
             .with_mime_type("application/json"),
+        ResourceTemplate::new(
+            format!("{CLOSING_CHECKLIST_PREFIX}{{period}}"),
+            "closing-checklist",
+        )
+        .with_description(
+            "Parcours de clôture guidé de l'exercice clos dans cette année civile, vu du jour : \
+             étapes par phase avec statut, résultat, réserve légale minimale — même vue que \
+             fiscal.checklist.",
+        )
+        .with_mime_type("application/json"),
     ])
 }
 
@@ -277,6 +288,20 @@ pub(crate) fn read(store: &Store, uri: &str) -> Result<ReadResourceResult, McpEr
                 .as_ref()
                 .map_or(serde_json::Value::Null, crate::tools::fiscal::opening_json),
         );
+    }
+
+    if let Some(period) = uri.strip_prefix(CLOSING_CHECKLIST_PREFIX) {
+        let period: i32 = period.parse().map_err(|_| {
+            McpError::resource_not_found(
+                format!("période invalide : {period} (attendu AAAA)"),
+                None,
+            )
+        })?;
+        let today = time::OffsetDateTime::now_utc().date();
+        let checklist =
+            freeflow_core::closing::closing_checklist(store.connection(), period, today)
+                .map_err(|e| McpError::resource_not_found(e.to_string(), None))?;
+        return json_contents(uri, freeflow_core::closing::checklist_json(&checklist));
     }
 
     if let Some(period) = uri.strip_prefix(BALANCE_SHEET_PREFIX) {

@@ -609,8 +609,15 @@ pub fn deadlines_due_within(today: Date, within_days: i64) -> Vec<FiscalDeadline
 }
 
 /// Solde d'IS : pour un exercice clos au 31/12, échéance fixée au 15 mai N+1 ; pour un exercice
-/// décalé, le 15 du 4e mois suivant la clôture (règle générale approchée).
-fn is_solde_due(fye: FiscalYearEnd, end: Date) -> Date {
+/// décalé, le 15 du 4e mois suivant la clôture (règle générale approchée). Partagée par le
+/// calendrier et le parcours de clôture ([`crate::closing`]).
+///
+/// # Panics
+///
+/// Ne panique jamais : les mois calculés restent dans `1..=12` et le 15 existe dans tous les
+/// mois.
+#[must_use]
+pub fn is_solde_due_on(fye: FiscalYearEnd, end: Date) -> Date {
     if fye.month() == 12 {
         nth_of_month(Month::new(end.year() + 1, 5).unwrap(), 15)
     } else {
@@ -622,8 +629,39 @@ fn is_solde_due(fye: FiscalYearEnd, end: Date) -> Date {
     }
 }
 
+/// Liasse fiscale (2065 + tableaux 2033) : pour un exercice civil, le deuxième jour ouvré
+/// suivant le 1er mai est approché au 15 mai N+1 ; pour un exercice décalé, dans les trois mois
+/// suivant la clôture. Indicatif — la date exacte est fixée chaque année par l'administration.
+///
+/// # Panics
+///
+/// Ne panique jamais : les mois calculés restent dans `1..=12` et les jours sont rognés au
+/// dernier jour réel du mois.
+#[must_use]
+pub fn liasse_due_on(fye: FiscalYearEnd, end: Date) -> Date {
+    if fye.month() == 12 {
+        nth_of_month(Month::new(end.year() + 1, 5).unwrap(), 15)
+    } else {
+        add_months(end, 3)
+    }
+}
+
+/// Assemblée d'approbation des comptes : dans les six mois de la clôture (art. L225-100 du
+/// Code de commerce, applicable à la SAS par renvoi ; décision de l'associé unique en SASU).
+#[must_use]
+pub fn approval_meeting_due_on(end: Date) -> Date {
+    add_months(end, 6)
+}
+
+/// Dépôt des comptes annuels au greffe : dans le mois suivant l'approbation (art. L232-23 du
+/// Code de commerce ; deux mois par voie électronique — la borne la plus courte est retenue).
+#[must_use]
+pub fn accounts_filing_due_on(approved_on: Date) -> Date {
+    add_months(approved_on, 1)
+}
+
 /// Ajoute `months` mois à une date, en ramenant le jour au dernier jour réel du mois cible.
-fn add_months(date: Date, months: u32) -> Date {
+pub(crate) fn add_months(date: Date, months: u32) -> Date {
     let mut month = Month::new(date.year(), u8::from(date.month())).unwrap();
     for _ in 0..months {
         month = month.succ();
@@ -854,7 +892,7 @@ pub fn fiscal_calendar(conn: &Connection, today: Date) -> Result<Vec<FiscalDeadl
         .transpose()?;
     let previous_is = previous_result.map(|r| r.corporate_tax);
 
-    let solde_due = is_solde_due(fye, previous.end());
+    let solde_due = is_solde_due_on(fye, previous.end());
     if solde_due >= today && solde_due <= horizon {
         deadlines.push(FiscalDeadline {
             kind: FiscalDeadlineKind::IsSolde,
@@ -904,11 +942,7 @@ pub fn fiscal_calendar(conn: &Connection, today: Date) -> Result<Vec<FiscalDeadl
     }
 
     // --- Liasse fiscale : pour un exercice civil, ~mi-mai N+1 (approché au 15). ---
-    let liasse_due = if fye.month() == 12 {
-        nth_of_month(Month::new(previous.end().year() + 1, 5).unwrap(), 15)
-    } else {
-        add_months(previous.end(), 3)
-    };
+    let liasse_due = liasse_due_on(fye, previous.end());
     if liasse_due >= today && liasse_due <= horizon {
         deadlines.push(FiscalDeadline {
             kind: FiscalDeadlineKind::Liasse,
@@ -919,11 +953,11 @@ pub fn fiscal_calendar(conn: &Connection, today: Date) -> Result<Vec<FiscalDeadl
     }
 
     // --- AG d'approbation (clôture + 6 mois) et dépôt au greffe (AG + 1 mois). ---
-    let approval_due = add_months(previous.end(), 6);
+    let approval_due = approval_meeting_due_on(previous.end());
     if approval_due >= today && approval_due <= horizon {
         deadlines.push(bare(FiscalDeadlineKind::ApprovalMeeting, approval_due));
     }
-    let filing_due = add_months(approval_due, 1);
+    let filing_due = accounts_filing_due_on(approval_due);
     if filing_due >= today && filing_due <= horizon {
         deadlines.push(bare(FiscalDeadlineKind::AccountsFiling, filing_due));
     }
@@ -1119,7 +1153,7 @@ mod tests {
     fn is_solde_for_a_calendar_year_falls_on_may_15_next_year() {
         let fye = FiscalYearEnd::CALENDAR;
         assert_eq!(
-            is_solde_due(fye, date(2025, TimeMonth::December, 31)),
+            is_solde_due_on(fye, date(2025, TimeMonth::December, 31)),
             date(2026, TimeMonth::May, 15)
         );
     }
@@ -1128,7 +1162,7 @@ mod tests {
     fn is_solde_for_an_offset_year_is_the_15th_of_the_fourth_month_after_close() {
         let fye = FiscalYearEnd::new(6, 30).unwrap();
         assert_eq!(
-            is_solde_due(fye, date(2026, TimeMonth::June, 30)),
+            is_solde_due_on(fye, date(2026, TimeMonth::June, 30)),
             date(2026, TimeMonth::October, 15)
         );
     }

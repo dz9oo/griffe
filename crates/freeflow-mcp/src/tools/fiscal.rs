@@ -12,6 +12,7 @@
 use std::path::Path;
 
 use freeflow_core::app::Executor;
+use freeflow_core::closing::{checklist_json, closing_checklist};
 use freeflow_core::company::{CompanyProfile, company_profile};
 use freeflow_core::domain::{FiscalYearEnd, Money, format_date};
 use freeflow_core::fiscal::{fiscal_calendar, upcoming_deadlines};
@@ -139,6 +140,16 @@ pub(crate) struct FiscalDeadlinesArgs {
 pub(crate) struct YearRefArgs {
     /// Année civile de la clôture (ex. `2026`).
     period: i32,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct ChecklistArgs {
+    /// Année civile de la clôture (ex. `2026`) — même désignation que `fiscal.year_show`.
+    period: i32,
+    /// Date du jour (`AAAA-MM-JJ`, défaut : aujourd'hui) — décide si l'exercice est écoulé et
+    /// des échéances dépassées.
+    #[serde(default)]
+    today: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -579,6 +590,33 @@ impl FreeflowServer {
         };
         match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
+    /// Parcours de clôture guidé de l'exercice clos dans `period` : où en est la clôture
+    /// (`stage` : not_ended, blocked, ready, draft, approved), les étapes par phase (préparer,
+    /// clore, affecter et approuver, déclarer et déposer) avec leur statut — `blocked` empêche
+    /// la clôture, `warning` mérite attention, `todo` est le prochain geste, `later` n'est pas
+    /// encore atteignable — le résultat figé ou prévisionnel, la dotation minimale à la réserve
+    /// légale (art. L232-10) et le report en arrière possible. Lecture seule : les gestes
+    /// passent par fiscal.close_year, fiscal.amend_year, fiscal.approve_year,
+    /// fiscal.set_opening_balance, company.set_profile, expense.*, bank.*. Montants en centimes.
+    #[tool(
+        name = "fiscal.checklist",
+        annotations(read_only_hint = true, idempotent_hint = true)
+    )]
+    async fn fiscal_checklist(
+        &self,
+        Parameters(args): Parameters<ChecklistArgs>,
+    ) -> CallToolResult {
+        let today = match args.today.as_deref() {
+            None => time::OffsetDateTime::now_utc().date(),
+            Some(raw) => ok_or_return!("today", freeflow_core::domain::parse_date(raw)),
+        };
+        let store = self.store.lock().await;
+        match closing_checklist(store.connection(), args.period, today) {
+            Ok(checklist) => ok_json(checklist_json(&checklist)),
             Err(e) => err_text(e.to_string()),
         }
     }
