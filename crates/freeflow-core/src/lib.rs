@@ -10,6 +10,7 @@ pub mod clients;
 pub mod company;
 pub mod domain;
 pub mod expenses;
+pub mod fec;
 pub mod fiscal;
 pub mod fiscal_year;
 pub mod forecast;

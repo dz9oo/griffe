@@ -57,6 +57,7 @@ impl FreeflowServer {
             + Self::billing_router()
             + Self::pending_router()
             + Self::fiscal_router()
+            + Self::fec_router()
             + Self::forecast_router()
     }
 }

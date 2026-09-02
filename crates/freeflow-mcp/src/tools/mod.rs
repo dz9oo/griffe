@@ -2,6 +2,7 @@ pub(crate) mod billing;
 pub(crate) mod clients;
 pub(crate) mod company;
 pub(crate) mod expenses;
+pub(crate) mod fec;
 pub(crate) mod fiscal;
 pub(crate) mod forecast;
 pub(crate) mod missions;

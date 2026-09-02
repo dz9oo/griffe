@@ -120,6 +120,12 @@ implémentation.
   télédéclaration dérivée du profil (`vat_filing`).
 - Prévisionnel de trésorerie sur 12 mois (factures émises non payées + missions signées non
   facturées + pipeline pondéré − charges connues).
+- **Export FEC** (Fichier des Écritures Comptables, art. A. 47 A-1 LPF) d'un exercice, clos ou
+  non, pour l'expert-comptable : `freeflow fec export 2026 --out <répertoire|fichier>`, outil MCP
+  `fec.export`, bouton « FEC » de l'écran `cloture`. Dérivé des factures et avoirs (journal VE),
+  encaissements et annulations (BQ) et dépenses (AC) sur un plan de comptes PCG minimal, écritures
+  équilibrées par construction, format DGFiP (18 colonnes, `|`, `AAAAMMJJ`, virgule décimale,
+  nom `<SIREN>FEC<AAAAMMJJ>.txt`).
 
 ### Sécurité & fiabilité
 - Chiffrement SQLCipher par une **clé maître aléatoire** (modèle LUKS) : la passphrase ne sert
@@ -282,6 +288,10 @@ distribués prêts à l'emploi — voir la checklist ci-dessous.
   impots.gouv.fr. La date de la CA3 suit la grille officielle et le régime réel simplifié est
   modélisé (acomptes 3514, CA12), mais la base des acomptes est la TVA nette de l'exercice
   précédent — le domaine ne distingue pas la TVA sur immobilisations, que la règle légale exclut.
+- **FEC dérivé, pas une comptabilité tenue** : les dépenses sont réputées payées à leur date
+  (pas de compte fournisseur), l'équipement passe en charge sans seuil d'immobilisation, la
+  rémunération du dirigeant et l'IS ne sont pas des écritures, lettrage et devise restent vides.
+  L'expert-comptable reste maître des écritures définitives.
 - **`.dmg` macOS** : pas encore construit/testé (nécessite une machine macOS réelle).
 - **`.AppImage` Linux** : le bundling bute sur une incompatibilité d'environnement documentée dans
   `CLAUDE.md` (chemin `gdk-pixbuf` non-FHS sur certaines distributions type NixOS/Nix-sur-Arch).
@@ -346,7 +356,8 @@ distribués prêts à l'emploi — voir la checklist ci-dessous.
       affichée par `company show`.
 - [ ] Relances de paiement configurables (cadences, modèles de message) au-delà des brouillons
       `.eml` actuels.
-- [ ] Export comptable (FEC ou format équivalent) pour transmission à un expert-comptable.
+- [x] Export comptable : FEC d'un exercice (CLI, MCP, fenêtre), dérivé des faits du domaine — voir
+      « Dépenses & obligations fiscales » et les limites ci-dessus.
 - [ ] Tableau de bord de rentabilité par client sur la durée (au-delà de la mission en cours).
 - [ ] Chiffrement additionnel des pièces jointes de justificatifs de dépenses sur disque (au-delà
       du hash d'intégrité SHA-256 déjà en place).

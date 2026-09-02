@@ -1079,6 +1079,114 @@ fn company_show_reports_the_derived_vat_filing_rule() {
 }
 
 #[test]
+fn fec_export_writes_the_regulatory_file_for_the_exercise() {
+    let db = temp_db("fec-export");
+    provision(&db);
+    set_company_profile(&db);
+    let client_out = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--json", "client", "create", "--name", "Kappa Software"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let client_id = json_result(&client_out)["result"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let lines =
+        r#"[{"description":"Prestation","quantity":2,"unit_price":100000,"vat_rate":"Standard"}]"#;
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "invoice",
+            "emit",
+            "--client",
+            &client_id,
+            "--lines",
+            lines,
+            "--issued-on",
+            "2026-03-10",
+        ])
+        .assert()
+        .success();
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "expense",
+            "record",
+            "--label",
+            "Licence IDE",
+            "--category",
+            "software",
+            "--amount",
+            "120",
+            "--vat-rate",
+            "standard",
+            "--vat-deductible",
+            "20",
+            "--incurred-on",
+            "2026-03-12",
+        ])
+        .assert()
+        .success();
+
+    // `--out` sur un répertoire : le fichier prend son nom réglementaire.
+    let dir = db.parent().unwrap().to_path_buf();
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["fec", "export", "2026", "--out"])
+        .arg(&dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("552100554FEC20261231.txt"));
+    let content = std::fs::read_to_string(dir.join("552100554FEC20261231.txt")).unwrap();
+    let mut records = content.lines();
+    assert_eq!(
+        records.next().unwrap(),
+        "JournalCode|JournalLib|EcritureNum|EcritureDate|CompteNum|CompteLib|CompAuxNum|CompAuxLib|PieceRef|PieceDate|EcritureLib|Debit|Credit|EcritureLet|DateLet|ValidDate|Montantdevise|Idevise"
+    );
+    let body: Vec<&str> = records.collect();
+    // Facture : 411 / 706 / 445710 ; dépense : 651 / 445660 / 512.
+    assert_eq!(body.len(), 6, "{content}");
+    assert!(
+        body[0].starts_with("VE|Ventes|1|20260310|411000|Clients|"),
+        "{content}"
+    );
+    assert!(
+        body[0].contains("|Kappa Software|FA-2026-0001|20260310|"),
+        "{content}"
+    );
+    assert!(body[0].ends_with("|2400,00|0,00|||20260310||"), "{content}");
+    assert!(
+        body[3].starts_with("AC|Achats|1|20260312|651000|"),
+        "{content}"
+    );
+    assert!(body.iter().all(|l| l.split('|').count() == 18), "{content}");
+
+    // `--out` sur un fichier, en JSON : le résumé porte le nom réglementaire et l'équilibre.
+    let file = dir.join("export.txt");
+    let out = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--json", "fec", "export", "2026", "--out"])
+        .arg(&file)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let shown = json_result(&out);
+    assert_eq!(shown["path"], file.to_str().unwrap());
+    assert_eq!(shown["summary"]["file_name"], "552100554FEC20261231.txt");
+    assert_eq!(shown["summary"]["entries"], 2);
+    assert_eq!(shown["summary"]["lines"], 6);
+    assert_eq!(shown["summary"]["total_debit_cents"], 252_000);
+    assert_eq!(shown["summary"]["total_credit_cents"], 252_000);
+    assert!(file.exists());
+}
+
+#[test]
 fn year_lifecycle_close_amend_approve_then_immutable() {
     let db = temp_db("year-lifecycle");
     provision(&db);

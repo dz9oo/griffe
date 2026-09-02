@@ -27,6 +27,7 @@ Commands:
   fiscal      Échéances fiscales indicatives (CA3, IS, CFE)
   forecast    Prévisionnel de trésorerie sur 12 mois
   year        Clôture d'exercice : snapshot du résultat, affectation, approbation, documents
+  fec         Fichier des Écritures Comptables (FEC) d'un exercice, pour l'expert-comptable
   backup      Sauvegardes : une automatique et silencieuse tourne déjà à chaque commande ; ces sous-commandes ne servent qu'à en forcer une, ou à restaurer
   help        Print this message or the help of the given subcommand(s)
 

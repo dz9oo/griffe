@@ -9,7 +9,7 @@
 //! l'adaptateur, jamais dans le cœur.
 
 use axum::Form;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderValue, header};
 use axum::response::{Html, IntoResponse, Response};
 use freeflow_core::app::{AppError, Executor, Outcome};
@@ -402,6 +402,33 @@ pub async fn delete(State(state): State<AppState>, Path(id): Path<String>) -> Re
             Html(views::cloture::detail_panel(&record, true, Some(&e.to_string())).into_string())
                 .into_response()
         }
+    }
+}
+
+// -- FEC (lot 28) ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct FecQuery {
+    /// Année civile de la clôture — même désignation que `year show` ; l'exercice n'a pas
+    /// besoin d'être clos.
+    pub period: i32,
+}
+
+/// `GET /cloture/fec?period=AAAA` : le Fichier des Écritures Comptables de l'exercice, en
+/// téléchargement sous son nom réglementaire. Construit et rendu par le cœur
+/// (`freeflow_core::fec`), comme en CLI et via MCP.
+pub async fn fec(State(state): State<AppState>, Query(query): Query<FecQuery>) -> Response {
+    let built = state
+        .with_store(|store| freeflow_core::fec::build_fec(store.connection(), query.period))
+        .await;
+    match built {
+        None => locked_fragment().into_response(),
+        Some(Err(e)) => message_fragment(&e.to_string()).into_response(),
+        Some(Ok(fec)) => document_response(
+            fec.render().into_bytes(),
+            "text/plain; charset=utf-8",
+            &fec.file_name(),
+        ),
     }
 }
 

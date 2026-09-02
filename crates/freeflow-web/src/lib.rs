@@ -193,6 +193,7 @@ pub fn router(state: AppState) -> Router {
             get(cloture::delete_confirm_panel).post(cloture::delete),
         )
         .route("/cloture/{id}/doc/{kind}", get(cloture::document))
+        .route("/cloture/fec", get(cloture::fec))
         .route("/session/touch", post(unlock::touch))
         .route("/lock", post(unlock::lock))
         .route("/unlock", get(unlock::show).post(unlock::submit))

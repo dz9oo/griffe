@@ -219,6 +219,7 @@ pub fn detail_panel(record: &FiscalYearRecord, editable: bool, error: Option<&st
                 a class="btn small" href=(format!("/cloture/{id}/doc/appropriation")) target="_blank" { "affectation (PDF)" }
                 a class="btn small" href=(format!("/cloture/{id}/doc/synthesis")) target="_blank" { "compte de résultat (PDF)" }
                 a class="btn small" href=(format!("/cloture/{id}/doc/liasse")) target="_blank" { "liasse (JSON)" }
+                a class="btn small" href=(format!("/cloture/fec?period={}", record.ends_on.year())) target="_blank" { "FEC (txt)" }
             }
         }
     };
@@ -237,6 +238,11 @@ pub fn list_fragment(store: &Store) -> Result<Markup, AppError> {
             hx-swap="outerHTML" {
             div class="pipe-toolbar" {
                 button class="btn primary" hx-get="/cloture/new" hx-target="#panel" hx-swap="innerHTML" { "+ clore un exercice" }
+                form method="get" action="/cloture/fec" target="_blank" style="display:inline-flex;gap:6px;align-items:center;margin-left:auto" title="Fichier des Écritures Comptables de l'exercice clos dans cette année civile (clos ou non)" {
+                    label { "FEC de l'exercice clos en " }
+                    input type="number" name="period" value=(time::OffsetDateTime::now_utc().year()) min="2000" max="2100" style="width:6em" {}
+                    button class="btn small" type="submit" { "exporter" }
+                }
             }
             @if years.is_empty() {
                 div class="empty-state" { "aucun exercice clos — cliquez sur « clore un exercice »" }

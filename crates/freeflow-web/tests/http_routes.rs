@@ -1914,6 +1914,37 @@ async fn closing_a_year_from_the_window_then_downloading_its_documents() {
     let liasse_body = body_text(liasse).await;
     assert!(liasse_body.contains("2065"));
 
+    // Le FEC de l'exercice se télécharge sous son nom réglementaire, en texte brut — le même
+    // fichier que `freeflow fec export 2026` (lot 28).
+    let fec = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/cloture/fec?period=2026")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(fec.status(), StatusCode::OK);
+    assert_eq!(
+        fec.headers()
+            .get("content-type")
+            .map(|v| v.to_str().unwrap()),
+        Some("text/plain; charset=utf-8")
+    );
+    assert_eq!(
+        fec.headers()
+            .get("content-disposition")
+            .map(|v| v.to_str().unwrap()),
+        Some("attachment; filename=\"552100554FEC20261231.txt\"")
+    );
+    let fec_body = body_text(fec).await;
+    assert!(
+        fec_body.starts_with("JournalCode|JournalLib|EcritureNum|"),
+        "{fec_body}"
+    );
+
     let minutes = router
         .clone()
         .oneshot(

@@ -7,6 +7,7 @@ mod client;
 mod company;
 mod error;
 mod expense;
+mod fec;
 mod fiscal;
 mod forecast;
 mod invoice;
@@ -121,6 +122,9 @@ enum TopCommand {
     /// Clôture d'exercice : snapshot du résultat, affectation, approbation, documents.
     #[command(subcommand)]
     Year(year::YearCommand),
+    /// Fichier des Écritures Comptables (FEC) d'un exercice, pour l'expert-comptable.
+    #[command(subcommand)]
+    Fec(fec::FecCommand),
     /// Sauvegardes : une automatique et silencieuse tourne déjà à chaque commande ; ces
     /// sous-commandes ne servent qu'à en forcer une, ou à restaurer.
     #[command(subcommand)]
@@ -341,5 +345,6 @@ fn run_command(
         TopCommand::Fiscal(cmd) => fiscal::run(cmd, store, json),
         TopCommand::Forecast(cmd) => forecast::run(cmd, store, json),
         TopCommand::Year(cmd) => year::run(cmd, store, ctx, json),
+        TopCommand::Fec(cmd) => fec::run(cmd, store, json),
     }
 }

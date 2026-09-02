@@ -153,6 +153,7 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "fiscal.approve_year",
         "fiscal.delete_year",
         "fiscal.render_year",
+        "fec.export",
     ] {
         assert!(names.contains(expected), "outil manquant : {expected}");
     }
@@ -1430,6 +1431,94 @@ async fn a_fiscal_year_can_be_shown_and_amended_but_approval_and_deletion_need_a
         Some(true),
         "un fichier existant n'est jamais écrasé par l'agent"
     );
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn exporting_the_fec_writes_the_regulatory_file_and_never_overwrites() {
+    let db_path = test_db_path("fec-export");
+    let mut store = Store::create(&db_path, &Passphrase::from("s3cret")).unwrap();
+    let human = freeflow_core::app::ExecutionContext::new(freeflow_core::app::Actor::Human, false);
+    Executor::new(&mut store)
+        .execute(
+            &freeflow_core::company::SetCompanyProfile {
+                name: "Lumen Conseil".into(),
+                legal_form: "SASU".into(),
+                siren: freeflow_core::domain::Siren::parse("552100554").unwrap(),
+                vat_number: None,
+                address: freeflow_core::domain::Address {
+                    street: "1 rue de la Paix".into(),
+                    postal_code: "75002".into(),
+                    city: "Paris".into(),
+                    country: "FR".into(),
+                },
+                share_capital: None,
+                rcs_city: None,
+                iban: None,
+                fiscal_year_end: None,
+                vat_regime: None,
+                director_monthly_gross: None,
+                director_charge_ratio_bps: None,
+            },
+            &human,
+        )
+        .unwrap();
+    let client_id = freeflow_core::domain::ClientId::new();
+    store
+        .connection()
+        .execute(
+            "INSERT INTO clients (id, name, created_at) \
+             VALUES (?1, 'Kappa Software', '2026-01-01T00:00:00Z')",
+            [client_id.to_string()],
+        )
+        .unwrap();
+    Executor::new(&mut store)
+        .execute(
+            &EmitInvoice {
+                client_id,
+                mission_id: None,
+                lines: vec![freeflow_core::domain::InvoiceLine {
+                    description: "Prestation".to_string(),
+                    quantity: 2.0,
+                    unit_price: freeflow_core::domain::Money::from_cents(100_000),
+                    vat_rate: freeflow_core::domain::VatRate::Standard,
+                }],
+                issued_on: time::Date::from_calendar_date(2026, time::Month::March, 10).unwrap(),
+                payment_terms_days: 30,
+            },
+            &human,
+        )
+        .unwrap();
+    let client = spawn_client(store).await;
+
+    // `out` sur un répertoire : le fichier prend son nom réglementaire.
+    let dir = db_path.parent().unwrap().to_path_buf();
+    let exported = call(
+        &client,
+        "fec.export",
+        json!({"period": 2026, "out": dir.to_str().unwrap()}),
+    )
+    .await;
+    assert_eq!(exported.is_error, Some(false), "{exported:?}");
+    let result = json_of(&exported);
+    assert_eq!(result["summary"]["file_name"], "552100554FEC20261231.txt");
+    assert_eq!(result["summary"]["entries"], 1);
+    assert_eq!(result["summary"]["total_debit_cents"], 240_000);
+    let path = dir.join("552100554FEC20261231.txt");
+    assert_eq!(result["path"], path.to_str().unwrap());
+    let content = std::fs::read_to_string(&path).unwrap();
+    assert!(content.starts_with("JournalCode|JournalLib|"), "{content}");
+    assert!(content.contains("|FA-2026-0001|20260310|"), "{content}");
+
+    // Un fichier existant n'est jamais écrasé par l'agent — la garde propre au canal MCP.
+    let again = call(
+        &client,
+        "fec.export",
+        json!({"period": 2026, "out": dir.to_str().unwrap()}),
+    )
+    .await;
+    assert_eq!(again.is_error, Some(true));
 
     client.cancel().await.unwrap();
 }
