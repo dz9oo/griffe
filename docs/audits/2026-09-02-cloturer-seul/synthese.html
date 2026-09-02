@@ -1,0 +1,435 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FreeFlow, audit « clôturer seul »</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Source+Sans+3:ital,wght@0,400;0,600;1,400&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    --bg: #f5f6f4;
+    --paper: #ffffff;
+    --ink: #1a2230;
+    --ink-2: #4b5563;
+    --ink-3: #7b8494;
+    --line: #dde1dd;
+    --accent: #0f766e;
+    --accent-soft: #e2f1ee;
+    --bloquant: #b3261e;
+    --bloquant-soft: #fbe9e7;
+    --majeur: #c2410c;
+    --majeur-soft: #fdebe0;
+    --mineur: #9a6b00;
+    --mineur-soft: #fbf1d6;
+    --ok: #2f7d4f;
+    --ok-soft: #e3f2e8;
+    --code-bg: #eef0ee;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #12161b;
+      --paper: #191e25;
+      --ink: #e7eaee;
+      --ink-2: #b4bbc6;
+      --ink-3: #7f8896;
+      --line: #2b323b;
+      --accent: #3fc9b8;
+      --accent-soft: #143a36;
+      --bloquant: #f28b82;
+      --bloquant-soft: #3b1f1d;
+      --majeur: #f2a26b;
+      --majeur-soft: #3d2618;
+      --mineur: #e5c46a;
+      --mineur-soft: #3a3116;
+      --ok: #7bd29a;
+      --ok-soft: #1d3326;
+      --code-bg: #232a33;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #12161b;
+    --paper: #191e25;
+    --ink: #e7eaee;
+    --ink-2: #b4bbc6;
+    --ink-3: #7f8896;
+    --line: #2b323b;
+    --accent: #3fc9b8;
+    --accent-soft: #143a36;
+    --bloquant: #f28b82;
+    --bloquant-soft: #3b1f1d;
+    --majeur: #f2a26b;
+    --majeur-soft: #3d2618;
+    --mineur: #e5c46a;
+    --mineur-soft: #3a3116;
+    --ok: #7bd29a;
+    --ok-soft: #1d3326;
+    --code-bg: #232a33;
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Source Sans 3", "Segoe UI", system-ui, sans-serif;
+    font-size: 17px;
+    line-height: 1.55;
+  }
+  main { max-width: 76ch; margin: 0 auto; padding: 48px 24px 96px; }
+  h1, h2, h3 {
+    font-family: "Bricolage Grotesque", "Source Sans 3", system-ui, sans-serif;
+    font-weight: 700;
+    line-height: 1.15;
+    text-wrap: balance;
+    margin: 0;
+  }
+  h1 { font-size: 2.6rem; letter-spacing: -0.01em; }
+  h2 { font-size: 1.55rem; margin-top: 56px; margin-bottom: 16px; padding-top: 16px; border-top: 2px solid var(--ink); }
+  h3 { font-size: 1.12rem; margin-top: 28px; margin-bottom: 8px; }
+  p { margin: 0 0 14px; }
+  a { color: var(--accent); }
+  code, pre {
+    font-family: "JetBrains Mono", ui-monospace, Menlo, monospace;
+    font-size: 0.86em;
+  }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; }
+  pre {
+    background: var(--code-bg);
+    padding: 12px 14px;
+    border-radius: 6px;
+    overflow-x: auto;
+    margin: 8px 0 14px;
+    line-height: 1.45;
+  }
+  pre code { background: none; padding: 0; }
+  .eyebrow {
+    font-family: "Source Sans 3", system-ui, sans-serif;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--ink-3);
+    margin-bottom: 10px;
+  }
+  .lede { font-size: 1.15rem; color: var(--ink-2); margin-top: 16px; max-width: 62ch; }
+
+  .verdict {
+    margin-top: 28px;
+    border-left: 5px solid var(--bloquant);
+    background: var(--paper);
+    padding: 18px 22px;
+    border-radius: 0 8px 8px 0;
+  }
+  .verdict strong { color: var(--bloquant); }
+  .verdict p:last-child { margin-bottom: 0; }
+
+  .reviewers { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 20px; }
+  .reviewer {
+    background: var(--paper);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 14px 16px;
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .reviewer .who { font-weight: 600; }
+  .reviewer .tag {
+    display: inline-block; font-family: "JetBrains Mono", monospace; font-size: 0.72rem;
+    background: var(--accent-soft); color: var(--accent); padding: 2px 7px; border-radius: 4px; align-self: flex-start;
+  }
+  .reviewer .what { color: var(--ink-2); font-size: 0.95rem; }
+  @media (max-width: 640px) { .reviewers { grid-template-columns: 1fr; } }
+
+  table { border-collapse: collapse; width: 100%; font-size: 0.95rem; font-variant-numeric: tabular-nums; }
+  .tablewrap { overflow-x: auto; margin: 10px 0 18px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-weight: 600; color: var(--ink-2); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; }
+  td.num { text-align: right; font-family: "JetBrains Mono", monospace; }
+
+  /* Parcours strip */
+  .strip { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; margin: 16px 0 8px; }
+  .step { border-radius: 6px; padding: 10px 8px; font-size: 0.82rem; line-height: 1.3; border: 1px solid var(--line); background: var(--paper); }
+  .step b { display: block; font-size: 0.85rem; margin-bottom: 4px; }
+  .step.ko { border-color: var(--bloquant); background: var(--bloquant-soft); }
+  .step.warn { border-color: var(--majeur); background: var(--majeur-soft); }
+  .step.ok { border-color: var(--ok); background: var(--ok-soft); }
+  .step small { color: var(--ink-2); }
+  @media (max-width: 700px) { .strip { grid-template-columns: repeat(2, 1fr); } }
+  .legend { font-size: 0.85rem; color: var(--ink-3); margin-bottom: 20px; }
+
+  /* Findings */
+  .finding {
+    background: var(--paper);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 16px 18px 14px;
+    margin: 12px 0;
+  }
+  .finding header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 12px; margin-bottom: 8px; }
+  .finding .n { font-family: "Bricolage Grotesque", sans-serif; font-weight: 700; font-size: 1.15rem; color: var(--ink-3); }
+  .finding h3 { margin: 0; font-size: 1.08rem; flex: 1 1 auto; }
+  .sev {
+    display: inline-block; font-size: 0.7rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+    padding: 2px 8px; border-radius: 4px;
+  }
+  .sev.b { background: var(--bloquant-soft); color: var(--bloquant); }
+  .sev.m { background: var(--majeur-soft); color: var(--majeur); }
+  .sev.i { background: var(--mineur-soft); color: var(--mineur); }
+  .chips { display: inline-flex; gap: 4px; }
+  .chip {
+    font-family: "JetBrains Mono", monospace; font-size: 0.68rem; padding: 1px 6px; border-radius: 3px;
+    border: 1px solid var(--line); color: var(--ink-2);
+  }
+  .finding p { margin-bottom: 8px; font-size: 0.98rem; }
+  .finding p:last-child { margin-bottom: 0; }
+  .finding .where { color: var(--ink-3); font-size: 0.88rem; }
+  .finding .where code { font-size: 0.8rem; }
+
+  ul, ol { padding-left: 22px; margin: 0 0 14px; }
+  li { margin-bottom: 6px; }
+  li::marker { color: var(--ink-3); }
+  .compact li { margin-bottom: 3px; font-size: 0.96rem; }
+
+  .lots { counter-reset: lot; list-style: none; padding: 0; }
+  .lots li {
+    display: grid; grid-template-columns: 64px 1fr; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line);
+  }
+  .lots .lot { font-family: "Bricolage Grotesque", sans-serif; font-weight: 700; color: var(--accent); font-size: 1.1rem; }
+  .lots .lot small { display: block; font-family: "Source Sans 3", sans-serif; font-weight: 400; font-size: 0.72rem; color: var(--ink-3); letter-spacing: 0.06em; text-transform: uppercase; }
+  .lots b { display: block; }
+  .lots span { color: var(--ink-2); font-size: 0.96rem; }
+
+  .note { font-size: 0.9rem; color: var(--ink-3); border-top: 1px solid var(--line); padding-top: 14px; margin-top: 40px; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+</style>
+</head>
+<body>
+
+<main>
+  <div class="eyebrow">Audit de mise en service · 2 septembre 2026 · commit e58409f (lot 35)</div>
+  <h1>FreeFlow face à un débutant qui reprend son bilan et clôture seul au 30 septembre</h1>
+  <p class="lede">Trois relecteurs ont rejoué le même scénario sur des coffres neufs, chacun dans son rôle : un expert-comptable spécialisé SASU, un développeur freelance sans notion comptable, un développeur senior Rust. Voici leurs constats croisés et dédoublonnés.</p>
+
+  <div class="verdict">
+    <p><strong>Verdict unanime : pas prêt pour ce scénario.</strong> Le cœur calcule juste et les gardes d'immuabilité tiennent. Mais l'utilisateur cible bute avant d'y arriver, et deux trous produisent un bilan faux ou irréversible : une dette reprise du cabinet ne peut jamais être soldée, et l'application laisse clore puis approuver un exercice non écoulé.</p>
+    <p>Chaque relecteur, sans se concerter, a fait la même liste de tête : profil société hors de la fenêtre, relevé bancaire réel inimportable, aucune reprise depuis Tiime ou Indy, sorties en <code>Debug</code> Rust.</p>
+  </div>
+
+  <div class="reviewers">
+    <div class="reviewer">
+      <span class="tag">EC</span>
+      <span class="who">Expert-comptable SASU</span>
+      <span class="what">Scénario complet en CLI, chiffres posés à la main, contrôle de la liasse, du PV, du FEC et des obligations déclaratives.</span>
+    </div>
+    <div class="reviewer">
+      <span class="tag">FL</span>
+      <span class="who">Freelance débutant</span>
+      <span class="what">Parcours dans la fenêtre depuis la création du coffre, avec une chronologie honnête des moments où il s'est perdu.</span>
+    </div>
+    <div class="reviewer">
+      <span class="tag">RS</span>
+      <span class="who">Senior Rust</span>
+      <span class="what">Cas limites en CLI et fenêtre, relevés de banques françaises, contrat MCP, revue de code des points à risque.</span>
+    </div>
+  </div>
+
+  <h2>Le scénario rejoué</h2>
+  <p>SASU à l'IS d'un développeur, capital 1 000 €, clôture au 30 septembre, bilan 2025 remis par un cabinet, exercice en cours du 1er octobre 2025 au 30 septembre 2026 sans aucune facture émise. Seules dépenses : frais de compte pro, honoraires du cabinet, une CFE. Objectif : produire le bilan au 30 septembre 2026 et toutes les démarches, sans notion comptable, guidé dans l'application.</p>
+
+  <div class="strip">
+    <div class="step ko"><b>1. Coffre et profil</b><small>Profil saisissable uniquement en console. Clôture et TVA non obligatoires.</small></div>
+    <div class="step warn"><b>2. Bilan d'ouverture</b><small>Formulaire clair, mais recopie manuelle sans import Tiime/Indy.</small></div>
+    <div class="step ko"><b>3. Relevé bancaire</b><small>Aucun export de banque réelle accepté. Rien dans la fenêtre.</small></div>
+    <div class="step ko"><b>4. Dépenses</b><small>Payer une dette reprise devient une charge : double comptage.</small></div>
+    <div class="step ko"><b>5. Clôture</b><small>Acceptée avant la fin d'exercice, approuvée à une date future, immuable.</small></div>
+    <div class="step ok"><b>6. Documents</b><small>Six documents cohérents, téléchargeables. Cases 2033-B à corriger.</small></div>
+    <div class="step warn"><b>7. Démarches</b><small>TVA absente du parcours, DAS2 et 2777 absentes, PV incomplet.</small></div>
+  </div>
+  <p class="legend">Rouge : le débutant est bloqué ou produit un résultat faux. Orange : il passe avec de l'aide extérieure. Vert : ça fonctionne.</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Sévérité</th><th>Constats consolidés</th><th>Ce que ça veut dire</th></tr></thead>
+    <tbody>
+      <tr><td><span class="sev b">Bloquant</span></td><td class="num">5</td><td>Le scénario ne peut pas aboutir, ou aboutit à un bilan faux ou irréversible.</td></tr>
+      <tr><td><span class="sev m">Majeur</span></td><td class="num">16</td><td>Conformité incorrecte, donnée fausse, ou étape impossible sans le README ou le code.</td></tr>
+      <tr><td><span class="sev i">Mineur</span></td><td class="num">14</td><td>Friction, incohérence ou cas limite, sans effet sur les comptes.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Constats bloquants</h2>
+
+  <article class="finding">
+    <header><span class="n">1</span><h3>Une dette ou une créance reprise au bilan d'ouverture ne peut jamais être soldée</h3><span class="sev b">Bloquant</span><span class="chips"><span class="chip">EC</span><span class="chip">RS</span></span></header>
+    <p>Le bilan du cabinet contient toujours des honoraires à payer (401), un solde d'IS (444), souvent un compte courant (455) ou un crédit de TVA. Quand le débit correspondant passe en banque, le seul geste possible est de le saisir en dépense : la charge est comptée deux fois, le compte de tiers reste au passif, et la banque dérivée est surestimée.</p>
+    <p>Chiffres observés par l'expert-comptable : banque à 8 143,12 € au lieu de 6 343,12 €, dettes fantômes de 1 800 € au 2033-A et au FEC. En suivant le conseil du parcours (rapprocher en dépense), le résultat passe de −1 226,90 € à −2 926,90 €. Aucun des deux chemins ne donne un bilan déposable.</p>
+    <p class="where">Où : <code>ledger.rs</code>, <code>expenses::rapprochable_debit</code>, étape « rapprochement » de <code>closing.rs</code>. Même impasse pour un acompte d'IS, une CFE, un remboursement de compte courant, des dividendes versés.</p>
+  </article>
+
+  <article class="finding">
+    <header><span class="n">2</span><h3>Clôture d'un exercice non écoulé acceptée, puis approbation à une date future, sans retour possible</h3><span class="sev b">Bloquant</span><span class="chips"><span class="chip">FL</span><span class="chip">EC</span><span class="chip">RS</span></span></header>
+    <p>Le parcours affiche « bloquant : exercice écoulé », mais le cœur n'a pas cette garde. Le 2 septembre, la CLI et la fenêtre acceptent de clore l'exercice au 30 septembre 2026, et même l'exercice 2027 ou une période de dix ans. L'approbation refuse une date antérieure à la clôture mais accepte le 15 décembre 2026 ou le 31 décembre 2028, et ne signale pas un dépassement du délai de six mois.</p>
+    <p>Une fois approuvé, l'exercice est immuable : pas de commande d'annulation, les dépenses de septembre sont refusées à jamais, et la sauvegarde automatique ne tourne que tous les sept jours. Le relecteur freelance a fait exactement cette erreur en trois clics. Ensuite, le parcours affiche « ✓ Exercice écoulé » le 2 septembre.</p>
+    <p class="where">Où : <code>fiscal_year.rs</code> (<code>CloseFiscalYear</code>, <code>ApproveFiscalYear</code>), <code>closing.rs:509-520</code>, <code>POST /cloture</code>.</p>
+  </article>
+
+  <article class="finding">
+    <header><span class="n">3</span><h3>Le profil société ne se saisit pas dans la fenêtre, et rien n'accueille le premier lancement</h3><span class="sev b">Bloquant</span><span class="chips"><span class="chip">FL</span><span class="chip">RS</span></span></header>
+    <p>Après la création du coffre, le tableau de bord montre des indicateurs de prospection. Le seul chemin vers le profil est le bouton du parcours qui renvoie sur la console, où il faut deviner une commande à douze options. La date de clôture et le régime de TVA n'y sont pas obligatoires : le premier essai du freelance a produit un parcours en année civile, « clôture supposée, TVA mensuelle supposée ». Le choix entre les quatre régimes de TVA n'est expliqué nulle part dans l'application.</p>
+    <p class="where">Où : aucune route <code>company</code> dans <code>freeflow-web/src/lib.rs</code> ; <code>views/cloture.rs:392-395</code>.</p>
+  </article>
+
+  <article class="finding">
+    <header><span class="n">4</span><h3>Aucun export de banque française n'est importable, et le format attendu n'est écrit nulle part</h3><span class="sev b">Bloquant</span><span class="chips"><span class="chip">FL</span><span class="chip">RS</span></span></header>
+    <p>Un export Qonto échoue avec « attendu 3 champs, trouvé 1 ». Un relevé en latin-1 avec colonnes débit et crédit échoue en « stream did not contain valid UTF-8 ». Un CSV avec BOM et dates JJ/MM/AAAA échoue sur la date. Seul un fichier <code>date;description;montant</code> en ISO passe, format documenté uniquement dans un commentaire du code. L'import n'existe pas dans la fenêtre, et depuis la console le chemin est relatif au processus, inconnaissable depuis l'application desktop.</p>
+    <p class="where">Où : <code>billing/import.rs:26-73</code>, <code>freeflow-cli/src/invoice.rs:334</code>. Les fichiers OFX 1.x et 2 minimaux passent.</p>
+  </article>
+
+  <article class="finding">
+    <header><span class="n">5</span><h3>Aucune reprise possible depuis Tiime, Indy ou le cabinet</h3><span class="sev b">Bloquant</span><span class="chips"><span class="chip">FL</span><span class="chip">EC</span></span></header>
+    <p>Pas d'import de balance ni de FEC. La seule voie est la recopie manuelle compte par compte dans la syntaxe <code>compte:libellé:D|C:montant</code>. Le bilan PDF du cabinet est présenté par rubriques sans numéros de compte, et rien n'explique qu'il faut demander la balance de clôture ni comment passer d'actif et passif à débit et crédit. Une balance réelle de SASU compte huit à quinze lignes, pas « trois ou quatre » comme l'annonce le README. Ne sont pas repris non plus l'IS de l'exercice précédent, la TVA due N−1 et les honoraires déjà versés dans l'année civile.</p>
+  </article>
+
+  <h2>Constats majeurs</h2>
+
+  <article class="finding">
+    <header><span class="n">6</span><h3>Une dizaine de sorties texte sont des dumps <code>Debug</code> Rust</h3><span class="sev m">Majeur</span><span class="chips"><span class="chip">FL</span><span class="chip">EC</span><span class="chip">RS</span></span></header>
+    <p>Le repli de <code>format_value</code> imprime <code>{value:?}</code> hors JSON. Touchés : <code>company show</code>, <code>company set-profile</code> (« ✓ () »), <code>fiscal calendar</code>, <code>fiscal deadlines</code>, <code>audit verify-chain</code>, <code>pending list</code>, <code>expense show</code>, et tous les retours d'identifiants. Le calendrier fiscal, la commande qui liste les obligations du débutant, est illisible. La console de la fenêtre a le même rendu.</p>
+<pre><code>fiscal calendar --today 2026-09-02
+[Object {"amount_cents": Null, "due_on": String("2026-09-15"), "kind": String("is_acompte"), …
+company show
+Some(CompanyProfileWithVatFiling { profile: CompanyProfile { … siren: Siren([8, 8, 9, 1, 1, 2, 3, 4, 8]) …</code></pre>
+    <p class="where">Où : <code>freeflow-cli/src/output.rs:28,42</code>.</p>
+  </article>
+
+  <article class="finding">
+    <header><span class="n">7</span><h3>Dates en <code>[année, jour ordinal]</code> dans plusieurs JSON, dont la liasse remise au cabinet</h3><span class="sev m">Majeur</span><span class="chips"><span class="chip">FL</span><span class="chip">EC</span><span class="chip">RS</span></span></header>
+    <p><code>bank list</code>, <code>expense show</code>, <code>pending list</code> et la liasse sérialisent <code>[2025, 274]</code>, quand <code>year show</code> ou le parcours donnent « 2026-09-30 ». Le serveur MCP hérite du mélange : un agent reçoit les deux formats selon l'outil.</p>
+  </article>
+
+  <article class="finding">
+    <header><span class="n">8</span><h3><code>freeflow init --db nom.db</code> échoue et laisse un sidecar orphelin</h3><span class="sev m">Majeur</span><span class="chips"><span class="chip">EC</span><span class="chip">RS</span></span></header>
+    <p>Avec un chemin sans répertoire, <code>sync_dir</code> reçoit une chaîne vide après le renommage du sidecar. Résultat : <code>nom.db.kdf</code> existe, <code>nom.db</code> non, et le nom est bloqué (« un coffre existe déjà », puis « aucun coffre »). C'est la toute première commande du parcours. Un chemin préfixé par <code>./</code> fonctionne.</p>
+    <p class="where">Où : <code>store/kdf.rs:808-818</code>.</p>
+  </article>
+
+  <article class="finding">
+    <header><span class="n">9</span><h3>Liasse : chiffre d'affaires en case 210 au lieu de 218, et d'autres cases approximatives</h3><span class="sev m">Majeur</span><span class="chips"><span class="chip">EC</span></span></header>
+    <p>Vérifié sur la notice : 210 est « ventes de marchandises », 218 « production vendue, services ». Les taxes tombent en 242 (charges externes) au lieu de 244, la rémunération du dirigeant n'est pas ventilée entre 250 et 252, l'IS n'est pas en 306, les entrées « 2065 / IS » et « 2065 / NET » ne sont pas des cases du formulaire. Les tableaux 2033-C (immobilisations) et 2033-F (composition du capital, obligatoire pour un associé unique) n'existent pas.</p>
+    <p class="where">Où : <code>freeflow-docs/src/liasse.rs:185-203</code>.</p>
+  </article>
+
+  <article class="finding">
+    <header><span class="n">10</span><h3>Le PV de décisions de l'associé unique n'identifie personne et omet des mentions obligatoires</h3><span class="sev m">Majeur</span><span class="chips"><span class="chip">EC</span></span></header>
+    <p>Le PV dit « l'associé unique a pris les décisions suivantes » sans nom, adresse ni nombre d'actions, et donne quitus à un président anonyme. Manquent : la mention de l'article 223 quater du CGI (dépenses non déductibles, même « néant »), les conventions réglementées, l'inscription au registre des décisions, la dispense de rapport de gestion. L'affectation d'une perte est rédigée comme un « distribuable » de 5 123,10 €. L'option de l'article L227-9 alinéa 3, où le dépôt des comptes signés vaut approbation quand l'associé unique est président, n'est proposée nulle part alors que c'est la voie la plus simple pour la cible.</p>
+    <p class="where">Où : <code>freeflow-docs/src/minutes.rs</code> ; aucun champ « associé unique » dans le profil.</p>
+  </article>
+
+  <article class="finding">
+    <header><span class="n">11</span><h3>DAS2 et prélèvements sur dividendes (2777, PFU) absents</h3><span class="sev m">Majeur</span><span class="chips"><span class="chip">EC</span></span></header>
+    <p>Toute société qui verse plus de 1 200 € d'honoraires à un même bénéficiaire dans l'année civile doit déposer une DAS2. La catégorie « honoraires » existe, mais rien ne cumule par bénéficiaire ni par année civile. Dans le scénario, le cabinet reçoit 1 500 € à cheval sur deux années civiles, exactement le calcul qu'un débutant ne fera pas. L'affectation modélise des dividendes, mais aucune échéance ne rappelle la retenue à la source ni la 2777 avant le 15 du mois suivant.</p>
+  </article>
+
+  <article class="finding">
+    <header><span class="n">12</span><h3>La TVA est absente du parcours, et le calendrier se trompe pour une clôture décalée en 2027</h3><span class="sev m">Majeur</span><span class="chips"><span class="chip">FL</span><span class="chip">EC</span></span></header>
+    <p>Aucune étape TVA dans les seize du parcours : rien ne dit qu'une CA3 « néant » reste due chaque mois sans CA, ni qu'un crédit de 120 € existe et se reporte ou se rembourse. Au réel simplifié avec clôture au 30 septembre, le calendrier réclame en 2027 une CA3 pour juillet à septembre en doublon de la CA12 E qui couvre déjà ce trimestre. La CA12 ignore aussi le crédit de TVA repris à l'ouverture.</p>
+    <p class="where">Où : <code>closing.rs</code> (phase « déclarer ») ; <code>fiscal.rs</code>, borne <code>earliest_period</code> testée pour une clôture au 31 décembre seulement.</p>
+  </article>
+
+  <article class="finding">
+    <header><span class="n">13</span><h3>Pas de catégorie « impôts et taxes » : la CFE part en charges diverses</h3><span class="sev m">Majeur</span><span class="chips"><span class="chip">FL</span><span class="chip">EC</span></span></header>
+    <p>Saisie en « autre », la CFE va en 658000 et en case 242 de la 2033-B au lieu de 635 et case 244. Le résultat est juste, la ventilation de la liasse non, et le débutant ne peut pas le savoir.</p>
+  </article>
+
+  <article class="finding">
+    <header><span class="n">14</span><h3>FEC : référence de pièce non unique et libellés de compte multiples</h3><span class="sev m">Majeur</span><span class="chips"><span class="chip">EC</span><span class="chip">RS</span></span></header>
+    <p>La pièce d'une dépense est « DEP- » suivi des huit premiers caractères d'un UUID v7, c'est-à-dire un horodatage : huit dépenses créées la même minute partagent la même référence. Une dépense avec justificatif porte le nom de fichier complet, plus de 80 caractères. Le compte 401000 porte deux libellés selon l'écriture, ce que le contrôle « Test Compta Demat » signale. Le reste du format est conforme.</p>
+    <p class="where">Où : <code>ledger.rs:552</code>.</p>
+  </article>
+
+  <article class="finding">
+    <header><span class="n">15</span><h3>La TVA déductible n'est bornée que par le TTC</h3><span class="sev m">Majeur</span><span class="chips"><span class="chip">RS</span></span></header>
+    <p>Sur 600 € TTC à 20 %, la TVA contenue est 100 € ; l'application accepte 150 €. La charge HT, le 445660 et la CA12 sont faux. Le taux est saisi, la borne est calculable.</p>
+    <p class="where">Où : <code>expenses.rs:132-134</code>.</p>
+  </article>
+
+  <article class="finding">
+    <header><span class="n">16</span><h3>Dédoublonnage d'import fragile, FITID ignoré, aucune suppression de transaction</h3><span class="sev m">Majeur</span><span class="chips"><span class="chip">RS</span></span></header>
+    <p>La clé d'unicité est (date, montant, libellé). Le même relevé importé en CSV puis en OFX crée des doublons « à rapprocher » à jamais, faute de <code>bank rm</code>. Le parcours les compte ensuite comme non rapprochés.</p>
+  </article>
+
+  <article class="finding">
+    <header><span class="n">17</span><h3>Justificatif impossible à joindre après clôture, et stocké en clair dans un dossier partagé</h3><span class="sev m">Majeur</span><span class="chips"><span class="chip">RS</span><span class="chip">FL</span></span></header>
+    <p>Joindre une pièce ne change ni montant ni date, mais la garde « exercice clôturé » la refuse : la facture du cabinet, qui arrive typiquement après la clôture, ne peut plus être attachée. Le dossier <code>receipts/</code> est à côté du coffre, en clair, et mélange les pièces de tous les coffres du même répertoire, alors que le README promet « un seul fichier chiffré ».</p>
+  </article>
+
+  <article class="finding">
+    <header><span class="n">18</span><h3>Immobilisations et amortissements acceptés à l'ouverture, jamais dotés, sans alerte</h3><span class="sev m">Majeur</span><span class="chips"><span class="chip">EC</span></span></header>
+    <p>Un bilan de cabinet pour un développeur contient presque toujours un ordinateur. Les comptes 218 et 281 sont repris et bien ventilés au 2033-A, mais aucune dotation n'est calculée ni proposée, la charge constatée d'avance n'est jamais extournée. Le résultat est surestimé et rien ne prévient l'utilisateur.</p>
+  </article>
+
+  <article class="finding">
+    <header><span class="n">19</span><h3>Les messages d'erreur de la fenêtre parlent en jargon et renvoient à la ligne de commande</h3><span class="sev m">Majeur</span><span class="chips"><span class="chip">FL</span><span class="chip">RS</span></span></header>
+    <p>Préfixe systématique « règle métier violée », instructions du type « supprimez d'abord l'exercice (freeflow year rm) » ou « en CLI : freeflow expense edit … », et messages bruts d'axum en anglais sur une requête mal formée. L'écran facturation vide dit « émettez-en une depuis la CLI ».</p>
+  </article>
+
+  <article class="finding">
+    <header><span class="n">20</span><h3>Texte trompeur : « réserve légale cumulée 0,00 € » sur l'exercice suivant</h3><span class="sev m">Majeur</span><span class="chips"><span class="chip">FL</span><span class="chip">EC</span></span></header>
+    <p>Le parcours 2027 affiche zéro alors que 100 € ont été repris à l'ouverture. Le calcul du minimum et le plafond utilisent bien la chaîne ; seul le texte lit la dotation du dernier exercice. C'est le texte qu'un débutant lit pour se rassurer.</p>
+    <p class="where">Où : <code>closing.rs:618-621</code>.</p>
+  </article>
+
+  <article class="finding">
+    <header><span class="n">21</span><h3>Défauts et présélections de l'écran clôture incohérents le 2 septembre</h3><span class="sev m">Majeur</span><span class="chips"><span class="chip">FL</span></span></header>
+    <p>La barre propose « parcours de l'exercice clos en 2025 » à côté de « bilan 2026 », et le formulaire de clôture pré-remplit 2024-10-01 → 2025-09-30, une période antérieure au bilan d'ouverture qui échouerait. Le panneau de rapprochement présélectionne le débit le plus récent plutôt que celui de la date de la dépense. Sans profil, le parcours affiche des échéances d'année civile qui seront fausses.</p>
+  </article>
+
+  <h2>Constats mineurs</h2>
+  <ul class="compact">
+    <li>IS non arrondi à l'euro (1 315,96 € au lieu de 1 316 €).</li>
+    <li><code>fiscal calendar</code>, <code>fiscal deadlines</code> et <code>forecast show</code> exigent <code>--today</code>, avec un message clap en anglais, alors que le parcours le déduit.</li>
+    <li>La date du jour est prise en UTC : à Paris, le parcours bascule avec deux heures de retard.</li>
+    <li>Le README et CLAUDE.md écrivent <code>freeflow confirm &lt;id&gt;</code>, le binaire exige <code>--id</code>.</li>
+    <li>Une dépense datée avant le bilan d'ouverture est acceptée puis invisible partout.</li>
+    <li>Un débordement de <code>Money</code> sur deux montants absurdes fait paniquer le parcours et la balance jusqu'à suppression.</li>
+    <li>Dispense d'acomptes d'IS et de TVA affirmée sans IS ni TVA de référence connus pour le premier exercice.</li>
+    <li>Le montant « DSN » affiche le coût total du dirigeant, pas les cotisations ; la sémantique du ratio de charges est ambiguë.</li>
+    <li>À-nouveaux avec 110 et 119 ouverts simultanément ; libellés saisis à l'ouverture qui deviennent permanents sur le compte.</li>
+    <li><code>year render … liasse --out x.pdf</code> écrit du JSON dans un fichier .pdf sans avertir.</li>
+    <li>Approbation hors délai : l'échéance affichée prend la valeur de la date d'approbation.</li>
+    <li>Aides <code>--help</code> lacunaires : syntaxe des lignes de bilan, valeurs de <code>--vat-rate</code>, format de <code>bank import</code>.</li>
+    <li>Le lexique n'a pas de point d'entrée global ; la console répond « unrecognized subcommand » à « aide ».</li>
+    <li>Tableau de bord : « capacité −0 % ».</li>
+  </ul>
+
+  <h2>Ce qui tient</h2>
+  <p>Les trois relecteurs le disent avec les mêmes mots : le cœur est juste et rejouable. Résultat, déficit reportable, report à nouveau, plafond de réserve légale avec la réserve reprise, chaînage des à-nouveaux d'un exercice sur l'autre, imputation du déficit et IS à 15 % en 2027, tout tombe sur les chiffres posés à la main avant vérification.</p>
+  <ul class="compact">
+    <li>Création et déverrouillage du coffre clairs, avertissement de non-récupération explicite.</li>
+    <li>Formulaire de bilan d'ouverture avec aide par champ et trois messages d'erreur précis ; capitaux propres reconstitués ; figé dès qu'un exercice est clos.</li>
+    <li>Bloc « débits du relevé à rapprocher » et formulaire de dépense pré-rempli : le meilleur moment du parcours freelance.</li>
+    <li>Parcours de clôture lisible, statuts explicites, commande suivante suggérée, échéances d'une clôture décalée exactes (approbation 30 mars 2027, solde d'IS 15 janvier, liasse 30 décembre, greffe un mois après l'AG).</li>
+    <li>Lexique réellement écrit pour un débutant.</li>
+    <li>Six documents cohérents entre eux, FEC formellement conforme (18 colonnes, journaux AN, AC, BQ, équilibre, numérotation, nommage).</li>
+    <li>Gardes du cœur toutes en français avec codes de sortie distincts ; SIREN et clé de TVA vérifiés ; audit intact ; sauvegarde et restauration fonctionnelles ; aucun 500 dans la fenêtre.</li>
+  </ul>
+
+  <h2>Ordre de travail proposé</h2>
+  <p>Chaque lot reprend un groupe de constats. Les deux premiers suppriment les cas où l'application produit un bilan faux ou irréversible ; les suivants rendent le scénario faisable sans README.</p>
+  <ol class="lots">
+    <li><div class="lot">36<small>base saine</small></div><div><b>Garde-fous et sorties</b><span>Clôture refusée avant la fin d'exercice et approbation refusée à une date future, avertissement au-delà de six mois, sauvegarde forcée avant approbation, chemin de retour ; <code>init</code> sur chemin nu ; fin du repli <code>Debug</code> ; dates ISO partout, liasse en premier. Constats 2, 6, 7, 8, 20, 21.</span></div></li>
+    <li><div class="lot">37<small>justesse</small></div><div><b>Un débit qui n'est pas une charge</b><span>Régler une dette ou une créance de bilan depuis le relevé (401, 444, 445, 455, dividendes, virement interne), proposé par le parcours tant qu'un compte de tiers repris reste ouvert ; catégorie « impôts et taxes » ; TVA déductible bornée par le taux ; pièce FEC unique ; alerte sur un fait daté hors exercice. Constats 1, 13, 14, 15.</span></div></li>
+    <li><div class="lot">38<small>relevé</small></div><div><b>Import bancaire réel</b><span>Détection du séparateur, de la décimale, du format de date, de l'encodage et des colonnes débit et crédit ; FITID en OFX ; <code>bank rm</code> ; import depuis la fenêtre, le multipart existe déjà ; message d'erreur qui donne le format. Constats 4, 16.</span></div></li>
+    <li><div class="lot">39<small>fenêtre</small></div><div><b>Premier lancement guidé</b><span>Assistant de première configuration en quatre écrans (ma société, d'où venez-vous, votre banque, prochaine étape), écran « Ma société » persistant avec aide par champ et régimes de TVA expliqués, bandeau « prochaine étape » sur le tableau de bord, messages en langage courant sans commande CLI, lexique accessible partout, justificatif joignable après clôture. Constats 3, 17, 19.</span></div></li>
+    <li><div class="lot">40<small>reprise</small></div><div><b>Reprise depuis Tiime, Indy ou le cabinet</b><span>Import d'une balance CSV ou du FEC de l'exercice précédent pour générer le bilan d'ouverture, avec explication de « demandez la balance de clôture » et de la conversion actif/passif en débit/crédit ; reprise de l'IS et de la TVA de référence et des honoraires de l'année civile. Constat 5.</span></div></li>
+    <li><div class="lot">41<small>conformité</small></div><div><b>Documents et déclarations</b><span>Liasse en 218, 244, 250/252, 306, 2033-F ; PV avec identité de l'associé et du président, 223 quater, conventions réglementées, registre, rédaction d'une perte, option L227-9 alinéa 3 ; étape TVA du parcours ; CA3 et CA12 pour clôture décalée ; DAS2 et 2777. Constats 9 à 12.</span></div></li>
+    <li><div class="lot">42<small>plus tard</small></div><div><b>Amortissements minimaux</b><span>Détecter un compte 28x à l'ouverture et avertir ; dotation linéaire saisie ou reprise du cabinet ; 2033-C. Constat 18.</span></div></li>
+  </ol>
+
+  <p class="note">Rapports complets des trois relecteurs, coffres de preuve et documents produits dans ce dossier : <code>rapport-expert-comptable.md</code>, <code>rapport-freelance.md</code>, <code>rapport-rust.md</code>. Le dépôt n'a pas été modifié. Sources de droit citées par l'expert-comptable : notice 2033-B-SD, C. com. L227-9, L227-10, L232-10, L232-23, L232-25, CGI 223 quater, 240, 1657, 1668, 117 quater, BOI-RES-TVA-000253.</p>
+</main>
+</body>
+</html>
