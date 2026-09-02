@@ -66,6 +66,26 @@ pub fn is_french_business_day(date: Date) -> bool {
         && !french_public_holidays(date.year()).contains(&date)
 }
 
+/// Premier jour ouvré français à partir de `date` incluse : `date` elle-même si elle est ouvrée,
+/// sinon le jour ouvré suivant. C'est la règle de report des échéances fiscales (une date limite
+/// qui tombe un samedi, un dimanche ou un jour férié est reportée au premier jour ouvrable
+/// suivant).
+///
+/// # Panics
+///
+/// Ne panique jamais en pratique : `Date::next_day` ne peut échouer qu'au-delà de l'an 9999, et il
+/// n'existe pas plus de quatre jours non ouvrés consécutifs dans le calendrier français.
+#[must_use]
+pub fn next_french_business_day_on_or_after(date: Date) -> Date {
+    let mut current = date;
+    while !is_french_business_day(current) {
+        current = current
+            .next_day()
+            .expect("un jour ouvré existe toujours avant l'an 9999");
+    }
+    current
+}
+
 /// Nombre de jours ouvrés français dans l'intervalle `[start, end]` (bornes inclusives).
 ///
 /// # Panics

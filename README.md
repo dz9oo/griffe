@@ -107,7 +107,11 @@ implémentation.
   se modifie et ne se supprime plus** : le résultat figé à la clôture a été calculé sur ces
   lignes-là — supprimez d'abord l'exercice s'il n'est qu'un projet (`freeflow year rm`).
 - Échéances indicatives CA3 (TVA), acomptes d'IS, CFE — **volontairement pas une source de vérité
-  fiscale** : le module le documente explicitement, à vérifier sur impots.gouv.fr.
+  fiscale** : le module le documente explicitement, à vérifier sur impots.gouv.fr. La date limite
+  de la CA3 suit toutefois la **grille officielle** (BOFIP BOI-TVA-DECLA-20-20-10-10) : zone du
+  siège (Paris/92/93/94 ou autres départements), forme juridique (EI, société, SA/SAS) et deux
+  premiers chiffres du SIREN, périodicité mensuelle ou trimestrielle selon le régime déclaré, et
+  report au jour ouvré suivant quand la date tombe un week-end ou un jour férié.
 - Prévisionnel de trésorerie sur 12 mois (factures émises non payées + missions signées non
   facturées + pipeline pondéré − charges connues).
 
@@ -269,8 +273,9 @@ distribués prêts à l'emploi — voir la checklist ci-dessous.
 - **Devise** : euro uniquement — cohérent avec le statut fiscal visé, mais pas adapté à une
   activité facturée dans une autre devise.
 - **Échéances fiscales indicatives, pas une source de vérité légale** — toujours vérifier sur
-  impots.gouv.fr, en particulier la date exacte de télédéclaration CA3 (dépend du dernier chiffre
-  du SIREN, non modélisé).
+  impots.gouv.fr. La date de la CA3 suit la grille officielle, mais le régime réel simplifié
+  (CA12 annuelle et acomptes semestriels) n'est pas modélisé : aucune échéance de TVA n'est
+  produite pour ce régime.
 - **`.dmg` macOS** : pas encore construit/testé (nécessite une machine macOS réelle).
 - **`.AppImage` Linux** : le bundling bute sur une incompatibilité d'environnement documentée dans
   `CLAUDE.md` (chemin `gdk-pixbuf` non-FHS sur certaines distributions type NixOS/Nix-sur-Arch).
@@ -327,7 +332,10 @@ distribués prêts à l'emploi — voir la checklist ci-dessous.
 - [ ] Validation PDF/A-3b par veraPDF en plus des vérifications structurelles actuelles.
 - [ ] Support d'autres statuts fiscaux français (micro-entreprise, société à l'IR).
 - [ ] Support multi-devise.
-- [ ] Échéance CA3 exacte tenant compte du régime de TVA déclaré et du dernier chiffre du SIREN.
+- [x] Échéance CA3 exacte : la règle officielle ne dépend pas du dernier chiffre du SIREN (l'idée
+      de départ de cet item) mais de la zone du siège, de la catégorie de redevable et des deux
+      premiers chiffres du SIREN — voir « Dépenses & obligations fiscales » ci-dessus. Reste hors
+      périmètre : la CA12 et les acomptes du régime réel simplifié.
 - [ ] Relances de paiement configurables (cadences, modèles de message) au-delà des brouillons
       `.eml` actuels.
 - [ ] Export comptable (FEC ou format équivalent) pour transmission à un expert-comptable.

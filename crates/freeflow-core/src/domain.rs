@@ -15,9 +15,11 @@ mod quote;
 mod siren;
 mod time_entry;
 mod vat;
+mod vat_filing;
 
 pub use calendar::{
     easter_sunday, french_business_days_in, french_public_holidays, is_french_business_day,
+    next_french_business_day_on_or_after,
 };
 pub use client::{Address, Client, Contact};
 pub use expense::{Expense, ExpenseCategory, UnknownExpenseCategory};
@@ -43,3 +45,4 @@ pub use quote::{
 pub use siren::{Siren, SirenError, VatNumber, VatNumberError};
 pub use time_entry::{TimeCategory, TimeEntry, UnknownTimeCategory};
 pub use vat::{UnknownVatRate, VatRate};
+pub use vat_filing::{Ca3FilingRule, VatFilerCategory, VatFilingZone};

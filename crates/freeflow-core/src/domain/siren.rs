@@ -48,6 +48,13 @@ impl Siren {
         self.0
     }
 
+    /// Les deux premiers chiffres du SIREN (`00..=99`) — le seul morceau du numéro dont dépend
+    /// la date limite de télédéclaration de la TVA (voir `domain::vat_filing`).
+    #[must_use]
+    pub const fn leading_pair(self) -> u8 {
+        self.0[0] * 10 + self.0[1]
+    }
+
     /// Valeur numérique du SIREN, utilisée pour le calcul de la clé de contrôle du numéro de
     /// TVA intracommunautaire français.
     #[must_use]
