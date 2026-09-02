@@ -3,7 +3,6 @@
 //! compris avec des données hostiles au balisage Typst (guillemets, `#`, crochets) dans le nom
 //! de la société.
 
-use freeflow_core::accounting::AccountingResult;
 use freeflow_core::company::CompanyProfile;
 use freeflow_core::domain::{Address, FiscalYear, FiscalYearId, Money, Siren};
 use freeflow_core::fiscal_year::FiscalYearRecord;
@@ -57,6 +56,10 @@ fn record(approved: bool) -> FiscalYearRecord {
         approved_on: approved.then(|| date(2027, Month::May, 15)),
         revision: 1,
         created_at: OffsetDateTime::UNIX_EPOCH,
+        losses_imputed: Money::ZERO,
+        carried_back: Money::ZERO,
+        carry_back_credit: Money::ZERO,
+        losses_carried_forward: Money::ZERO,
     }
 }
 
@@ -72,15 +75,7 @@ fn assert_is_pdf(bytes: &[u8], label: &str) {
 fn all_three_documents_render_to_pdf() {
     let profile = profile("Argon Digital");
     let year = record(true);
-    let result = AccountingResult {
-        period: FiscalYear::new(year.starts_on, year.ends_on),
-        revenue_ht: year.revenue_ht,
-        expenses: year.expenses,
-        director_remuneration: year.director_remuneration,
-        result_before_tax: year.result_before_tax,
-        corporate_tax: year.corporate_tax,
-        net_result: year.net_result,
-    };
+    let result = year.accounting_result();
 
     let minutes = render_approval_minutes(&profile, &year, date(2027, Month::May, 20)).unwrap();
     assert_is_pdf(&minutes, "PV d'approbation");
@@ -148,9 +143,11 @@ fn ledger(profile: &CompanyProfile) -> Ledger {
                     "455000:Compte courant d'associé:C:200.00".parse().unwrap(),
                     "512000:Banque:D:1200.00".parse().unwrap(),
                 ],
+                tax_losses: Money::ZERO,
             },
         )),
         snapshot: None,
+        prior_losses: freeflow_core::domain::Money::ZERO,
         appropriations: &[],
     })
 }

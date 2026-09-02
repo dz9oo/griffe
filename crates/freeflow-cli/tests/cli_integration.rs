@@ -1882,6 +1882,180 @@ fn payment_corrections_from_reconciliation_to_unreconcile_and_void() {
 }
 
 #[test]
+fn year_deficits_are_carried_forward_then_back_from_the_cli() {
+    let db = temp_db("year-deficits");
+    provision(&db);
+    set_company_profile(&db);
+
+    // Bilan d'ouverture avec 30 € de déficits antérieurs reportables (hors bilan).
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "year",
+            "opening",
+            "set",
+            "--opens-on",
+            "2026-01-01",
+            "--line",
+            "101000:Capital social:C:1000.00",
+            "--line",
+            "512000:Banque:D:1000.00",
+            "--tax-losses",
+            "30",
+        ])
+        .assert()
+        .success();
+    let opening = json_result(
+        &freeflow()
+            .env("FREEFLOW_DB", &db)
+            .args(["--json", "year", "opening", "show"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert_eq!(opening["tax_losses_cents"], 3_000);
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["year", "opening", "show"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Déficits fiscaux reportables repris : 30,00\u{a0}€",
+        ));
+
+    // 2026 : CA 6 175 € HT → 30 € imputés, IS 15 % sur 6 145 € = 921,75 €.
+    let client_id = create_client(&db, "Kappa Software");
+    let lines =
+        r#"[{"description":"Prestation","quantity":9.5,"unit_price":65000,"vat_rate":"Standard"}]"#;
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "invoice",
+            "emit",
+            "--client",
+            &client_id,
+            "--lines",
+            lines,
+            "--issued-on",
+            "2026-09-30",
+        ])
+        .assert()
+        .success();
+    // Le report en arrière est refusé sur un bénéfice : rien n'est clos.
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["year", "close", "--period", "2026", "--carry-back"])
+        .assert()
+        .failure()
+        .code(4)
+        .stderr(predicate::str::contains("aucun déficit"));
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["year", "close", "--period", "2026"])
+        .assert()
+        .success();
+    let shown = json_result(
+        &freeflow()
+            .env("FREEFLOW_DB", &db)
+            .args(["--json", "year", "show", "2026"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert_eq!(shown["result_before_tax_cents"], 617_500);
+    assert_eq!(shown["losses_imputed_cents"], 3_000);
+    assert_eq!(shown["taxable_result_cents"], 614_500);
+    assert_eq!(shown["corporate_tax_cents"], 92_175);
+    assert_eq!(shown["net_result_cents"], 525_325);
+    assert_eq!(shown["carried_back_cents"], 0);
+    assert_eq!(shown["losses_carried_forward_cents"], 0);
+
+    // 2027 : une dépense de 80 € nets, aucune facture → déficit de 80 €, reporté en arrière
+    // sur le bénéfice 2026 : créance de 15 % × 80 = 12 €, net −68 €.
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "expense",
+            "record",
+            "--label",
+            "Honoraires",
+            "--category",
+            "professional",
+            "--amount",
+            "96",
+            "--vat-rate",
+            "standard",
+            "--vat-deductible",
+            "16",
+            "--incurred-on",
+            "2027-03-05",
+        ])
+        .assert()
+        .success();
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["year", "close", "--period", "2027", "--carry-back"])
+        .assert()
+        .success();
+    let shown = json_result(
+        &freeflow()
+            .env("FREEFLOW_DB", &db)
+            .args(["--json", "year", "show", "2027"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert_eq!(shown["taxable_result_cents"], -8_000);
+    assert_eq!(shown["corporate_tax_cents"], 0);
+    assert_eq!(shown["carried_back_cents"], 8_000);
+    assert_eq!(shown["carry_back_credit_cents"], 1_200);
+    assert_eq!(shown["net_result_cents"], -6_800);
+    assert_eq!(shown["losses_carried_forward_cents"], 0);
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["year", "show", "2027"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Créance de report en arrière : 12,00\u{a0}€",
+        ));
+
+    // La liasse porte les cases de suivi des déficits, et le FEC la créance 444/699.
+    let liasse_path = db.with_file_name("liasse-2027.json");
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["year", "render", "2027", "liasse", "--out"])
+        .arg(&liasse_path)
+        .assert()
+        .success();
+    let liasse: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&liasse_path).unwrap()).unwrap();
+    let entries = liasse["entries"].as_array().unwrap();
+    assert!(
+        entries
+            .iter()
+            .any(|e| e["form"] == "2033-B" && e["case"] == "356" && e["amount_cents"] == 8_000),
+        "{entries:#?}"
+    );
+    let fec_path = db.with_file_name("fec-2027.txt");
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["fec", "export", "2027", "--out"])
+        .arg(&fec_path)
+        .assert()
+        .success();
+    let fec = std::fs::read_to_string(&fec_path).unwrap();
+    assert!(fec.contains("OD-RAD"), "{fec}");
+    assert!(fec.contains("699000"), "{fec}");
+}
+
+#[test]
 fn year_opening_balance_set_show_then_chains_into_the_first_close() {
     let db = temp_db("year-opening");
     provision(&db);

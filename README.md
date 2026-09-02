@@ -156,7 +156,30 @@ implémentation.
   le report à nouveau (110/119, et un 120/129 réputé affecté en report) et la réserve légale
   (1061) dont hérite le premier exercice clos ici — qui doit commencer le jour même de la
   reprise — et les **à-nouveaux** (journal `AN`) du grand livre de ce premier exercice. Figé dès
-  qu'un exercice est clos : corriger se fait en supprimant d'abord le projet de clôture.
+  qu'un exercice est clos : corriger se fait en supprimant d'abord le projet de clôture. Il
+  reprend aussi, hors bilan, les **déficits fiscaux antérieurs** encore reportables
+  (`--tax-losses`, case 870 du dernier tableau 2033-D déposé).
+- **Déficits fiscaux : report en avant et report en arrière.** Le résultat *fiscal* d'un
+  exercice n'est pas son résultat comptable : les déficits des exercices antérieurs (bilan
+  d'ouverture, puis chaque exercice déficitaire clos ici) **s'imputent sur le bénéfice avant
+  IS** (art. 209 I CGI, dans la limite de 1 000 000 € + 50 % de l'excédent — BOFIP
+  BOI-IS-DEF-10-30), et l'IS est calculé sur ce résultat fiscal. Le stock de déficits
+  reportables n'est jamais saisi ni stocké : il se dérive de la chaîne des exercices clos
+  (`losses_carried_forward` de `year show`, case 870 du 2033-D). À la clôture, **l'option de
+  report en arrière** (`freeflow year close --carry-back`, `carry_back` de `fiscal.close_year`,
+  case du formulaire de la fenêtre — art. 220 quinquies CGI, notice 2039-SD ligne 13) impute le
+  déficit de l'exercice sur le bénéfice fiscal *non distribué* de l'exercice précédent clos
+  ici, dans la limite de 1 000 000 €, en priorité sur la fraction taxée au taux normal puis sur
+  celle au taux réduit (BOI-IS-DEF-20-10 § 100) ; la créance d'IS qui en naît est un produit
+  (699 contre 444 dans le grand livre et le FEC, une créance à l'actif du 2033-A) qui entre dans
+  le résultat net et donc dans le report à nouveau. Refusée sans déficit, sans exercice
+  précédent clos dans l'application ou sans bénéfice d'imputation — jamais un report
+  silencieusement nul. La liasse JSON gagne les cases de suivi des déficits (2033-B 356/360/372,
+  2033-D 982/983/984/860/870) et le résultat fiscal en 2065. Conventions dites plutôt que
+  devinées : les distributions sont réparties entre les deux fractions de taux au prorata (le
+  2039-SD laisse ce choix à l'entreprise) ; l'option ne se change pas sur un projet (supprimer
+  et clore à nouveau) ; l'utilisation de la créance (paiement de l'IS des cinq exercices
+  suivants, remboursement au terme) n'est pas suivie.
 
 ### Sécurité & fiabilité
 - Chiffrement SQLCipher par une **clé maître aléatoire** (modèle LUKS) : la passphrase ne sert
@@ -398,9 +421,11 @@ distribués prêts à l'emploi — voir la checklist ci-dessous.
       à-nouveaux chaînés d'un exercice clos sur le suivant, opérations de clôture (rémunération,
       IS, affectation) en écritures `OD`, balance des comptes et bilan 2033-A en CLI/MCP/fenêtre
       et en PDF, cases 2033-A dans la liasse — voir « Dépenses & obligations fiscales ».
-- [ ] Déficit fiscal reportable (art. 209 I CGI) et option de report en arrière : aujourd'hui un
-      exercice déficitaire ne porte qu'un report à nouveau comptable, jamais réimputé sur l'IS
-      suivant.
+- [x] Déficit fiscal reportable (art. 209 I CGI) et option de report en arrière
+      (art. 220 quinquies) : imputation plafonnée sur les bénéfices suivants, créance d'IS du
+      report en arrière en produit, suivi des déficits dans la liasse — voir « Dépenses &
+      obligations fiscales » ci-dessus. Non suivi : l'utilisation de la créance sur les cinq
+      exercices suivants et son remboursement.
 - [ ] Tableau de bord de rentabilité par client sur la durée (au-delà de la mission en cours).
 - [ ] Chiffrement additionnel des pièces jointes de justificatifs de dépenses sur disque (au-delà
       du hash d'intégrité SHA-256 déjà en place).

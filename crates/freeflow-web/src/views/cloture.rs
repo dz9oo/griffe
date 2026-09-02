@@ -24,6 +24,8 @@ pub struct CloseFormValues {
     pub ends_on: String,
     pub legal_reserve: String,
     pub dividends: String,
+    /// Option de report en arrière du déficit (lot 32).
+    pub carry_back: bool,
 }
 
 #[derive(Default)]
@@ -52,6 +54,7 @@ pub fn default_close_values(store: &Store, today: time::Date) -> CloseFormValues
         ends_on: format_date(previous.end()),
         legal_reserve: "0".to_string(),
         dividends: "0".to_string(),
+        carry_back: false,
     }
 }
 
@@ -68,9 +71,14 @@ fn close_form(action: &str, values: &CloseFormValues, errors: &CloseFormErrors) 
                 (form::date("ends_on", "Fin de l'exercice", &values.ends_on, errors.ends_on.as_deref()))
                 (form::number("legal_reserve", "Dotation à la réserve légale (€)", &values.legal_reserve, "0.01", errors.legal_reserve.as_deref()))
                 (form::number("dividends", "Dividendes distribués (€)", &values.dividends, "0.01", errors.dividends.as_deref()))
+                (form::checkbox_checked("carry_back", "Reporter le déficit en arrière (art. 220 quinquies CGI)", values.carry_back))
                 (form::field_help(
                     "Le résultat (CA, charges, IS) est recalculé et figé à la clôture ; le \
-                     report à nouveau enchaîne sur l'exercice précédent. L'exercice reste un \
+                     report à nouveau enchaîne sur l'exercice précédent, et les déficits \
+                     fiscaux antérieurs s'imputent d'abord sur le bénéfice. Le report en \
+                     arrière impute le déficit de l'exercice sur le bénéfice de l'exercice \
+                     précédent clos ici, contre une créance d'IS ; refusé sans déficit, sans \
+                     exercice précédent ou sans bénéfice d'imputation. L'exercice reste un \
                      projet éditable jusqu'à son approbation."
                 ))
                 (form::actions("Clore l'exercice"))
@@ -194,11 +202,18 @@ pub fn detail_panel(record: &FiscalYearRecord, editable: bool, error: Option<&st
             dt { "Charges externes" } dd class="mono" { (record.expenses) }
             dt { "Rémunération dirigeant" } dd class="mono" { (record.director_remuneration) }
             dt { "Résultat avant IS" } dd class="mono" { (record.result_before_tax) }
+            dt { "Déficits antérieurs imputés" } dd class="mono" { (record.losses_imputed) }
+            dt { "Résultat fiscal" } dd class="mono" { (record.taxable_result()) }
             dt { "IS" } dd class="mono" { (record.corporate_tax) }
+            @if !record.carried_back.is_zero() {
+                dt { "Déficit reporté en arrière" } dd class="mono" { (record.carried_back) }
+                dt { "Créance de report en arrière" } dd class="mono" { (record.carry_back_credit) }
+            }
             dt { "Résultat net" } dd class="mono" { (record.net_result) }
             dt { "Réserve légale" } dd class="mono" { (record.legal_reserve) }
             dt { "Dividendes" } dd class="mono" { (record.dividends) }
             dt { "Report à nouveau" } dd class="mono" { (record.retained_earnings) }
+            dt { "Déficits reportables en avant" } dd class="mono" { (record.losses_carried_forward) }
         }
 
         @if editable {
@@ -383,6 +398,8 @@ pub struct OpeningFormValues {
     pub opens_on: String,
     pub source: String,
     pub lines: String,
+    /// Déficits fiscaux antérieurs reportables, en euros (lot 32).
+    pub tax_losses: String,
 }
 
 impl From<&OpeningBalanceRecord> for OpeningFormValues {
@@ -397,6 +414,7 @@ impl From<&OpeningBalanceRecord> for OpeningFormValues {
                 .map(ToString::to_string)
                 .collect::<Vec<_>>()
                 .join("\n"),
+            tax_losses: r.balance.tax_losses.to_decimal_string(),
         }
     }
 }
@@ -405,6 +423,7 @@ impl From<&OpeningBalanceRecord> for OpeningFormValues {
 pub struct OpeningFormErrors {
     pub opens_on: Option<String>,
     pub lines: Option<String>,
+    pub tax_losses: Option<String>,
     pub banner: Option<String>,
     pub conflict: Option<(String, String)>,
 }
@@ -435,6 +454,12 @@ pub fn opening_form_panel(
                      (classes 1 à 5) seulement ; le total des débits doit égaler celui des crédits. \
                      Reprenez la balance de clôture de l'expert-comptable, après affectation du \
                      résultat (un résultat encore en 120/129 est réputé affecté en report à nouveau)."
+                ))
+                (form::number("tax_losses", "Déficits fiscaux antérieurs reportables (€)", &values.tax_losses, "0.01", errors.tax_losses.as_deref()))
+                (form::field_help(
+                    "Hors bilan : le total des déficits restant à reporter (case 870 du dernier \
+                     tableau 2033-D déposé), imputé sur les bénéfices des exercices clos ici. \
+                     Zéro si aucun."
                 ))
                 (form::actions(if revision.is_some() { "Remplacer le bilan d'ouverture" } else { "Enregistrer le bilan d'ouverture" }))
             }
@@ -480,6 +505,7 @@ pub fn opening_detail_panel(record: &OpeningBalanceRecord, frozen_by: Option<&st
             dt { "Capital repris" } dd class="mono" { (equity.share_capital) }
             dt { "Réserve légale reprise" } dd class="mono" { (equity.legal_reserve) }
             dt { "Report à nouveau repris" } dd class="mono" { (equity.retained_earnings) }
+            dt { "Déficits fiscaux reportables repris" } dd class="mono" { (record.balance.tax_losses) }
         }
         @if let Some(period) = frozen_by {
             div class="detail-note" {

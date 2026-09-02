@@ -224,6 +224,12 @@ pub struct OpeningBalance {
     /// Provenance, libre — ex. « bilan au 30/09/2025 établi par le cabinet X ».
     pub source: Option<String>,
     pub lines: Vec<OpeningBalanceLine>,
+    /// Déficits fiscaux antérieurs encore reportables en avant à l'ouverture (art. 209 I CGI —
+    /// la case 870 du dernier tableau 2033-D déposé), repris **hors bilan** : ce n'est pas un
+    /// compte, mais le maillon zéro de la chaîne de déficits que [`crate::fiscal_year`] impute
+    /// sur les bénéfices des exercices clos ici (lot 32). Jamais négatif ; zéro par défaut.
+    #[serde(default)]
+    pub tax_losses: Money,
 }
 
 #[derive(Debug, Error, PartialEq, Eq, Clone)]
@@ -247,6 +253,9 @@ pub enum OpeningBalanceError {
         "montant nul ou négatif sur le compte {0} : une ligne de balance porte un montant strictement positif"
     )]
     NonPositiveAmount(AccountCode),
+
+    #[error("déficits reportables négatifs ({0}) : un stock de déficits est nul ou positif")]
+    NegativeTaxLosses(Money),
 }
 
 /// Ce que la chaîne de clôture (`fiscal_year`) lit dans un bilan d'ouverture : les capitaux
@@ -272,6 +281,9 @@ impl OpeningBalance {
     pub fn validate(&self) -> Result<(), OpeningBalanceError> {
         if self.lines.is_empty() {
             return Err(OpeningBalanceError::Empty);
+        }
+        if self.tax_losses.is_negative() {
+            return Err(OpeningBalanceError::NegativeTaxLosses(self.tax_losses));
         }
         let mut seen = std::collections::HashSet::new();
         for line in &self.lines {
@@ -352,7 +364,22 @@ mod tests {
             opens_on: Date::from_calendar_date(2025, Month::October, 1).unwrap(),
             source: None,
             lines: specs.iter().map(|s| line(s)).collect(),
+            tax_losses: Money::ZERO,
         }
+    }
+
+    #[test]
+    fn negative_carried_losses_are_refused() {
+        let mut b = balance(&["101000:Capital:C:10.00", "512000:Banque:D:10.00"]);
+        b.tax_losses = Money::from_cents(-1);
+        assert_eq!(
+            b.validate(),
+            Err(OpeningBalanceError::NegativeTaxLosses(Money::from_cents(
+                -1
+            )))
+        );
+        b.tax_losses = Money::from_cents(250_000);
+        assert_eq!(b.validate(), Ok(()));
     }
 
     #[test]
@@ -489,6 +516,7 @@ mod tests {
                 side: Side::Debit,
                 amount: Money::ZERO,
             }],
+            tax_losses: Money::ZERO,
         };
         assert_eq!(
             zero.validate(),

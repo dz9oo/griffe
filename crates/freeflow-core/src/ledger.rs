@@ -25,9 +25,11 @@
 //! **Opérations de clôture** (`OD`, datées du dernier jour) : la rémunération du dirigeant
 //! (641/645 contre 421/431 — réputée *due, non décaissée* : le domaine n'enregistre aucun fait
 //! de paie, l'expert-comptable substitue les écritures réelles) et l'IS (695 contre 444), pris
-//! dans le snapshot de clôture s'il existe, recalculés sinon. Le résultat de l'exercice est la
-//! somme des comptes de gestion (classes 6 et 7) ; il se retrouve donc au passif du bilan
-//! *après* IS.
+//! dans le snapshot de clôture s'il existe, recalculés sinon — en imputant d'abord les déficits
+//! antérieurs de la chaîne sur le bénéfice (lot 32) — et, depuis un snapshot ayant opté pour le
+//! report en arrière, la créance d'IS qui en naît (444 contre le produit 699). Le résultat de
+//! l'exercice est la somme des comptes de gestion (classes 6 et 7) ; il se retrouve donc au
+//! passif du bilan *après* IS.
 //!
 //! Limites assumées, dites dans les libellés : les dépenses sont réputées payées à leur date
 //! (pas de compte fournisseur), l'équipement est passé en charge sans seuil d'immobilisation, la
@@ -42,7 +44,7 @@ use rusqlite::Connection;
 use serde::Serialize;
 use time::Date;
 
-use crate::accounting::{corporate_income_tax, director_gross};
+use crate::accounting::{corporate_income_tax, director_gross, impute_prior_losses};
 use crate::app::AppError;
 use crate::billing::{compute_totals, list_invoices, list_payments};
 use crate::clients::list_clients;
@@ -160,6 +162,10 @@ pub mod accounts {
     pub const CORPORATE_TAX: Account = Account::fixed("695000", "Impôts sur les bénéfices");
     pub const CORPORATE_TAX_DUE: Account =
         Account::fixed("444000", "État — impôts sur les bénéfices");
+    /// Produit du report en arrière d'un déficit (art. 220 quinquies CGI) : la créance d'IS
+    /// est débitée en 444 par ce crédit (lot 32).
+    pub const CARRY_BACK_INCOME: Account =
+        Account::fixed("699000", "Produits — report en arrière des déficits");
     pub const PROFIT: Account = Account::fixed("120000", "Résultat de l'exercice (bénéfice)");
     pub const LOSS: Account = Account::fixed("129000", "Résultat de l'exercice (perte)");
     pub const LEGAL_RESERVE: Account = Account::fixed("106100", "Réserve légale");
@@ -298,6 +304,9 @@ pub struct LedgerFacts<'a> {
     /// Les exercices clos antérieurs dont l'écriture d'affectation du résultat peut tomber
     /// dans cet exercice — seulement ceux de la chaîne dont les à-nouveaux dérivent.
     pub appropriations: &'a [FiscalYearRecord],
+    /// Déficits fiscaux antérieurs reportables à l'ouverture (lot 32) : sans snapshot, l'IS
+    /// recalculé les impute d'abord sur le bénéfice, comme la clôture le fera.
+    pub prior_losses: Money,
 }
 
 /// Le grand livre dérivé d'un exercice : ses écritures triées et numérotées.
@@ -600,6 +609,24 @@ impl Facts<'_> {
         )
     }
 
+    /// Créance née du report en arrière du déficit (art. 220 quinquies) : 444 débité par le
+    /// produit 699 — seulement depuis un snapshot, l'option étant une décision de clôture.
+    fn carry_back_entry(&self, credit: Money) -> Option<LedgerEntry> {
+        if credit.cents() <= 0 {
+            return None;
+        }
+        entry(
+            Journal::Misc,
+            self.exercise.end(),
+            "OD-RAD",
+            "Créance d'IS née du report en arrière du déficit (art. 220 quinquies CGI, 2039-SD)",
+            vec![
+                line(accounts::CORPORATE_TAX_DUE, credit),
+                line(accounts::CARRY_BACK_INCOME, -credit),
+            ],
+        )
+    }
+
     /// Impôt sur les sociétés de l'exercice : 695 contre 444 (dette d'IS, les acomptes n'étant
     /// pas des faits datés).
     fn corporate_tax_entry(&self, tax: Money) -> Option<LedgerEntry> {
@@ -655,10 +682,16 @@ impl Ledger {
         );
         entries.extend(index.director_entry(facts.profile, director_total));
         let tax = facts.snapshot.map_or_else(
-            || corporate_income_tax(income_of(&entries)),
+            || {
+                corporate_income_tax(
+                    impute_prior_losses(income_of(&entries), facts.prior_losses).taxable_result,
+                )
+            },
             |r| r.corporate_tax,
         );
         entries.extend(index.corporate_tax_entry(tax));
+        let credit = facts.snapshot.map_or(Money::ZERO, |r| r.carry_back_credit);
+        entries.extend(index.carry_back_entry(credit));
 
         // Ordre chronologique (exigé par le FEC), puis journal et pièce pour un ordre total
         // reproductible ; numérotation continue par journal une fois l'ordre fixé.
@@ -1422,6 +1455,23 @@ impl Loaded {
             .fiscal_years
             .iter()
             .find(|r| r.starts_on == exercise.start() && r.ends_on == exercise.end());
+        // Le stock de déficits à l'ouverture : celui d'après le dernier exercice clos avant
+        // (déjà chaîné à la lecture), sinon les déficits repris au bilan d'ouverture s'il ouvre
+        // ce jour-là — la même lecture tolérante que `fiscal_year::tax_losses_available`.
+        let prior_losses = self
+            .fiscal_years
+            .iter()
+            .filter(|r| r.ends_on < exercise.start())
+            .max_by_key(|r| r.ends_on)
+            .map_or_else(
+                || {
+                    self.opening
+                        .as_ref()
+                        .filter(|o| o.opens_on == exercise.start())
+                        .map_or(Money::ZERO, |o| o.tax_losses)
+                },
+                |r| r.losses_carried_forward,
+            );
         Ledger::build(LedgerFacts {
             profile: &self.profile,
             exercise,
@@ -1432,6 +1482,7 @@ impl Loaded {
             opening,
             snapshot,
             appropriations,
+            prior_losses,
         })
     }
 }
@@ -1545,6 +1596,7 @@ mod tests {
                 "281540:Amortissement matériel:C:100.00".parse().unwrap(),
                 "512000:Banque:D:810.00".parse().unwrap(),
             ],
+            tax_losses: Money::ZERO,
         }
     }
 
@@ -1564,6 +1616,7 @@ mod tests {
             expenses,
             opening,
             snapshot: None,
+            prior_losses: Money::ZERO,
             appropriations: &[],
         }
     }
@@ -1591,6 +1644,10 @@ mod tests {
             approved_on: approved,
             revision: 1,
             created_at: OffsetDateTime::UNIX_EPOCH,
+            losses_imputed: Money::ZERO,
+            carried_back: Money::ZERO,
+            carry_back_credit: Money::ZERO,
+            losses_carried_forward: Money::ZERO,
         }
     }
 
@@ -1758,6 +1815,7 @@ mod tests {
             expenses: &[],
             opening: Some(ledger.closing_opening_lines()),
             snapshot: None,
+            prior_losses: Money::ZERO,
             appropriations: &chain,
         });
         let an = &next.entries[0];
@@ -1835,6 +1893,7 @@ mod tests {
                 ],
             }),
             snapshot: None,
+            prior_losses: Money::ZERO,
             appropriations: &chain,
         });
         let appropriation = &next.entries[1];
@@ -1870,6 +1929,7 @@ mod tests {
         };
         let ledger = Ledger::build(LedgerFacts {
             snapshot: Some(&snapshot),
+            prior_losses: Money::ZERO,
             ..facts(&p, exercise, &invoices, &[], None)
         });
         let tax = ledger
@@ -1878,6 +1938,83 @@ mod tests {
             .find(|e| e.piece_ref == "OD-IS")
             .unwrap();
         assert_eq!(tax.lines[0].amount, Money::from_cents(123_400));
+    }
+
+    #[test]
+    fn prior_losses_lower_the_recomputed_tax_of_an_unclosed_exercise() {
+        // Bénéfice 10 000 € ; 4 000 € de déficits antérieurs → IS 15 % sur 6 000 € = 900 €
+        // (au lieu de 1 500 €), le même calcul que la clôture fera (lot 32).
+        let p = profile(None, None);
+        let exercise = FiscalYear::calendar(2026);
+        let invoices = vec![invoice(
+            ClientId::new(),
+            1_000_000,
+            date(2026, TimeMonth::June, 1),
+        )];
+        let ledger = Ledger::build(LedgerFacts {
+            prior_losses: Money::from_cents(400_000),
+            ..facts(&p, exercise, &invoices, &[], None)
+        });
+        let tax = ledger
+            .entries
+            .iter()
+            .find(|e| e.piece_ref == "OD-IS")
+            .unwrap();
+        assert_eq!(tax.lines[0].amount, Money::from_cents(90_000));
+        assert_eq!(ledger.net_result(), Money::from_cents(910_000));
+        assert!(ledger.entries.iter().all(LedgerEntry::is_balanced));
+    }
+
+    #[test]
+    fn a_carry_back_credit_from_the_snapshot_is_a_444_receivable_against_699() {
+        // Exercice déficitaire (dépense de 800 € nets) clos avec report en arrière : la créance
+        // de 120 € est un produit, le résultat net passe de −800 à −680 €, et 444 débiteur est
+        // une créance à l'actif — bilan équilibré.
+        let p = profile(None, None);
+        let exercise = FiscalYear::calendar(2027);
+        let expenses = vec![expense(96_000, 16_000, date(2027, TimeMonth::March, 5))];
+        let snapshot = FiscalYearRecord {
+            result_before_tax: Money::from_cents(-80_000),
+            carried_back: Money::from_cents(80_000),
+            carry_back_credit: Money::from_cents(12_000),
+            net_result: Money::from_cents(-68_000),
+            ..record(exercise, -68_000, 0, 0, None)
+        };
+        let ledger = Ledger::build(LedgerFacts {
+            snapshot: Some(&snapshot),
+            ..facts(&p, exercise, &[], &expenses, None)
+        });
+        let credit = ledger
+            .entries
+            .iter()
+            .find(|e| e.piece_ref == "OD-RAD")
+            .expect("écriture de report en arrière");
+        assert_eq!(credit.journal, Journal::Misc);
+        assert_eq!(credit.date, exercise.end());
+        assert_eq!(credit.lines[0].account, accounts::CORPORATE_TAX_DUE);
+        assert_eq!(credit.lines[0].amount, Money::from_cents(12_000));
+        assert_eq!(credit.lines[1].account, accounts::CARRY_BACK_INCOME);
+        assert_eq!(credit.lines[1].amount, Money::from_cents(-12_000));
+        assert!(credit.is_balanced());
+        assert!(
+            ledger.entries.iter().all(|e| e.piece_ref != "OD-IS"),
+            "aucun IS sur un déficit"
+        );
+        assert_eq!(ledger.net_result(), Money::from_cents(-68_000));
+
+        let sheet = ledger.balance_sheet();
+        assert!(sheet.is_balanced(), "{sheet:#?}");
+        let receivables = sheet
+            .assets
+            .iter()
+            .find(|a| a.rubric == AssetRubric::OtherReceivables)
+            .unwrap();
+        // TVA déductible 160 € + créance de report en arrière 120 €.
+        assert_eq!(receivables.gross, Money::from_cents(28_000));
+        assert_eq!(
+            sheet.liability(LiabilityRubric::Result),
+            Money::from_cents(-68_000)
+        );
     }
 
     #[test]
@@ -2043,6 +2180,7 @@ mod tests {
                         "101000:Capital social:C:1000.00".parse().unwrap(),
                         "512000:Banque:D:1000.00".parse().unwrap(),
                     ],
+                    tax_losses: Money::ZERO,
                 },
                 &human,
             )
@@ -2088,6 +2226,7 @@ mod tests {
                     ends_on: date(2026, TimeMonth::December, 31),
                     legal_reserve: Money::from_cents(5_000),
                     dividends: Money::ZERO,
+                    carry_back: false,
                 },
                 &human,
             )

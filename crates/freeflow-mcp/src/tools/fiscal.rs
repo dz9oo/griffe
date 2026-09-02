@@ -11,7 +11,6 @@
 
 use std::path::Path;
 
-use freeflow_core::accounting::AccountingResult;
 use freeflow_core::app::Executor;
 use freeflow_core::company::{CompanyProfile, company_profile};
 use freeflow_core::domain::{FiscalYearEnd, Money, format_date};
@@ -93,6 +92,12 @@ pub(crate) struct CloseYearArgs {
     /// Dividendes distribués, en centimes (défaut : 0).
     #[serde(default)]
     dividends_cents: i64,
+    /// Option de report en arrière du déficit de l'exercice (art. 220 quinquies CGI) sur le
+    /// bénéfice de l'exercice précédent clos dans l'application — la créance d'IS entre dans
+    /// le résultat net. Refusé sans déficit, sans exercice précédent ou sans bénéfice
+    /// d'imputation (défaut : faux).
+    #[serde(default)]
+    carry_back: bool,
     /// N'écrit rien, montre ce qui serait fait (défaut : faux).
     #[serde(default)]
     dry_run: bool,
@@ -109,6 +114,10 @@ pub(crate) struct SetOpeningBalanceArgs {
     /// `["101000:Capital social:C:1000.00", "512000:Banque:D:1000.00"]`. Comptes de bilan
     /// (classes 1 à 5) seulement ; total débit = total crédit.
     lines: Vec<String>,
+    /// Déficits fiscaux antérieurs encore reportables, en centimes (case 870 du dernier
+    /// 2033-D), hors bilan — imputés sur les bénéfices des exercices clos ici (défaut : 0).
+    #[serde(default)]
+    tax_losses_cents: i64,
     /// N'écrit rien, montre ce qui serait fait (défaut : faux).
     #[serde(default)]
     dry_run: bool,
@@ -185,11 +194,16 @@ pub(crate) fn year_json(r: &FiscalYearRecord) -> serde_json::Value {
         "expenses_cents": r.expenses.cents(),
         "director_remuneration_cents": r.director_remuneration.cents(),
         "result_before_tax_cents": r.result_before_tax.cents(),
+        "losses_imputed_cents": r.losses_imputed.cents(),
+        "taxable_result_cents": r.taxable_result().cents(),
         "corporate_tax_cents": r.corporate_tax.cents(),
+        "carried_back_cents": r.carried_back.cents(),
+        "carry_back_credit_cents": r.carry_back_credit.cents(),
         "net_result_cents": r.net_result.cents(),
         "legal_reserve_cents": r.legal_reserve.cents(),
         "dividends_cents": r.dividends.cents(),
         "retained_earnings_cents": r.retained_earnings.cents(),
+        "losses_carried_forward_cents": r.losses_carried_forward.cents(),
         "approved_on": r.approved_on.map(format_date),
         "revision": r.revision,
     })
@@ -213,6 +227,7 @@ pub(crate) fn opening_json(r: &OpeningBalanceRecord) -> serde_json::Value {
             "legal_reserve_cents": equity.legal_reserve.cents(),
             "retained_earnings_cents": equity.retained_earnings.cents(),
         },
+        "tax_losses_cents": r.balance.tax_losses.cents(),
         "revision": r.revision,
     })
 }
@@ -276,6 +291,7 @@ impl FreeflowServer {
                         opens_on,
                         source: args.source,
                         lines,
+                        tax_losses: Money::from_cents(args.tax_losses_cents),
                     },
                     &ctx,
                 )
@@ -286,6 +302,7 @@ impl FreeflowServer {
                         opens_on,
                         source: args.source,
                         lines,
+                        tax_losses: Money::from_cents(args.tax_losses_cents),
                     },
                     &ctx,
                 )
@@ -419,6 +436,7 @@ impl FreeflowServer {
             ends_on,
             legal_reserve: Money::from_cents(args.legal_reserve_cents),
             dividends: Money::from_cents(args.dividends_cents),
+            carry_back: args.carry_back,
         };
         match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
@@ -651,15 +669,7 @@ impl FreeflowServer {
             ),
             "synthesis" => {
                 // Le document reflète le snapshot figé à la clôture, pas un recalcul vivant.
-                let result = AccountingResult {
-                    period: record.period(),
-                    revenue_ht: record.revenue_ht,
-                    expenses: record.expenses,
-                    director_remuneration: record.director_remuneration,
-                    result_before_tax: record.result_before_tax,
-                    corporate_tax: record.corporate_tax,
-                    net_result: record.net_result,
-                };
+                let result = record.accounting_result();
                 let years = ok_or_return!("years", list_fiscal_years(store.connection()));
                 let prior = years
                     .iter()

@@ -8,6 +8,13 @@
 //! immobilisations, et s'en écarte dès qu'il y en a. Ce module ne remplace pas la liasse produite
 //! par un expert-comptable via EDI-TDFC : il sert au pilotage et à la production des documents de
 //! synthèse. Tout est en centimes entiers (`Money`), jamais en flottant.
+//!
+//! **Déficits (lot 32).** Le résultat *fiscal* n'est pas le résultat comptable : les déficits des
+//! exercices antérieurs s'imputent sur le bénéfice avant IS (report en avant, art. 209 I CGI,
+//! [`impute_prior_losses`]), et le déficit d'un exercice peut, sur option, s'imputer sur le
+//! bénéfice de l'exercice précédent contre une créance d'IS (report en arrière,
+//! art. 220 quinquies CGI, [`carry_back`]). Les deux règles sont *pures* ici ; la chaîne des
+//! déficits d'un exercice à l'autre vit dans [`crate::fiscal_year`].
 
 use rusqlite::Connection;
 
@@ -24,6 +31,16 @@ const REDUCED_RATE_BPS: u32 = 1_500;
 /// Taux normal d'IS (25 %) en dix-millièmes.
 const NORMAL_RATE_BPS: u32 = 2_500;
 
+/// Plafond d'imputation des déficits antérieurs sur le bénéfice d'un exercice : 1 000 000 €,
+/// majoré de 50 % de la fraction du bénéfice qui excède ce montant (art. 209 I al. 3 CGI,
+/// BOI-IS-DEF-10-30 § 140).
+pub const LOSS_CARRY_FORWARD_CAP: Money = Money::from_cents(100_000_000);
+/// Part (en dix-millièmes) du bénéfice au-delà du plafond de base qui reste imputable.
+const LOSS_CARRY_FORWARD_EXCESS_BPS: u32 = 5_000;
+/// Plafond du déficit reportable en arrière sur le bénéfice de l'exercice précédent
+/// (art. 220 quinquies I CGI, BOI-IS-DEF-20-10 § 200).
+pub const LOSS_CARRY_BACK_CAP: Money = Money::from_cents(100_000_000);
+
 /// Résultat comptable simplifié d'un exercice, et l'IS qui en découle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct AccountingResult {
@@ -37,9 +54,166 @@ pub struct AccountingResult {
     /// Coût employeur de la rémunération du président sur la période (brut × mois + cotisations
     /// patronales estimées), à titre indicatif.
     pub director_remuneration: Money,
+    /// Résultat **comptable** avant impôt : produits − charges.
     pub result_before_tax: Money,
+    /// Déficits des exercices antérieurs encore reportables à l'ouverture de l'exercice.
+    pub prior_losses_available: Money,
+    /// Fraction de ces déficits imputée sur le bénéfice de l'exercice (report en avant,
+    /// ligne 360 du 2033-B) — nulle sur un exercice déficitaire.
+    pub losses_imputed: Money,
+    /// Résultat **fiscal** : `result_before_tax − losses_imputed`, base de l'IS (négatif =
+    /// déficit fiscal de l'exercice, ligne 372 du 2033-B).
+    pub taxable_result: Money,
     pub corporate_tax: Money,
+    /// Déficit de l'exercice reporté en arrière sur le bénéfice de l'exercice précédent
+    /// (ligne 356 du 2033-B) — nul sans option.
+    pub carried_back: Money,
+    /// Créance d'IS née du report en arrière (2039-SD), comptabilisée en produit (699 contre
+    /// 444) : elle entre dans le résultat net.
+    pub carry_back_credit: Money,
+    /// `result_before_tax − corporate_tax + carry_back_credit`.
     pub net_result: Money,
+}
+
+impl AccountingResult {
+    /// Déficit fiscal de l'exercice (positif), ou zéro sur un bénéfice.
+    #[must_use]
+    pub fn deficit(&self) -> Money {
+        (-self.taxable_result).max(Money::ZERO)
+    }
+
+    /// Déficits reportables en avant *après* cet exercice : le stock antérieur non imputé, plus
+    /// le déficit de l'exercice non reporté en arrière (case 870 du 2033-D).
+    #[must_use]
+    pub fn losses_carried_forward(&self) -> Money {
+        self.prior_losses_available - self.losses_imputed + self.deficit() - self.carried_back
+    }
+
+    /// Applique l'option de report en arrière : le déficit reporté sort du stock reportable en
+    /// avant, la créance d'IS entre dans le résultat net.
+    #[must_use]
+    pub fn with_carry_back(mut self, carry_back: CarryBack) -> Self {
+        self.carried_back = carry_back.imputed;
+        self.carry_back_credit = carry_back.credit;
+        self.net_result = self.result_before_tax - self.corporate_tax + carry_back.credit;
+        self
+    }
+}
+
+/// Imputation des déficits antérieurs sur le bénéfice d'un exercice (report en avant).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct LossImputation {
+    /// Fraction du stock imputée sur le bénéfice.
+    pub imputed: Money,
+    /// Résultat fiscal après imputation (négatif = déficit de l'exercice).
+    pub taxable_result: Money,
+    /// Stock antérieur restant reportable après imputation.
+    pub remaining: Money,
+}
+
+/// Plafond d'imputation des déficits antérieurs sur un bénéfice donné : 1 000 000 € + 50 % de
+/// l'excédent (BOI-IS-DEF-10-30 § 160 : un bénéfice de 1 500 000 € admet 1 250 000 €).
+#[must_use]
+pub fn loss_carry_forward_ceiling(profit: Money) -> Money {
+    if profit <= LOSS_CARRY_FORWARD_CAP {
+        return profit.max(Money::ZERO);
+    }
+    LOSS_CARRY_FORWARD_CAP
+        + (profit - LOSS_CARRY_FORWARD_CAP).apply_rate_bps(LOSS_CARRY_FORWARD_EXCESS_BPS)
+}
+
+/// Impute le stock `available` de déficits antérieurs sur `result_before_tax`, dans la limite du
+/// plafond (art. 209 I al. 3 CGI). Un résultat nul ou déficitaire n'impute rien : le stock
+/// reste entier et le déficit de l'exercice s'y ajoutera (voir
+/// [`AccountingResult::losses_carried_forward`]).
+#[must_use]
+pub fn impute_prior_losses(result_before_tax: Money, available: Money) -> LossImputation {
+    let available = available.max(Money::ZERO);
+    if result_before_tax.cents() <= 0 {
+        return LossImputation {
+            imputed: Money::ZERO,
+            taxable_result: result_before_tax,
+            remaining: available,
+        };
+    }
+    let imputed = available.min(loss_carry_forward_ceiling(result_before_tax));
+    LossImputation {
+        imputed,
+        taxable_result: result_before_tax - imputed,
+        remaining: available - imputed,
+    }
+}
+
+/// Le bénéfice de l'exercice précédent sur lequel un déficit peut être reporté en arrière.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CarryBackBase {
+    /// Résultat fiscal de l'exercice précédent (bénéfice imposé, après imputation de ses propres
+    /// déficits antérieurs — rubrique « résultat fiscal » du cadre C du 2065).
+    pub taxable_profit: Money,
+    /// Distributions prélevées sur ce bénéfice (dividendes décidés au titre de cet exercice) :
+    /// elles en sortent (art. 220 quinquies I, BOI-IS-DEF-20-10 § 120, ligne 3 du 2039-SD).
+    pub distributed: Money,
+}
+
+/// Le report en arrière d'un déficit : la fraction imputée et la créance d'IS qui en naît.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct CarryBack {
+    /// Déficit imputé sur le bénéfice de l'exercice précédent.
+    pub imputed: Money,
+    /// Créance sur l'État : l'IS effectivement acquitté à raison du bénéfice imputé.
+    pub credit: Money,
+}
+
+impl CarryBack {
+    pub const NONE: Self = Self {
+        imputed: Money::ZERO,
+        credit: Money::ZERO,
+    };
+}
+
+/// Reporte `deficit` en arrière sur `base` (art. 220 quinquies CGI, notice 2039-SD, ligne 13) :
+/// imputation à hauteur du plus faible de 1 000 000 € et du bénéfice d'imputation (bénéfice
+/// fiscal hors distributions), **en priorité sur la fraction soumise au taux normal, puis sur
+/// celle au taux réduit** (BOI-IS-DEF-20-10 § 100) ; la créance est l'IS acquitté sur chaque
+/// fraction imputée. Convention pour ventiler les distributions entre les deux fractions, que
+/// le 2039-SD laisse à l'entreprise : au prorata de chaque fraction dans le bénéfice.
+///
+/// Exemple BOI-IS-DEF-20-10 § 210 : bénéfice 1 020 620 € (42 500 € à 15 %, 978 120 € à 25 %),
+/// déficit ≥ 1 M€ → 978 120 € imputés à 25 % (244 530 €) et 21 880 € à 15 % (3 282 €).
+///
+/// # Panics
+///
+/// Ne panique jamais : les produits intermédiaires sont calculés en `i128`, et un prorata est
+/// borné par sa base.
+#[must_use]
+pub fn carry_back(deficit: Money, base: CarryBackBase) -> CarryBack {
+    let profit = base.taxable_profit;
+    if deficit.cents() <= 0 || profit.cents() <= 0 {
+        return CarryBack::NONE;
+    }
+    let imputable = (profit - base.distributed.max(Money::ZERO)).max(Money::ZERO);
+    let capped = deficit.min(LOSS_CARRY_BACK_CAP).min(imputable);
+    if capped.is_zero() {
+        return CarryBack::NONE;
+    }
+    // Double calcul (§ 190) : la part au taux réduit du bénéfice, ramenée au prorata du
+    // bénéfice d'imputation (les distributions en sortent proportionnellement).
+    let reduced_fraction = profit.min(REDUCED_RATE_CEILING);
+    let reduced_base = Money::from_cents(
+        i64::try_from(
+            i128::from(reduced_fraction.cents()) * i128::from(imputable.cents())
+                / i128::from(profit.cents()),
+        )
+        .unwrap_or(reduced_fraction.cents()),
+    );
+    let normal_base = imputable - reduced_base;
+    let on_normal = capped.min(normal_base);
+    let on_reduced = (capped - on_normal).min(reduced_base);
+    CarryBack {
+        imputed: on_normal + on_reduced,
+        credit: on_normal.apply_rate_bps(NORMAL_RATE_BPS)
+            + on_reduced.apply_rate_bps(REDUCED_RATE_BPS),
+    }
 }
 
 /// Impôt sur les sociétés d'un bénéfice, barème 2025+ : **15 %** jusqu'à 42 500 € (PME éligible —
@@ -96,7 +270,10 @@ pub fn director_cost(profile: &CompanyProfile, period: FiscalYear) -> Money {
     }
 }
 
-/// Calcule le résultat comptable simplifié et l'IS d'un exercice.
+/// Calcule le résultat comptable simplifié et l'IS d'un exercice, les déficits antérieurs
+/// reportables étant lus dans la chaîne des exercices clos
+/// ([`crate::fiscal_year::tax_losses_available`]) — sans option de report en arrière, qui est
+/// une décision de clôture ([`crate::fiscal_year::CloseFiscalYear`]).
 ///
 /// # Errors
 ///
@@ -105,6 +282,21 @@ pub fn compute_result(
     conn: &Connection,
     period: FiscalYear,
     profile: &CompanyProfile,
+) -> Result<AccountingResult, AppError> {
+    let prior_losses = crate::fiscal_year::tax_losses_available(conn, period.start())?;
+    compute_result_with_losses(conn, period, profile, prior_losses)
+}
+
+/// [`compute_result`] avec un stock de déficits antérieurs donné par l'appelant.
+///
+/// # Errors
+///
+/// Erreur de lecture SQLite.
+pub fn compute_result_with_losses(
+    conn: &Connection,
+    period: FiscalYear,
+    profile: &CompanyProfile,
+    prior_losses_available: Money,
 ) -> Result<AccountingResult, AppError> {
     let revenue_ht: Money = list_invoices(conn)?
         .iter()
@@ -120,7 +312,8 @@ pub fn compute_result(
     let director_remuneration = director_cost(profile, period);
 
     let result_before_tax = revenue_ht - expenses - director_remuneration;
-    let corporate_tax = corporate_income_tax(result_before_tax);
+    let imputation = impute_prior_losses(result_before_tax, prior_losses_available);
+    let corporate_tax = corporate_income_tax(imputation.taxable_result);
     let net_result = result_before_tax - corporate_tax;
 
     Ok(AccountingResult {
@@ -129,7 +322,12 @@ pub fn compute_result(
         expenses,
         director_remuneration,
         result_before_tax,
+        prior_losses_available: prior_losses_available.max(Money::ZERO),
+        losses_imputed: imputation.imputed,
+        taxable_result: imputation.taxable_result,
         corporate_tax,
+        carried_back: Money::ZERO,
+        carry_back_credit: Money::ZERO,
         net_result,
     })
 }
@@ -214,7 +412,141 @@ mod tests {
         );
     }
 
+    // --- Déficits : report en avant plafonné, report en arrière (lot 32). ---
+
+    #[test]
+    fn carry_forward_is_capped_at_one_million_plus_half_the_excess() {
+        // BOI-IS-DEF-10-30 § 160 : déficit de 2 M€, bénéfice de 1,5 M€ → 1 250 000 € imputés,
+        // 250 000 € taxables, 750 000 € encore reportables.
+        let r = impute_prior_losses(
+            Money::from_cents(150_000_000),
+            Money::from_cents(200_000_000),
+        );
+        assert_eq!(r.imputed, Money::from_cents(125_000_000));
+        assert_eq!(r.taxable_result, Money::from_cents(25_000_000));
+        assert_eq!(r.remaining, Money::from_cents(75_000_000));
+        // § 170 : sous le plafond, le déficit s'impute en entier.
+        let r = impute_prior_losses(
+            Money::from_cents(150_000_000),
+            Money::from_cents(90_000_000),
+        );
+        assert_eq!(r.imputed, Money::from_cents(90_000_000));
+        assert_eq!(r.remaining, Money::ZERO);
+    }
+
+    #[test]
+    fn a_loss_year_imputes_nothing_and_keeps_the_stock_whole() {
+        let r = impute_prior_losses(Money::from_cents(-80_000), Money::from_cents(300_000));
+        assert_eq!(r.imputed, Money::ZERO);
+        assert_eq!(r.taxable_result, Money::from_cents(-80_000));
+        assert_eq!(r.remaining, Money::from_cents(300_000));
+        // Un stock négatif (impossible par validation, mais reçu tel quel) vaut zéro.
+        let r = impute_prior_losses(Money::from_cents(100), Money::from_cents(-5));
+        assert_eq!(r.imputed, Money::ZERO);
+        assert_eq!(r.taxable_result, Money::from_cents(100));
+    }
+
+    #[test]
+    fn carry_back_imputes_the_normal_rate_fraction_first() {
+        // BOI-IS-DEF-20-10 § 210 : 42 500 € à 15 % + 978 120 € à 25 %, déficit ≥ 1 M€ →
+        // 978 120 € imputés à 25 % (244 530 €) puis 21 880 € à 15 % (3 282 €).
+        let cb = carry_back(
+            Money::from_cents(150_000_000),
+            CarryBackBase {
+                taxable_profit: Money::from_cents(102_062_000),
+                distributed: Money::ZERO,
+            },
+        );
+        assert_eq!(cb.imputed, Money::from_cents(100_000_000));
+        assert_eq!(cb.credit, Money::from_cents(24_781_200));
+
+        // Un petit bénéfice entièrement au taux réduit : créance à 15 % du déficit imputé.
+        let cb = carry_back(
+            Money::from_cents(80_000),
+            CarryBackBase {
+                taxable_profit: Money::from_cents(537_500),
+                distributed: Money::ZERO,
+            },
+        );
+        assert_eq!(cb.imputed, Money::from_cents(80_000));
+        assert_eq!(cb.credit, Money::from_cents(12_000));
+    }
+
+    #[test]
+    fn carry_back_excludes_distributed_profit_and_needs_a_deficit_and_a_profit() {
+        // 5 375 € de bénéfice dont 5 000 € distribués : 375 € imputables seulement.
+        let cb = carry_back(
+            Money::from_cents(80_000),
+            CarryBackBase {
+                taxable_profit: Money::from_cents(537_500),
+                distributed: Money::from_cents(500_000),
+            },
+        );
+        assert_eq!(cb.imputed, Money::from_cents(37_500));
+        assert_eq!(cb.credit, Money::from_cents(5_625));
+        // Tout distribué, ou pas de déficit, ou pas de bénéfice : rien.
+        let base = CarryBackBase {
+            taxable_profit: Money::from_cents(537_500),
+            distributed: Money::from_cents(600_000),
+        };
+        assert_eq!(carry_back(Money::from_cents(80_000), base), CarryBack::NONE);
+        let base = CarryBackBase {
+            taxable_profit: Money::from_cents(537_500),
+            distributed: Money::ZERO,
+        };
+        assert_eq!(carry_back(Money::ZERO, base), CarryBack::NONE);
+        let base = CarryBackBase {
+            taxable_profit: Money::from_cents(-100),
+            distributed: Money::ZERO,
+        };
+        assert_eq!(carry_back(Money::from_cents(80_000), base), CarryBack::NONE);
+    }
+
     proptest! {
+        /// L'imputation ne dépasse ni le stock, ni le plafond, ni le bénéfice ; le résultat
+        /// fiscal d'un bénéfice reste positif ou nul ; stock + déficit se conservent.
+        #[test]
+        fn carry_forward_never_exceeds_stock_ceiling_or_profit(
+            profit in -1_000_000_000_000i64..1_000_000_000_000,
+            stock in 0i64..1_000_000_000_000,
+        ) {
+            let (profit, stock) = (Money::from_cents(profit), Money::from_cents(stock));
+            let r = impute_prior_losses(profit, stock);
+            prop_assert!(r.imputed.cents() >= 0);
+            prop_assert!(r.imputed <= stock);
+            prop_assert!(r.imputed <= loss_carry_forward_ceiling(profit));
+            prop_assert!(r.imputed <= profit.max(Money::ZERO));
+            prop_assert_eq!(r.remaining + r.imputed, stock);
+            prop_assert_eq!(r.taxable_result + r.imputed, profit);
+            if profit.cents() > 0 {
+                prop_assert!(r.taxable_result.cents() >= 0);
+            }
+        }
+
+        /// La créance de report en arrière ne dépasse jamais l'IS du bénéfice d'imputation, et
+        /// l'imputation reste sous le déficit, le plafond et le bénéfice non distribué.
+        #[test]
+        fn carry_back_credit_never_exceeds_the_tax_paid(
+            deficit in 0i64..1_000_000_000_000,
+            profit in 0i64..1_000_000_000_000,
+            distributed in 0i64..1_000_000_000_000,
+        ) {
+            let base = CarryBackBase {
+                taxable_profit: Money::from_cents(profit),
+                distributed: Money::from_cents(distributed),
+            };
+            let cb = carry_back(Money::from_cents(deficit), base);
+            prop_assert!(cb.imputed.cents() >= 0);
+            prop_assert!(cb.imputed <= Money::from_cents(deficit));
+            prop_assert!(cb.imputed <= LOSS_CARRY_BACK_CAP);
+            prop_assert!(cb.imputed <= (base.taxable_profit - base.distributed).max(Money::ZERO));
+            prop_assert!(cb.credit.cents() >= 0);
+            prop_assert!(cb.credit <= corporate_income_tax(base.taxable_profit));
+            // Au moins le taux réduit sur ce qui est imputé, au plus le taux normal.
+            prop_assert!(cb.credit >= cb.imputed.apply_rate_bps(REDUCED_RATE_BPS));
+            prop_assert!(cb.credit <= cb.imputed.apply_rate_bps(NORMAL_RATE_BPS));
+        }
+
         /// L'IS est monotone (un bénéfice plus élevé n'est jamais moins taxé) et ne dépasse
         /// jamais 25 % du bénéfice.
         #[test]

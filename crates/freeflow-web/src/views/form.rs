@@ -165,3 +165,13 @@ pub fn conflict_banner(message: &str, reload_hx_get: &str) -> Markup {
         }
     }
 }
+
+/// Case à cocher avec état initial — pour re-rendre un formulaire refusé sans perdre la coche.
+pub fn checkbox_checked(name: &str, label: &str, checked: bool) -> Markup {
+    html! {
+        label class="field-checkbox" {
+            input name=(name) type="checkbox" value="on" checked[checked];
+            span { (label) }
+        }
+    }
+}

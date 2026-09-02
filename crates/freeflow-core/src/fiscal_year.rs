@@ -10,6 +10,17 @@
 //! ([`DeleteFiscalYear`]), sous révision optimiste. Un exercice suivi d'un exercice plus récent
 //! n'est plus ni éditable ni supprimable même en projet : son report à nouveau a déjà été copié
 //! dans la chaîne du suivant.
+//!
+//! **Déficits fiscaux (lot 32).** À côté du report à nouveau *comptable*, la chaîne porte le
+//! stock de déficits *fiscaux* reportables en avant (art. 209 I CGI) : le bilan d'ouverture en
+//! est le maillon zéro (`OpeningBalance::tax_losses`), chaque exercice clos y ajoute son déficit
+//! et y prélève ce qu'il impute sur son bénéfice ([`crate::accounting::impute_prior_losses`]).
+//! Ce stock n'est pas stocké : il se dérive des faits figés dans chaque snapshot
+//! (`losses_imputed`, `carried_back`), si bien qu'un exercice clos avant ce lot — où rien
+//! n'était imputé — garde exactement la lecture qu'il avait. L'option de **report en arrière**
+//! (art. 220 quinquies) est une décision de clôture ([`CloseFiscalYear::carry_back`]) : le
+//! déficit s'impute sur le bénéfice fiscal de l'exercice précédent clos ici, et la créance d'IS
+//! qui en naît entre dans le résultat net (produit 699).
 
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Deserialize, Serialize};
@@ -17,7 +28,7 @@ use thiserror::Error;
 use time::format_description::well_known::Rfc3339;
 use time::{Date, OffsetDateTime};
 
-use crate::accounting::compute_result;
+use crate::accounting::{AccountingResult, CarryBackBase, carry_back, compute_result_with_losses};
 use crate::app::{AppError, Command};
 use crate::company::{CompanyProfile, company_profile};
 use crate::domain::{FiscalYear, FiscalYearId, Money, format_date, parse_date};
@@ -82,6 +93,28 @@ pub enum FiscalYearError {
          bilan d'ouverture)"
     )]
     OpeningBalanceMismatch { opens_on: String, starts_on: String },
+
+    #[error(
+        "report en arrière impossible : l'exercice ne dégage aucun déficit fiscal (résultat \
+         fiscal {0})"
+    )]
+    CarryBackWithoutDeficit(String),
+
+    #[error(
+        "report en arrière impossible : le déficit ne s'impute que sur le bénéfice de l'exercice \
+         précédent (clos la veille du {0}), qui doit être clos dans l'application"
+    )]
+    CarryBackWithoutPriorYear(String),
+
+    #[error(
+        "report en arrière impossible : l'exercice précédent ({period}) n'offre aucun bénéfice \
+         d'imputation (résultat fiscal {taxable}, distributions {distributed})"
+    )]
+    CarryBackNoImputableProfit {
+        period: String,
+        taxable: String,
+        distributed: String,
+    },
 }
 
 impl From<FiscalYearError> for AppError {
@@ -100,13 +133,25 @@ pub struct FiscalYearRecord {
     pub revenue_ht: Money,
     pub expenses: Money,
     pub director_remuneration: Money,
+    /// Résultat comptable avant impôt.
     pub result_before_tax: Money,
+    /// Déficits antérieurs imputés sur le bénéfice de l'exercice (ligne 360 du 2033-B).
+    pub losses_imputed: Money,
+    /// IS sur le résultat fiscal (`result_before_tax − losses_imputed`).
     pub corporate_tax: Money,
+    /// Déficit de l'exercice reporté en arrière (ligne 356 du 2033-B), nul sans option.
+    pub carried_back: Money,
+    /// Créance d'IS née du report en arrière (2039-SD), produit de l'exercice.
+    pub carry_back_credit: Money,
+    /// `result_before_tax − corporate_tax + carry_back_credit`.
     pub net_result: Money,
     pub legal_reserve: Money,
     pub dividends: Money,
     /// Report à nouveau cumulé après cette affectation (peut être négatif).
     pub retained_earnings: Money,
+    /// Déficits fiscaux reportables en avant **après** cet exercice (case 870 du 2033-D) —
+    /// dérivés de la chaîne à la lecture, jamais stockés.
+    pub losses_carried_forward: Money,
     /// Date de l'AG d'approbation — `None` tant que l'exercice est un projet éditable.
     pub approved_on: Option<Date>,
     pub revision: i64,
@@ -122,6 +167,46 @@ impl FiscalYearRecord {
     #[must_use]
     pub const fn is_approved(&self) -> bool {
         self.approved_on.is_some()
+    }
+
+    /// Résultat fiscal : le résultat comptable avant IS diminué des déficits antérieurs imputés
+    /// (négatif = déficit fiscal de l'exercice).
+    #[must_use]
+    pub fn taxable_result(&self) -> Money {
+        self.result_before_tax - self.losses_imputed
+    }
+
+    /// Déficit fiscal de l'exercice (positif), ou zéro sur un bénéfice.
+    #[must_use]
+    pub fn deficit(&self) -> Money {
+        (-self.taxable_result()).max(Money::ZERO)
+    }
+
+    /// Déficits antérieurs reportables à l'ouverture de l'exercice (case 982 du 2033-D) — la
+    /// chaîne lue à l'envers depuis le stock après l'exercice.
+    #[must_use]
+    pub fn losses_available_before(&self) -> Money {
+        self.losses_carried_forward + self.losses_imputed - (self.deficit() - self.carried_back)
+    }
+
+    /// Le snapshot figé relu comme un [`AccountingResult`] — pour les documents, qui reflètent
+    /// la photo prise à la clôture, pas un recalcul vivant.
+    #[must_use]
+    pub fn accounting_result(&self) -> AccountingResult {
+        AccountingResult {
+            period: self.period(),
+            revenue_ht: self.revenue_ht,
+            expenses: self.expenses,
+            director_remuneration: self.director_remuneration,
+            result_before_tax: self.result_before_tax,
+            prior_losses_available: self.losses_available_before(),
+            losses_imputed: self.losses_imputed,
+            taxable_result: self.taxable_result(),
+            corporate_tax: self.corporate_tax,
+            carried_back: self.carried_back,
+            carry_back_credit: self.carry_back_credit,
+            net_result: self.net_result,
+        }
     }
 }
 
@@ -168,15 +253,43 @@ fn validate_appropriation(
     Ok(prior_retained + net_result - legal_reserve - dividends)
 }
 
-/// Report à nouveau et réserve légale cumulés des exercices clos **avant** `starts_on` — la
-/// chaîne dont hérite l'exercice qui commence à cette date.
+/// Ce dont hérite l'exercice qui commence à une date donnée : la chaîne des exercices clos
+/// avant lui, bilan d'ouverture compris.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PriorChain {
+    /// Report à nouveau comptable.
+    retained: Money,
+    /// Réserve légale cumulée (dotations en base + réserve reprise).
+    reserve: Money,
+    /// Déficits fiscaux encore reportables en avant.
+    tax_losses: Money,
+}
+
+/// Contribution des exercices clos **avant** `before` au stock de déficits reportables : chaque
+/// déficit, moins ce qui en a été reporté en arrière, moins ce que les exercices bénéficiaires
+/// ont imputé. Un exercice clos avant le lot 32 a ses deux colonnes à zéro : son déficit reste
+/// intégralement reportable, comme il l'était.
+fn losses_from_closed_years(conn: &Connection, before: Date) -> Result<Money, AppError> {
+    let cents: i64 = conn.query_row(
+        "SELECT coalesce(sum(max(0, -result_before_tax_cents) - carried_back_cents \
+                             - losses_imputed_cents), 0)
+         FROM fiscal_years WHERE ends_on < ?1",
+        [format_date(before)],
+        |row| row.get(0),
+    )?;
+    Ok(Money::from_cents(cents))
+}
+
+/// Report à nouveau, réserve légale et déficits reportables cumulés des exercices clos **avant**
+/// `starts_on` — la chaîne dont hérite l'exercice qui commence à cette date.
 ///
 /// Le bilan d'ouverture (lot 30) en est le maillon zéro : pour le **premier** exercice clos ici,
 /// le report à nouveau est celui des capitaux propres repris (et il doit ouvrir ce jour-là —
 /// une reprise datée d'un autre jour est une incohérence refusée, jamais ignorée en silence) ;
 /// pour les suivants, le report vient du snapshot du précédent, qui l'a déjà intégré. La réserve
-/// légale reprise, elle, s'ajoute toujours : aucun snapshot ne la porte.
-fn prior_chain(conn: &Connection, starts_on: Date) -> Result<(Money, Money), AppError> {
+/// légale reprise et les déficits repris, eux, s'ajoutent toujours : aucun snapshot ne les
+/// porte.
+fn prior_chain(conn: &Connection, starts_on: Date) -> Result<PriorChain, AppError> {
     let retained: Option<i64> = conn
         .query_row(
             "SELECT retained_earnings_cents FROM fiscal_years WHERE ends_on < ?1
@@ -190,14 +303,14 @@ fn prior_chain(conn: &Connection, starts_on: Date) -> Result<(Money, Money), App
         [format_date(starts_on)],
         |row| row.get(0),
     )?;
-    let opening =
-        crate::opening_balance::opening_balance(conn)?.map(|r| (r.balance.opens_on, r.equity()));
-    let (retained, opening_reserve) = match (retained, opening) {
-        (Some(from_chain), Some((_, equity))) => {
-            (Money::from_cents(from_chain), equity.legal_reserve)
+    let opening = crate::opening_balance::opening_balance(conn)?
+        .map(|r| (r.balance.opens_on, r.equity(), r.balance.tax_losses));
+    let (retained, opening_reserve, opening_losses) = match (retained, opening) {
+        (Some(from_chain), Some((_, equity, losses))) => {
+            (Money::from_cents(from_chain), equity.legal_reserve, losses)
         }
-        (Some(from_chain), None) => (Money::from_cents(from_chain), Money::ZERO),
-        (None, Some((opens_on, equity))) => {
+        (Some(from_chain), None) => (Money::from_cents(from_chain), Money::ZERO, Money::ZERO),
+        (None, Some((opens_on, equity, losses))) => {
             if opens_on != starts_on {
                 return Err(FiscalYearError::OpeningBalanceMismatch {
                     opens_on: format_date(opens_on),
@@ -205,11 +318,15 @@ fn prior_chain(conn: &Connection, starts_on: Date) -> Result<(Money, Money), App
                 }
                 .into());
             }
-            (equity.retained_earnings, equity.legal_reserve)
+            (equity.retained_earnings, equity.legal_reserve, losses)
         }
-        (None, None) => (Money::ZERO, Money::ZERO),
+        (None, None) => (Money::ZERO, Money::ZERO, Money::ZERO),
     };
-    Ok((retained, Money::from_cents(reserve) + opening_reserve))
+    Ok(PriorChain {
+        retained,
+        reserve: Money::from_cents(reserve) + opening_reserve,
+        tax_losses: losses_from_closed_years(conn, starts_on)? + opening_losses,
+    })
 }
 
 /// Report à nouveau hérité par un exercice commençant à `starts_on` : celui du dernier exercice
@@ -219,22 +336,67 @@ fn prior_chain(conn: &Connection, starts_on: Date) -> Result<(Money, Money), App
 ///
 /// Erreur de lecture SQLite.
 pub fn latest_retained_earnings(conn: &Connection, starts_on: Date) -> Result<Money, AppError> {
-    prior_chain(conn, starts_on).map(|(retained, _)| retained)
+    prior_chain(conn, starts_on).map(|chain| chain.retained)
+}
+
+/// Déficits fiscaux reportables en avant à l'ouverture d'un exercice commençant à `starts_on`
+/// — la lecture *tolérante* de la chaîne, pour un calcul indicatif (calendrier, grand livre
+/// d'un exercice non clos) : un bilan d'ouverture daté d'un autre jour et sans exercice clos
+/// entre les deux ne compte pas, là où [`CloseFiscalYear`] le refuse.
+///
+/// # Errors
+///
+/// Erreur de lecture SQLite.
+pub fn tax_losses_available(conn: &Connection, starts_on: Date) -> Result<Money, AppError> {
+    let from_years = losses_from_closed_years(conn, starts_on)?;
+    let has_prior_year: bool = conn.query_row(
+        "SELECT count(*) > 0 FROM fiscal_years WHERE ends_on < ?1",
+        [format_date(starts_on)],
+        |row| row.get(0),
+    )?;
+    let opening = crate::opening_balance::opening_balance(conn)?
+        .filter(|r| has_prior_year || r.balance.opens_on == starts_on)
+        .map_or(Money::ZERO, |r| r.balance.tax_losses);
+    Ok(from_years + opening)
+}
+
+/// L'exercice clos la veille de `starts_on`, s'il l'est dans l'application — le seul sur
+/// lequel un déficit se reporte en arrière (art. 220 quinquies I CGI : « bénéfice de l'exercice
+/// précédent »).
+fn previous_year(conn: &Connection, starts_on: Date) -> Result<Option<FiscalYearRecord>, AppError> {
+    let Some(ends_on) = starts_on.previous_day() else {
+        return Ok(None);
+    };
+    conn.query_row(
+        &format!("{RECORD_SELECT} WHERE fy.ends_on = ?1"),
+        [format_date(ends_on)],
+        row_to_record,
+    )
+    .optional()
+    .map_err(AppError::from)
 }
 
 // ---------------------------------------------------------------------------------------------
 // Commandes
 // ---------------------------------------------------------------------------------------------
 
-/// Clôt un exercice : recalcule le résultat via [`crate::accounting::compute_result`], le fige
-/// en snapshot, et enregistre la décision d'affectation en **projet** (non approuvé). Le report
-/// à nouveau résultant est `report antérieur + résultat net − réserve légale − dividendes`.
+/// Clôt un exercice : recalcule le résultat via [`crate::accounting::compute_result_with_losses`]
+/// (déficits antérieurs de la chaîne imputés sur le bénéfice), le fige en snapshot, et
+/// enregistre la décision d'affectation en **projet** (non approuvé). Le report à nouveau
+/// résultant est `report antérieur + résultat net − réserve légale − dividendes`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CloseFiscalYear {
     pub starts_on: Date,
     pub ends_on: Date,
     pub legal_reserve: Money,
     pub dividends: Money,
+    /// Option de report en arrière du déficit de l'exercice (art. 220 quinquies CGI) sur le
+    /// bénéfice de l'exercice précédent clos ici : la créance d'IS qui en naît entre dans le
+    /// résultat net. Refusée sans déficit, sans exercice précédent, ou sans bénéfice
+    /// d'imputation. Une décision de clôture : pour la changer, supprimer le projet et clore à
+    /// nouveau. `false` par défaut (entrées d'audit antérieures comprises).
+    #[serde(default)]
+    pub carry_back: bool,
 }
 
 impl Command for CloseFiscalYear {
@@ -268,17 +430,21 @@ impl Command for CloseFiscalYear {
             return Err(FiscalYearError::Overlaps(period).into());
         }
 
-        let (prior_retained, prior_reserve) = prior_chain(conn, self.starts_on)?;
-        let result = compute_result(
+        let chain = prior_chain(conn, self.starts_on)?;
+        let mut result = compute_result_with_losses(
             conn,
             FiscalYear::new(self.starts_on, self.ends_on),
             &profile,
+            chain.tax_losses,
         )?;
+        if self.carry_back {
+            result = result.with_carry_back(self.carry_back_of(conn, &result)?);
+        }
         let retained_earnings = validate_appropriation(
             &profile,
             result.net_result,
-            prior_retained,
-            prior_reserve,
+            chain.retained,
+            chain.reserve,
             self.legal_reserve,
             self.dividends,
         )?;
@@ -289,8 +455,10 @@ impl Command for CloseFiscalYear {
                 (id, starts_on, ends_on, revenue_ht_cents, expenses_cents,
                  director_remuneration_cents, result_before_tax_cents, corporate_tax_cents,
                  net_result_cents, legal_reserve_cents, dividends_cents, retained_earnings_cents,
-                 approved_on, revision, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, NULL, 1, ?13)",
+                 approved_on, revision, created_at, losses_imputed_cents, carried_back_cents,
+                 carry_back_credit_cents)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, NULL, 1, ?13, ?14, ?15,
+                     ?16)",
             params![
                 id.to_string(),
                 format_date(self.starts_on),
@@ -305,9 +473,52 @@ impl Command for CloseFiscalYear {
                 self.dividends.cents(),
                 retained_earnings.cents(),
                 OffsetDateTime::now_utc().format(&Rfc3339)?,
+                result.losses_imputed.cents(),
+                result.carried_back.cents(),
+                result.carry_back_credit.cents(),
             ],
         )?;
         Ok(id)
+    }
+}
+
+impl CloseFiscalYear {
+    /// Le report en arrière du déficit de `result` sur l'exercice précédent : ses trois refus
+    /// (pas de déficit, pas d'exercice précédent clos la veille, pas de bénéfice d'imputation)
+    /// sont des erreurs explicites, jamais un report silencieusement nul.
+    fn carry_back_of(
+        &self,
+        conn: &Connection,
+        result: &AccountingResult,
+    ) -> Result<crate::accounting::CarryBack, AppError> {
+        let deficit = result.deficit();
+        if deficit.is_zero() {
+            return Err(FiscalYearError::CarryBackWithoutDeficit(
+                result.taxable_result.to_string(),
+            )
+            .into());
+        }
+        let previous = previous_year(conn, self.starts_on)?.ok_or_else(|| {
+            FiscalYearError::CarryBackWithoutPriorYear(format_date(self.starts_on))
+        })?;
+        let base = CarryBackBase {
+            taxable_profit: previous.taxable_result(),
+            distributed: previous.dividends,
+        };
+        let carried = carry_back(deficit, base);
+        if carried.imputed.is_zero() {
+            return Err(FiscalYearError::CarryBackNoImputableProfit {
+                period: format!(
+                    "{} → {}",
+                    format_date(previous.starts_on),
+                    format_date(previous.ends_on)
+                ),
+                taxable: base.taxable_profit.to_string(),
+                distributed: base.distributed.to_string(),
+            }
+            .into());
+        }
+        Ok(carried)
     }
 }
 
@@ -332,12 +543,12 @@ impl Command for UpdateFiscalYearAppropriation {
         let record = fiscal_year_by_id(conn, self.id)?.ok_or(FiscalYearError::NotFound(self.id))?;
         require_editable(conn, &record)?;
         let profile = company_profile(conn)?.ok_or(FiscalYearError::ProfileMissing)?;
-        let (prior_retained, prior_reserve) = prior_chain(conn, record.starts_on)?;
+        let chain = prior_chain(conn, record.starts_on)?;
         let retained_earnings = validate_appropriation(
             &profile,
             record.net_result,
-            prior_retained,
-            prior_reserve,
+            chain.retained,
+            chain.reserve,
             self.legal_reserve,
             self.dividends,
         )?;
@@ -473,6 +684,18 @@ fn conv_err(e: impl std::error::Error + Send + Sync + 'static) -> rusqlite::Erro
     rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
 }
 
+/// La projection d'un exercice : ses colonnes, plus le stock de déficits reportables **après**
+/// lui, dérivé de la chaîne (déficits de tous les exercices clos jusqu'à lui, moins ce qui en a
+/// été reporté en arrière ou imputé, plus les déficits repris au bilan d'ouverture — qui ouvre
+/// nécessairement la chaîne dès qu'un exercice existe, voir [`prior_chain`]).
+const RECORD_SELECT: &str = "SELECT fy.*,
+    (SELECT coalesce(sum(max(0, -p.result_before_tax_cents) - p.carried_back_cents \
+                         - p.losses_imputed_cents), 0)
+       FROM fiscal_years p WHERE p.ends_on <= fy.ends_on)
+    + coalesce((SELECT tax_losses_cents FROM opening_balance WHERE id = 1), 0)
+    AS losses_carried_forward_cents
+ FROM fiscal_years fy";
+
 fn row_to_record(row: &Row) -> rusqlite::Result<FiscalYearRecord> {
     let id: String = row.get("id")?;
     let starts_on: String = row.get("starts_on")?;
@@ -487,11 +710,15 @@ fn row_to_record(row: &Row) -> rusqlite::Result<FiscalYearRecord> {
         expenses: Money::from_cents(row.get("expenses_cents")?),
         director_remuneration: Money::from_cents(row.get("director_remuneration_cents")?),
         result_before_tax: Money::from_cents(row.get("result_before_tax_cents")?),
+        losses_imputed: Money::from_cents(row.get("losses_imputed_cents")?),
         corporate_tax: Money::from_cents(row.get("corporate_tax_cents")?),
+        carried_back: Money::from_cents(row.get("carried_back_cents")?),
+        carry_back_credit: Money::from_cents(row.get("carry_back_credit_cents")?),
         net_result: Money::from_cents(row.get("net_result_cents")?),
         legal_reserve: Money::from_cents(row.get("legal_reserve_cents")?),
         dividends: Money::from_cents(row.get("dividends_cents")?),
         retained_earnings: Money::from_cents(row.get("retained_earnings_cents")?),
+        losses_carried_forward: Money::from_cents(row.get("losses_carried_forward_cents")?),
         approved_on: approved_on
             .map(|s| parse_date(&s))
             .transpose()
@@ -507,7 +734,7 @@ pub fn fiscal_year_by_id(
     id: FiscalYearId,
 ) -> Result<Option<FiscalYearRecord>, AppError> {
     conn.query_row(
-        "SELECT * FROM fiscal_years WHERE id = ?1",
+        &format!("{RECORD_SELECT} WHERE fy.id = ?1"),
         [id.to_string()],
         row_to_record,
     )
@@ -521,7 +748,7 @@ pub fn fiscal_year_by_period(
     period: FiscalYear,
 ) -> Result<Option<FiscalYearRecord>, AppError> {
     conn.query_row(
-        "SELECT * FROM fiscal_years WHERE starts_on = ?1 AND ends_on = ?2",
+        &format!("{RECORD_SELECT} WHERE fy.starts_on = ?1 AND fy.ends_on = ?2"),
         [format_date(period.start()), format_date(period.end())],
         row_to_record,
     )
@@ -540,8 +767,10 @@ pub fn fiscal_year_ending_in(
     year: i32,
 ) -> Result<Option<FiscalYearRecord>, AppError> {
     conn.query_row(
-        "SELECT * FROM fiscal_years WHERE ends_on >= ?1 AND ends_on <= ?2
-         ORDER BY ends_on DESC LIMIT 1",
+        &format!(
+            "{RECORD_SELECT} WHERE fy.ends_on >= ?1 AND fy.ends_on <= ?2
+             ORDER BY fy.ends_on DESC LIMIT 1"
+        ),
         [format!("{year:04}-01-01"), format!("{year:04}-12-31")],
         row_to_record,
     )
@@ -553,7 +782,7 @@ pub fn fiscal_year_ending_in(
 ///
 /// # Errors
 pub fn list_fiscal_years(conn: &Connection) -> Result<Vec<FiscalYearRecord>, AppError> {
-    let mut stmt = conn.prepare("SELECT * FROM fiscal_years ORDER BY starts_on ASC")?;
+    let mut stmt = conn.prepare(&format!("{RECORD_SELECT} ORDER BY fy.starts_on ASC"))?;
     let rows = stmt.query_map([], row_to_record)?;
     rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
 }
@@ -664,6 +893,7 @@ mod tests {
             ends_on: date(2026, TimeMonth::December, 31),
             legal_reserve: Money::from_cents(legal_reserve),
             dividends: Money::from_cents(dividends),
+            carry_back: false,
         };
         let Outcome::Applied(id) = Executor::new(store).execute(&cmd, &human()).unwrap() else {
             panic!("expected Applied")
@@ -716,6 +946,7 @@ mod tests {
             ends_on: date(2026, TimeMonth::December, 31),
             legal_reserve: Money::ZERO,
             dividends: Money::ZERO,
+            carry_back: false,
         };
         let err = Executor::new(&mut store)
             .execute(&cmd, &human())
@@ -735,6 +966,7 @@ mod tests {
             ends_on: date(2027, TimeMonth::June, 30),
             legal_reserve: Money::ZERO,
             dividends: Money::ZERO,
+            carry_back: false,
         };
         let err = Executor::new(&mut store)
             .execute(&overlapping, &human())
@@ -754,6 +986,7 @@ mod tests {
             ends_on: date(2026, TimeMonth::December, 31),
             legal_reserve: Money::ZERO,
             dividends: Money::from_cents(500_000),
+            carry_back: false,
         };
         let err = Executor::new(&mut store)
             .execute(&cmd, &human())
@@ -773,6 +1006,7 @@ mod tests {
             ends_on: date(2026, TimeMonth::December, 31),
             legal_reserve: Money::from_cents(20_000),
             dividends: Money::ZERO,
+            carry_back: false,
         };
         let err = Executor::new(&mut store)
             .execute(&cmd, &human())
@@ -929,6 +1163,7 @@ mod tests {
             ends_on: date(2027, TimeMonth::December, 31),
             legal_reserve: Money::ZERO,
             dividends: Money::ZERO,
+            carry_back: false,
         };
         Executor::new(&mut store).execute(&cmd, &human()).unwrap();
 
@@ -981,6 +1216,7 @@ mod tests {
             ends_on: date(2026, TimeMonth::December, 31),
             legal_reserve: Money::ZERO,
             dividends: Money::ZERO,
+            carry_back: false,
         };
         let agent = ExecutionContext::new(
             Actor::Agent {
@@ -1001,6 +1237,7 @@ mod tests {
             opens_on,
             source: Some("bilan repris".to_string()),
             lines: specs.iter().map(|s| s.parse().unwrap()).collect(),
+            tax_losses: Money::ZERO,
         };
         Executor::new(store).execute(&cmd, &human()).unwrap();
     }
@@ -1028,6 +1265,7 @@ mod tests {
             ends_on: date(2026, TimeMonth::December, 31),
             legal_reserve: Money::from_cents(5_000),
             dividends: Money::ZERO,
+            carry_back: false,
         };
         let err = Executor::new(&mut store)
             .execute(&too_much, &human())
@@ -1054,6 +1292,7 @@ mod tests {
             ends_on: date(2027, TimeMonth::December, 31),
             legal_reserve: Money::from_cents(1),
             dividends: Money::ZERO,
+            carry_back: false,
         };
         let err = Executor::new(&mut store)
             .execute(&next, &human())
@@ -1076,6 +1315,7 @@ mod tests {
             ends_on: date(2026, TimeMonth::December, 31),
             legal_reserve: Money::ZERO,
             dividends: Money::ZERO,
+            carry_back: false,
         };
         let err = Executor::new(&mut store)
             .execute(&cmd, &human())
@@ -1118,6 +1358,7 @@ mod tests {
             ends_on: date(2026, TimeMonth::December, 31),
             legal_reserve: Money::ZERO,
             dividends: Money::from_cents(100),
+            carry_back: false,
         };
         let err = Executor::new(&mut store)
             .execute(&with_dividends, &human())
@@ -1131,5 +1372,228 @@ mod tests {
         assert_eq!(record.net_result, Money::from_cents(-80_000));
         // 300 € repris − 800 € de perte : report à nouveau débiteur de 500 €.
         assert_eq!(record.retained_earnings, Money::from_cents(-50_000));
+        // Et fiscalement, 800 € de déficit reportable en avant (lot 32).
+        assert_eq!(record.taxable_result(), Money::from_cents(-80_000));
+        assert_eq!(record.deficit(), Money::from_cents(80_000));
+        assert_eq!(record.losses_imputed, Money::ZERO);
+        assert_eq!(record.losses_carried_forward, Money::from_cents(80_000));
+        assert_eq!(record.losses_available_before(), Money::ZERO);
+    }
+
+    // --- Déficits fiscaux : report en avant et report en arrière (lot 32). ---
+
+    /// Une seule dépense nette de 800 € en mars `year`, aucune facture : déficit de 800 €.
+    fn seed_loss(store: &mut Store, year: i32) {
+        Executor::new(store)
+            .execute(
+                &RecordExpense {
+                    label: "Honoraires".to_string(),
+                    category: ExpenseCategory::Professional,
+                    amount: Money::from_cents(96_000),
+                    vat_rate: VatRate::Standard,
+                    vat_deductible: Money::from_cents(16_000),
+                    incurred_on: date(year, TimeMonth::March, 5),
+                    receipt_hash: None,
+                    receipt_filename: None,
+                },
+                &human(),
+            )
+            .unwrap();
+    }
+
+    fn close_year(store: &mut Store, year: i32, carry_back: bool) -> FiscalYearRecord {
+        let cmd = CloseFiscalYear {
+            starts_on: date(year, TimeMonth::January, 1),
+            ends_on: date(year, TimeMonth::December, 31),
+            legal_reserve: Money::ZERO,
+            dividends: Money::ZERO,
+            carry_back,
+        };
+        let Outcome::Applied(id) = Executor::new(store).execute(&cmd, &human()).unwrap() else {
+            panic!("expected Applied")
+        };
+        fiscal_year_by_id(store.connection(), id).unwrap().unwrap()
+    }
+
+    #[test]
+    fn a_prior_deficit_is_imputed_on_the_next_profit_and_lowers_the_is() {
+        let mut store = test_store("carry-forward");
+        set_profile(&mut store, Some(100_000));
+        // 2026 : déficit de 800 €, aucun IS, stock reportable de 800 €.
+        seed_loss(&mut store, 2026);
+        let loss_year = close_year(&mut store, 2026, false);
+        assert_eq!(loss_year.losses_carried_forward, Money::from_cents(80_000));
+        assert_eq!(
+            tax_losses_available(store.connection(), date(2027, TimeMonth::January, 1)).unwrap(),
+            Money::from_cents(80_000)
+        );
+
+        // 2027 : bénéfice comptable de 5 375 € → résultat fiscal 4 575 €, IS 15 % = 686,25 €
+        // (au lieu de 806,25 € sans imputation), net = 5 375 − 686,25 = 4 688,75 €.
+        seed_activity(&mut store, 2027);
+        let profit_year = close_year(&mut store, 2027, false);
+        assert_eq!(profit_year.result_before_tax, Money::from_cents(537_500));
+        assert_eq!(profit_year.losses_imputed, Money::from_cents(80_000));
+        assert_eq!(profit_year.taxable_result(), Money::from_cents(457_500));
+        assert_eq!(profit_year.corporate_tax, Money::from_cents(68_625));
+        assert_eq!(profit_year.net_result, Money::from_cents(468_875));
+        assert_eq!(
+            profit_year.losses_available_before(),
+            Money::from_cents(80_000)
+        );
+        assert_eq!(profit_year.losses_carried_forward, Money::ZERO);
+        // Report à nouveau comptable : −800 + 4 688,75 = 3 888,75 €.
+        assert_eq!(profit_year.retained_earnings, Money::from_cents(388_875));
+        // Le stock relu sur l'exercice déficitaire n'a pas bougé : c'est un stock *après* lui.
+        let loss_year = fiscal_year_by_id(store.connection(), loss_year.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loss_year.losses_carried_forward, Money::from_cents(80_000));
+        assert_eq!(
+            tax_losses_available(store.connection(), date(2028, TimeMonth::January, 1)).unwrap(),
+            Money::ZERO
+        );
+    }
+
+    #[test]
+    fn the_opening_balance_carries_prior_tax_losses_into_the_first_close() {
+        let mut store = test_store("opening-losses");
+        set_profile(&mut store, Some(100_000));
+        let cmd = crate::opening_balance::RecordOpeningBalance {
+            opens_on: date(2026, TimeMonth::January, 1),
+            source: None,
+            lines: ["101000:Capital:C:1000.00", "512000:Banque:D:1000.00"]
+                .iter()
+                .map(|s| s.parse().unwrap())
+                .collect(),
+            // 3 000 € de déficits antérieurs (case 870 du dernier 2033-D).
+            tax_losses: Money::from_cents(300_000),
+        };
+        Executor::new(&mut store).execute(&cmd, &human()).unwrap();
+        // Lecture tolérante : le stock repris compte dès l'exercice qui ouvre ce jour-là, pas
+        // pour un exercice commençant un autre jour sans exercice clos entre les deux.
+        assert_eq!(
+            tax_losses_available(store.connection(), date(2026, TimeMonth::January, 1)).unwrap(),
+            Money::from_cents(300_000)
+        );
+        assert_eq!(
+            tax_losses_available(store.connection(), date(2026, TimeMonth::July, 1)).unwrap(),
+            Money::ZERO
+        );
+
+        // Bénéfice 5 375 € : 3 000 € imputés, IS sur 2 375 € = 356,25 €.
+        seed_activity(&mut store, 2026);
+        let year = close_year(&mut store, 2026, false);
+        assert_eq!(year.losses_imputed, Money::from_cents(300_000));
+        assert_eq!(year.taxable_result(), Money::from_cents(237_500));
+        assert_eq!(year.corporate_tax, Money::from_cents(35_625));
+        assert_eq!(year.losses_carried_forward, Money::ZERO);
+        assert_eq!(year.losses_available_before(), Money::from_cents(300_000));
+        assert_eq!(
+            year.accounting_result().prior_losses_available,
+            Money::from_cents(300_000)
+        );
+    }
+
+    #[test]
+    fn carrying_a_deficit_back_creates_an_is_credit_in_the_net_result() {
+        let mut store = test_store("carry-back");
+        set_profile(&mut store, Some(100_000));
+        // 2026 : bénéfice fiscal 5 375 €, IS 806,25 €, 1 000 € distribués.
+        seed_activity(&mut store, 2026);
+        let profit_year = close_2026(&mut store, 0, 100_000);
+        let profit_year = fiscal_year_by_id(store.connection(), profit_year)
+            .unwrap()
+            .unwrap();
+        assert_eq!(profit_year.retained_earnings, Money::from_cents(356_875));
+
+        // 2027 : déficit de 800 €, reporté en arrière sur les 4 375 € non distribués de 2026,
+        // entièrement au taux réduit : créance de 15 % × 800 = 120 €.
+        seed_loss(&mut store, 2027);
+        let loss_year = close_year(&mut store, 2027, true);
+        assert_eq!(loss_year.taxable_result(), Money::from_cents(-80_000));
+        assert_eq!(loss_year.carried_back, Money::from_cents(80_000));
+        assert_eq!(loss_year.carry_back_credit, Money::from_cents(12_000));
+        assert_eq!(loss_year.corporate_tax, Money::ZERO);
+        // Net comptable = −800 + 120 = −680 € ; report = 3 568,75 − 680 = 2 888,75 €.
+        assert_eq!(loss_year.net_result, Money::from_cents(-68_000));
+        assert_eq!(loss_year.retained_earnings, Money::from_cents(288_875));
+        // Le déficit reporté en arrière ne l'est plus en avant.
+        assert_eq!(loss_year.losses_carried_forward, Money::ZERO);
+        assert_eq!(
+            tax_losses_available(store.connection(), date(2028, TimeMonth::January, 1)).unwrap(),
+            Money::ZERO
+        );
+        let result = loss_year.accounting_result();
+        assert_eq!(result.carry_back_credit, Money::from_cents(12_000));
+        assert_eq!(result.losses_carried_forward(), Money::ZERO);
+    }
+
+    #[test]
+    fn carry_back_is_refused_without_a_deficit_a_previous_year_or_an_imputable_profit() {
+        let mut store = test_store("carry-back-refused");
+        set_profile(&mut store, Some(100_000));
+
+        // Pas d'exercice précédent clos ici.
+        seed_loss(&mut store, 2026);
+        let cmd = CloseFiscalYear {
+            starts_on: date(2026, TimeMonth::January, 1),
+            ends_on: date(2026, TimeMonth::December, 31),
+            legal_reserve: Money::ZERO,
+            dividends: Money::ZERO,
+            carry_back: true,
+        };
+        let err = Executor::new(&mut store)
+            .execute(&cmd, &human())
+            .unwrap_err();
+        assert!(
+            matches!(&err, AppError::Domain(msg) if msg.contains("exercice précédent")),
+            "{err}"
+        );
+        assert!(list_fiscal_years(store.connection()).unwrap().is_empty());
+        close_year(&mut store, 2026, false);
+
+        // 2027 bénéficiaire : pas de déficit à reporter.
+        seed_activity(&mut store, 2027);
+        let cmd = CloseFiscalYear {
+            starts_on: date(2027, TimeMonth::January, 1),
+            ends_on: date(2027, TimeMonth::December, 31),
+            legal_reserve: Money::ZERO,
+            dividends: Money::ZERO,
+            carry_back: true,
+        };
+        let err = Executor::new(&mut store)
+            .execute(&cmd, &human())
+            .unwrap_err();
+        assert!(
+            matches!(&err, AppError::Domain(msg) if msg.contains("aucun déficit")),
+            "{err}"
+        );
+        let cmd = CloseFiscalYear {
+            carry_back: false,
+            ..cmd
+        };
+        Executor::new(&mut store).execute(&cmd, &human()).unwrap();
+
+        // 2028 et 2029 déficitaires : le déficit 2029 n'a, la veille, qu'un exercice lui-même
+        // déficitaire — aucun bénéfice d'imputation (le report en arrière ne remonte jamais
+        // au-delà de l'exercice précédent).
+        seed_loss(&mut store, 2028);
+        close_year(&mut store, 2028, false);
+        seed_loss(&mut store, 2029);
+        let cmd = CloseFiscalYear {
+            starts_on: date(2029, TimeMonth::January, 1),
+            ends_on: date(2029, TimeMonth::December, 31),
+            legal_reserve: Money::ZERO,
+            dividends: Money::ZERO,
+            carry_back: true,
+        };
+        let err = Executor::new(&mut store)
+            .execute(&cmd, &human())
+            .unwrap_err();
+        assert!(
+            matches!(&err, AppError::Domain(msg) if msg.contains("bénéfice d'imputation")),
+            "{err}"
+        );
     }
 }

@@ -13,7 +13,6 @@
 use std::path::{Path, PathBuf};
 
 use clap::{Subcommand, ValueEnum};
-use freeflow_core::accounting::AccountingResult;
 use freeflow_core::app::{ExecutionContext, Executor};
 use freeflow_core::company::{CompanyProfile, company_profile};
 use freeflow_core::domain::{FiscalYearEnd, Money, OpeningBalanceLine, format_date};
@@ -73,6 +72,11 @@ pub enum YearCommand {
         /// Dividendes distribués (euros).
         #[arg(long, value_parser = parse_money, default_value = "0")]
         dividends: Money,
+        /// Opte pour le report en arrière du déficit de l'exercice (art. 220 quinquies CGI) sur
+        /// le bénéfice de l'exercice précédent clos ici : la créance d'IS entre dans le résultat
+        /// net. Refusé sans déficit, sans exercice précédent ou sans bénéfice d'imputation.
+        #[arg(long)]
+        carry_back: bool,
     },
     /// Liste les exercices clos, du plus ancien au plus récent.
     List,
@@ -145,6 +149,10 @@ pub enum OpeningCommand {
         /// ignorées. Se cumule avec `--line`.
         #[arg(long, value_name = "FICHIER")]
         lines_file: Option<PathBuf>,
+        /// Déficits fiscaux antérieurs encore reportables (euros, case 870 du dernier 2033-D),
+        /// hors bilan : imputés sur les bénéfices des exercices clos ici.
+        #[arg(long, value_parser = parse_money, default_value = "0")]
+        tax_losses: Money,
     },
     /// Supprime le bilan d'ouverture (tant qu'aucun exercice n'est clos).
     Rm,
@@ -168,6 +176,7 @@ fn opening_json(r: &OpeningBalanceRecord) -> serde_json::Value {
             "legal_reserve_cents": equity.legal_reserve.cents(),
             "retained_earnings_cents": equity.retained_earnings.cents(),
         },
+        "tax_losses_cents": r.balance.tax_losses.cents(),
         "revision": r.revision,
     })
 }
@@ -189,7 +198,7 @@ fn opening_human(r: &OpeningBalanceRecord) -> String {
     format!(
         "Bilan d'ouverture au {}{}\n{}\nTotal débit : {} — total crédit : {}\n\
          Capitaux propres repris : capital {}, réserve légale {}, report à nouveau {}\n\
-         (révision {})",
+         Déficits fiscaux reportables repris : {}\n(révision {})",
         format_date(r.balance.opens_on),
         r.balance
             .source
@@ -201,6 +210,7 @@ fn opening_human(r: &OpeningBalanceRecord) -> String {
         equity.share_capital,
         equity.legal_reserve,
         equity.retained_earnings,
+        r.balance.tax_losses,
         r.revision,
     )
 }
@@ -235,6 +245,7 @@ fn run_opening(
             source,
             mut lines,
             lines_file,
+            tax_losses,
         } => {
             if let Some(path) = lines_file {
                 lines.extend(read_lines_file(&path)?);
@@ -248,6 +259,7 @@ fn run_opening(
                         opens_on,
                         source,
                         lines,
+                        tax_losses,
                     },
                     ctx,
                 )?,
@@ -256,6 +268,7 @@ fn run_opening(
                         opens_on,
                         source,
                         lines,
+                        tax_losses,
                     },
                     ctx,
                 )?,
@@ -287,11 +300,16 @@ fn year_json(r: &FiscalYearRecord) -> serde_json::Value {
         "expenses_cents": r.expenses.cents(),
         "director_remuneration_cents": r.director_remuneration.cents(),
         "result_before_tax_cents": r.result_before_tax.cents(),
+        "losses_imputed_cents": r.losses_imputed.cents(),
+        "taxable_result_cents": r.taxable_result().cents(),
         "corporate_tax_cents": r.corporate_tax.cents(),
+        "carried_back_cents": r.carried_back.cents(),
+        "carry_back_credit_cents": r.carry_back_credit.cents(),
         "net_result_cents": r.net_result.cents(),
         "legal_reserve_cents": r.legal_reserve.cents(),
         "dividends_cents": r.dividends.cents(),
         "retained_earnings_cents": r.retained_earnings.cents(),
+        "losses_carried_forward_cents": r.losses_carried_forward.cents(),
         "approved_on": r.approved_on.map(format_date),
         "revision": r.revision,
     })
@@ -470,15 +488,7 @@ fn render(
             .map_err(|e| CliError::Unexpected(e.to_string()))?,
         DocKind::Synthesis => {
             // Le document reflète le snapshot figé à la clôture, pas un recalcul vivant.
-            let result = AccountingResult {
-                period: record.period(),
-                revenue_ht: record.revenue_ht,
-                expenses: record.expenses,
-                director_remuneration: record.director_remuneration,
-                result_before_tax: record.result_before_tax,
-                corporate_tax: record.corporate_tax,
-                net_result: record.net_result,
-            };
+            let result = record.accounting_result();
             let years = list_fiscal_years(store.connection())?;
             let prior = years
                 .iter()
@@ -512,6 +522,7 @@ pub fn run(
             ends_on,
             legal_reserve,
             dividends,
+            carry_back,
         } => {
             let (starts_on, ends_on) = resolve_close_period(store, period, starts_on, ends_on)?;
             let command = CloseFiscalYear {
@@ -519,6 +530,7 @@ pub fn run(
                 ends_on,
                 legal_reserve,
                 dividends,
+                carry_back,
             };
             let outcome = Executor::new(store).execute(&command, ctx)?;
             format_outcome(&outcome, json)
@@ -569,20 +581,27 @@ pub fn run(
                 format!(
                     "Exercice du {} au {} — {status}\n\
                      CA HT : {}\nCharges externes : {}\nRémunération dirigeant : {}\n\
-                     Résultat avant IS : {}\nIS : {}\nRésultat net : {}\n\
+                     Résultat avant IS : {}\nDéficits antérieurs imputés : {}\n\
+                     Résultat fiscal : {}\nIS : {}\nDéficit reporté en arrière : {}\n\
+                     Créance de report en arrière : {}\nRésultat net : {}\n\
                      Réserve légale : {}\nDividendes : {}\nReport à nouveau : {}\n\
-                     (id {}, révision {})",
+                     Déficits reportables en avant : {}\n(id {}, révision {})",
                     format_date(record.starts_on),
                     format_date(record.ends_on),
                     record.revenue_ht,
                     record.expenses,
                     record.director_remuneration,
                     record.result_before_tax,
+                    record.losses_imputed,
+                    record.taxable_result(),
                     record.corporate_tax,
+                    record.carried_back,
+                    record.carry_back_credit,
                     record.net_result,
                     record.legal_reserve,
                     record.dividends,
                     record.retained_earnings,
+                    record.losses_carried_forward,
                     record.id,
                     record.revision,
                 )

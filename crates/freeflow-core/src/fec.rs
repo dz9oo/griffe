@@ -107,6 +107,7 @@ impl Fec {
                 .filter(|o| o.opens_on == exercise.start())
                 .map(OpeningLines::from_opening_balance),
             snapshot: None,
+            prior_losses: Money::ZERO,
             appropriations: &[],
         });
         Self::from_ledger(profile.siren, ledger)
@@ -390,6 +391,7 @@ mod tests {
                 "110000:Report à nouveau:C:500.00".parse().unwrap(),
                 "512000:Banque:D:1500.00".parse().unwrap(),
             ],
+            tax_losses: Money::ZERO,
         };
         let fec = Fec::build(
             &profile(),

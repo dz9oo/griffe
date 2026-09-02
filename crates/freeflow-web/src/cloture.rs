@@ -114,6 +114,9 @@ pub struct CloseForm {
     legal_reserve: String,
     #[serde(default)]
     dividends: String,
+    /// Case « report en arrière » : présente (`on`) seulement si cochée.
+    #[serde(default)]
+    carry_back: Option<String>,
 }
 
 impl From<&CloseForm> for CloseFormValues {
@@ -123,6 +126,7 @@ impl From<&CloseForm> for CloseFormValues {
             ends_on: f.ends_on.clone(),
             legal_reserve: f.legal_reserve.clone(),
             dividends: f.dividends.clone(),
+            carry_back: f.carry_back.is_some(),
         }
     }
 }
@@ -174,6 +178,7 @@ fn parse_close_form(form: &CloseForm) -> Result<ParsedCloseForm, Box<CloseFormEr
                     ends_on,
                     legal_reserve,
                     dividends,
+                    carry_back: form.carry_back.is_some(),
                 },
             })
         }
@@ -563,15 +568,7 @@ pub async fn document(
             })
         }
         "synthesis" => {
-            let result = freeflow_core::accounting::AccountingResult {
-                period: record.period(),
-                revenue_ht: record.revenue_ht,
-                expenses: record.expenses,
-                director_remuneration: record.director_remuneration,
-                result_before_tax: record.result_before_tax,
-                corporate_tax: record.corporate_tax,
-                net_result: record.net_result,
-            };
+            let result = record.accounting_result();
             let prior = years
                 .iter()
                 .filter(|y| y.ends_on < record.starts_on)
@@ -617,6 +614,8 @@ pub struct OpeningForm {
     source: String,
     #[serde(default)]
     lines: String,
+    #[serde(default)]
+    tax_losses: String,
 }
 
 impl From<&OpeningForm> for OpeningFormValues {
@@ -625,6 +624,7 @@ impl From<&OpeningForm> for OpeningFormValues {
             opens_on: f.opens_on.clone(),
             source: f.source.clone(),
             lines: f.lines.clone(),
+            tax_losses: f.tax_losses.clone(),
         }
     }
 }
@@ -690,6 +690,7 @@ struct ParsedOpeningForm {
     opens_on: time::Date,
     source: Option<String>,
     lines: Vec<OpeningBalanceLine>,
+    tax_losses: Money,
 }
 
 fn parse_opening_form(form: &OpeningForm) -> Result<ParsedOpeningForm, Box<OpeningFormErrors>> {
@@ -717,12 +718,16 @@ fn parse_opening_form(form: &OpeningForm) -> Result<ParsedOpeningForm, Box<Openi
         }
     }
     let source = form.source.trim();
+    let tax_losses = parse_money_field(&form.tax_losses, &mut errors.tax_losses);
     match opens_on {
-        Some(opens_on) if errors.lines.is_none() => Ok(ParsedOpeningForm {
-            opens_on,
-            source: (!source.is_empty()).then(|| source.to_string()),
-            lines,
-        }),
+        Some(opens_on) if errors.lines.is_none() && errors.tax_losses.is_none() => {
+            Ok(ParsedOpeningForm {
+                opens_on,
+                source: (!source.is_empty()).then(|| source.to_string()),
+                lines,
+                tax_losses,
+            })
+        }
         _ => Err(Box::new(errors)),
     }
 }
@@ -773,6 +778,7 @@ pub async fn opening_save(
                     opens_on: parsed.opens_on,
                     source: parsed.source,
                     lines: parsed.lines,
+                    tax_losses: parsed.tax_losses,
                 },
             )
             .await
@@ -784,6 +790,7 @@ pub async fn opening_save(
                 opens_on: parsed.opens_on,
                 source: parsed.source,
                 lines: parsed.lines,
+                tax_losses: parsed.tax_losses,
             },
         )
         .await

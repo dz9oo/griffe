@@ -32,11 +32,21 @@ pub fn render_synthesis(
         fr_date(result.period.end())
     ));
     let disclaimer_v = b.bind(DISCLAIMER);
-    let scope_v = b.bind(
+    let scope_v = b.bind(&format!(
         "Périmètre simplifié : produits = factures émises HT, charges = dépenses nettes de TVA \
          déductible et rémunération du dirigeant. Sans amortissements, provisions, variation de \
-         stock ni produits/charges constatés d'avance.",
-    );
+         stock ni produits/charges constatés d'avance. Déficits reportables en avant après \
+         l'exercice : {}{}.",
+        result.losses_carried_forward(),
+        if result.carried_back.is_zero() {
+            String::new()
+        } else {
+            format!(
+                " ; déficit reporté en arrière (art. 220 quinquies CGI) : {}",
+                result.carried_back
+            )
+        }
+    ));
 
     // Une ligne du tableau : libellé, montant N, et montant N−1 si l'exercice précédent est là.
     let rows: Vec<(String, String, Option<String>)> = [
@@ -61,9 +71,24 @@ pub fn render_synthesis(
             prior.map(|p| p.result_before_tax),
         ),
         (
+            "Déficits antérieurs imputés (art. 209 I CGI)",
+            result.losses_imputed,
+            prior.map(|p| p.losses_imputed),
+        ),
+        (
+            "Résultat fiscal",
+            result.taxable_result,
+            prior.map(|p| p.taxable_result()),
+        ),
+        (
             "Impôt sur les sociétés",
             result.corporate_tax,
             prior.map(|p| p.corporate_tax),
+        ),
+        (
+            "Produit du report en arrière du déficit (créance d'IS)",
+            result.carry_back_credit,
+            prior.map(|p| p.carry_back_credit),
         ),
         (
             "Résultat net",

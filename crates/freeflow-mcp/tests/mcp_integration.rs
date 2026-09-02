@@ -996,7 +996,13 @@ async fn an_agent_closing_a_fiscal_year_only_deposits_a_pending_action() {
     set_company_profile(&mut store);
     let client = spawn_client(store).await;
 
-    let closed = call(&client, "fiscal.close_year", json!({"period": 2026})).await;
+    // L'option de report en arrière (lot 32) voyage avec la commande en attente.
+    let closed = call(
+        &client,
+        "fiscal.close_year",
+        json!({"period": 2026, "carry_back": true}),
+    )
+    .await;
     assert_eq!(closed.is_error, Some(false));
     let body = json_of(&closed);
     assert_eq!(body["status"], "pending_confirmation");
@@ -1370,6 +1376,7 @@ async fn a_fiscal_year_can_be_shown_and_amended_but_approval_and_deletion_need_a
                 ends_on: time::Date::from_calendar_date(2025, time::Month::December, 31).unwrap(),
                 legal_reserve: Money::from_cents(0),
                 dividends: Money::from_cents(0),
+                carry_back: false,
             },
             &human,
         )
@@ -1382,6 +1389,11 @@ async fn a_fiscal_year_can_be_shown_and_amended_but_approval_and_deletion_need_a
     let record = json_of(&shown);
     assert_eq!(record["ends_on"], "2025-12-31");
     assert!(record["approved_on"].is_null());
+    // Lot 32 : le suivi des déficits fait partie de la vue partagée.
+    assert_eq!(record["taxable_result_cents"], 0);
+    assert_eq!(record["losses_imputed_cents"], 0);
+    assert_eq!(record["carry_back_credit_cents"], 0);
+    assert_eq!(record["losses_carried_forward_cents"], 0);
 
     // Lot 31 : balance et bilan dérivés du grand livre — outil et ressource partagent la vue.
     let sheet = call(&client, "fiscal.balance_sheet", json!({"period": 2025})).await;
@@ -1634,6 +1646,7 @@ async fn an_agent_setting_the_opening_balance_only_deposits_a_pending_action() {
             "opens_on": "2026-01-01",
             "source": "bilan au 31/12/2025",
             "lines": ["101000:Capital social:C:1000.00", "512000:Banque:D:1000.00"],
+            "tax_losses_cents": 300_000,
         }),
     )
     .await;

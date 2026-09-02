@@ -1880,6 +1880,31 @@ async fn closing_a_year_from_the_window_then_downloading_its_documents() {
     let state = unlocked_state_with_activity(&db_path).await;
     let router = freeflow_web::router(state);
 
+    // Lot 32 : le report en arrière coché sur un exercice bénéficiaire est refusé par le cœur —
+    // le formulaire se re-rend avec le bandeau, la case toujours cochée, sans rien clore.
+    let refused = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/cloture")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(
+                    "starts_on=2026-01-01&ends_on=2026-12-31&legal_reserve=0&dividends=0&carry_back=on",
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), StatusCode::OK);
+    assert!(refused.headers().get("HX-Trigger").is_none());
+    let refused_body = body_text(refused).await;
+    assert!(refused_body.contains("aucun déficit"), "{refused_body}");
+    assert!(
+        refused_body.contains("name=\"carry_back\" type=\"checkbox\" value=\"on\" checked"),
+        "{refused_body}"
+    );
+
     // Clore 2026 depuis le formulaire du panneau.
     let closed = router
         .clone()
@@ -1920,6 +1945,24 @@ async fn closing_a_year_from_the_window_then_downloading_its_documents() {
     let table_body = body_text(table).await;
     assert!(table_body.contains("2026-12-31"));
     assert!(table_body.contains("projet"));
+    let detail_body = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/cloture/{id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(detail_body.contains("Résultat fiscal"), "{detail_body}");
+    assert!(
+        detail_body.contains("Déficits reportables en avant"),
+        "{detail_body}"
+    );
 
     // Les documents se téléchargent avec le bon type de contenu — liasse JSON et PV PDF (rendu
     // par le vrai binaire typst, comme les tests de freeflow-docs).
@@ -2888,7 +2931,7 @@ async fn the_opening_balance_panel_records_shows_and_freezes_after_a_close() {
                 .uri("/cloture/opening")
                 .header("content-type", "application/x-www-form-urlencoded")
                 .body(Body::from(
-                    "opens_on=2026-01-01&source=bilan+2025&lines=101000%3ACapital+social%3AC%3A1000.00%0A110000%3AReport+%C3%A0+nouveau%3AC%3A250.00%0A512000%3ABanque%3AD%3A1250.00",
+                    "opens_on=2026-01-01&source=bilan+2025&lines=101000%3ACapital+social%3AC%3A1000.00%0A110000%3AReport+%C3%A0+nouveau%3AC%3A250.00%0A512000%3ABanque%3AD%3A1250.00&tax_losses=3000",
                 ))
                 .unwrap(),
         )
@@ -2918,6 +2961,12 @@ async fn the_opening_balance_panel_records_shows_and_freezes_after_a_close() {
     assert!(detail.contains("Capital social"), "{detail}");
     assert!(detail.contains("modifiable"), "{detail}");
     assert!(detail.contains("250,00"), "{detail}");
+    // Lot 32 : les déficits fiscaux repris (hors bilan) s'affichent et se pré-remplissent.
+    assert!(
+        detail.contains("Déficits fiscaux reportables repris"),
+        "{detail}"
+    );
+    assert!(detail.contains("3\u{202f}000,00"), "{detail}");
 
     // Le formulaire de modification est pré-rempli avec la syntaxe texte et la révision.
     let edit = body_text(
@@ -2935,6 +2984,10 @@ async fn the_opening_balance_panel_records_shows_and_freezes_after_a_close() {
     .await;
     assert!(edit.contains("101000:Capital social:C:1000.00"), "{edit}");
     assert!(edit.contains("name=\"revision\" value=\"1\""), "{edit}");
+    assert!(
+        edit.contains("name=\"tax_losses\" type=\"number\" step=\"0.01\" value=\"3000.00\""),
+        "{edit}"
+    );
 
     // Clore 2026 fige le bilan : la fiche le dit, la suppression est refusée.
     let closed = router

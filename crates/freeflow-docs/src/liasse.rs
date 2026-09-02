@@ -101,6 +101,76 @@ fn balance_sheet_entries(sheet: &BalanceSheet) -> Vec<LiasseEntry> {
     entries
 }
 
+/// Les cases de suivi des déficits (lot 32) : sur le 2033-B, le déficit reporté en arrière
+/// (356), les déficits antérieurs imputés (360) et le déficit fiscal de l'exercice (372) ; sur
+/// le 2033-D, le relevé des déficits reportables (982 restant à reporter au titre de l'exercice
+/// précédent, 983 imputés, 984 non imputés, 860 déficit de l'exercice après report en arrière,
+/// 870 total restant à reporter). Cases à zéro omises, comme sur un formulaire.
+fn tax_loss_entries(year: &FiscalYearRecord) -> Vec<LiasseEntry> {
+    let mut entries = Vec::new();
+    let mut push = |form: &'static str, case: &'static str, label: &'static str, cents: i64| {
+        if cents != 0 {
+            entries.push(LiasseEntry {
+                form,
+                case,
+                label,
+                amount_cents: cents,
+            });
+        }
+    };
+    let deficit = year.deficit();
+    let available_before = year.losses_available_before();
+    push(
+        "2033-B",
+        "356",
+        "Déficit de l'exercice reporté en arrière (art. 220 quinquies CGI)",
+        year.carried_back.cents(),
+    );
+    push(
+        "2033-B",
+        "360",
+        "Déficits antérieurs reportables imputés sur l'exercice",
+        year.losses_imputed.cents(),
+    );
+    push(
+        "2033-B",
+        "372",
+        "Déficit fiscal de l'exercice",
+        deficit.cents(),
+    );
+    push(
+        "2033-D",
+        "982",
+        "Déficits restant à reporter au titre de l'exercice précédent",
+        available_before.cents(),
+    );
+    push(
+        "2033-D",
+        "983",
+        "Déficits imputés",
+        year.losses_imputed.cents(),
+    );
+    push(
+        "2033-D",
+        "984",
+        "Déficits antérieurs non imputés, reportables sans limite de durée",
+        (available_before - year.losses_imputed).cents(),
+    );
+    push(
+        "2033-D",
+        "860",
+        "Déficit de l'exercice restant à reporter (après report en arrière)",
+        (deficit - year.carried_back).cents(),
+    );
+    push(
+        "2033-D",
+        "870",
+        "Total des déficits restant à reporter",
+        year.losses_carried_forward.cents(),
+    );
+    entries
+}
+
 /// Construit l'export de liasse depuis le snapshot figé d'un exercice clos, et le bilan dérivé
 /// de son grand livre (`balance_sheet`) s'il est fourni.
 #[must_use]
@@ -137,8 +207,9 @@ pub fn liasse_export(
         LiasseEntry {
             form: "2065",
             case: "C1",
-            label: "Bénéfice imposable au taux normal et au taux réduit",
-            amount_cents: year.result_before_tax.cents(),
+            label: "Résultat fiscal (bénéfice imposable après imputation des déficits \
+                    antérieurs, négatif = déficit)",
+            amount_cents: year.taxable_result().cents(),
         },
         LiasseEntry {
             form: "2065",
@@ -153,6 +224,7 @@ pub fn liasse_export(
             amount_cents: year.net_result.cents(),
         },
     ];
+    entries.extend(tax_loss_entries(year));
     if let Some(sheet) = balance_sheet {
         entries.extend(balance_sheet_entries(sheet));
     }

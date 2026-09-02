@@ -131,6 +131,10 @@ pub struct RecordOpeningBalance {
     pub opens_on: Date,
     pub source: Option<String>,
     pub lines: Vec<OpeningBalanceLine>,
+    /// Déficits fiscaux antérieurs encore reportables (case 870 du dernier 2033-D), hors
+    /// bilan — zéro par défaut (lot 32).
+    #[serde(default)]
+    pub tax_losses: Money,
 }
 
 impl RecordOpeningBalance {
@@ -139,6 +143,7 @@ impl RecordOpeningBalance {
             opens_on: self.opens_on,
             source: self.source.clone(),
             lines: self.lines.clone(),
+            tax_losses: self.tax_losses,
         }
     }
 }
@@ -164,12 +169,14 @@ impl Command for RecordOpeningBalance {
         }
         require_no_fiscal_year(conn)?;
         conn.execute(
-            "INSERT INTO opening_balance (id, opens_on, source, revision, created_at)
-             VALUES (1, ?1, ?2, 1, ?3)",
+            "INSERT INTO opening_balance (id, opens_on, source, revision, created_at, \
+             tax_losses_cents)
+             VALUES (1, ?1, ?2, 1, ?3, ?4)",
             params![
                 format_date(self.opens_on),
                 self.source,
                 OffsetDateTime::now_utc().format(&Rfc3339)?,
+                self.tax_losses.cents(),
             ],
         )?;
         write_lines(conn, &self.lines)?;
@@ -186,6 +193,8 @@ pub struct UpdateOpeningBalance {
     pub opens_on: Date,
     pub source: Option<String>,
     pub lines: Vec<OpeningBalanceLine>,
+    #[serde(default)]
+    pub tax_losses: Money,
 }
 
 impl Command for UpdateOpeningBalance {
@@ -201,18 +210,21 @@ impl Command for UpdateOpeningBalance {
             opens_on: self.opens_on,
             source: self.source.clone(),
             lines: self.lines.clone(),
+            tax_losses: self.tax_losses,
         };
         balance.validate().map_err(OpeningBalanceError::from)?;
         require_no_fiscal_year(conn)?;
         let new_revision = require_opening_revision(conn, self.revision)?;
         let changed = conn.execute(
-            "UPDATE opening_balance SET opens_on = ?1, source = ?2, revision = ?3
+            "UPDATE opening_balance SET opens_on = ?1, source = ?2, revision = ?3, \
+             tax_losses_cents = ?5
              WHERE id = 1 AND revision = ?4",
             params![
                 format_date(self.opens_on),
                 self.source,
                 new_revision,
-                self.revision
+                self.revision,
+                self.tax_losses.cents(),
             ],
         )?;
         if changed == 0 {
@@ -275,14 +287,23 @@ fn conv_err(e: impl std::error::Error + Send + Sync + 'static) -> rusqlite::Erro
 ///
 /// Erreur de lecture SQLite.
 pub fn opening_balance(conn: &Connection) -> Result<Option<OpeningBalanceRecord>, AppError> {
-    let head: Option<(String, Option<String>, i64, String)> = conn
+    let head: Option<(String, Option<String>, i64, String, i64)> = conn
         .query_row(
-            "SELECT opens_on, source, revision, created_at FROM opening_balance WHERE id = 1",
+            "SELECT opens_on, source, revision, created_at, tax_losses_cents
+             FROM opening_balance WHERE id = 1",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
         )
         .optional()?;
-    let Some((opens_on, source, revision, created_at)) = head else {
+    let Some((opens_on, source, revision, created_at, tax_losses)) = head else {
         return Ok(None);
     };
     let mut stmt = conn.prepare(
@@ -306,6 +327,7 @@ pub fn opening_balance(conn: &Connection) -> Result<Option<OpeningBalanceRecord>
             opens_on: parse_date(&opens_on).map_err(|e| AppError::Domain(e.to_string()))?,
             source,
             lines,
+            tax_losses: Money::from_cents(tax_losses),
         },
         revision,
         created_at: OffsetDateTime::parse(&created_at, &Rfc3339)
@@ -347,6 +369,7 @@ mod tests {
                 "110000:Report à nouveau:C:2500.00",
                 "512000:Banque:D:3600.00",
             ]),
+            tax_losses: Money::ZERO,
         };
         match Executor::new(store).execute(&cmd, &human()).unwrap() {
             Outcome::Applied(rev) => rev,
@@ -385,6 +408,7 @@ mod tests {
             opens_on: Date::from_calendar_date(2025, Month::October, 1).unwrap(),
             source: None,
             lines: lines(&["101000:Capital:C:10.00", "512000:Banque:D:10.00"]),
+            tax_losses: Money::ZERO,
         };
         let err = Executor::new(&mut store)
             .execute(&again, &human())
@@ -399,6 +423,7 @@ mod tests {
             opens_on: Date::from_calendar_date(2025, Month::October, 1).unwrap(),
             source: None,
             lines: lines(&["101000:Capital:C:10.00", "512000:Banque:D:9.00"]),
+            tax_losses: Money::ZERO,
         };
         let err = Executor::new(&mut store)
             .execute(&unbalanced, &human())
@@ -410,6 +435,7 @@ mod tests {
             opens_on: Date::from_calendar_date(2025, Month::October, 1).unwrap(),
             source: None,
             lines: lines(&["706000:Ventes:C:10.00", "512000:Banque:D:10.00"]),
+            tax_losses: Money::ZERO,
         };
         let err = Executor::new(&mut store)
             .execute(&with_revenue, &human())
@@ -427,6 +453,7 @@ mod tests {
             opens_on: Date::from_calendar_date(2025, Month::October, 1).unwrap(),
             source: None,
             lines: lines(&["101000:Capital social:C:1000.00", "512000:Banque:D:1000.00"]),
+            tax_losses: Money::ZERO,
         };
         let Outcome::Applied(rev) = Executor::new(&mut store)
             .execute(&update, &human())
@@ -476,6 +503,7 @@ mod tests {
             opens_on: Date::from_calendar_date(2025, Month::October, 1).unwrap(),
             source: None,
             lines: lines(&["101000:Capital:C:10.00", "512000:Banque:D:10.00"]),
+            tax_losses: Money::ZERO,
         };
         let ctx = ExecutionContext::new(
             Actor::Agent {
