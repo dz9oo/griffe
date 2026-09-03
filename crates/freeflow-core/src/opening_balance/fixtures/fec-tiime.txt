@@ -1,0 +1,19 @@
+JournalCode|JournalLib|EcritureNum|EcritureDate|CompteNum|CompteLib|CompAuxNum|CompAuxLib|PieceRef|PieceDate|EcritureLib|Debit|Credit|EcritureLet|DateLet|ValidDate|Montantdevise|Idevise
+AN|A-nouveaux|1|20241001|101000|Capital social|||AN-2025|20241001|A-nouveaux au 01/10/2024||1000,00|||20241001||
+AN|A-nouveaux|1|20241001|106100|Réserve légale|||AN-2025|20241001|A-nouveaux au 01/10/2024||100,00|||20241001||
+AN|A-nouveaux|1|20241001|110000|Report à nouveau|||AN-2025|20241001|A-nouveaux au 01/10/2024||5150,00|||20241001||
+AN|A-nouveaux|1|20241001|218300|Matériel informatique|||AN-2025|20241001|A-nouveaux au 01/10/2024|1500,00||||20241001||
+AN|A-nouveaux|1|20241001|281830|Amortissements matériel|||AN-2025|20241001|A-nouveaux au 01/10/2024||500,00|||20241001||
+AN|A-nouveaux|1|20241001|455000|Compte courant associé|||AN-2025|20241001|A-nouveaux au 01/10/2024||500,00|||20241001||
+AN|A-nouveaux|1|20241001|445670|Crédit de TVA|||AN-2025|20241001|A-nouveaux au 01/10/2024|210,00||||20241001||
+AN|A-nouveaux|1|20241001|512000|Banque|||AN-2025|20241001|A-nouveaux au 01/10/2024|5540,00||||20241001||
+VE|Ventes|1|20250315|512000|Banque|||FA-2025-0001|20250315|Facture FA-2025-0001|4500,00||||20250315||
+VE|Ventes|1|20250315|706000|Prestations de services|||FA-2025-0001|20250315|Facture FA-2025-0001||4500,00|||20250315||
+AC|Achats|1|20250610|606400|Fournitures administratives|||DEP-1|20250610|Fournitures|300,00||||20250610||
+AC|Achats|1|20250610|512000|Banque|||DEP-1|20250610|Fournitures||300,00|||20250610||
+AC|Achats|2|20250920|622600|Honoraires|||DEP-2|20250920|Honoraires cabinet|1800,00||||20250920||
+AC|Achats|2|20250920|401000|Fournisseurs|||DEP-2|20250920|Honoraires cabinet||1800,00|||20250920||
+BQ|Banque|1|20250925|401000|Fournisseurs|||BQ-1|20250925|Paiement acompte honoraires|1200,00||||20250925||
+BQ|Banque|1|20250925|512000|Banque|||BQ-1|20250925|Paiement acompte honoraires||1200,00|||20250925||
+OD|Opérations diverses|1|20250930|695000|Impôts sur les bénéfices|||OD-IS|20250930|IS de l'exercice|1200,00||||20250930||
+OD|Opérations diverses|1|20250930|444000|État - impôts sur les bénéfices|||OD-IS|20250930|IS de l'exercice||1200,00|||20250930||

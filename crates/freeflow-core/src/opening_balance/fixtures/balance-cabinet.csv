@@ -1,0 +1,18 @@
+Balance générale au 30/09/2025 - NOVA DEV SASU
+
+Compte;Libellé;Total débit;Total crédit;Solde débiteur;Solde créditeur
+101000;Capital social;0,00;1 000,00;;1 000,00
+106100;Réserve légale;0,00;100,00;;100,00
+110000;Report à nouveau (solde créditeur);0,00;5 150,00;;5 150,00
+218300;Matériel de bureau et informatique;1 500,00;0,00;1 500,00;
+281830;Amortissements du matériel informatique;0,00;500,00;;500,00
+401000;Fournisseurs;2 400,00;3 000,00;;600,00
+444000;État - impôts sur les bénéfices;0,00;1 200,00;;1 200,00
+445670;Crédit de TVA à reporter;210,00;0,00;210,00;
+455000;Associés - comptes courants;0,00;500,00;;500,00
+512000;Banque;12 000,00;3 460,00;8 540,00;
+606400;Fournitures administratives;300,00;0,00;300,00;
+622600;Honoraires;1 800,00;0,00;1 800,00;
+695000;Impôts sur les bénéfices;1 200,00;0,00;1 200,00;
+706000;Prestations de services;0,00;4 500,00;;4 500,00
+Total;;19 410,00;19 410,00;12 750,00;12 750,00

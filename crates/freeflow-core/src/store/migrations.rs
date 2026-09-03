@@ -55,5 +55,7 @@ pub fn migrations() -> Migrations<'static> {
             .down(include_str!("migrations/0018_bank_fitid_down.sql")),
         M::up(include_str!("migrations/0019_setup_up.sql"))
             .down(include_str!("migrations/0019_setup_down.sql")),
+        M::up(include_str!("migrations/0020_opening_references_up.sql"))
+            .down(include_str!("migrations/0020_opening_references_down.sql")),
     ])
 }

@@ -1241,6 +1241,8 @@ mod tests {
                             .unwrap(),
                     ],
                     tax_losses: Money::ZERO,
+                    prior_corporate_tax: None,
+                    prior_vat_due: None,
                 },
                 &human_ctx(),
             )

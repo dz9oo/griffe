@@ -639,6 +639,12 @@ pub struct OpeningFormValues {
     pub lines: String,
     /// Déficits fiscaux antérieurs reportables, en euros (lot 32).
     pub tax_losses: String,
+    /// IS et TVA due de l'exercice précédent, en euros (lot 40) — vides = inconnus.
+    pub prior_is: String,
+    pub prior_vat: String,
+    /// Ce que l'import d'une balance ou d'un FEC a compris (lot 40), affiché au-dessus des
+    /// lignes pré-remplies.
+    pub import_note: Option<String>,
 }
 
 impl From<&OpeningBalanceRecord> for OpeningFormValues {
@@ -654,6 +660,13 @@ impl From<&OpeningBalanceRecord> for OpeningFormValues {
                 .collect::<Vec<_>>()
                 .join("\n"),
             tax_losses: r.balance.tax_losses.to_decimal_string(),
+            prior_is: r
+                .prior_corporate_tax
+                .map_or(String::new(), Money::to_decimal_string),
+            prior_vat: r
+                .prior_vat_due
+                .map_or(String::new(), Money::to_decimal_string),
+            import_note: None,
         }
     }
 }
@@ -674,12 +687,29 @@ pub fn opening_form_panel(
     revision: Option<i64>,
 ) -> Markup {
     let body = html! {
+        // Lot 40 : la reprise depuis le fichier du cabinet, avant la saisie à la main.
+        form hx-post="/cloture/opening/import" hx-target="#panel" hx-swap="innerHTML" hx-encoding="multipart/form-data" class="panel bordered" style="margin-bottom:12px" {
+            div class="panel-title" { "importer une balance ou un FEC" }
+            (form::date("opens_on", "Premier jour de l'exercice qui s'ouvre sur ce bilan", &values.opens_on, None))
+            (form::file("statement", "Balance générale (CSV) ou FEC de l'exercice précédent", ".csv,.txt,.tsv,text/csv,text/plain"))
+            (form::field_help(
+                "Demandez à votre cabinet la « balance de clôture » au dernier jour de l'exercice \
+                 précédent ; dans Tiime : Comptabilité → Exports → FEC ; dans Indy : Documents → \
+                 Export FEC. Les comptes de bilan sont repris tels quels, les comptes de charges et \
+                 de produits résumés en un résultat ; vous pourrez corriger les lignes avant \
+                 d'enregistrer."
+            ))
+            (form::actions("Analyser le fichier"))
+        }
         form hx-post="/cloture/opening" hx-target="#panel" hx-swap="innerHTML" {
             @if let Some((message, reload)) = &errors.conflict {
                 (form::conflict_banner(message, reload))
             } @else {
                 @if let Some(msg) = &errors.banner {
                     (form::error_banner(msg))
+                }
+                @if let Some(note) = &values.import_note {
+                    div class="detail-note" { span class="badge ok" { "aperçu" } " " (note) }
                 }
                 @if let Some(revision) = revision {
                     (form::hidden("revision", &revision.to_string()))
@@ -699,6 +729,13 @@ pub fn opening_form_panel(
                     "Hors bilan : le total des déficits restant à reporter (case 870 du dernier \
                      tableau 2033-D déposé), imputé sur les bénéfices des exercices clos ici. \
                      Zéro si aucun."
+                ))
+                (form::number("prior_is", "IS de l'exercice précédent (€, vide = inconnu)", &values.prior_is, "0.01", None))
+                (form::number("prior_vat", "TVA due au titre de l'exercice précédent (€, vide = inconnue)", &values.prior_vat, "0.01", None))
+                (form::field_help(
+                    "Les bases des acomptes de l'année : l'IS sur votre dernier relevé de solde \
+                     (2572), la TVA sur votre dernière CA12. Sans ces montants, le calendrier dit \
+                     « base inconnue » plutôt que d'affirmer une dispense."
                 ))
                 (form::actions(if revision.is_some() { "Remplacer le bilan d'ouverture" } else { "Enregistrer le bilan d'ouverture" }))
             }

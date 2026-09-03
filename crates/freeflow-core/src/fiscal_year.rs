@@ -1392,6 +1392,8 @@ mod tests {
             source: Some("bilan repris".to_string()),
             lines: specs.iter().map(|s| s.parse().unwrap()).collect(),
             tax_losses: Money::ZERO,
+            prior_corporate_tax: None,
+            prior_vat_due: None,
         };
         Executor::new(store).execute(&cmd, &human()).unwrap();
     }
@@ -1629,6 +1631,8 @@ mod tests {
                 .collect(),
             // 3 000 € de déficits antérieurs (case 870 du dernier 2033-D).
             tax_losses: Money::from_cents(300_000),
+            prior_corporate_tax: None,
+            prior_vat_due: None,
         };
         Executor::new(&mut store).execute(&cmd, &human()).unwrap();
         // Lecture tolérante : le stock repris compte dès l'exercice qui ouvre ce jour-là, pas

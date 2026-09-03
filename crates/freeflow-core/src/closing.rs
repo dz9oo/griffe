@@ -1430,6 +1430,21 @@ pub const GLOSSARY: &[GlossaryEntry] = &[
                   FreeFlow l'exporte depuis son grand livre dérivé.",
     },
     GlossaryEntry {
+        term: "Balance",
+        meaning: "La liste de tous les comptes avec leur solde à une date : c'est ce que votre \
+                  cabinet vous remet à la clôture (« balance générale » ou « balance de \
+                  clôture »), et ce que FreeFlow lit pour reprendre votre bilan d'ouverture. Un \
+                  export FEC de l'exercice précédent fait aussi l'affaire.",
+    },
+    GlossaryEntry {
+        term: "Débit et crédit",
+        meaning: "Les deux colonnes de toute écriture comptable. Pour un compte de bilan : ce \
+                  que la société possède (banque, créances, matériel) est un solde au débit, ce \
+                  qu'elle doit (capital, dettes, résultat non distribué) un solde au crédit — \
+                  l'actif est à gauche, le passif à droite. Les deux totaux sont toujours \
+                  égaux.",
+    },
+    GlossaryEntry {
         term: "Dépôt des comptes au greffe",
         meaning: "Rendre publics le bilan, le compte de résultat et la décision d'affectation, \
                   sur le guichet unique des formalités d'entreprises, dans le mois qui suit \
@@ -1882,6 +1897,8 @@ mod tests {
                             .unwrap(),
                     ],
                     tax_losses: Money::ZERO,
+                    prior_corporate_tax: None,
+                    prior_vat_due: None,
                 },
                 &human(),
             )
@@ -2164,6 +2181,8 @@ mod tests {
                         "512000:Banque:D:1600.00".parse().unwrap(),
                     ],
                     tax_losses: Money::ZERO,
+                    prior_corporate_tax: None,
+                    prior_vat_due: None,
                 },
                 &human(),
             )

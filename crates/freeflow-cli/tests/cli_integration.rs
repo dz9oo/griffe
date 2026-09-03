@@ -3217,3 +3217,187 @@ fn receipts_are_encrypted_migrated_and_attachable_after_the_close() {
         .stdout(predicate::str::contains("justificatif déchiffré dans"));
     assert_eq!(std::fs::read(&out).unwrap(), b"%PDF-1.4 facture definitive");
 }
+
+// ---------------------------------------------------------------------------------------------
+// Lot 40 : reprise depuis une balance de cabinet ou un FEC.
+// ---------------------------------------------------------------------------------------------
+
+/// La balance de clôture du cabinet s'importe sans saisir une ligne : aperçu en `--dry-run`,
+/// puis bilan d'ouverture enregistré (résultat dérivé en 120, capitaux propres reconstitués,
+/// avertissement sur l'amortissement) ; le calendrier dit « IS de référence inconnu » tant que
+/// `--prior-is` n'est pas donné, puis chiffre l'acompte.
+#[test]
+fn a_cabinet_balance_is_imported_as_the_opening_balance_without_typing_a_line() {
+    let db = temp_db("opening-import");
+    provision(&db);
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "company",
+            "set-profile",
+            "--name",
+            "Nova Dev",
+            "--legal-form",
+            "SASU",
+            "--siren",
+            "889112348",
+            "--street",
+            "3 allée des Tanneurs",
+            "--postal-code",
+            "44000",
+            "--city",
+            "Nantes",
+            "--country",
+            "FR",
+            "--share-capital",
+            "1000",
+            "--fiscal-year-end",
+            "30/09",
+            "--vat-regime",
+            "real_normal_monthly",
+        ])
+        .assert()
+        .success();
+    let balance = db.with_file_name("balance-cabinet.csv");
+    std::fs::write(
+        &balance,
+        include_bytes!("../../freeflow-core/src/opening_balance/fixtures/balance-cabinet.csv"),
+    )
+    .unwrap();
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--dry-run", "year", "opening", "import"])
+        .arg(&balance)
+        .args(["--opens-on", "2025-10-01"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("(dry-run) bilan d'ouverture au 2025-10-01 lu depuis une balance générale — 11 compte(s)"))
+        .stdout(predicate::str::contains("Résultat dérivé des comptes 6/7 : 1\u{202f}200,00\u{a0}€ (posé en 120)"))
+        .stdout(predicate::str::contains("⚠ Un compte d'amortissement"));
+    let preview = json_result(
+        &freeflow()
+            .env("FREEFLOW_DB", &db)
+            .args(["--json", "--dry-run", "year", "opening", "import"])
+            .arg(&balance)
+            .args(["--opens-on", "2025-10-01"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert_eq!(preview["balanced"], true);
+    assert_eq!(preview["derived_result_cents"], 120_000);
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["year", "opening", "show"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("aucun bilan d'ouverture"));
+
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["year", "opening", "import"])
+        .arg(&balance)
+        .args(["--opens-on", "2025-10-01"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "✓ bilan d'ouverture repris depuis",
+        ))
+        .stdout(predicate::str::contains(
+            "11 compte(s), résultat dérivé 1\u{202f}200,00\u{a0}€",
+        ));
+    let shown = json_result(
+        &freeflow()
+            .env("FREEFLOW_DB", &db)
+            .args(["--json", "year", "opening", "show"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert_eq!(shown["equity"]["share_capital_cents"], 100_000);
+    assert_eq!(shown["equity"]["legal_reserve_cents"], 10_000);
+    assert_eq!(shown["equity"]["retained_earnings_cents"], 635_000);
+    assert_eq!(shown["total_debit_cents"], shown["total_credit_cents"]);
+    assert_eq!(shown["prior_corporate_tax_cents"], serde_json::Value::Null);
+
+    // Le calendrier ne présume plus la dispense d'acompte : base inconnue, dit tel quel.
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["fiscal", "calendar", "--today", "2025-10-02"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("IS de référence inconnu"));
+    // Le FEC du même exercice donne le même bilan (remplacement, avec les références).
+    let fec = db.with_file_name("fec-tiime.txt");
+    std::fs::write(
+        &fec,
+        include_bytes!("../../freeflow-core/src/opening_balance/fixtures/fec-tiime.txt"),
+    )
+    .unwrap();
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["year", "opening", "import"])
+        .arg(&fec)
+        .args([
+            "--opens-on",
+            "2025-10-01",
+            "--prior-is",
+            "1200",
+            "--prior-vat",
+            "0",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("(révision 2)"));
+    let again = json_result(
+        &freeflow()
+            .env("FREEFLOW_DB", &db)
+            .args(["--json", "year", "opening", "show"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    // Mêmes comptes et montants (les libellés, eux, viennent de chaque fichier).
+    let strip = |v: &serde_json::Value| -> Vec<(String, String, i64)> {
+        v["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| {
+                (
+                    l["account"].as_str().unwrap().to_string(),
+                    l["side"].as_str().unwrap().to_string(),
+                    l["amount_cents"].as_i64().unwrap(),
+                )
+            })
+            .collect()
+    };
+    assert_eq!(strip(&again), strip(&shown));
+    assert_eq!(again["prior_corporate_tax_cents"], 120_000);
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["fiscal", "calendar", "--today", "2025-10-02"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "dispense d'acompte (IS de référence < 3 000 €)",
+        ));
+    // Un fichier illisible dit le format attendu.
+    let junk = db.with_file_name("junk.csv");
+    std::fs::write(&junk, "rien;du;tout\n1;2;3\n").unwrap();
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["year", "opening", "import"])
+        .arg(&junk)
+        .args(["--opens-on", "2025-10-01"])
+        .assert()
+        .failure()
+        .code(4)
+        .stderr(predicate::str::contains("Attendu : une balance générale"));
+}

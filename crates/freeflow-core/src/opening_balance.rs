@@ -17,6 +17,8 @@
 //! chaîne pour de bon. Les trois commandes exigent une confirmation humaine : la reprise d'un
 //! bilan est un fait comptable qu'un agent propose, jamais qu'il pose seul.
 
+pub mod import;
+
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -65,6 +67,10 @@ pub struct OpeningBalanceRecord {
     pub revision: i64,
     #[serde(with = "crate::domain::serde_date::datetime")]
     pub created_at: OffsetDateTime,
+    /// IS de l'exercice précédent, base des acomptes (lot 40) — `None` = inconnu.
+    pub prior_corporate_tax: Option<Money>,
+    /// TVA due de l'exercice précédent, base des acomptes 3514 (lot 40) — `None` = inconnue.
+    pub prior_vat_due: Option<Money>,
 }
 
 impl OpeningBalanceRecord {
@@ -137,6 +143,14 @@ pub struct RecordOpeningBalance {
     /// bilan — zéro par défaut (lot 32).
     #[serde(default)]
     pub tax_losses: Money,
+    /// IS de l'exercice précédent (lot 40) — base des acomptes d'IS du premier exercice suivi
+    /// ici ; `None` = inconnu, le calendrier le dit plutôt que d'affirmer une dispense.
+    #[serde(default)]
+    pub prior_corporate_tax: Option<Money>,
+    /// TVA due au titre de l'exercice précédent (lot 40) — base des acomptes 3514 du réel
+    /// simplifié ; `None` = inconnue.
+    #[serde(default)]
+    pub prior_vat_due: Option<Money>,
 }
 
 impl RecordOpeningBalance {
@@ -172,13 +186,15 @@ impl Command for RecordOpeningBalance {
         require_no_fiscal_year(conn)?;
         conn.execute(
             "INSERT INTO opening_balance (id, opens_on, source, revision, created_at, \
-             tax_losses_cents)
-             VALUES (1, ?1, ?2, 1, ?3, ?4)",
+             tax_losses_cents, prior_corporate_tax_cents, prior_vat_due_cents)
+             VALUES (1, ?1, ?2, 1, ?3, ?4, ?5, ?6)",
             params![
                 format_date(self.opens_on),
                 self.source,
                 OffsetDateTime::now_utc().format(&Rfc3339)?,
                 self.tax_losses.cents(),
+                self.prior_corporate_tax.map(Money::cents),
+                self.prior_vat_due.map(Money::cents),
             ],
         )?;
         write_lines(conn, &self.lines)?;
@@ -198,6 +214,10 @@ pub struct UpdateOpeningBalance {
     pub lines: Vec<OpeningBalanceLine>,
     #[serde(default)]
     pub tax_losses: Money,
+    #[serde(default)]
+    pub prior_corporate_tax: Option<Money>,
+    #[serde(default)]
+    pub prior_vat_due: Option<Money>,
 }
 
 impl Command for UpdateOpeningBalance {
@@ -220,7 +240,7 @@ impl Command for UpdateOpeningBalance {
         let new_revision = require_opening_revision(conn, self.revision)?;
         let changed = conn.execute(
             "UPDATE opening_balance SET opens_on = ?1, source = ?2, revision = ?3, \
-             tax_losses_cents = ?5
+             tax_losses_cents = ?5, prior_corporate_tax_cents = ?6, prior_vat_due_cents = ?7
              WHERE id = 1 AND revision = ?4",
             params![
                 format_date(self.opens_on),
@@ -228,6 +248,8 @@ impl Command for UpdateOpeningBalance {
                 new_revision,
                 self.revision,
                 self.tax_losses.cents(),
+                self.prior_corporate_tax.map(Money::cents),
+                self.prior_vat_due.map(Money::cents),
             ],
         )?;
         if changed == 0 {
@@ -290,9 +312,19 @@ fn conv_err(e: impl std::error::Error + Send + Sync + 'static) -> rusqlite::Erro
 ///
 /// Erreur de lecture SQLite.
 pub fn opening_balance(conn: &Connection) -> Result<Option<OpeningBalanceRecord>, AppError> {
-    let head: Option<(String, Option<String>, i64, String, i64)> = conn
+    type Head = (
+        String,
+        Option<String>,
+        i64,
+        String,
+        i64,
+        Option<i64>,
+        Option<i64>,
+    );
+    let head: Option<Head> = conn
         .query_row(
-            "SELECT opens_on, source, revision, created_at, tax_losses_cents
+            "SELECT opens_on, source, revision, created_at, tax_losses_cents,
+                    prior_corporate_tax_cents, prior_vat_due_cents
              FROM opening_balance WHERE id = 1",
             [],
             |row| {
@@ -302,11 +334,14 @@ pub fn opening_balance(conn: &Connection) -> Result<Option<OpeningBalanceRecord>
                     row.get(2)?,
                     row.get(3)?,
                     row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
                 ))
             },
         )
         .optional()?;
-    let Some((opens_on, source, revision, created_at, tax_losses)) = head else {
+    let Some((opens_on, source, revision, created_at, tax_losses, prior_is, prior_vat)) = head
+    else {
         return Ok(None);
     };
     let mut stmt = conn.prepare(
@@ -335,6 +370,8 @@ pub fn opening_balance(conn: &Connection) -> Result<Option<OpeningBalanceRecord>
         revision,
         created_at: OffsetDateTime::parse(&created_at, &Rfc3339)
             .map_err(|e| AppError::Domain(e.to_string()))?,
+        prior_corporate_tax: prior_is.map(Money::from_cents),
+        prior_vat_due: prior_vat.map(Money::from_cents),
     }))
 }
 
@@ -373,6 +410,8 @@ mod tests {
                 "512000:Banque:D:3600.00",
             ]),
             tax_losses: Money::ZERO,
+            prior_corporate_tax: None,
+            prior_vat_due: None,
         };
         match Executor::new(store).execute(&cmd, &human()).unwrap() {
             Outcome::Applied(rev) => rev,
@@ -412,6 +451,8 @@ mod tests {
             source: None,
             lines: lines(&["101000:Capital:C:10.00", "512000:Banque:D:10.00"]),
             tax_losses: Money::ZERO,
+            prior_corporate_tax: None,
+            prior_vat_due: None,
         };
         let err = Executor::new(&mut store)
             .execute(&again, &human())
@@ -427,6 +468,8 @@ mod tests {
             source: None,
             lines: lines(&["101000:Capital:C:10.00", "512000:Banque:D:9.00"]),
             tax_losses: Money::ZERO,
+            prior_corporate_tax: None,
+            prior_vat_due: None,
         };
         let err = Executor::new(&mut store)
             .execute(&unbalanced, &human())
@@ -439,6 +482,8 @@ mod tests {
             source: None,
             lines: lines(&["706000:Ventes:C:10.00", "512000:Banque:D:10.00"]),
             tax_losses: Money::ZERO,
+            prior_corporate_tax: None,
+            prior_vat_due: None,
         };
         let err = Executor::new(&mut store)
             .execute(&with_revenue, &human())
@@ -457,6 +502,8 @@ mod tests {
             source: None,
             lines: lines(&["101000:Capital social:C:1000.00", "512000:Banque:D:1000.00"]),
             tax_losses: Money::ZERO,
+            prior_corporate_tax: None,
+            prior_vat_due: None,
         };
         let Outcome::Applied(rev) = Executor::new(&mut store)
             .execute(&update, &human())
@@ -507,6 +554,8 @@ mod tests {
             source: None,
             lines: lines(&["101000:Capital:C:10.00", "512000:Banque:D:10.00"]),
             tax_losses: Money::ZERO,
+            prior_corporate_tax: None,
+            prior_vat_due: None,
         };
         let ctx = ExecutionContext::new(
             Actor::Agent {

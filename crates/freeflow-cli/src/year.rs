@@ -186,9 +186,134 @@ pub enum OpeningCommand {
         /// hors bilan : imputés sur les bénéfices des exercices clos ici.
         #[arg(long, value_parser = parse_money, default_value = "0")]
         tax_losses: Money,
+        /// IS de l'exercice précédent (euros, relevé 2572) : base des acomptes d'IS du premier
+        /// exercice suivi ici — sans lui, le calendrier dit « base inconnue ».
+        #[arg(long, value_parser = parse_money)]
+        prior_is: Option<Money>,
+        /// TVA due au titre de l'exercice précédent (euros, CA12) : base des acomptes 3514 du
+        /// réel simplifié.
+        #[arg(long, value_parser = parse_money)]
+        prior_vat: Option<Money>,
+    },
+    /// Reprend le bilan d'ouverture depuis un fichier du cabinet : une **balance générale** en
+    /// CSV (compte, libellé, débit, crédit — ou soldes), ou le **FEC** de l'exercice précédent
+    /// (18 colonnes, `|` ou tabulation — l'export de Tiime : Comptabilité → Exports → FEC ;
+    /// d'Indy : Documents → Export FEC). Les comptes de bilan sont repris tels quels, les
+    /// comptes 6/7 agrégés en résultat (120/129) sauf si la balance est déjà après affectation ;
+    /// le reste est écarté et dit. `--dry-run` montre l'aperçu (lignes retenues, écartées,
+    /// résultat dérivé, avertissements) sans rien écrire. Nécessite confirmation humaine quand
+    /// `--actor agent:...`.
+    Import {
+        #[arg(value_name = "FICHIER")]
+        file: PathBuf,
+        /// Premier jour de l'exercice qui s'ouvre sur ce bilan (lendemain de la clôture reprise).
+        #[arg(long, value_parser = parse_date)]
+        opens_on: Date,
+        /// Force le format (`balance`, `fec`) si la détection se trompe.
+        #[arg(long, value_parser = clap::value_parser!(freeflow_core::opening_balance::import::OpeningImportFormat))]
+        format: Option<freeflow_core::opening_balance::import::OpeningImportFormat>,
+        /// Provenance, libre (défaut : le nom du fichier).
+        #[arg(long)]
+        source: Option<String>,
+        #[arg(long, value_parser = parse_money, default_value = "0")]
+        tax_losses: Money,
+        #[arg(long, value_parser = parse_money)]
+        prior_is: Option<Money>,
+        #[arg(long, value_parser = parse_money)]
+        prior_vat: Option<Money>,
     },
     /// Supprime le bilan d'ouverture (tant qu'aucun exercice n'est clos).
     Rm,
+}
+
+/// Enregistrer ou remplacer : la CLI offre la sémantique « set », la commande envoyée au cœur
+/// reste l'une des deux commandes en état complet.
+#[allow(clippy::too_many_arguments)]
+fn record_or_replace(
+    store: &mut Store,
+    ctx: &ExecutionContext,
+    opens_on: Date,
+    source: Option<String>,
+    lines: Vec<OpeningBalanceLine>,
+    tax_losses: Money,
+    prior_corporate_tax: Option<Money>,
+    prior_vat_due: Option<Money>,
+) -> Result<freeflow_core::app::Outcome<i64>, CliError> {
+    Ok(match opening_balance(store.connection())? {
+        Some(existing) => Executor::new(store).execute(
+            &UpdateOpeningBalance {
+                revision: existing.revision,
+                opens_on,
+                source,
+                lines,
+                tax_losses,
+                prior_corporate_tax,
+                prior_vat_due,
+            },
+            ctx,
+        )?,
+        None => Executor::new(store).execute(
+            &RecordOpeningBalance {
+                opens_on,
+                source,
+                lines,
+                tax_losses,
+                prior_corporate_tax,
+                prior_vat_due,
+            },
+            ctx,
+        )?,
+    })
+}
+
+/// L'aperçu d'un import de bilan : lignes retenues, écartées, résultat dérivé, avertissements.
+fn import_preview_human(preview: &freeflow_core::opening_balance::import::ImportPreview) -> String {
+    let rows: Vec<Vec<String>> = preview
+        .lines
+        .iter()
+        .map(|l| {
+            let (debit, credit) = match l.side {
+                freeflow_core::domain::Side::Debit => (l.amount.to_string(), String::new()),
+                freeflow_core::domain::Side::Credit => (String::new(), l.amount.to_string()),
+            };
+            vec![l.account.to_string(), l.label.clone(), debit, credit]
+        })
+        .collect();
+    let balance = preview.to_opening_balance(None);
+    let mut out = format!(
+        "(dry-run) bilan d'ouverture au {} lu depuis {} — {} compte(s) retenu(s)\n{}\nTotal \
+         débit : {} — total crédit : {}{}",
+        format_date(preview.opens_on),
+        match preview.format {
+            freeflow_core::opening_balance::import::OpeningImportFormat::Balance => {
+                "une balance générale"
+            }
+            freeflow_core::opening_balance::import::OpeningImportFormat::Fec => "un FEC",
+        },
+        preview.lines.len(),
+        table::render(&["Compte", "Libellé", "Débit", "Crédit"], &rows),
+        balance.total_debit(),
+        balance.total_credit(),
+        preview.derived_result.map_or(String::new(), |r| format!(
+            "\nRésultat dérivé des comptes 6/7 : {r} (posé en {})",
+            if r.is_negative() { "129" } else { "120" }
+        )),
+    );
+    if !preview.dropped.is_empty() {
+        out.push_str(&format!(
+            "\nÉcarté : {}",
+            preview
+                .dropped
+                .iter()
+                .map(|(what, why)| format!("{what} ({why})"))
+                .collect::<Vec<_>>()
+                .join(" ; ")
+        ));
+    }
+    for w in &preview.warnings {
+        out.push_str(&format!("\n⚠ {w}"));
+    }
+    out
 }
 
 fn opening_json(r: &OpeningBalanceRecord) -> serde_json::Value {
@@ -210,6 +335,8 @@ fn opening_json(r: &OpeningBalanceRecord) -> serde_json::Value {
             "retained_earnings_cents": equity.retained_earnings.cents(),
         },
         "tax_losses_cents": r.balance.tax_losses.cents(),
+        "prior_corporate_tax_cents": r.prior_corporate_tax.map(Money::cents),
+        "prior_vat_due_cents": r.prior_vat_due.map(Money::cents),
         "revision": r.revision,
     })
 }
@@ -231,7 +358,8 @@ fn opening_human(r: &OpeningBalanceRecord) -> String {
     format!(
         "Bilan d'ouverture au {}{}\n{}\nTotal débit : {} — total crédit : {}\n\
          Capitaux propres repris : capital {}, réserve légale {}, report à nouveau {}\n\
-         Déficits fiscaux reportables repris : {}\n(révision {})",
+         Déficits fiscaux reportables repris : {}\nIS de l'exercice précédent : {} — TVA due de \
+         l'exercice précédent : {}\n(révision {})",
         format_date(r.balance.opens_on),
         r.balance
             .source
@@ -244,6 +372,10 @@ fn opening_human(r: &OpeningBalanceRecord) -> String {
         equity.legal_reserve,
         equity.retained_earnings,
         r.balance.tax_losses,
+        r.prior_corporate_tax
+            .map_or_else(|| "inconnu".to_string(), |m| m.to_string()),
+        r.prior_vat_due
+            .map_or_else(|| "inconnue".to_string(), |m| m.to_string()),
         r.revision,
     )
 }
@@ -279,36 +411,73 @@ fn run_opening(
             mut lines,
             lines_file,
             tax_losses,
+            prior_is,
+            prior_vat,
         } => {
             if let Some(path) = lines_file {
                 lines.extend(read_lines_file(&path)?);
             }
-            // Enregistrer ou remplacer : la CLI offre la sémantique « set », la commande envoyée
-            // au cœur reste l'une des deux commandes en état complet.
-            let outcome = match opening_balance(store.connection())? {
-                Some(existing) => Executor::new(store).execute(
-                    &UpdateOpeningBalance {
-                        revision: existing.revision,
-                        opens_on,
-                        source,
-                        lines,
-                        tax_losses,
-                    },
-                    ctx,
-                )?,
-                None => Executor::new(store).execute(
-                    &RecordOpeningBalance {
-                        opens_on,
-                        source,
-                        lines,
-                        tax_losses,
-                    },
-                    ctx,
-                )?,
-            };
+            let outcome = record_or_replace(
+                store, ctx, opens_on, source, lines, tax_losses, prior_is, prior_vat,
+            )?;
             format_outcome_as(&outcome, json, |revision| {
                 format!("bilan d'ouverture enregistré (révision {revision})")
             })
+        }
+        OpeningCommand::Import {
+            file,
+            opens_on,
+            format,
+            source,
+            tax_losses,
+            prior_is,
+            prior_vat,
+        } => {
+            let bytes = std::fs::read(&file).map_err(|e| {
+                CliError::Unexpected(format!("lecture de {} impossible : {e}", file.display()))
+            })?;
+            let preview = freeflow_core::opening_balance::import::import_opening_balance(
+                &bytes, opens_on, format,
+            )
+            .map_err(|e| CliError::Domain(e.to_string()))?;
+            if ctx.dry_run {
+                return Ok(if json {
+                    format_json(&freeflow_core::opening_balance::import::preview_json(
+                        &preview,
+                    ))
+                } else {
+                    import_preview_human(&preview)
+                });
+            }
+            let source = source.or_else(|| {
+                file.file_name()
+                    .map(|n| format!("import de {}", n.to_string_lossy()))
+            });
+            let outcome = record_or_replace(
+                store,
+                ctx,
+                opens_on,
+                source,
+                preview.lines.clone(),
+                tax_losses,
+                prior_is,
+                prior_vat,
+            )?;
+            let rendered = format_outcome_as(&outcome, json, |revision| {
+                format!(
+                    "bilan d'ouverture repris depuis {} : {} compte(s){} (révision {revision})",
+                    file.display(),
+                    preview.lines.len(),
+                    preview
+                        .derived_result
+                        .map_or(String::new(), |r| format!(", résultat dérivé {r}"))
+                )
+            });
+            if json || preview.warnings.is_empty() {
+                rendered
+            } else {
+                format!("{rendered}\n⚠ {}", preview.warnings.join("\n⚠ "))
+            }
         }
         OpeningCommand::Rm => {
             let existing = opening_balance(store.connection())?.ok_or_else(|| {

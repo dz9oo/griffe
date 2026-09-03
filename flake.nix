@@ -51,7 +51,7 @@
         # `*.ofx`) inclus par `include_bytes!` dans les tests : on complète le filtre plutôt que
         # de perdre le cache incrémental d'un `src = ./.` non filtré.
         nonRustAssets =
-          path: _type: builtins.match ".*\\.(sql|typst|css|js|json|png|html|csv|ofx)$" path != null;
+          path: _type: builtins.match ".*\\.(sql|typst|css|js|json|png|html|csv|ofx|txt)$" path != null;
         src = lib.cleanSourceWith {
           src = craneLib.path ./.;
           filter = path: type: (craneLib.filterCargoSources path type) || (nonRustAssets path type);

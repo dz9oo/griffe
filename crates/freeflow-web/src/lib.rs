@@ -84,6 +84,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/lexique", get(handlers::lexique))
         .route("/depenses/{id}/receipt", get(depenses::receipt))
+        .route(
+            "/cloture/opening/import",
+            post(cloture::opening_import).layer(banque::body_limit()),
+        )
         .route("/console/run", post(console::run))
         .route("/audit/recent", get(audit::recent))
         .route("/clients/table", get(clients::table))

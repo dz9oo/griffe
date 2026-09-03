@@ -4097,3 +4097,59 @@ async fn receipts_are_encrypted_beside_the_vault_and_attachable_after_approval()
     let bytes = shown.into_body().collect().await.unwrap().to_bytes();
     assert_eq!(&bytes[..], b"%PDF-1.4 facture du cabinet");
 }
+
+/// Lot 40 : depuis le panneau du bilan d'ouverture, une balance de cabinet s'analyse et
+/// pré-remplit les lignes (modifiables), avec le résultat dérivé et les avertissements.
+#[tokio::test]
+async fn a_cabinet_balance_prefills_the_opening_balance_form() {
+    let db_path = test_db_path("opening-import-web");
+    let state = unlocked_state_with_activity(&db_path).await;
+    let router = freeflow_web::router(state);
+    const BOUNDARY: &str = "----freeflow-opening-boundary";
+    let mut body = Vec::new();
+    body.extend_from_slice(
+        format!("--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"opens_on\"\r\n\r\n2025-10-01\r\n")
+            .as_bytes(),
+    );
+    body.extend_from_slice(
+        format!(
+            "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"statement\"; \
+             filename=\"balance.csv\"\r\nContent-Type: text/csv\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(include_bytes!(
+        "../../freeflow-core/src/opening_balance/fixtures/balance-cabinet.csv"
+    ));
+    body.extend_from_slice(format!("\r\n--{BOUNDARY}--\r\n").as_bytes());
+    let form = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/cloture/opening/import")
+                    .header(
+                        "content-type",
+                        format!("multipart/form-data; boundary={BOUNDARY}"),
+                    )
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        form.contains("11 compte(s) repris depuis balance.csv"),
+        "{form}"
+    );
+    assert!(form.contains("résultat dérivé des comptes 6/7"), "{form}");
+    assert!(
+        form.contains("120000:Résultat de l&#39;exercice (bénéfice):C:1200.00")
+            || form.contains("120000:Résultat de l'exercice (bénéfice):C:1200.00"),
+        "{form}"
+    );
+    assert!(form.contains("import de balance.csv"), "{form}");
+    assert!(form.contains("amortissement"), "{form}");
+}

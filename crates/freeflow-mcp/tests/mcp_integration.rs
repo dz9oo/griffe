@@ -2108,3 +2108,39 @@ async fn setup_status_and_receipt_attachment_over_mcp() {
         std::fs::read(receipts_dir.join(shown["receipt_filename"].as_str().unwrap())).unwrap();
     assert!(raw.starts_with(b"FFR1") && !raw.windows(4).any(|w| w == b"%PDF"));
 }
+
+/// Lot 40 : `fiscal.import_opening_balance` prévisualise puis dépose une action en attente ;
+/// les références de l'exercice précédent voyagent avec.
+#[tokio::test]
+async fn importing_an_opening_balance_over_mcp_previews_then_needs_a_human() {
+    let db_path = test_db_path("opening-import-mcp");
+    let store = Store::create(&db_path, &Passphrase::from("s3cret")).unwrap();
+    let client = spawn_client(store).await;
+    let fec = String::from_utf8_lossy(include_bytes!(
+        "../../freeflow-core/src/opening_balance/fixtures/fec-tiime.txt"
+    ))
+    .into_owned();
+    let preview = json_of(
+        &call(
+            &client,
+            "fiscal.import_opening_balance",
+            json!({"opens_on": "2025-10-01", "content": fec, "dry_run": true}),
+        )
+        .await,
+    );
+    assert_eq!(preview["format"], "fec");
+    assert_eq!(preview["balanced"], true);
+    assert_eq!(preview["lines"].as_array().unwrap().len(), 11);
+    let proposed = json_of(
+        &call(
+            &client,
+            "fiscal.import_opening_balance",
+            json!({"opens_on": "2025-10-01", "content": fec, "prior_corporate_tax_cents": 120000}),
+        )
+        .await,
+    );
+    assert_eq!(proposed["status"], "pending_confirmation");
+    assert_eq!(proposed["preview"]["derived_result_cents"], 120_000);
+    let read = json_of(&call(&client, "fiscal.opening_balance", json!({})).await);
+    assert!(read.is_null(), "rien tant qu'un humain n'a pas confirmé");
+}

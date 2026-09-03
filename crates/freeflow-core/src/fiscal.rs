@@ -31,6 +31,7 @@ use crate::domain::{
     Ca3FilingRule, FiscalYear, FiscalYearEnd, Money, Month, VatRegime, is_french_business_day,
     next_french_business_day_on_or_after,
 };
+use crate::opening_balance::opening_balance;
 
 /// Seuil de dispense des acomptes d'IS : aucun acompte n'est dû si l'IS de l'exercice précédent
 /// est inférieur à 3 000 €.
@@ -688,6 +689,7 @@ struct SimplifiedVatWindow {
 /// dans `[today, horizon]`. La base d'un acompte est la TVA nette de l'exercice qui précède celui
 /// au cours duquel il est payé ; la CA12 d'un exercice régularise sa TVA nette des deux acomptes
 /// versés à son titre.
+#[allow(clippy::too_many_lines)]
 fn push_simplified_vat_deadlines(
     conn: &Connection,
     deadlines: &mut Vec<FiscalDeadline>,
@@ -703,8 +705,18 @@ fn push_simplified_vat_deadlines(
         day,
     } = window;
     let day = day.clamp(Ca3FilingRule::EARLIEST_DAY, 24);
-    let vat_of = |exercise: FiscalYear| -> Result<Money, AppError> {
-        Ok(vat_due_for_period(conn, exercise.start(), exercise.end())?.due)
+    // Lot 40 : un exercice antérieur au bilan d'ouverture n'est pas suivi ici — sa TVA due est
+    // celle reprise au bilan, ou inconnue.
+    let reprise = opening_balance(conn)?;
+    let vat_of = |exercise: FiscalYear| -> Result<Option<Money>, AppError> {
+        if let Some(o) = &reprise
+            && exercise.start() < o.balance.opens_on
+        {
+            return Ok(o.prior_vat_due);
+        }
+        Ok(Some(
+            vat_due_for_period(conn, exercise.start(), exercise.end())?.due,
+        ))
     };
 
     // --- Acomptes : chaque juillet et décembre de l'horizon tombant dans un exercice RSI. ---
@@ -716,11 +728,20 @@ fn push_simplified_vat_deadlines(
             let exercise = fye.containing(nominal);
             if due_on >= today && due_on <= horizon && simplified_regime_applies_to(exercise) {
                 let base_exercise = fye.previous(exercise);
-                let base = vat_of(base_exercise)?;
-                let amount = vat_instalment_amount(instalment, base);
+                let known_base = vat_of(base_exercise)?;
+                let base = known_base.unwrap_or(Money::ZERO);
+                let amount = known_base.and_then(|b| vat_instalment_amount(instalment, b));
                 // Écrire dans une `String` est infaillible : le `Result` de `write!` est ignoré.
-                let mut note = match amount {
-                    Some(_) => format!(
+                let mut note = match (known_base, amount) {
+                    (None, _) => format!(
+                        "acompte de TVA de {} (3514) : base inconnue — l'exercice {} – {} n'est \
+                         pas suivi ici et le bilan d'ouverture ne reprend pas sa TVA due (year \
+                         opening set --prior-vat) ; vérifiez sur votre dernière CA12",
+                        instalment.as_str(),
+                        base_exercise.start(),
+                        base_exercise.end(),
+                    ),
+                    (Some(_), Some(_)) => format!(
                         "acompte de TVA de {} (3514) : {} % de la TVA due au titre de l'exercice \
                          {} – {} ({base}, hors TVA sur immobilisations non distinguée) ; le {day} \
                          du mois (grille CA3)",
@@ -729,7 +750,7 @@ fn push_simplified_vat_deadlines(
                         base_exercise.start(),
                         base_exercise.end(),
                     ),
-                    None => format!(
+                    (Some(_), None) => format!(
                         "acompte de TVA de {} (3514) : dispense, TVA due au titre de l'exercice \
                          {} – {} ({base}) inférieure à 1 000 €",
                         instalment.as_str(),
@@ -763,15 +784,29 @@ fn push_simplified_vat_deadlines(
         }
         let vat = vat_of(exercise)?;
         let base = vat_of(fye.previous(exercise))?;
-        let instalments: Money = VatInstalment::ALL
-            .iter()
-            .filter_map(|i| vat_instalment_amount(*i, base))
-            .sum();
+        let instalments: Option<Money> = base.map(|b| {
+            VatInstalment::ALL
+                .iter()
+                .filter_map(|i| vat_instalment_amount(*i, b))
+                .sum()
+        });
+        let amount = match (vat, instalments) {
+            (Some(v), Some(i)) => Some(v - i),
+            _ => None,
+        };
+        let unknown = |m: Option<Money>| {
+            m.map_or_else(
+                || "inconnue : exercice non suivi ici, voir le bilan d'ouverture".to_string(),
+                |m| m.to_string(),
+            )
+        };
         let mut note = format!(
-            "CA12 : TVA due au titre de l'exercice {} – {} ({vat}) − acomptes de juillet et \
-             décembre ({instalments}) ; {}",
+            "CA12 : TVA due au titre de l'exercice {} – {} ({}) − acomptes de juillet et \
+             décembre ({}) ; {}",
             exercise.start(),
             exercise.end(),
+            unknown(vat),
+            unknown(instalments),
             if exercise.end().month() == time::Month::December && exercise.end().day() == 31 {
                 "le 2e jour ouvré suivant le 1er mai"
             } else {
@@ -788,7 +823,7 @@ fn push_simplified_vat_deadlines(
         deadlines.push(FiscalDeadline {
             kind: FiscalDeadlineKind::Ca12,
             due_on,
-            amount: Some(vat - instalments),
+            amount,
             note: Some(note),
         });
     }
@@ -887,11 +922,23 @@ pub fn fiscal_calendar(conn: &Connection, today: Date) -> Result<Vec<FiscalDeadl
 
     // --- IS : solde de l'exercice clos + acomptes de l'exercice en cours, montants tirés du
     // résultat de l'exercice précédent (base des acomptes). ---
-    let previous_result = profile
+    // Lot 40 : si l'exercice précédent n'est pas suivi ici (il précède le bilan d'ouverture),
+    // sa base d'acomptes est celle reprise au bilan — ou inconnue, et on le dit.
+    let reprise = opening_balance(conn)?.filter(|o| previous.start() < o.balance.opens_on);
+    let previous_result = match &reprise {
+        Some(_) => None,
+        None => profile
+            .as_ref()
+            .map(|p| compute_result(conn, previous, p))
+            .transpose()?,
+    };
+    let reference_unknown = reprise
         .as_ref()
-        .map(|p| compute_result(conn, previous, p))
-        .transpose()?;
-    let previous_is = previous_result.map(|r| r.corporate_tax);
+        .is_some_and(|o| o.prior_corporate_tax.is_none());
+    let previous_is = match &reprise {
+        Some(o) => o.prior_corporate_tax,
+        None => previous_result.map(|r| r.corporate_tax),
+    };
 
     let solde_due = is_solde_due_on(fye, previous.end());
     if solde_due >= today && solde_due <= horizon {
@@ -918,7 +965,12 @@ pub fn fiscal_calendar(conn: &Connection, today: Date) -> Result<Vec<FiscalDeadl
                 )
             }
         });
-        let note = if previous_is.is_some_and(|is| is < IS_ACOMPTE_DISPENSATION) {
+        let note = if reference_unknown {
+            "IS de référence inconnu : l'exercice précédent n'est pas suivi ici et le bilan \
+             d'ouverture ne le reprend pas (year opening set --prior-is) — vérifiez sur votre \
+             dernier relevé 2572"
+                .to_string()
+        } else if previous_is.is_some_and(|is| is < IS_ACOMPTE_DISPENSATION) {
             "dispense d'acompte (IS de référence < 3 000 €)".to_string()
         } else {
             "acompte = 1/4 de l'IS de référence (indicatif)".to_string()

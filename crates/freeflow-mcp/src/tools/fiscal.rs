@@ -122,7 +122,34 @@ pub(crate) struct SetOpeningBalanceArgs {
     /// 2033-D), hors bilan — imputés sur les bénéfices des exercices clos ici (défaut : 0).
     #[serde(default)]
     tax_losses_cents: i64,
+    /// IS de l'exercice précédent, en centimes (base des acomptes d'IS) — absent = inconnu.
+    prior_corporate_tax_cents: Option<i64>,
+    /// TVA due au titre de l'exercice précédent, en centimes (base des acomptes 3514).
+    prior_vat_due_cents: Option<i64>,
     /// N'écrit rien, montre ce qui serait fait (défaut : faux).
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct ImportOpeningBalanceArgs {
+    /// Premier jour de l'exercice qui s'ouvre sur ce bilan (`AAAA-MM-JJ`).
+    opens_on: String,
+    /// `balance` (balance générale CSV) ou `fec` — facultatif, détecté sinon.
+    format: Option<String>,
+    /// Contenu du fichier en texte, ou `content_base64` (octets exacts), ou `path` (fichier
+    /// local lu par le serveur).
+    content: Option<String>,
+    content_base64: Option<String>,
+    path: Option<String>,
+    /// Provenance, libre (défaut : « import »).
+    source: Option<String>,
+    #[serde(default)]
+    tax_losses_cents: i64,
+    prior_corporate_tax_cents: Option<i64>,
+    prior_vat_due_cents: Option<i64>,
+    /// `true` : renvoie seulement l'aperçu (lignes retenues, écartées, résultat dérivé,
+    /// avertissements) sans rien écrire.
     #[serde(default)]
     dry_run: bool,
 }
@@ -309,6 +336,8 @@ impl FreeflowServer {
                         source: args.source,
                         lines,
                         tax_losses: Money::from_cents(args.tax_losses_cents),
+                        prior_corporate_tax: args.prior_corporate_tax_cents.map(Money::from_cents),
+                        prior_vat_due: args.prior_vat_due_cents.map(Money::from_cents),
                     },
                     &ctx,
                 )
@@ -320,6 +349,8 @@ impl FreeflowServer {
                         source: args.source,
                         lines,
                         tax_losses: Money::from_cents(args.tax_losses_cents),
+                        prior_corporate_tax: args.prior_corporate_tax_cents.map(Money::from_cents),
+                        prior_vat_due: args.prior_vat_due_cents.map(Money::from_cents),
                     },
                     &ctx,
                 )
@@ -333,6 +364,99 @@ impl FreeflowServer {
 
     /// Supprime le bilan d'ouverture — tant qu'aucun exercice n'est clos. Derrière confirmation
     /// humaine, comme les autres suppressions.
+    /// Reprend le bilan d'ouverture depuis un fichier du cabinet : une balance générale (CSV :
+    /// compte, libellé, débit, crédit ou soldes) ou le FEC de l'exercice précédent (export
+    /// Tiime/Indy, `|` ou tabulation). Comptes de bilan repris tels quels, comptes 6/7 agrégés en
+    /// résultat (120/129) sauf balance déjà affectée, reste écarté avec son motif. `dry_run`
+    /// renvoie l'aperçu ; sinon l'appel dépose une action en attente (`RecordOpeningBalance`,
+    /// ou remplacement) qu'un humain doit confirmer.
+    #[tool(
+        name = "fiscal.import_opening_balance",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true
+        )
+    )]
+    async fn fiscal_import_opening_balance(
+        &self,
+        Parameters(args): Parameters<ImportOpeningBalanceArgs>,
+    ) -> CallToolResult {
+        use base64::Engine as _;
+        let opens_on = ok_or_return!(
+            "opens_on",
+            freeflow_core::domain::parse_date(&args.opens_on)
+        );
+        let bytes: Vec<u8> = match (&args.content, &args.content_base64, &args.path) {
+            (Some(text), _, _) => text.clone().into_bytes(),
+            (None, Some(b64), _) => ok_or_return!(
+                "content_base64",
+                base64::engine::general_purpose::STANDARD.decode(b64.trim())
+            ),
+            (None, None, Some(path)) => ok_or_return!("path", std::fs::read(path)),
+            (None, None, None) => return err_text("fournissez content, content_base64 ou path"),
+        };
+        let hint = match args.format.as_deref() {
+            None => None,
+            Some(raw) => Some(ok_or_return!(
+                "format",
+                raw.parse::<freeflow_core::opening_balance::import::OpeningImportFormat>()
+            )),
+        };
+        let preview = ok_or_return!(
+            "content",
+            freeflow_core::opening_balance::import::import_opening_balance(&bytes, opens_on, hint)
+        );
+        if args.dry_run {
+            return ok_json(freeflow_core::opening_balance::import::preview_json(
+                &preview,
+            ));
+        }
+        let mut store = self.store.lock().await;
+        let existing = match opening_balance(store.connection()) {
+            Ok(existing) => existing,
+            Err(e) => return err_text(e.to_string()),
+        };
+        let ctx = self.ctx(false);
+        let source = Some(args.source.unwrap_or_else(|| "import".to_string()));
+        let result = match existing {
+            Some(existing) => Executor::new(&mut store)
+                .execute(
+                    &UpdateOpeningBalance {
+                        revision: existing.revision,
+                        opens_on,
+                        source,
+                        lines: preview.lines.clone(),
+                        tax_losses: Money::from_cents(args.tax_losses_cents),
+                        prior_corporate_tax: args.prior_corporate_tax_cents.map(Money::from_cents),
+                        prior_vat_due: args.prior_vat_due_cents.map(Money::from_cents),
+                    },
+                    &ctx,
+                )
+                .map(|o| outcome_json(&o)),
+            None => Executor::new(&mut store)
+                .execute(
+                    &RecordOpeningBalance {
+                        opens_on,
+                        source,
+                        lines: preview.lines.clone(),
+                        tax_losses: Money::from_cents(args.tax_losses_cents),
+                        prior_corporate_tax: args.prior_corporate_tax_cents.map(Money::from_cents),
+                        prior_vat_due: args.prior_vat_due_cents.map(Money::from_cents),
+                    },
+                    &ctx,
+                )
+                .map(|o| outcome_json(&o)),
+        };
+        match result {
+            Ok(mut body) => {
+                body["preview"] = freeflow_core::opening_balance::import::preview_json(&preview);
+                ok_json(body)
+            }
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
     #[tool(
         name = "fiscal.delete_opening_balance",
         annotations(

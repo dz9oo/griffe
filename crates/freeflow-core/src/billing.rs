@@ -6,7 +6,7 @@
 
 mod commands;
 mod error;
-mod import;
+pub(crate) mod import;
 mod queries;
 mod row;
 mod totals;

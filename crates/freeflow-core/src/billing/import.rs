@@ -173,7 +173,7 @@ fn strict(parsed: ParsedStatement) -> Result<Vec<ParsedTransaction>, ImportError
 
 /// UTF-8 (BOM retiré) si le fichier en est, sinon Windows-1252 — jamais une erreur : un relevé
 /// n'est pas moins lisible pour avoir été exporté par une banque en latin-1.
-fn decode(bytes: &[u8]) -> (String, &'static str) {
+pub(crate) fn decode(bytes: &[u8]) -> (String, &'static str) {
     let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
     if let Ok(text) = std::str::from_utf8(bytes) {
         return (text.to_string(), "utf-8");
@@ -278,11 +278,11 @@ fn parse_ofx_date(s: &str) -> Option<Date> {
 // CSV : découpage, en-tête, colonnes
 // ---------------------------------------------------------------------------------------------
 
-const SEPARATORS: [char; 3] = [';', ',', '\t'];
+pub(crate) const SEPARATORS: [char; 3] = [';', ',', '\t'];
 
 /// Découpe une ligne en champs selon `sep`, en respectant les guillemets doubles (un `;` ou une
 /// `,` entre guillemets fait partie du champ, `""` est un guillemet échappé).
-fn split_fields(line: &str, sep: char) -> Vec<String> {
+pub(crate) fn split_fields(line: &str, sep: char) -> Vec<String> {
     let mut fields = Vec::new();
     let mut current = String::new();
     let mut quoted = false;
@@ -307,7 +307,7 @@ fn split_fields(line: &str, sep: char) -> Vec<String> {
 
 /// Minuscules, sans accents ni ponctuation superflue : la clé de comparaison des noms de
 /// colonnes (« Date d'opération », « DATE OPERATION », « dateOp » se rejoignent).
-fn normalize(name: &str) -> String {
+pub(crate) fn normalize(name: &str) -> String {
     let mut out = String::new();
     for c in name.chars() {
         let mapped = match c {
@@ -746,7 +746,7 @@ fn parse_date_any(s: &str) -> Option<Date> {
 /// apparaissent, sinon `,` ou `.` — sauf un `.` ou une `,` suivi d'exactement trois chiffres
 /// *et* précédé d'un groupe de milliers plausible, qui est un séparateur de milliers. Le
 /// séparateur décimal retenu est mémorisé dans `decimal` pour l'aperçu.
-fn parse_amount(raw: &str, decimal: Option<&mut Option<char>>) -> Option<i64> {
+pub(crate) fn parse_amount(raw: &str, decimal: Option<&mut Option<char>>) -> Option<i64> {
     let mut s: String = raw
         .chars()
         .filter(|c| !c.is_whitespace() && *c != '\u{a0}' && *c != '\u{202f}')

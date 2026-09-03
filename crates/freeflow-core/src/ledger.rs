@@ -2450,6 +2450,8 @@ mod tests {
                         "512000:Banque:D:1000.00".parse().unwrap(),
                     ],
                     tax_losses: Money::ZERO,
+                    prior_corporate_tax: None,
+                    prior_vat_due: None,
                 },
                 &human,
             )

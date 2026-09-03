@@ -184,6 +184,17 @@ implémentation.
   XChaCha20-Poly1305), les pièces en clair d'avant sont migrées au premier déverrouillage ;
   `freeflow expense attach <réf> <fichier>` joint une pièce **même après la clôture** (elle ne change
   ni montant ni date), `expense receipt <réf> [--out]` la déchiffre, la fiche de la fenêtre l'affiche.
+- **Reprise depuis Tiime, Indy ou le cabinet** (lot 40) : `freeflow year opening import
+  <fichier> --opens-on <date>` lit une **balance générale** (CSV : compte, libellé, débit, crédit
+  ou soldes) ou le **FEC** de l'exercice précédent (export Tiime/Indy, `|` ou tabulation) et en
+  fait le bilan d'ouverture : comptes de bilan repris tels quels, comptes de charges et de
+  produits résumés en un résultat posé en 120/129 (sauf balance déjà après affectation), reste
+  écarté avec son motif, avertissement si un amortissement est repris. `--dry-run` montre l'aperçu ;
+  outil MCP `fiscal.import_opening_balance` (aperçu puis action en attente) ; dans la fenêtre, le
+  panneau du bilan d'ouverture analyse le fichier et pré-remplit les lignes, modifiables avant
+  d'enregistrer. Le bilan d'ouverture porte aussi l'IS et la TVA due de l'exercice précédent
+  (`--prior-is`, `--prior-vat`) : sans eux, le calendrier dit « base inconnue » pour les acomptes
+  au lieu d'affirmer une dispense.
 - **Grand livre dérivé, balance et bilan** : FreeFlow ne tient pas de comptabilité, il *dérive*
   les écritures de ses faits — bilan d'ouverture (journal `AN`), factures et avoirs (`VE`),
   encaissements et annulations (`BQ`), dépenses (`AC` ; une dépense rapprochée d'un débit du
@@ -472,10 +483,18 @@ Le reste du vocabulaire est expliqué au fil de l'app : `freeflow year glossary`
      --share-capital 1000 --fiscal-year-end 30/09 --vat-regime real_normal_monthly
    ```
 
-2. **Recopie le dernier bilan du cabinet** (le bilan d'ouverture), compte par compte, daté du
-   premier jour de ton exercice. Les numéros de compte sont sur le document du cabinet ; il n'y en
-   a souvent que trois ou quatre. Le total de la colonne « débit » doit être égal au total
-   « crédit », sinon FreeFlow refuse.
+2. **Reprends le dernier bilan du cabinet** (le bilan d'ouverture), daté du premier jour de ton
+   exercice. Le plus simple : demande-lui sa *balance de clôture* (ou exporte le FEC depuis Tiime
+   ou Indy) et importe le fichier tel quel — FreeFlow reprend les comptes de bilan et résume le
+   résultat :
+
+   ```bash
+   freeflow year opening import balance-30-09-2025.csv --opens-on 2025-10-01 --dry-run   # aperçu
+   freeflow year opening import balance-30-09-2025.csv --opens-on 2025-10-01 --prior-is 0
+   ```
+
+   Sinon, recopie-le compte par compte ; il n'y en a souvent que trois ou quatre. Le total de la
+   colonne « débit » doit être égal au total « crédit », sinon FreeFlow refuse.
 
    ```bash
    freeflow year opening set --opens-on 2025-10-01 --source "bilan au 30/09/2025, cabinet X" \

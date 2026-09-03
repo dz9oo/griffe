@@ -732,6 +732,10 @@ pub struct OpeningForm {
     lines: String,
     #[serde(default)]
     tax_losses: String,
+    #[serde(default)]
+    prior_is: String,
+    #[serde(default)]
+    prior_vat: String,
 }
 
 impl From<&OpeningForm> for OpeningFormValues {
@@ -741,6 +745,9 @@ impl From<&OpeningForm> for OpeningFormValues {
             source: f.source.clone(),
             lines: f.lines.clone(),
             tax_losses: f.tax_losses.clone(),
+            prior_is: f.prior_is.clone(),
+            prior_vat: f.prior_vat.clone(),
+            import_note: None,
         }
     }
 }
@@ -807,6 +814,8 @@ struct ParsedOpeningForm {
     source: Option<String>,
     lines: Vec<OpeningBalanceLine>,
     tax_losses: Money,
+    prior_corporate_tax: Option<Money>,
+    prior_vat_due: Option<Money>,
 }
 
 fn parse_opening_form(form: &OpeningForm) -> Result<ParsedOpeningForm, Box<OpeningFormErrors>> {
@@ -835,6 +844,15 @@ fn parse_opening_form(form: &OpeningForm) -> Result<ParsedOpeningForm, Box<Openi
     }
     let source = form.source.trim();
     let tax_losses = parse_money_field(&form.tax_losses, &mut errors.tax_losses);
+    let optional_money = |raw: &str, slot: &mut Option<String>| -> Option<Money> {
+        if raw.trim().is_empty() {
+            None
+        } else {
+            Some(parse_money_field(raw, slot))
+        }
+    };
+    let prior_corporate_tax = optional_money(&form.prior_is, &mut errors.tax_losses);
+    let prior_vat_due = optional_money(&form.prior_vat, &mut errors.tax_losses);
     match opens_on {
         Some(opens_on) if errors.lines.is_none() && errors.tax_losses.is_none() => {
             Ok(ParsedOpeningForm {
@@ -842,6 +860,8 @@ fn parse_opening_form(form: &OpeningForm) -> Result<ParsedOpeningForm, Box<Openi
                 source: (!source.is_empty()).then(|| source.to_string()),
                 lines,
                 tax_losses,
+                prior_corporate_tax,
+                prior_vat_due,
             })
         }
         _ => Err(Box::new(errors)),
@@ -895,6 +915,8 @@ pub async fn opening_save(
                     source: parsed.source,
                     lines: parsed.lines,
                     tax_losses: parsed.tax_losses,
+                    prior_corporate_tax: parsed.prior_corporate_tax,
+                    prior_vat_due: parsed.prior_vat_due,
                 },
             )
             .await
@@ -907,6 +929,8 @@ pub async fn opening_save(
                 source: parsed.source,
                 lines: parsed.lines,
                 tax_losses: parsed.tax_losses,
+                prior_corporate_tax: parsed.prior_corporate_tax,
+                prior_vat_due: parsed.prior_vat_due,
             },
         )
         .await
@@ -957,4 +981,89 @@ pub async fn opening_delete(State(state): State<AppState>) -> Response {
                 .into_response()
         }
     }
+}
+
+/// `POST /cloture/opening/import` (lot 40, multipart) : une balance de cabinet ou un FEC →
+/// le formulaire du bilan d'ouverture pré-rempli avec les lignes retenues (modifiables avant
+/// enregistrement), les lignes écartées, le résultat dérivé et les avertissements. Rien n'est
+/// écrit : l'enregistrement reste le `POST /cloture/opening` ordinaire.
+pub async fn opening_import(
+    State(state): State<AppState>,
+    mut multipart: axum::extract::Multipart,
+) -> Html<String> {
+    let mut opens_on = String::new();
+    let mut file: Option<(String, Vec<u8>)> = None;
+    while let Ok(Some(field)) = multipart.next_field().await {
+        match field.name().unwrap_or_default() {
+            "opens_on" => opens_on = field.text().await.unwrap_or_default(),
+            "statement" => {
+                let name = std::path::Path::new(field.file_name().unwrap_or_default())
+                    .file_name()
+                    .map(|f| f.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                if let Ok(bytes) = field.bytes().await
+                    && !bytes.is_empty()
+                {
+                    file = Some((name, bytes.to_vec()));
+                }
+            }
+            _ => {}
+        }
+    }
+    let revision = match current_opening(&state).await {
+        Some(Ok(Some(existing))) => Some(existing.revision),
+        _ => None,
+    };
+    let mut values = OpeningFormValues {
+        opens_on: opens_on.clone(),
+        ..Default::default()
+    };
+    let mut errors = OpeningFormErrors::default();
+    let Ok(date) = freeflow_core::domain::parse_date(opens_on.trim()) else {
+        errors.opens_on = Some("date invalide (AAAA-MM-JJ)".to_string());
+        return Html(views::cloture::opening_form_panel(&values, &errors, revision).into_string());
+    };
+    let Some((name, bytes)) = file else {
+        errors.banner = Some("choisissez un fichier (balance générale CSV ou FEC)".to_string());
+        return Html(views::cloture::opening_form_panel(&values, &errors, revision).into_string());
+    };
+    match freeflow_core::opening_balance::import::import_opening_balance(&bytes, date, None) {
+        Err(e) => {
+            errors.banner = Some(e.to_string());
+        }
+        Ok(preview) => {
+            values.source = format!("import de {name}");
+            values.lines = preview
+                .lines
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n");
+            values.tax_losses = "0".to_string();
+            let mut note = format!(
+                "{} compte(s) repris depuis {name}{}.",
+                preview.lines.len(),
+                preview.derived_result.map_or(String::new(), |r| format!(
+                    " — résultat dérivé des comptes 6/7 : {r}, posé en {}",
+                    if r.is_negative() { "129" } else { "120" }
+                ))
+            );
+            if !preview.dropped.is_empty() {
+                note.push_str(&format!(
+                    " Écarté : {}.",
+                    preview
+                        .dropped
+                        .iter()
+                        .map(|(what, why)| format!("{what} ({why})"))
+                        .collect::<Vec<_>>()
+                        .join(" ; ")
+                ));
+            }
+            for w in &preview.warnings {
+                note.push_str(&format!(" ⚠ {w}"));
+            }
+            values.import_note = Some(note);
+        }
+    }
+    Html(views::cloture::opening_form_panel(&values, &errors, revision).into_string())
 }
