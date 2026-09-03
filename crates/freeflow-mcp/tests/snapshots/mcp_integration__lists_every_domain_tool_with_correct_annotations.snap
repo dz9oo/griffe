@@ -45,6 +45,7 @@ expression: "json!({\n    \"tool_names\": names, \"invoice_emit_input_schema\":\
   },
   "tool_names": [
     "audit.verify_chain",
+    "bank.delete",
     "bank.import",
     "bank.list",
     "bank.reconcile",

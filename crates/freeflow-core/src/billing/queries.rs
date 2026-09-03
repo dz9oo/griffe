@@ -83,6 +83,20 @@ pub fn bank_transaction_by_id(
     row::bank_transaction_by_id(conn, id)
 }
 
+/// Les transactions d'un relevé analysé qui ne sont **pas** encore en base (lot 38) — ce que
+/// l'import insérerait, pour l'aperçu (`bank import --dry-run`, panneau de la fenêtre).
+///
+/// # Errors
+pub fn new_transactions_among(
+    conn: &Connection,
+    transactions: &[super::ParsedTransaction],
+) -> Result<Vec<bool>, AppError> {
+    transactions
+        .iter()
+        .map(|tx| row::is_already_imported(conn, tx).map(|dup| !dup))
+        .collect()
+}
+
 /// Les débits du relevé restant à rapprocher d'une dépense, les plus récents d'abord (lot 33).
 ///
 /// # Errors

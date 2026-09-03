@@ -7,7 +7,8 @@ Relevés bancaires : import et rapprochement
 Usage: freeflow bank [OPTIONS] <COMMAND>
 
 Commands:
-  import       Importe un relevé bancaire (CSV ou OFX)
+  import       Importe un relevé bancaire : l'export CSV de votre banque tel quel, ou un OFX
+  rm           Supprime une transaction importée par erreur (non rapprochée). Nécessite confirmation humaine quand `--actor agent:...`
   list         Liste les transactions importées, les plus récentes d'abord (`--unmatched` pour ne voir que celles restant à rapprocher)
   reconcile    Rapproche un crédit importé avec une facture (crée l'encaissement correspondant) — pour un débit et une dépense, voir `expense reconcile` / `expense record --transaction`
   unreconcile  Défait un rapprochement : libère la transaction et annule l'encaissement qui en était issu (pour un rapprochement historique sans lignée, seule la transaction est libérée — annulez le paiement via `payment void`). Pour un débit rapproché d'une dépense, la dépense reste, seule la transaction est libérée

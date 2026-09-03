@@ -1,0 +1,4 @@
+dateOp;dateVal;label;category;categoryParent;supplierFound;amount;comment;accountNum;accountLabel;accountbalance
+2026-01-15;2026-01-15;"PRLV SEPA FRAIS TENUE COMPTE";"Frais bancaires";"Banque";"";-12,50;"";00012345678;"COMPTE PRO";9527,50
+2026-01-20;2026-01-20;"VIR SEPA CABINET COMPTA";"Honoraires";"Services";"CABINET COMPTA";-600,00;"";00012345678;"COMPTE PRO";8927,50
+2026-01-28;2026-01-28;"VIR SEPA LUMEN BANK FA-2026-0001";"Ventes";"Revenus";"LUMEN BANK";1 200,00;"";00012345678;"COMPTE PRO";10127,50

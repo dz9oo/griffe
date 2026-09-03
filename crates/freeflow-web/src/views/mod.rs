@@ -1,3 +1,4 @@
+pub mod banque;
 pub mod clients;
 pub mod cloture;
 pub mod console;

@@ -8,8 +8,7 @@ use std::path::PathBuf;
 use clap::{Subcommand, ValueEnum};
 use freeflow_core::app::{ExecutionContext, Executor};
 use freeflow_core::billing::{
-    self, aged_balance, list_bank_transactions, list_invoices, list_payments,
-    parse_csv_bank_statement, parse_ofx_bank_statement, verify_chain,
+    self, aged_balance, list_bank_transactions, list_invoices, list_payments, verify_chain,
 };
 use freeflow_core::domain::{
     BankTransactionId, ClientId, InvoiceId, InvoiceLine, MissionId, Money, PaymentId, PaymentMethod,
@@ -100,11 +99,30 @@ pub enum PaymentCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum BankCommand {
-    /// Importe un relevé bancaire (CSV ou OFX).
+    /// Importe un relevé bancaire : l'export CSV de votre banque tel quel, ou un OFX.
+    ///
+    /// Tout est détecté (lot 38) : l'encodage (UTF-8 avec ou sans BOM, Windows-1252/latin-1),
+    /// le séparateur (`;`, `,`, tabulation), la décimale (`,` ou `.`), les milliers, le format
+    /// de date (AAAA-MM-JJ, JJ/MM/AAAA, JJ-MM-AAAA, JJ.MM.AAAA), les guillemets, les lignes de
+    /// préambule et de solde, et les colonnes par leur nom — date (d'opération), libellé /
+    /// label / description, montant / amount, ou débit + crédit séparés, identifiant de
+    /// transaction. Exports vérifiés : Qonto, Shine, Boursorama, Crédit Agricole, BNP, LCL
+    /// (sans en-tête), La Banque Postale, OFX 1.x et 2.x. Un fichier sans en-tête reconnu se
+    /// lit `date;description;montant`. Les doublons (identifiant de banque, sinon date +
+    /// montant + libellé) sont ignorés : réimporter ne duplique rien. `--dry-run` montre ce qui
+    /// a été compris (dialecte, colonnes, lignes retenues, doublons, lignes sautées) sans rien
+    /// écrire.
     Import {
+        /// Force le format (`csv`, `ofx`) si la détection se trompe.
         #[arg(long, value_enum)]
-        format: ImportFormat,
+        format: Option<ImportFormat>,
         file: PathBuf,
+    },
+    /// Supprime une transaction importée par erreur (non rapprochée). Nécessite confirmation
+    /// humaine quand `--actor agent:...`.
+    Rm {
+        #[arg(value_parser = clap::value_parser!(BankTransactionId))]
+        transaction: BankTransactionId,
     },
     /// Liste les transactions importées, les plus récentes d'abord (`--unmatched` pour ne voir
     /// que celles restant à rapprocher).
@@ -361,6 +379,94 @@ fn payment_table(
     ))
 }
 
+/// L'aperçu d'un import (`--dry-run`) : ce que la détection a compris, le nombre de lignes
+/// retenues et de doublons déjà en base, les cinq premières, les lignes sautées.
+fn import_preview(
+    store: &Store,
+    parsed: &billing::ParsedStatement,
+    json: bool,
+) -> Result<String, CliError> {
+    let fresh = billing::new_transactions_among(store.connection(), &parsed.transactions)?;
+    let duplicates = fresh.iter().filter(|f| !**f).count();
+    let d = &parsed.dialect;
+    if json {
+        return Ok(format_json(&serde_json::json!({
+            "dialect": d,
+            "transactions": parsed.transactions.len(),
+            "new": parsed.transactions.len() - duplicates,
+            "duplicates": duplicates,
+            "skipped": parsed.skipped,
+            "preview": parsed.transactions.iter().take(5).collect::<Vec<_>>(),
+        })));
+    }
+    let rows: Vec<Vec<String>> = parsed
+        .transactions
+        .iter()
+        .zip(&fresh)
+        .take(5)
+        .map(|(t, is_new)| {
+            vec![
+                freeflow_core::domain::format_date(t.occurred_on),
+                Money::from_cents(t.amount_cents).to_string(),
+                t.description.clone(),
+                if *is_new {
+                    "nouvelle"
+                } else {
+                    "déjà importée"
+                }
+                .to_string(),
+            ]
+        })
+        .collect();
+    let mut out = format!(
+        "(dry-run) relevé lu comme {} en {}{}{}{}{} — colonnes : {}\n{} transaction(s), {} \
+         nouvelle(s), {duplicates} doublon(s) déjà en base\n{}",
+        match d.format {
+            billing::StatementFormat::Csv => "CSV",
+            billing::StatementFormat::Ofx => "OFX",
+        },
+        d.encoding,
+        d.separator.map_or(String::new(), |s| format!(
+            ", séparateur « {} »",
+            if s == '\t' {
+                "tab".to_string()
+            } else {
+                s.to_string()
+            }
+        )),
+        d.decimal
+            .map_or(String::new(), |c| format!(", décimale « {c} »")),
+        d.date_format
+            .as_deref()
+            .map_or(String::new(), |f| format!(", dates {f}")),
+        d.header_line
+            .map_or(String::new(), |l| format!(", en-tête ligne {l}")),
+        d.columns,
+        parsed.transactions.len(),
+        parsed.transactions.len() - duplicates,
+        crate::table::render(&["date", "montant", "libellé", "état"], &rows),
+    );
+    if parsed.transactions.len() > 5 {
+        out.push_str(&format!(
+            "… et {} autre(s)\n",
+            parsed.transactions.len() - 5
+        ));
+    }
+    if !parsed.skipped.is_empty() {
+        out.push_str(&format!(
+            "{} ligne(s) sautée(s) : {}\n",
+            parsed.skipped.len(),
+            parsed
+                .skipped
+                .iter()
+                .map(|(l, r)| format!("ligne {l} ({r})"))
+                .collect::<Vec<_>>()
+                .join(" ; ")
+        ));
+    }
+    Ok(out.trim_end().to_string())
+}
+
 fn bank_table(transactions: &[freeflow_core::domain::BankTransaction]) -> String {
     let rows = transactions
         .iter()
@@ -396,17 +502,46 @@ pub fn run_bank(
 ) -> Result<String, CliError> {
     let output = match cmd {
         BankCommand::Import { format, file } => {
-            let content = std::fs::read_to_string(&file).map_err(|e| {
+            let bytes = std::fs::read(&file).map_err(|e| {
                 CliError::Unexpected(format!("lecture de {} impossible : {e}", file.display()))
             })?;
-            let transactions = match format {
-                ImportFormat::Csv => parse_csv_bank_statement(&content),
-                ImportFormat::Ofx => parse_ofx_bank_statement(&content),
+            let hint = format.map(|f| match f {
+                ImportFormat::Csv => billing::StatementFormat::Csv,
+                ImportFormat::Ofx => billing::StatementFormat::Ofx,
+            });
+            let parsed = billing::parse_bank_statement(&bytes, hint)
+                .map_err(|e| CliError::Domain(e.to_string()))?;
+            if ctx.dry_run {
+                return import_preview(store, &parsed, json);
             }
-            .map_err(|e| CliError::Domain(e.to_string()))?;
-            let command = billing::ImportBankTransactions { transactions };
+            let command = billing::ImportBankTransactions {
+                transactions: parsed.transactions,
+            };
             let outcome = Executor::new(store).execute(&command, ctx)?;
-            format_outcome(&outcome, json)
+            let rendered = format_outcome(&outcome, json);
+            if json || parsed.skipped.is_empty() {
+                rendered
+            } else {
+                format!(
+                    "{rendered}\n{} ligne(s) sautée(s) : {}",
+                    parsed.skipped.len(),
+                    parsed
+                        .skipped
+                        .iter()
+                        .map(|(l, r)| format!("ligne {l} ({r})"))
+                        .collect::<Vec<_>>()
+                        .join(" ; ")
+                )
+            }
+        }
+        BankCommand::Rm { transaction } => {
+            let command = billing::DeleteBankTransaction {
+                transaction_id: transaction,
+            };
+            let outcome = Executor::new(store).execute(&command, ctx)?;
+            format_outcome_as(&outcome, json, |()| {
+                format!("transaction {transaction} supprimée")
+            })
         }
         BankCommand::List { unmatched } => {
             let mut transactions = list_bank_transactions(store.connection())?;

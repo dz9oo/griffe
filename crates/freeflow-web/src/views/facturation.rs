@@ -59,6 +59,9 @@ pub fn list_fragment(store: &Store, today: Date) -> Result<Markup, AppError> {
             hx-trigger="freeflow:saved from:body"
             hx-target="this"
             hx-swap="outerHTML" {
+            div class="pipe-toolbar" {
+                (crate::views::banque::import_button())
+            }
             @if invoices.is_empty() {
                 div class="empty-state" {
                     "aucune facture émise — émettez-en une depuis la CLI : " code { "freeflow invoice emit" }

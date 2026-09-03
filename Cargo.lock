@@ -1529,6 +1529,7 @@ dependencies = [
  "argon2",
  "chacha20poly1305",
  "dirs",
+ "encoding_rs",
  "hex",
  "keyring",
  "proptest",
@@ -1587,6 +1588,7 @@ dependencies = [
 name = "freeflow-mcp"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "freeflow-core",
  "freeflow-docs",
  "freeflow-invoice",
@@ -1605,6 +1607,7 @@ name = "freeflow-web"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "freeflow-cli",
  "freeflow-core",
  "freeflow-docs",

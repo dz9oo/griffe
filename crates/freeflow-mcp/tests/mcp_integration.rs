@@ -1891,6 +1891,7 @@ async fn settling_a_balance_sheet_account_over_mcp_needs_a_human() {
                         .unwrap(),
                     amount_cents: -120_000,
                     description: "PRLV DGFIP SOLDE IS".to_string(),
+                    fitid: None,
                 }],
             },
             &human,
@@ -1945,4 +1946,82 @@ async fn settling_a_balance_sheet_account_over_mcp_needs_a_human() {
 
     let unsettled = call(&client, "bank.unsettle", json!({"transaction_id": tx})).await;
     assert_eq!(json_of(&unsettled)["status"], "pending_confirmation");
+}
+
+/// Lot 38 : `bank.import` prend le fichier en base64 (octets exacts, encodage détecté), sans
+/// `format`, annonce l'aperçu en `dry_run` et rapporte les lignes sautées ; `bank.delete` est
+/// derrière confirmation humaine.
+#[tokio::test]
+async fn bank_import_over_mcp_detects_the_format_and_reports_what_it_understood() {
+    use base64::Engine as _;
+    let db_path = test_db_path("bank-import-mcp");
+    let store = Store::create(&db_path, &Passphrase::from("s3cret")).unwrap();
+    let client = spawn_client(store).await;
+
+    let latin1 = include_bytes!("../../freeflow-core/src/billing/fixtures/credit-agricole.csv");
+    let b64 = base64::engine::general_purpose::STANDARD.encode(latin1);
+    let preview = json_of(
+        &call(
+            &client,
+            "bank.import",
+            json!({"content_base64": b64, "dry_run": true}),
+        )
+        .await,
+    );
+    assert_eq!(preview["status"], "dry_run");
+    assert_eq!(preview["dialect"]["encoding"], "windows-1252");
+    assert_eq!(preview["dialect"]["date_format"], "JJ/MM/AAAA");
+    assert_eq!(preview["new"], 3);
+    assert_eq!(preview["skipped"].as_array().unwrap().len(), 1);
+
+    let imported = json_of(&call(&client, "bank.import", json!({"content_base64": b64})).await);
+    assert_eq!(imported["status"], "applied");
+    assert_eq!(imported["result"], 3);
+    assert_eq!(imported["skipped"][0][0], 8);
+
+    // Le même relevé en OFX : sans identifiant commun avec le CSV, seul le triplet
+    // date/montant/libellé dédoublonne — un mouvement sur trois porte le même libellé (« FRAIS
+    // TENUE DE COMPTE »), les deux autres s'ajoutent ; avec `path`, le serveur lit le fichier.
+    let ofx_path = db_path.with_file_name("releve.ofx");
+    std::fs::write(
+        &ofx_path,
+        include_bytes!("../../freeflow-core/src/billing/fixtures/ofx1.ofx"),
+    )
+    .unwrap();
+    let imported = json_of(
+        &call(
+            &client,
+            "bank.import",
+            json!({"path": ofx_path.to_string_lossy()}),
+        )
+        .await,
+    );
+    assert_eq!(imported["result"], 2);
+    let again = json_of(
+        &call(
+            &client,
+            "bank.import",
+            json!({"path": ofx_path.to_string_lossy()}),
+        )
+        .await,
+    );
+    assert_eq!(again["result"], 0, "FITID : aucun doublon");
+
+    let garbage = call(
+        &client,
+        "bank.import",
+        json!({"content": "\u{0}\u{1} n'importe quoi"}),
+    )
+    .await;
+    assert_eq!(garbage.is_error, Some(true));
+    let message = garbage.content[0]
+        .as_text()
+        .map(|t| t.text.clone())
+        .unwrap_or_default();
+    assert!(message.contains("Attendu :"), "{message}");
+
+    let listed = json_of(&call(&client, "bank.list", json!({})).await);
+    let victim = listed[0]["id"].as_str().unwrap().to_string();
+    let deleted = json_of(&call(&client, "bank.delete", json!({"transaction_id": victim})).await);
+    assert_eq!(deleted["status"], "pending_confirmation");
 }

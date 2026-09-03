@@ -246,10 +246,20 @@ pub(super) fn insert_bank_transaction(
     conn: &Connection,
     tx: &ParsedTransaction,
 ) -> Result<bool, AppError> {
+    // Lot 38 : avec un identifiant de banque, c'est lui qui dédoublonne (le libellé d'un même
+    // mouvement diffère entre l'export CSV et l'OFX) ; sans, le triplet date/montant/libellé
+    // comme avant. `INSERT OR IGNORE` couvre les deux index uniques.
     let changed = conn.execute(
-        "INSERT OR IGNORE INTO bank_transactions (id, occurred_on, amount_cents, description, matched_invoice_id)
-         VALUES (?1, ?2, ?3, ?4, NULL)",
-        params![BankTransactionId::new().to_string(), domain::format_date(tx.occurred_on), tx.amount_cents, tx.description],
+        "INSERT OR IGNORE INTO bank_transactions
+            (id, occurred_on, amount_cents, description, matched_invoice_id, fitid)
+         VALUES (?1, ?2, ?3, ?4, NULL, ?5)",
+        params![
+            BankTransactionId::new().to_string(),
+            domain::format_date(tx.occurred_on),
+            tx.amount_cents,
+            tx.description,
+            tx.fitid,
+        ],
     )?;
     Ok(changed > 0)
 }
@@ -291,7 +301,52 @@ fn row_to_bank_transaction(row: &Row) -> rusqlite::Result<BankTransaction> {
             .transpose()
             .map_err(conv_err)?,
         settlement_label: row.get("settlement_label")?,
+        fitid: row.get("fitid")?,
     })
+}
+
+/// Une transaction analysée est-elle déjà en base (lot 38) — par son identifiant de banque s'il
+/// en a un, sinon par le triplet date/montant/libellé : la même règle que l'insertion.
+pub(super) fn is_already_imported(
+    conn: &Connection,
+    tx: &ParsedTransaction,
+) -> Result<bool, AppError> {
+    let count: i64 = match &tx.fitid {
+        Some(fitid) => conn.query_row(
+            "SELECT count(*) FROM bank_transactions
+              WHERE fitid = ?1 OR (occurred_on = ?2 AND amount_cents = ?3 AND description = ?4)",
+            params![
+                fitid,
+                domain::format_date(tx.occurred_on),
+                tx.amount_cents,
+                tx.description
+            ],
+            |row| row.get(0),
+        )?,
+        None => conn.query_row(
+            "SELECT count(*) FROM bank_transactions
+              WHERE occurred_on = ?1 AND amount_cents = ?2 AND description = ?3",
+            params![
+                domain::format_date(tx.occurred_on),
+                tx.amount_cents,
+                tx.description
+            ],
+            |row| row.get(0),
+        )?,
+    };
+    Ok(count > 0)
+}
+
+/// Supprime une transaction importée non rapprochée (lot 38).
+pub(super) fn delete_bank_transaction(
+    conn: &Connection,
+    id: BankTransactionId,
+) -> Result<(), AppError> {
+    conn.execute(
+        "DELETE FROM bank_transactions WHERE id = ?1",
+        [id.to_string()],
+    )?;
+    Ok(())
 }
 
 /// Marque la transaction réglée sur un compte de bilan (lot 37) — les gardes (non rapprochée,

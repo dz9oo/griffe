@@ -3,6 +3,7 @@
 
 mod assets;
 mod audit;
+mod banque;
 mod clients;
 mod cloture;
 mod console;
@@ -149,6 +150,14 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/payments/{id}/void",
             get(facturation::void_confirm_panel).post(facturation::void),
+        )
+        .route(
+            "/banque/import",
+            get(banque::import_panel).post(banque::import),
+        )
+        .route(
+            "/banque/import/preview",
+            post(banque::preview).layer(banque::body_limit()),
         )
         .route("/depenses/table", get(depenses::table))
         .route("/depenses/new", get(depenses::new_panel))

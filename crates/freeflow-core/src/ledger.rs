@@ -1762,6 +1762,7 @@ mod tests {
         BankTransaction {
             settlement_account: None,
             settlement_label: None,
+            fitid: None,
             id: BankTransactionId::new(),
             occurred_on: on,
             amount_cents: -expense.amount.cents(),
@@ -2659,6 +2660,7 @@ mod tests {
             matched_expense_id: None,
             settlement_account: Some(account.parse().unwrap()),
             settlement_label: label.map(str::to_string),
+            fitid: None,
         }
     }
 

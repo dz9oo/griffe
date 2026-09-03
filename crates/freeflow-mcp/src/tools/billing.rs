@@ -9,8 +9,7 @@
 
 use freeflow_core::app::Executor;
 use freeflow_core::billing::{
-    self, aged_balance, list_bank_transactions, list_payments, parse_csv_bank_statement,
-    parse_ofx_bank_statement, verify_chain,
+    self, aged_balance, list_bank_transactions, list_payments, verify_chain,
 };
 use freeflow_core::domain::{
     BankTransactionId, ClientId, InvoiceId, InvoiceLine, MissionId, Money, PaymentId, PaymentMethod,
@@ -77,10 +76,22 @@ pub(crate) struct RecordPaymentArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct BankImportArgs {
-    /// `csv` ou `ofx`.
-    format: String,
-    /// Contenu brut du relevé bancaire.
-    content: String,
+    /// `csv` ou `ofx` — facultatif, détecté sinon.
+    format: Option<String>,
+    /// Contenu du relevé en texte (UTF-8). Pour un export en latin-1 ou un fichier binaire,
+    /// préférez `content_base64` ou `path`.
+    content: Option<String>,
+    /// Contenu du relevé encodé en base64 (octets exacts du fichier : l'encodage est détecté).
+    content_base64: Option<String>,
+    /// Chemin local du fichier de relevé — lu par le serveur (IO d'adaptateur).
+    path: Option<String>,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct BankDeleteArgs {
+    transaction_id: String,
     #[serde(default)]
     dry_run: bool,
 }
@@ -321,7 +332,13 @@ impl FreeflowServer {
         }
     }
 
-    /// Importe un relevé bancaire (CSV ou OFX) fourni en texte brut.
+    /// Importe un relevé bancaire — l'export CSV de la banque tel quel (Qonto, Shine,
+    /// Boursorama, Crédit Agricole, BNP, LCL, La Banque Postale…) ou un OFX : encodage,
+    /// séparateur, décimale, format de date et colonnes sont détectés ; `format` force
+    /// `csv`/`ofx`. Fournir `content` (texte), `content_base64` (octets) ou `path` (fichier
+    /// local). Les doublons (identifiant de banque, sinon date + montant + libellé) sont
+    /// ignorés. `dry_run` renvoie l'aperçu : dialecte détecté, colonnes, nombre de lignes
+    /// nouvelles et de doublons, lignes sautées.
     #[tool(
         name = "bank.import",
         annotations(
@@ -331,15 +348,73 @@ impl FreeflowServer {
         )
     )]
     async fn bank_import(&self, Parameters(args): Parameters<BankImportArgs>) -> CallToolResult {
-        let transactions = match args.format.as_str() {
-            "csv" => parse_csv_bank_statement(&args.content),
-            "ofx" => parse_ofx_bank_statement(&args.content),
-            other => {
-                return err_text(format!("format invalide : {other} (attendu csv ou ofx)"));
+        use base64::Engine as _;
+        let bytes: Vec<u8> = match (&args.content, &args.content_base64, &args.path) {
+            (Some(text), _, _) => text.clone().into_bytes(),
+            (None, Some(b64), _) => {
+                ok_or_return!(
+                    "content_base64",
+                    base64::engine::general_purpose::STANDARD.decode(b64.trim())
+                )
+            }
+            (None, None, Some(path)) => ok_or_return!("path", std::fs::read(path)),
+            (None, None, None) => {
+                return err_text("fournissez content, content_base64 ou path");
             }
         };
-        let transactions = ok_or_return!("content", transactions);
-        let cmd = billing::ImportBankTransactions { transactions };
+        let hint = match args.format.as_deref() {
+            None => None,
+            Some(raw) => Some(ok_or_return!(
+                "format",
+                raw.parse::<billing::StatementFormat>()
+            )),
+        };
+        let parsed = ok_or_return!("content", billing::parse_bank_statement(&bytes, hint));
+        let mut store = self.store.lock().await;
+        if args.dry_run {
+            let fresh = ok_or_return!(
+                "content",
+                billing::new_transactions_among(store.connection(), &parsed.transactions)
+            );
+            let duplicates = fresh.iter().filter(|f| !**f).count();
+            return ok_json(json!({
+                "status": "dry_run",
+                "dialect": parsed.dialect,
+                "transactions": parsed.transactions.len(),
+                "new": parsed.transactions.len() - duplicates,
+                "duplicates": duplicates,
+                "skipped": parsed.skipped,
+                "preview": parsed.transactions.iter().take(5).collect::<Vec<_>>(),
+            }));
+        }
+        let cmd = billing::ImportBankTransactions {
+            transactions: parsed.transactions,
+        };
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(false)) {
+            Ok(outcome) => {
+                let mut body = outcome_json(&outcome);
+                body["skipped"] = json!(parsed.skipped);
+                ok_json(body)
+            }
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
+    /// Supprime une transaction importée par erreur — non rapprochée seulement (défaire
+    /// d'abord). Action sensible : un agent la propose, seul un humain (`freeflow confirm`)
+    /// l'applique.
+    #[tool(
+        name = "bank.delete",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false
+        )
+    )]
+    async fn bank_delete(&self, Parameters(args): Parameters<BankDeleteArgs>) -> CallToolResult {
+        let transaction_id: BankTransactionId =
+            ok_or_return!("transaction_id", args.transaction_id.parse());
+        let cmd = billing::DeleteBankTransaction { transaction_id };
         let mut store = self.store.lock().await;
         match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),

@@ -380,6 +380,7 @@ pub fn list_fragment(store: &Store) -> Result<Markup, AppError> {
             hx-swap="outerHTML" {
             div class="pipe-toolbar" {
                 button class="btn primary" hx-get="/depenses/new" hx-target="#panel" hx-swap="innerHTML" { "+ nouvelle dépense" }
+                (crate::views::banque::import_button())
             }
             @if !debits.is_empty() {
                 div class="panel bordered" style="padding:0;margin-bottom:12px" {

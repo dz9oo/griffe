@@ -2807,3 +2807,189 @@ fn an_expense_before_the_opening_balance_is_refused_by_the_cli() {
             "antérieure au bilan d'ouverture (2026-01-01)",
         ));
 }
+
+// ---------------------------------------------------------------------------------------------
+// Lot 38 : import bancaire réel.
+// ---------------------------------------------------------------------------------------------
+
+/// Les exports de banques réelles s'importent sans option ; `--dry-run` annonce ce qui a été
+/// compris ; un fichier illisible dit le format attendu ; `bank rm` supprime une ligne importée
+/// par erreur.
+#[test]
+fn real_bank_exports_import_without_options_and_the_dry_run_explains_itself() {
+    // Un coffre par export : deux banques décrivent le même mouvement avec le même libellé
+    // (« FRAIS TENUE DE COMPTE » chez Crédit Agricole et en OFX), et le triplet
+    // date/montant/libellé dédoublonnerait légitimement le second.
+    let fixtures: [(&str, &[u8]); 10] = [
+        (
+            "qonto.csv",
+            include_bytes!("../../freeflow-core/src/billing/fixtures/qonto.csv"),
+        ),
+        (
+            "qonto-fr.csv",
+            include_bytes!("../../freeflow-core/src/billing/fixtures/qonto-fr.csv"),
+        ),
+        (
+            "shine.csv",
+            include_bytes!("../../freeflow-core/src/billing/fixtures/shine.csv"),
+        ),
+        (
+            "boursorama.csv",
+            include_bytes!("../../freeflow-core/src/billing/fixtures/boursorama.csv"),
+        ),
+        (
+            "credit-agricole.csv",
+            include_bytes!("../../freeflow-core/src/billing/fixtures/credit-agricole.csv"),
+        ),
+        (
+            "bnp.csv",
+            include_bytes!("../../freeflow-core/src/billing/fixtures/bnp.csv"),
+        ),
+        (
+            "lcl.csv",
+            include_bytes!("../../freeflow-core/src/billing/fixtures/lcl.csv"),
+        ),
+        (
+            "banque-postale.csv",
+            include_bytes!("../../freeflow-core/src/billing/fixtures/banque-postale.csv"),
+        ),
+        (
+            "ofx1.ofx",
+            include_bytes!("../../freeflow-core/src/billing/fixtures/ofx1.ofx"),
+        ),
+        (
+            "ofx2.ofx",
+            include_bytes!("../../freeflow-core/src/billing/fixtures/ofx2.ofx"),
+        ),
+    ];
+    let mut vaults = std::collections::HashMap::new();
+    for (name, bytes) in fixtures {
+        let db = temp_db(&format!("bank-import-{name}"));
+        provision(&db);
+        let path = db.with_file_name(name);
+        std::fs::write(&path, bytes).unwrap();
+        vaults.insert(name, db.clone());
+        freeflow()
+            .env("FREEFLOW_DB", &db)
+            .args(["bank", "import"])
+            .arg(&path)
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("✓ 3 nouvelle(s) transaction(s)"))
+            .stdout(predicate::str::contains("pied de page").or(predicate::str::is_empty().not()));
+        // Réimporter la même chose n'ajoute rien.
+        freeflow()
+            .env("FREEFLOW_DB", &db)
+            .args(["bank", "import"])
+            .arg(&path)
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("✓ 0 nouvelle(s)"));
+    }
+    let db = vaults["credit-agricole.csv"].clone();
+    let dry = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--dry-run", "bank", "import"])
+        .arg(db.with_file_name("credit-agricole.csv"))
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("(dry-run) relevé lu comme CSV en windows-1252, séparateur « ; », décimale « , », dates JJ/MM/AAAA, en-tête ligne 4"))
+        .stdout(predicate::str::contains("montant ← Crédit euros / Débit euros"))
+        .stdout(predicate::str::contains("3 transaction(s), 0 nouvelle(s), 3 doublon(s) déjà en base"))
+        .stdout(predicate::str::contains("déjà importée"))
+        .stdout(predicate::str::contains("1 ligne(s) sautée(s) : ligne 8"))
+        .get_output()
+        .stdout
+        .clone();
+    assert!(
+        !String::from_utf8_lossy(&dry).contains("Solde au"),
+        "le pied de page n'est pas un mouvement"
+    );
+    let qonto = vaults["qonto.csv"].clone();
+    let dry_json = json_result(
+        &freeflow()
+            .env("FREEFLOW_DB", &qonto)
+            .args(["--json", "--dry-run", "bank", "import"])
+            .arg(qonto.with_file_name("qonto.csv"))
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert_eq!(dry_json["dialect"]["separator"], ",");
+    assert_eq!(dry_json["dialect"]["encoding"], "utf-8");
+    assert_eq!(dry_json["duplicates"], 3);
+    assert_eq!(dry_json["preview"][0]["fitid"], "qonto-tx-0001");
+
+    // Un fichier binaire : un message qui dit le format attendu, jamais une panique.
+    let garbage = db.with_file_name("garbage.bin");
+    std::fs::write(&garbage, [0u8, 1, 2, 255, 254, 100, 200]).unwrap();
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["bank", "import"])
+        .arg(&garbage)
+        .assert()
+        .failure()
+        .code(4)
+        .stderr(predicate::str::contains(
+            "Attendu : un export CSV de votre banque",
+        ));
+    // `--format` force la détection.
+    let lcl = vaults["lcl.csv"].clone();
+    freeflow()
+        .env("FREEFLOW_DB", &lcl)
+        .args(["bank", "import", "--format", "ofx"])
+        .arg(lcl.with_file_name("lcl.csv"))
+        .assert()
+        .failure()
+        .code(4)
+        .stderr(predicate::str::contains("aucun bloc <STMTTRN>"));
+
+    // `bank rm` : un agent propose, un humain confirme ; une ligne rapprochée est refusée.
+    let listed = json_result(
+        &freeflow()
+            .env("FREEFLOW_DB", &db)
+            .args(["--json", "bank", "list"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    let before = listed.as_array().unwrap().len();
+    let victim = listed[0]["id"].as_str().unwrap().to_string();
+    let pending = json_result(
+        &freeflow()
+            .env("FREEFLOW_DB", &db)
+            .args(["--json", "--actor", "agent:audit", "bank", "rm", &victim])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert_eq!(pending["status"], "pending_confirmation");
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["confirm", pending["pending_action_id"].as_str().unwrap()])
+        .assert()
+        .success();
+    let after = json_result(
+        &freeflow()
+            .env("FREEFLOW_DB", &db)
+            .args(["--json", "bank", "list"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert_eq!(after.as_array().unwrap().len(), before - 1);
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["bank", "rm", &victim])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("introuvable"));
+}

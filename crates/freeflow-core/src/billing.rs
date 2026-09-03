@@ -12,18 +12,19 @@ mod row;
 mod totals;
 
 pub use commands::{
-    EmitInvoice, EmittedInvoice, ImportBankTransactions, IssueCreditNote, ReconcileTransaction,
-    RecordPayment, SettleBankTransaction, UnreconcileTransaction, UnsettleBankTransaction,
-    VoidPayment,
+    DeleteBankTransaction, EmitInvoice, EmittedInvoice, ImportBankTransactions, IssueCreditNote,
+    ReconcileTransaction, RecordPayment, SettleBankTransaction, UnreconcileTransaction,
+    UnsettleBankTransaction, VoidPayment,
 };
 pub use error::BillingError;
 pub use import::{
-    ImportError, ParsedTransaction, parse_csv_bank_statement, parse_ofx_bank_statement,
+    DetectedDialect, EXPECTED_FORMAT, ImportError, ParsedStatement, ParsedTransaction,
+    StatementFormat, parse_bank_statement, parse_csv_bank_statement, parse_ofx_bank_statement,
 };
 pub use queries::{
     AgedInvoice, AgingBucket, ChainStatus, aged_balance, bank_transaction_by_id, invoice_by_id,
-    list_bank_transactions, list_invoices, list_payments, paid_amount, payment_by_id,
-    payments_for_invoice, unmatched_debits, verify_chain,
+    list_bank_transactions, list_invoices, list_payments, new_transactions_among, paid_amount,
+    payment_by_id, payments_for_invoice, unmatched_debits, verify_chain,
 };
 pub(crate) use row::{
     bank_transaction_for_expense, clear_transaction_match, mark_transaction_matched_expense,
@@ -791,11 +792,13 @@ mod tests {
                             occurred_on: date(2026, Month::October, 10),
                             amount_cents: -60_000,
                             description: "VIR CABINET COMPTA".to_string(),
+                            fitid: None,
                         },
                         ParsedTransaction {
                             occurred_on: date(2026, Month::November, 2),
                             amount_cents: 21_000,
                             description: "REMBOURSEMENT CREDIT TVA".to_string(),
+                            fitid: None,
                         },
                     ],
                 },
@@ -906,5 +909,124 @@ mod tests {
             )
             .unwrap_err();
         assert!(err.to_string().contains("n'est pas un règlement"), "{err}");
+    }
+
+    /// Lot 38 : l'identifiant de banque dédoublonne un ré-import même sous un autre format
+    /// (libellés différents) ; sans identifiant, le triplet date/montant/libellé fait foi, comme
+    /// avant ; une transaction non rapprochée se supprime, une rapprochée non.
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn re_importing_the_same_statement_under_another_format_creates_no_duplicate_with_fitid() {
+        let (mut store, _client) = test_store("fitid-dedup");
+        let import = |store: &mut Store, bytes: &[u8]| -> u32 {
+            let parsed = parse_bank_statement(bytes, None).unwrap();
+            let Outcome::Applied(n) = Executor::new(store)
+                .execute(
+                    &ImportBankTransactions {
+                        transactions: parsed.transactions,
+                    },
+                    &human_ctx(),
+                )
+                .unwrap()
+            else {
+                panic!("expected Applied")
+            };
+            n
+        };
+        // Un CSV qui porte les mêmes identifiants que l'OFX, avec d'autres libellés.
+        let csv = b"Transaction ID;Date;Libell\xe9;Montant\n\
+                    20260115-0001;15/01/2026;FRAIS;-12,50\n\
+                    20260120-0002;20/01/2026;CABINET;-600,00\n\
+                    20260128-0003;28/01/2026;LUMEN;1200,00\n";
+        assert_eq!(import(&mut store, csv), 3);
+        assert_eq!(
+            import(&mut store, include_bytes!("billing/fixtures/ofx1.ofx")),
+            0
+        );
+        assert_eq!(
+            import(&mut store, include_bytes!("billing/fixtures/ofx2.ofx")),
+            0
+        );
+        assert_eq!(import(&mut store, csv), 0);
+        // Sans identifiant, seul le triplet exact dédoublonne.
+        let plain =
+            b"date;description;montant\n2026-01-15;FRAIS;-12.50\n2026-01-15;FRAIS BIS;-12.50\n";
+        assert_eq!(import(&mut store, plain), 1);
+        assert_eq!(import(&mut store, plain), 0);
+        let all = list_bank_transactions(store.connection()).unwrap();
+        assert_eq!(all.len(), 4);
+        assert_eq!(
+            all.iter().filter(|t| t.fitid.is_some()).count(),
+            3,
+            "les trois identifiants sont conservés"
+        );
+        let fresh = new_transactions_among(
+            store.connection(),
+            &parse_bank_statement(include_bytes!("billing/fixtures/ofx1.ofx"), None)
+                .unwrap()
+                .transactions,
+        )
+        .unwrap();
+        assert_eq!(fresh, vec![false, false, false]);
+
+        // Suppression : refusée sur une transaction rapprochée, faite sinon.
+        let victim = all
+            .iter()
+            .find(|t| t.description == "FRAIS BIS")
+            .unwrap()
+            .id;
+        Executor::new(&mut store)
+            .execute(
+                &SettleBankTransaction {
+                    transaction_id: victim,
+                    account: "401000".parse().unwrap(),
+                    label: None,
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+        let err = Executor::new(&mut store)
+            .execute(
+                &DeleteBankTransaction {
+                    transaction_id: victim,
+                },
+                &human_ctx(),
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("rapprochée"), "{err}");
+        Executor::new(&mut store)
+            .execute(
+                &UnsettleBankTransaction {
+                    transaction_id: victim,
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+        let agent = ExecutionContext::new(
+            Actor::Agent {
+                session: "s".into(),
+            },
+            false,
+        );
+        assert!(matches!(
+            Executor::new(&mut store)
+                .execute(
+                    &DeleteBankTransaction {
+                        transaction_id: victim
+                    },
+                    &agent
+                )
+                .unwrap(),
+            Outcome::PendingConfirmation(_)
+        ));
+        Executor::new(&mut store)
+            .execute(
+                &DeleteBankTransaction {
+                    transaction_id: victim,
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+        assert_eq!(list_bank_transactions(store.connection()).unwrap().len(), 3);
     }
 }

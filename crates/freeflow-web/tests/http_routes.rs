@@ -2389,6 +2389,7 @@ async fn expense_reconciliation_through_the_panel() {
                             .unwrap(),
                             amount_cents: -96_000,
                             description: "PRLV CABINET COMPTA".to_string(),
+                            fitid: None,
                         },
                         freeflow_core::billing::ParsedTransaction {
                             occurred_on: time::Date::from_calendar_date(
@@ -2399,6 +2400,7 @@ async fn expense_reconciliation_through_the_panel() {
                             .unwrap(),
                             amount_cents: -1_250,
                             description: "FRAIS TENUE DE COMPTE".to_string(),
+                            fitid: None,
                         },
                     ],
                 },
@@ -3446,6 +3448,7 @@ async fn a_statement_debit_can_settle_a_balance_sheet_account_from_the_window() 
                         occurred_on: time::macros::date!(2026 - 01 - 15),
                         amount_cents: -120_000,
                         description: "PRLV DGFIP SOLDE IS".to_string(),
+                        fitid: None,
                     }],
                 },
                 &human_ctx(),
@@ -3595,4 +3598,157 @@ async fn a_statement_debit_can_settle_a_balance_sheet_account_from_the_window() 
         form.contains("impôts et taxes (CFE, CVAE… pas l'IS ni la TVA)"),
         "{form}"
     );
+}
+
+/// Lot 38 : importer un relevé depuis la fenêtre — panneau, aperçu (dialecte, nouveaux,
+/// doublons, lignes sautées), import, puis un second aperçu qui ne voit plus rien de nouveau.
+#[tokio::test]
+async fn a_bank_statement_is_imported_from_the_window_after_a_preview() {
+    let db_path = test_db_path("banque-import");
+    let state = unlocked_state(&db_path).await;
+    let router = freeflow_web::router(state);
+
+    let panel = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/banque/import")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        panel.contains("Où trouver l'export dans ma banque"),
+        "{panel}"
+    );
+    assert!(panel.contains("Qonto"), "{panel}");
+
+    let statement_multipart = |bytes: &[u8]| -> (String, Vec<u8>) {
+        const BOUNDARY: &str = "----freeflow-statement-boundary";
+        let mut body = Vec::new();
+        body.extend_from_slice(
+            format!(
+                "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"statement\"; \
+                 filename=\"releve.csv\"\r\nContent-Type: text/csv\r\n\r\n"
+            )
+            .as_bytes(),
+        );
+        body.extend_from_slice(bytes);
+        body.extend_from_slice(format!("\r\n--{BOUNDARY}--\r\n").as_bytes());
+        (format!("multipart/form-data; boundary={BOUNDARY}"), body)
+    };
+    let (content_type, body) = statement_multipart(include_bytes!(
+        "../../freeflow-core/src/billing/fixtures/credit-agricole.csv"
+    ));
+    let preview = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/banque/import/preview")
+                    .header("content-type", &content_type)
+                    .body(Body::from(body.clone()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        preview.contains("CSV en windows-1252, séparateur « ; »"),
+        "{preview}"
+    );
+    assert!(preview.contains("3 nouveau(x)"), "{preview}");
+    assert!(preview.contains("1 ligne(s) sautée(s)"), "{preview}");
+    assert!(preview.contains("Importer 3 mouvement(s)"), "{preview}");
+    let payload = preview
+        .split("name=\"payload\" value=\"")
+        .nth(1)
+        .unwrap()
+        .split('"')
+        .next()
+        .unwrap()
+        .to_string();
+
+    let imported = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/banque/import")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(format!(
+                    "payload={}&filename=releve.csv",
+                    payload
+                        .replace('+', "%2B")
+                        .replace('/', "%2F")
+                        .replace('=', "%3D")
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        imported
+            .headers()
+            .get("HX-Trigger")
+            .map(|v| v.to_str().unwrap()),
+        Some("freeflow:saved")
+    );
+    let list = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/depenses/table")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(list.contains("VIR SEPA CABINET COMPTA"), "{list}");
+    assert!(list.contains("importer un relevé"), "{list}");
+
+    let again = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/banque/import/preview")
+                    .header("content-type", &content_type)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(again.contains("0 nouveau(x)"), "{again}");
+    assert!(again.contains("rien de nouveau à importer"), "{again}");
+
+    // Un fichier illisible : un bandeau avec le format attendu, jamais un 500.
+    let (content_type, body) = statement_multipart(b"\x00\x01\xff garbage");
+    let refused = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/banque/import/preview")
+                .header("content-type", &content_type)
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), StatusCode::OK);
+    let refused = body_text(refused).await;
+    assert!(refused.contains("Attendu : un export CSV"), "{refused}");
 }

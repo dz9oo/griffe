@@ -7,8 +7,8 @@
 use clap::Subcommand;
 use freeflow_core::app::{self, Command, Executor, PendingActionId};
 use freeflow_core::billing::{
-    EmitInvoice, IssueCreditNote, ReconcileTransaction, RecordPayment, SettleBankTransaction,
-    UnreconcileTransaction, UnsettleBankTransaction, VoidPayment,
+    DeleteBankTransaction, EmitInvoice, IssueCreditNote, ReconcileTransaction, RecordPayment,
+    SettleBankTransaction, UnreconcileTransaction, UnsettleBankTransaction, VoidPayment,
 };
 use freeflow_core::clients::{DeleteClient, DeleteContact};
 use freeflow_core::expenses::{DeleteExpense, ReconcileExpense, RecordExpense};
@@ -160,6 +160,9 @@ pub fn confirm(store: &mut Store, id: PendingActionId, json: bool) -> Result<Str
         Ok(format_outcome(&outcome, json))
     } else if action.command_name == UnsettleBankTransaction::NAME {
         let outcome = Executor::new(store).confirm::<UnsettleBankTransaction>(id)?;
+        Ok(format_outcome(&outcome, json))
+    } else if action.command_name == DeleteBankTransaction::NAME {
+        let outcome = Executor::new(store).confirm::<DeleteBankTransaction>(id)?;
         Ok(format_outcome(&outcome, json))
     } else if action.command_name == RecordOpeningBalance::NAME {
         let outcome = Executor::new(store).confirm::<RecordOpeningBalance>(id)?;

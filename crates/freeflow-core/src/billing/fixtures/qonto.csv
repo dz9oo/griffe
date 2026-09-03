@@ -1,0 +1,4 @@
+Transaction ID,Reference,Counterparty name,Card holder name,Category,Amount,Currency,Local amount,Local currency,Payment date,Settlement date,Operation type,Payment method,Status
+qonto-tx-0001,Frais tenue de compte,Qonto,,fees,-12.50,EUR,-12.50,EUR,2026-01-15 08:00:12,2026-01-15 08:00:12,direct_debit,SEPA,completed
+qonto-tx-0002,"Facture 09/2025, honoraires",Cabinet Compta,,fees,-600.00,EUR,-600.00,EUR,2026-01-20 10:22:05,2026-01-21 03:00:00,transfer,SEPA,completed
+qonto-tx-0003,FA-2026-0001,Lumen Bank,,income,"1,200.00",EUR,"1,200.00",EUR,2026-01-28 14:03:00,2026-01-28 14:03:00,income,SEPA,completed

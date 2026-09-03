@@ -757,6 +757,7 @@ mod tests {
                         occurred_on: on,
                         amount_cents,
                         description: format!("CB {amount_cents}"),
+                        fitid: None,
                     }],
                 },
                 &human_ctx(),

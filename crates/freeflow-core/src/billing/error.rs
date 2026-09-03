@@ -51,6 +51,12 @@ pub enum BillingError {
          (--label), comme au bilan d'ouverture"
     )]
     SettlementLabelRequired(String),
+
+    #[error(
+        "la transaction {0} est rapprochée (facture, dépense ou règlement) : défaites d'abord le \
+         rapprochement avant de la supprimer"
+    )]
+    TransactionStillMatched(BankTransactionId),
 }
 
 impl From<BillingError> for AppError {

@@ -447,3 +447,31 @@ impl Command for UnsettleBankTransaction {
         Ok(())
     }
 }
+
+/// Supprime une transaction importée par erreur (lot 38 : un relevé importé deux fois sous
+/// deux formats sans identifiant commun, une ligne de solde lue comme un mouvement…). Refusée
+/// tant qu'elle est rapprochée d'une facture, d'une dépense ou d'un règlement — défaire
+/// d'abord. Destructeur réel : un agent propose, un humain confirme.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeleteBankTransaction {
+    pub transaction_id: BankTransactionId,
+}
+
+impl Command for DeleteBankTransaction {
+    type Output = ();
+    const NAME: &'static str = "billing.delete_bank_transaction";
+
+    fn requires_confirmation(&self) -> bool {
+        true
+    }
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        let tx = row::bank_transaction_by_id(conn, self.transaction_id)?
+            .ok_or(BillingError::TransactionNotFound)?;
+        if tx.is_matched() {
+            return Err(BillingError::TransactionStillMatched(self.transaction_id).into());
+        }
+        row::delete_bank_transaction(conn, self.transaction_id)?;
+        Ok(())
+    }
+}

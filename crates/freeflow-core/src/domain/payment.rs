@@ -93,6 +93,10 @@ pub struct BankTransaction {
     /// Libellé du règlement (celui du plan fixe par défaut, ou saisi pour un compte hors plan).
     #[serde(default)]
     pub settlement_label: Option<String>,
+    /// Identifiant unique donné par la banque (lot 38, migration `0018`) — `FITID` en OFX,
+    /// « Transaction ID » de certains CSV ; la clé de dédoublonnage quand il existe.
+    #[serde(default)]
+    pub fitid: Option<String>,
 }
 
 impl BankTransaction {

@@ -159,6 +159,18 @@ implémentation.
   jour. Catégorie de dépense **impôts et taxes** (`taxes`, compte 635, case 244 du 2033-B) pour la
   CFE et consorts — pas l'IS ni la TVA, qui se règlent. La TVA déductible est bornée par le taux
   (`TTC − TTC / (1 + taux)`, arrondi au centime supérieur), plus seulement par le TTC.
+- **Import bancaire réel** (lot 38) : `freeflow bank import <fichier>` prend l'export de la banque
+  tel quel et détecte l'encodage (UTF-8 avec ou sans BOM, Windows-1252), le format (OFX 1.x/2.x ou
+  CSV), le séparateur, la décimale et les milliers, le format de date, les lignes de préambule et
+  de solde, et les colonnes par leur nom (date d'opération, libellé, montant ou débit/crédit,
+  identifiant de transaction) — vérifié sur des exports Qonto, Shine, Boursorama, Crédit Agricole,
+  BNP, LCL (sans en-tête) et La Banque Postale. `--dry-run` annonce le dialecte compris, les lignes
+  nouvelles, les doublons et les lignes sautées ; une erreur dit le format attendu avec un exemple.
+  Les doublons sont ignorés par identifiant de banque (`FITID` OFX, « Transaction ID » CSV) quand il
+  existe, sinon par date + montant + libellé. `bank rm <id>` supprime une ligne importée par erreur
+  (non rapprochée, confirmation humaine). Outil MCP `bank.import` (`content`, `content_base64` ou
+  `path`, `dry_run` pour l'aperçu), `bank.delete` ; fenêtre : bouton « importer un relevé » des
+  écrans `depenses` et `facturation`, aperçu puis import, et où trouver l'export dans chaque banque.
 - **Grand livre dérivé, balance et bilan** : FreeFlow ne tient pas de comptabilité, il *dérive*
   les écritures de ses faits — bilan d'ouverture (journal `AN`), factures et avoirs (`VE`),
   encaissements et annulations (`BQ`), dépenses (`AC` ; une dépense rapprochée d'un débit du
@@ -462,12 +474,16 @@ Le reste du vocabulaire est expliqué au fil de l'app : `freeflow year glossary`
    Dans la fenêtre : écran `cloture`, bouton « bilan d'ouverture ». Si le cabinet t'a laissé un
    déficit reportable (case 870 du dernier 2033-D), ajoute `--tax-losses <montant>`.
 
-3. **Au fil de l'année, saisis tes dépenses depuis ton relevé bancaire.** Importe le relevé
-   (CSV ou OFX exporté de ta banque), puis crée chaque dépense *depuis* la ligne du relevé : la
-   date et le montant sont repris, tu n'ajoutes que la catégorie, la TVA et le justificatif.
+3. **Au fil de l'année, saisis tes dépenses depuis ton relevé bancaire.** Importe le relevé —
+   l'export CSV ou OFX de ta banque **tel quel** (Qonto, Shine, Boursorama, Crédit Agricole,
+   BNP, LCL, La Banque Postale… : encodage, séparateur, dates et colonnes sont reconnus ;
+   `--dry-run` montre ce qui a été compris ; dans la fenêtre, bouton « importer un relevé »
+   des écrans `depenses` et `facturation`, avec un aperçu avant l'import) — puis crée chaque
+   dépense *depuis* la ligne du relevé : la date et le montant sont repris, tu n'ajoutes que la
+   catégorie, la TVA et le justificatif.
 
    ```bash
-   freeflow bank import --format csv releve.csv
+   freeflow bank import releve.csv                      # l'export de ta banque, tel quel
    freeflow bank list --unmatched                       # les lignes qu'il reste à expliquer
    freeflow expense record --transaction <id> --label "Honoraires cabinet" --category fees \
      --vat-rate standard --vat-deductible 120 --receipt facture-cabinet.pdf
