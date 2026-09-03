@@ -1214,6 +1214,10 @@ mod tests {
             vat_regime: Some(VatRegime::RealNormalMonthly),
             director_monthly_gross: None,
             director_charge_ratio_bps: None,
+            president_name: None,
+            sole_shareholder_name: None,
+            sole_shareholder_address: None,
+            share_count: None,
         }
     }
 
@@ -1491,6 +1495,10 @@ mod tests {
             vat_regime: set.vat_regime,
             director_monthly_gross: None,
             director_charge_ratio_bps: None,
+            president_name: None,
+            sole_shareholder_name: None,
+            sole_shareholder_address: None,
+            share_count: None,
         };
         let today = date(2026, TimeMonth::September, 2);
 

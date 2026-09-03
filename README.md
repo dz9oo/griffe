@@ -171,6 +171,19 @@ implémentation.
   (non rapprochée, confirmation humaine). Outil MCP `bank.import` (`content`, `content_base64` ou
   `path`, `dry_run` pour l'aperçu), `bank.delete` ; fenêtre : bouton « importer un relevé » des
   écrans `depenses` et `facturation`, aperçu puis import, et où trouver l'export dans chaque banque.
+- **Premier lancement guidé dans la fenêtre** (lot 39) : un coffre neuf atterrit sur l'assistant
+  « premiers pas » — *Ma société* (le profil complet, chaque champ avec son aide, les régimes de TVA
+  expliqués en une phrase), *D'où venez-vous ?* (recopier le bilan du cabinet, ou « société
+  nouvelle »), *Votre banque* (import du relevé), *Prochaine étape* (le parcours de clôture). L'état
+  vient du cœur (`freeflow setup status`, outil MCP `setup.status`) : le tableau de bord porte un
+  bandeau « prochaine étape » tant que tout n'est pas en place. Nouvel onglet **`societe`** pour
+  modifier le profil (associé unique, président, nombre d'actions compris — le PV du lot 41 en a
+  besoin) ; plus aucun message de la fenêtre ne renvoie à une commande ; le lexique est à portée du
+  `?` de l'en-tête et de la palette ; la console répond à « aide ». **Justificatifs chiffrés** :
+  chaque pièce vit désormais dans `<coffre>.receipts/` sous une clé dérivée de celle du coffre (HKDF,
+  XChaCha20-Poly1305), les pièces en clair d'avant sont migrées au premier déverrouillage ;
+  `freeflow expense attach <réf> <fichier>` joint une pièce **même après la clôture** (elle ne change
+  ni montant ni date), `expense receipt <réf> [--out]` la déchiffre, la fiche de la fenêtre l'affiche.
 - **Grand livre dérivé, balance et bilan** : FreeFlow ne tient pas de comptabilité, il *dérive*
   les écritures de ses faits — bilan d'ouverture (journal `AN`), factures et avoirs (`VE`),
   encaissements et annulations (`BQ`), dépenses (`AC` ; une dépense rapprochée d'un débit du

@@ -1795,6 +1795,10 @@ mod tests {
             vat_regime: None,
             director_monthly_gross: director_gross.map(Money::from_cents),
             director_charge_ratio_bps: ratio_bps,
+            president_name: None,
+            sole_shareholder_name: None,
+            sole_shareholder_address: None,
+            share_count: None,
         }
     }
 
@@ -2428,6 +2432,10 @@ mod tests {
                     vat_regime: None,
                     director_monthly_gross: None,
                     director_charge_ratio_bps: None,
+                    president_name: None,
+                    sole_shareholder_name: None,
+                    sole_shareholder_address: None,
+                    share_count: None,
                 },
                 &human,
             )

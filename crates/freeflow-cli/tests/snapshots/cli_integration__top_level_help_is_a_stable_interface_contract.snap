@@ -22,6 +22,7 @@ Commands:
   bank        Relevés bancaires : import et rapprochement
   pending     Actions en attente de confirmation humaine (proposées par un agent)
   audit       Journal d'audit
+  setup       Premier lancement : ce qui reste à configurer (profil, point de départ, relevé) et le prochain geste
   confirm     Confirme une action en attente : retrouve son type de commande et l'applique
   expense     Dépenses professionnelles et TVA déductible
   fiscal      Échéances fiscales indicatives (CA3, IS, CFE)

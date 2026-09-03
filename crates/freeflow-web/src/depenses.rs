@@ -5,7 +5,7 @@
 //!
 //! Seule différence avec les autres écrans : les formulaires de création et de modification
 //! sont en `multipart/form-data` (lot 29), pour le champ fichier du justificatif. Le fichier
-//! reçu est archivé par [`freeflow_cli::archive_receipt_bytes`] — la même IO d'adaptateur que
+//! reçu est archivé chiffré par `freeflow_core::receipts::archive` — la même IO d'adaptateur que
 //! `freeflow expense record --receipt`, jamais réimplémentée ici — *avant* de construire la
 //! commande du cœur, qui ne reçoit que le hash et le nom archivé (voir `CLAUDE.md`, « les
 //! `Command` ne touchent que `&Connection` »). Le corps du protocole `freeflow://` arrive
@@ -153,12 +153,19 @@ async fn read_multipart_form(
 /// Archive le justificatif reçu à côté du coffre et renvoie `(hash, nom archivé)` — ou une
 /// erreur de bandeau si le disque refuse. IO bloquante, comme tout accès au `Store` dans ces
 /// handlers (transport en mémoire, une requête à la fois).
-fn archive_uploaded(
+async fn archive_uploaded(
     state: &AppState,
     receipt: &UploadedReceipt,
 ) -> Result<(Option<String>, Option<String>), String> {
-    let archived =
-        freeflow_cli::archive_receipt_bytes(state.db_path(), &receipt.filename, &receipt.content)?;
+    // Lot 39 : chiffré sous une clé dérivée de celle du coffre, dans `<coffre>.receipts/` —
+    // la même implémentation que la CLI et le serveur MCP (`freeflow_core::receipts`).
+    let archived = state
+        .with_store(|store| {
+            freeflow_core::receipts::archive(store, &receipt.filename, &receipt.content)
+                .map_err(|e| e.to_string())
+        })
+        .await
+        .ok_or_else(|| "coffre verrouillé — rechargez la page".to_string())??;
     Ok((Some(archived.hash), Some(archived.filename)))
 }
 
@@ -390,7 +397,7 @@ pub async fn create(State(state): State<AppState>, multipart: Multipart) -> Resp
     // Archivage *après* validation des champs (un formulaire refusé ne laisse pas de fichier
     // orphelin dans `receipts/`) et *avant* la commande, comme la CLI.
     let (receipt_hash, receipt_filename) = match &receipt {
-        Some(uploaded) => match archive_uploaded(&state, uploaded) {
+        Some(uploaded) => match archive_uploaded(&state, uploaded).await {
             Ok(archived) => archived,
             Err(message) => {
                 let errors = ExpenseFormErrors {
@@ -509,7 +516,7 @@ pub async fn update(
     let (receipt_hash, receipt_filename) = if form.clear_receipt {
         (None, None)
     } else if let Some(uploaded) = &receipt {
-        match archive_uploaded(&state, uploaded) {
+        match archive_uploaded(&state, uploaded).await {
             Ok(archived) => archived,
             Err(message) => {
                 let errors = ExpenseFormErrors {
@@ -581,7 +588,7 @@ pub async fn delete(State(state): State<AppState>, Path(id): Path<String>) -> Re
     match execute(&state, expenses::DeleteExpense { id, revision }).await {
         None => locked_fragment().into_response(),
         Some(Ok(_)) => saved(),
-        Some(Err(e)) => detail_with_error(&state, id, &e.to_string()).await,
+        Some(Err(e)) => detail_with_error(&state, id, &views::errors::message(&e)).await,
     }
 }
 
@@ -649,7 +656,7 @@ pub async fn reconcile(
     match execute(&state, cmd).await {
         None => locked_fragment().into_response(),
         Some(Ok(_)) => saved(),
-        Some(Err(e)) => detail_with_error(&state, id, &e.to_string()).await,
+        Some(Err(e)) => detail_with_error(&state, id, &views::errors::message(&e)).await,
     }
 }
 
@@ -787,6 +794,60 @@ pub async fn unreconcile(State(state): State<AppState>, Path(id): Path<String>) 
     match execute(&state, billing::UnreconcileTransaction { transaction_id }).await {
         None => locked_fragment().into_response(),
         Some(Ok(_)) => saved(),
-        Some(Err(e)) => detail_with_error(&state, id, &e.to_string()).await,
+        Some(Err(e)) => detail_with_error(&state, id, &views::errors::message(&e)).await,
+    }
+}
+
+/// `GET /depenses/{id}/receipt` : le justificatif déchiffré à la volée (lot 39) — les pièces
+/// vivent chiffrées dans `<coffre>.receipts/`, la fenêtre est le seul visualiseur qui n'a pas
+/// besoin d'un fichier temporaire.
+pub async fn receipt(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let Some(id) = parse_id::<ExpenseId>(&id) else {
+        return message_fragment("identifiant de dépense invalide").into_response();
+    };
+    let loaded = state
+        .with_store(|store| -> Result<Option<(String, Vec<u8>)>, String> {
+            let Some(detail) = views::depenses::load(store, id).map_err(|e| e.to_string())? else {
+                return Ok(None);
+            };
+            let Some(filename) = detail.expense.receipt_filename else {
+                return Ok(None);
+            };
+            let bytes =
+                freeflow_core::receipts::read(store, &filename).map_err(|e| e.to_string())?;
+            Ok(Some((filename, bytes)))
+        })
+        .await;
+    match loaded {
+        None => locked_fragment().into_response(),
+        Some(Err(e)) => message_fragment(&e).into_response(),
+        Some(Ok(None)) => message_fragment("aucun justificatif pour cette dépense").into_response(),
+        Some(Ok(Some((filename, bytes)))) => {
+            let original = filename
+                .split_once('-')
+                .map_or(filename.as_str(), |(_, n)| n)
+                .to_string();
+            let content_type = match original.rsplit('.').next().map(str::to_ascii_lowercase) {
+                Some(ext) if ext == "pdf" => "application/pdf",
+                Some(ext) if ext == "png" => "image/png",
+                Some(ext) if ext == "jpg" || ext == "jpeg" => "image/jpeg",
+                Some(ext) if ext == "webp" => "image/webp",
+                _ => "application/octet-stream",
+            };
+            let mut response = bytes.into_response();
+            response.headers_mut().insert(
+                axum::http::header::CONTENT_TYPE,
+                HeaderValue::from_static(content_type),
+            );
+            if let Ok(disposition) = HeaderValue::from_str(&format!(
+                "inline; filename=\"{}\"",
+                original.replace('"', "")
+            )) {
+                response
+                    .headers_mut()
+                    .insert(axum::http::header::CONTENT_DISPOSITION, disposition);
+            }
+            response
+        }
     }
 }

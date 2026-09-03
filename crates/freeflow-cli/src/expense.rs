@@ -82,7 +82,7 @@ pub struct RecordArgs {
     /// Date d'engagement — reprise de la date du débit du relevé si omise avec `--transaction`.
     #[arg(long, value_parser = parse_date, required_unless_present = "transaction")]
     incurred_on: Option<Date>,
-    /// Justificatif à archiver : haché (SHA-256) et copié dans `receipts/` à côté du coffre.
+    /// Justificatif à archiver : haché (SHA-256) et copié **chiffré** dans `<coffre>.receipts/`.
     #[arg(long)]
     receipt: Option<PathBuf>,
     /// Débit du relevé importé (`bank list --unmatched`) que cette dépense paie : elle est
@@ -95,6 +95,23 @@ pub struct RecordArgs {
 pub enum ExpenseCommand {
     /// Enregistre une dépense professionnelle.
     Record(Box<RecordArgs>),
+    /// Joint (ou remplace) le justificatif d'une dépense — **même dans un exercice clôturé** :
+    /// la pièce ne change ni le montant ni la date, et la facture du cabinet arrive souvent
+    /// après la clôture. Le fichier est archivé chiffré dans `<coffre>.receipts/`.
+    Attach {
+        #[arg(value_name = "RÉFÉRENCE")]
+        reference: String,
+        #[arg(value_name = "FICHIER")]
+        file: PathBuf,
+    },
+    /// Déchiffre le justificatif d'une dépense : dans `--out`, ou dans un fichier temporaire
+    /// (0600) ouvert par le visualiseur par défaut.
+    Receipt {
+        #[arg(value_name = "RÉFÉRENCE")]
+        reference: String,
+        #[arg(long, value_name = "FICHIER")]
+        out: Option<PathBuf>,
+    },
     /// Liste les dépenses, les plus récentes d'abord.
     List,
     /// Affiche une dépense.
@@ -138,8 +155,8 @@ pub struct EditArgs {
     vat_deductible: Option<Money>,
     #[arg(long, value_parser = parse_date)]
     incurred_on: Option<Date>,
-    /// Remplace le justificatif : le nouveau fichier est haché et archivé, l'ancien reste en
-    /// place dans `receipts/`. Exclusif avec `--clear-receipt`.
+    /// Remplace le justificatif : le nouveau fichier est haché et archivé chiffré, l'ancien
+    /// reste en place. Exclusif avec `--clear-receipt` — voir aussi `expense attach`.
     #[arg(long, conflicts_with = "clear_receipt")]
     receipt: Option<PathBuf>,
     /// Détache le justificatif de la dépense (sans supprimer le fichier archivé).
@@ -147,21 +164,10 @@ pub struct EditArgs {
     clear_receipt: bool,
 }
 
-/// Copie `receipt` dans `<répertoire du coffre>/receipts/<hash>-<nom d'origine>` (stockage
-/// adressé par contenu : un même fichier importé deux fois écrase le même chemin, sans le
-/// dupliquer) et renvoie `(hash, nom de fichier archivé)`.
-/// Résultat de l'archivage d'un justificatif : son hash d'intégrité et le nom du fichier copié
-/// dans `receipts/`, tels que la commande du cœur les persiste.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ArchivedReceipt {
-    pub hash: String,
-    pub filename: String,
-}
-
-fn archive_receipt(
-    db_path: &std::path::Path,
-    receipt: &std::path::Path,
-) -> Result<(String, String), CliError> {
+/// Lit `receipt` et l'archive **chiffré** dans `<coffre>.receipts/` (lot 39 —
+/// `freeflow_core::receipts`, la même implémentation que la fenêtre et le serveur MCP) ;
+/// renvoie `(hash, nom de fichier archivé)`, ce que la commande du cœur persiste.
+fn archive_receipt(store: &Store, receipt: &std::path::Path) -> Result<(String, String), CliError> {
     let content = std::fs::read(receipt).map_err(|e| {
         CliError::Unexpected(format!("lecture de {} impossible : {e}", receipt.display()))
     })?;
@@ -169,74 +175,10 @@ fn archive_receipt(
         || "justificatif".to_string(),
         |n| n.to_string_lossy().into_owned(),
     );
-    let archived =
-        archive_receipt_bytes(db_path, &original_name, &content).map_err(CliError::Unexpected)?;
+    let archived = freeflow_core::receipts::archive(store, &original_name, &content)
+        .map_err(|e| CliError::Unexpected(e.to_string()))?;
     Ok((archived.hash, archived.filename))
 }
-
-/// Archive le contenu d'un justificatif à côté du coffre (`<répertoire du coffre>/receipts/
-/// <hash>-<nom d'origine>`) et renvoie ce qu'il faut persister sur la dépense.
-///
-/// C'est l'IO annexe que `CLAUDE.md` réserve à l'adaptateur appelant, jamais à `Command::apply` :
-/// la CLI l'invoque pour `--receipt <fichier>`, la fenêtre (`freeflow-web`) pour un fichier reçu
-/// en multipart — une seule implémentation, jamais réécrite par façade. `original_name` est
-/// réduit à son composant final : un nom venu d'un navigateur ne doit pas pouvoir sortir de
-/// `receipts/` (« ../x »).
-///
-/// # Errors
-///
-/// Un message lisible si le répertoire ne peut être créé ou le fichier écrit.
-pub fn archive_receipt_bytes(
-    db_path: &std::path::Path,
-    original_name: &str,
-    content: &[u8],
-) -> Result<ArchivedReceipt, String> {
-    let hash = hash_receipt(content);
-    let original_name = std::path::Path::new(original_name)
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .filter(|n| !n.is_empty() && n != "." && n != "..")
-        .unwrap_or_else(|| "justificatif".to_string());
-    let archived_name = format!("{hash}-{original_name}");
-
-    let receipts_dir = db_path
-        .parent()
-        .map_or_else(|| PathBuf::from("receipts"), |p| p.join("receipts"));
-    std::fs::create_dir_all(&receipts_dir)
-        .map_err(|e| format!("création de {} impossible : {e}", receipts_dir.display()))?;
-    // Le justificatif (facture fournisseur, note de frais…) vit à côté du coffre chiffré mais
-    // n'est pas lui-même chiffré : au minimum, on le rend illisible aux autres utilisateurs de la
-    // machine — le répertoire en 0700 et le fichier en 0600 — pour ne pas laisser en clair, en
-    // 0644 (umask par défaut), des données que tout le reste du produit protège.
-    tighten_dir_permissions(&receipts_dir);
-    let archived_path = receipts_dir.join(&archived_name);
-    std::fs::write(&archived_path, content)
-        .map_err(|e| format!("écriture du justificatif impossible : {e}"))?;
-    tighten_file_permissions(&archived_path);
-
-    Ok(ArchivedReceipt {
-        hash,
-        filename: archived_name,
-    })
-}
-
-#[cfg(unix)]
-fn tighten_dir_permissions(path: &std::path::Path) {
-    use std::os::unix::fs::PermissionsExt;
-    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700));
-}
-
-#[cfg(unix)]
-fn tighten_file_permissions(path: &std::path::Path) {
-    use std::os::unix::fs::PermissionsExt;
-    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-}
-
-#[cfg(not(unix))]
-fn tighten_dir_permissions(_path: &std::path::Path) {}
-
-#[cfg(not(unix))]
-fn tighten_file_permissions(_path: &std::path::Path) {}
 
 pub fn run(
     cmd: ExpenseCommand,
@@ -260,7 +202,7 @@ pub fn run(
                     (Some(hash_receipt(&content)), None)
                 }
                 Some(path) => {
-                    let (hash, filename) = archive_receipt(store.db_path(), path)?;
+                    let (hash, filename) = archive_receipt(store, path)?;
                     (Some(hash), Some(filename))
                 }
                 None => (None, None),
@@ -334,7 +276,7 @@ pub fn run(
                         (Some(hash_receipt(&content)), None)
                     }
                     Some(path) => {
-                        let (hash, filename) = archive_receipt(store.db_path(), path)?;
+                        let (hash, filename) = archive_receipt(store, path)?;
                         (Some(hash), Some(filename))
                     }
                     None => (
@@ -367,6 +309,56 @@ pub fn run(
             };
             let outcome = Executor::new(store).execute(&command, ctx)?;
             format_outcome(&outcome, json)
+        }
+        ExpenseCommand::Attach { reference, file } => {
+            let id = refs::resolve_expense(store, &reference)?;
+            let current = expense_or_not_found(store, id)?;
+            let (receipt_hash, receipt_filename) = if ctx.dry_run {
+                let content = std::fs::read(&file).map_err(|e| {
+                    CliError::Unexpected(format!("lecture de {} impossible : {e}", file.display()))
+                })?;
+                (hash_receipt(&content), String::new())
+            } else {
+                archive_receipt(store, &file)?
+            };
+            let command = expenses::AttachReceipt {
+                id,
+                revision: current.revision,
+                receipt_hash,
+                receipt_filename,
+            };
+            let outcome = Executor::new(store).execute(&command, ctx)?;
+            format_outcome_as(&outcome, json, |revision| {
+                format!("justificatif joint (révision {revision})")
+            })
+        }
+        ExpenseCommand::Receipt { reference, out } => {
+            let id = refs::resolve_expense(store, &reference)?;
+            let current = expense_or_not_found(store, id)?;
+            let filename = current.receipt_filename.ok_or_else(|| {
+                CliError::Domain(format!("la dépense {id} n'a pas de justificatif archivé"))
+            })?;
+            let content = freeflow_core::receipts::read(store, &filename)
+                .map_err(|e| CliError::Unexpected(e.to_string()))?;
+            let original = filename
+                .split_once('-')
+                .map_or(filename.as_str(), |(_, n)| n);
+            let target = match out {
+                Some(path) => path,
+                None => std::env::temp_dir()
+                    .join(format!("freeflow-{}-{original}", &id.to_string()[..8])),
+            };
+            write_private(&target, &content)?;
+            if json {
+                format_json(&serde_json::json!({ "path": target.display().to_string() }))
+            } else {
+                let opened = open_with_default_viewer(&target);
+                format!(
+                    "✓ justificatif déchiffré dans {}{}",
+                    target.display(),
+                    if opened { " (ouvert)" } else { "" }
+                )
+            }
         }
         ExpenseCommand::Reconcile {
             reference,
@@ -436,4 +428,35 @@ fn expense_table(
         ],
         &rows,
     )
+}
+
+/// Écrit `content` dans `path` en 0600 (Unix) : une pièce déchiffrée ne doit pas être lisible
+/// par les autres utilisateurs de la machine.
+fn write_private(path: &std::path::Path, content: &[u8]) -> Result<(), CliError> {
+    std::fs::write(path, content).map_err(|e| {
+        CliError::Unexpected(format!("écriture de {} impossible : {e}", path.display()))
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
+/// Ouvre `path` avec le visualiseur par défaut (`xdg-open` sous Linux, `open` sous macOS) —
+/// best-effort : `false` si aucun ouvreur n'est disponible, le chemin est de toute façon
+/// affiché.
+fn open_with_default_viewer(path: &std::path::Path) -> bool {
+    let opener = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    std::process::Command::new(opener)
+        .arg(path)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .is_ok()
 }

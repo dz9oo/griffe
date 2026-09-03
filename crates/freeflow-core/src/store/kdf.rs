@@ -810,6 +810,39 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), StoreError> {
     Ok(())
 }
 
+/// HMAC-SHA256 (RFC 2104), écrit ici plutôt que tiré de `hmac` : la version de `hmac`/`hkdf`
+/// disponible ne parle pas la même `digest` que le `sha2` 0.11 du dépôt, et vingt lignes
+/// vérifiées par un vecteur de test valent mieux qu'une seconde chaîne de crates cryptographiques.
+fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
+    use sha2::Digest as _;
+    const BLOCK: usize = 64;
+    let mut key_block = [0u8; BLOCK];
+    if key.len() > BLOCK {
+        key_block[..32].copy_from_slice(&sha2::Sha256::digest(key));
+    } else {
+        key_block[..key.len()].copy_from_slice(key);
+    }
+    let mut inner = sha2::Sha256::new();
+    inner.update(key_block.map(|b| b ^ 0x36));
+    inner.update(data);
+    let inner = inner.finalize();
+    let mut outer = sha2::Sha256::new();
+    outer.update(key_block.map(|b| b ^ 0x5c));
+    outer.update(inner);
+    outer.finalize().into()
+}
+
+/// HKDF-SHA256 (RFC 5869), extraction puis une seule itération d'expansion — 32 octets
+/// exactement, ce qu'une clé de sous-domaine (justificatifs, lot 39) demande.
+#[must_use]
+pub fn hkdf_sha256(salt: &[u8], ikm: &[u8], info: &[u8]) -> [u8; 32] {
+    let prk = hmac_sha256(salt, ikm);
+    let mut t = Vec::with_capacity(info.len() + 1);
+    t.extend_from_slice(info);
+    t.push(1);
+    hmac_sha256(&prk, &t)
+}
+
 #[cfg(unix)]
 fn sync_dir(dir: Option<&Path>) -> io::Result<()> {
     if let Some(dir) = dir {
@@ -843,6 +876,24 @@ mod tests {
             std::process::id(),
             uuid::Uuid::now_v7()
         ))
+    }
+
+    /// RFC 5869, cas de test 1 (SHA-256) : IKM 22 × 0x0b, sel 0x00..0x0c, info 0xf0..0xf9 ;
+    /// les 32 premiers octets de l'OKM attendu commencent par `3cb25f25faacd57a…`.
+    #[test]
+    fn hkdf_sha256_matches_the_rfc_5869_test_vector() {
+        let ikm = [0x0bu8; 22];
+        let salt: Vec<u8> = (0x00u8..=0x0c).collect();
+        let info: Vec<u8> = (0xf0u8..=0xf9).collect();
+        assert_eq!(
+            hex::encode(hkdf_sha256(&salt, &ikm, &info)),
+            "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf"
+        );
+        // HMAC seul : RFC 4231, cas 2 (clé « Jefe »).
+        assert_eq!(
+            hex::encode(hmac_sha256(b"Jefe", b"what do ya want for nothing?")),
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+        );
     }
 
     #[test]

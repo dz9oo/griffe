@@ -33,7 +33,7 @@ pub enum BillingError {
 
     #[error(
         "la transaction {0} est déjà rapprochée — défaites d'abord ce rapprochement \
-         (bank unreconcile) si elle visait la mauvaise facture ou la mauvaise dépense"
+         si elle visait la mauvaise facture ou la mauvaise dépense"
     )]
     AlreadyReconciled(BankTransactionId),
 
@@ -42,7 +42,7 @@ pub enum BillingError {
 
     #[error(
         "la transaction {0} n'est pas un règlement de compte de bilan : rien à défaire (pour un \
-         rapprochement de facture ou de dépense, voir bank unreconcile)"
+         rapprochement de facture ou de dépense, défaites-le d'abord)"
     )]
     TransactionNotSettled(BankTransactionId),
 

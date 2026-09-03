@@ -13,7 +13,9 @@ mod facturation;
 mod handlers;
 mod layout;
 mod missions;
+mod premiers_pas;
 mod prospection;
+mod societe;
 mod state;
 mod unlock;
 mod views;
@@ -30,6 +32,37 @@ use axum::routing::{get, post};
 /// Toute route à l'exception de `/unlock`, `/setup` et `/assets/*` est protégée par
 /// [`unlock::require_unlocked`] : tant que le coffre n'est pas déverrouillé, elle redirige vers
 /// l'écran approprié plutôt que d'atteindre un handler qui supposerait un `Store` ouvert.
+/// Les rejets d'extraction d'axum (formulaire illisible, corps trop grand, type de contenu
+/// inattendu) sortent en anglais, en texte brut — la fenêtre les traduit (lot 39) : un `4xx`
+/// sans HTML devient une phrase en français, dans un fragment que le panneau peut afficher.
+async fn french_rejections(response: axum::response::Response) -> axum::response::Response {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse as _;
+    let status = response.status();
+    let is_html = response
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with("text/html"));
+    if !status.is_client_error() || is_html {
+        return response;
+    }
+    let message = match status {
+        StatusCode::NOT_FOUND => "page introuvable — rechargez la fenêtre".to_string(),
+        StatusCode::PAYLOAD_TOO_LARGE => "fichier trop volumineux (32 Mio au plus)".to_string(),
+        StatusCode::UNSUPPORTED_MEDIA_TYPE
+        | StatusCode::BAD_REQUEST
+        | StatusCode::UNPROCESSABLE_ENTITY => {
+            "formulaire illisible — rechargez la page et réessayez".to_string()
+        }
+        other => format!("requête refusée ({})", other.as_u16()),
+    };
+    let body = maud::html! { div class="empty-state" role="alert" { (message) } }.into_string();
+    let mut fixed = axum::response::Html(body).into_response();
+    *fixed.status_mut() = status;
+    fixed
+}
+
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(handlers::index))
@@ -42,6 +75,15 @@ pub fn router(state: AppState) -> Router {
         .route("/view/clients", get(handlers::clients))
         .route("/view/cloture", get(handlers::cloture))
         .route("/view/console", get(handlers::console))
+        .route("/view/societe", get(handlers::societe))
+        .route("/societe", post(societe::save))
+        .route("/premiers-pas", get(premiers_pas::show))
+        .route(
+            "/premiers-pas/nouvelle",
+            post(premiers_pas::declare_new_company),
+        )
+        .route("/lexique", get(handlers::lexique))
+        .route("/depenses/{id}/receipt", get(depenses::receipt))
         .route("/console/run", post(console::run))
         .route("/audit/recent", get(audit::recent))
         .route("/clients/table", get(clients::table))
@@ -246,6 +288,7 @@ pub fn router(state: AppState) -> Router {
             state.clone(),
             unlock::require_unlocked,
         ))
+        .layer(axum::middleware::map_response(french_rejections))
         // Filet le plus externe : une panique dans un handler (p. ex. un débordement
         // arithmétique résiduel au rendu d'un montant) devient une réponse 500 au lieu de tuer la
         // tâche du protocole `freeflow://` sans jamais répondre — ce qui figeait la webview

@@ -81,6 +81,7 @@ pub fn render(store: &Store) -> Result<Markup, AppError> {
     let clients = list_clients(conn)?;
     let missions = list_active_missions(conn)?;
     let calendar = fiscal_calendar(conn, today)?;
+    let setup = freeflow_core::setup::setup_status(conn)?;
 
     let mut profitability = Vec::new();
     for mission in missions
@@ -101,6 +102,18 @@ pub fn render(store: &Store) -> Result<Markup, AppError> {
 
     Ok(html! {
         (view_head(ViewId::Dashboard, &format!("dernière consultation {}", format_date(today))))
+
+        // Lot 39 : tant que la configuration n'est pas complète, le prochain geste passe avant
+        // les indicateurs — un débutant doit voir *quoi faire*, pas un pipeline vide.
+        @if !setup.is_done() {
+            div class="panel bordered" id="next-step" style="margin-bottom:14px" {
+                div class="panel-title" { "prochaine_etape" }
+                div class="detail-note" { (setup.next_step.text()) }
+                div class="form-actions" {
+                    a class="btn primary" href="/premiers-pas" hx-get="/premiers-pas" hx-target="#content" hx-push-url="true" { "premiers pas : configurer ma société" }
+                }
+            }
+        }
 
         div class="kpi-grid" {
             div class="kpi" {

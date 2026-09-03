@@ -452,10 +452,7 @@ fn step_action(checklist: &ClosingChecklist, step: &ClosingStep) -> Markup {
         html! { a class="btn small" href=(href) { (label) } }
     };
     match step.key {
-        ClosingStepKey::Profile => nav_link(
-            "/view/console",
-            "renseigner le profil (console : company set-profile)",
-        ),
+        ClosingStepKey::Profile => nav_link("/view/societe", "renseigner le profil"),
         ClosingStepKey::OpeningBalance => {
             panel_button("/cloture/opening".to_string(), "bilan d'ouverture")
         }

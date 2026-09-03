@@ -21,6 +21,8 @@ pub mod missions;
 pub mod opening_balance;
 pub mod prospection;
 pub mod quotes;
+pub mod receipts;
 pub mod reference;
+pub mod setup;
 pub mod store;
 pub mod vault;

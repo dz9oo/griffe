@@ -2993,3 +2993,227 @@ fn real_bank_exports_import_without_options_and_the_dry_run_explains_itself() {
         .failure()
         .stderr(predicate::str::contains("introuvable"));
 }
+
+// ---------------------------------------------------------------------------------------------
+// Lot 39 : premier lancement, justificatifs chiffrés, pièce après clôture.
+// ---------------------------------------------------------------------------------------------
+
+/// `setup status` dit ce qui manque et le prochain geste ; « société nouvelle » règle l'origine ;
+/// le profil complété (associé unique, président) fait passer la liste au vert.
+#[test]
+fn setup_status_lists_what_is_missing_then_goes_green() {
+    let db = temp_db("setup-status");
+    provision(&db);
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["setup", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "✗ profil de la société — manquant",
+        ))
+        .stdout(predicate::str::contains(
+            "Prochain geste : Dites qui vous êtes",
+        ));
+    set_company_profile(&db);
+    let status = json_result(
+        &freeflow()
+            .env("FREEFLOW_DB", &db)
+            .args(["--json", "setup", "status"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert_eq!(status["profile"]["state"], "incomplete");
+    assert_eq!(status["next_step"], "origin");
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["setup", "new-company"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("société déclarée nouvelle"));
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["setup", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "✓ point de départ (société nouvelle",
+        ))
+        .stdout(predicate::str::contains(
+            "! profil de la société — à compléter : régime de TVA, associé unique, président",
+        ))
+        .stdout(predicate::str::contains("freeflow bank import"));
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "company",
+            "set-profile",
+            "--name",
+            "Argon Digital",
+            "--legal-form",
+            "SASU",
+            "--siren",
+            "552100554",
+            "--street",
+            "12 rue de la Paix",
+            "--postal-code",
+            "75002",
+            "--city",
+            "Paris",
+            "--country",
+            "FR",
+            "--share-capital",
+            "1000",
+            "--share-count",
+            "100",
+            "--fiscal-year-end",
+            "31/12",
+            "--vat-regime",
+            "real_normal_monthly",
+            "--president",
+            "Léa Martin",
+            "--sole-shareholder",
+            "Léa Martin",
+            "--sole-shareholder-address",
+            "12 rue de la Paix, 75002 Paris",
+        ])
+        .assert()
+        .success();
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["company", "show"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Président           : Léa Martin",
+        ))
+        .stdout(predicate::str::contains(
+            "Associé unique      : Léa Martin, 12 rue de la Paix, 75002 Paris",
+        ))
+        .stdout(predicate::str::contains("Actions             : 100"));
+    let path = db.with_file_name("releve.csv");
+    std::fs::write(&path, "date;description;montant\n2026-01-15;FRAIS;-12.50\n").unwrap();
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["bank", "import"])
+        .arg(&path)
+        .assert()
+        .success();
+    let status = json_result(
+        &freeflow()
+            .env("FREEFLOW_DB", &db)
+            .args(["--json", "setup", "status"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert_eq!(status["done"], true, "{status}");
+}
+
+/// Les justificatifs sont chiffrés dans `<coffre>.receipts/` (plus de `receipts/` en clair, et
+/// les anciennes pièces y sont migrées au premier passage) ; `expense attach` accepte une pièce
+/// après la clôture ; `expense receipt --out` la déchiffre.
+#[test]
+fn receipts_are_encrypted_migrated_and_attachable_after_the_close() {
+    let db = temp_db("receipts-cli");
+    provision(&db);
+    set_company_profile(&db);
+    // Une pièce en clair de l'ancien format, à migrer.
+    let legacy_dir = db.with_file_name("receipts");
+    std::fs::create_dir_all(&legacy_dir).unwrap();
+    let legacy_hash = freeflow_core::expenses::hash_receipt(b"ancienne piece");
+    std::fs::write(
+        legacy_dir.join(format!("{legacy_hash}-ancienne.pdf")),
+        b"ancienne piece",
+    )
+    .unwrap();
+
+    let receipt = db.with_file_name("facture-cabinet.pdf");
+    std::fs::write(&receipt, b"%PDF-1.4 facture du cabinet").unwrap();
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "expense",
+            "record",
+            "--label",
+            "Honoraires cabinet",
+            "--category",
+            "fees",
+            "--amount",
+            "600",
+            "--vat-rate",
+            "standard",
+            "--vat-deductible",
+            "100",
+            "--incurred-on",
+            "2026-03-05",
+            "--receipt",
+        ])
+        .arg(&receipt)
+        .assert()
+        .success();
+    let receipts_dir = {
+        let mut name = db.as_os_str().to_owned();
+        name.push(".receipts");
+        std::path::PathBuf::from(name)
+    };
+    assert!(
+        !legacy_dir.exists(),
+        "l'ancien dossier est migré puis retiré"
+    );
+    let stored: Vec<_> = std::fs::read_dir(&receipts_dir)
+        .unwrap()
+        .flatten()
+        .collect();
+    assert_eq!(stored.len(), 2, "la pièce migrée et la nouvelle");
+    for entry in &stored {
+        let raw = std::fs::read(entry.path()).unwrap();
+        assert!(raw.starts_with(b"FFR1"));
+        assert!(!raw.windows(4).any(|w| w == b"%PDF" || w == b"anci"));
+    }
+
+    // Clore l'exercice, puis joindre une nouvelle pièce : accepté malgré la clôture.
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["year", "close", "--period", "2026", "--today", "2027-01-05"])
+        .assert()
+        .success();
+    let later = db.with_file_name("facture-definitive.pdf");
+    std::fs::write(&later, b"%PDF-1.4 facture definitive").unwrap();
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["expense", "attach", "Honoraires"])
+        .arg(&later)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "✓ justificatif joint (révision 2)",
+        ));
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "expense",
+            "edit",
+            "Honoraires",
+            "--label",
+            "Honoraires 2026",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("exercice déjà clôturé"));
+
+    let out = db.with_file_name("dechiffree.pdf");
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["expense", "receipt", "Honoraires", "--out"])
+        .arg(&out)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("justificatif déchiffré dans"));
+    assert_eq!(std::fs::read(&out).unwrap(), b"%PDF-1.4 facture definitive");
+}

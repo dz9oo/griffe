@@ -1819,6 +1819,10 @@ async fn unlocked_state_with_activity(db_path: &Path) -> AppState {
                 vat_regime: None,
                 director_monthly_gross: None,
                 director_charge_ratio_bps: None,
+                president_name: None,
+                sole_shareholder_name: None,
+                sole_shareholder_address: None,
+                share_count: None,
             },
             &human_ctx(),
         )
@@ -2665,17 +2669,21 @@ async fn a_receipt_uploaded_from_the_panel_is_archived_like_the_cli_does() {
         );
         let archived_name = expense.receipt_filename.clone().unwrap();
         assert_eq!(archived_name, format!("{expected_hash}-facture-ecran.pdf"));
+        // Lot 39 : la pièce est chiffrée dans `<coffre>.receipts/`, relisible par le coffre.
+        assert_eq!(
+            freeflow_core::receipts::read(&store, &archived_name).unwrap(),
+            content,
+            "le contenu déchiffré est le contenu reçu, tel quel"
+        );
         (expense.id, archived_name)
     };
-    let archived_path = db_path
-        .parent()
-        .unwrap()
-        .join("receipts")
-        .join(&archived_name);
-    assert_eq!(
-        std::fs::read(&archived_path).unwrap(),
-        content,
-        "le fichier archivé est le contenu reçu, tel quel"
+    let archived_path = freeflow_core::receipts::path_of(
+        &Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap(),
+        &archived_name,
+    );
+    assert!(
+        std::fs::read(&archived_path).unwrap().starts_with(b"FFR1"),
+        "le fichier sur le disque est chiffré"
     );
     #[cfg(unix)]
     {
@@ -3751,4 +3759,341 @@ async fn a_bank_statement_is_imported_from_the_window_after_a_preview() {
     assert_eq!(refused.status(), StatusCode::OK);
     let refused = body_text(refused).await;
     assert!(refused.contains("Attendu : un export CSV"), "{refused}");
+}
+
+/// Lot 39 : le premier lancement, sans jamais toucher la console — coffre neuf → assistant →
+/// profil complet depuis le formulaire → « société existante » → parcours de clôture avec la
+/// bonne date de clôture ; le bandeau « prochaine étape » du tableau de bord disparaît une fois
+/// tout en place ; aucun message de la fenêtre ne renvoie à une commande.
+#[tokio::test]
+async fn a_first_launch_is_guided_from_the_window_without_the_console() {
+    let db_path = test_db_path("premiers-pas");
+    let state = AppState::new(db_path.clone()).with_today(time::macros::date!(2026 - 10 - 05));
+    let router = freeflow_web::router(state);
+
+    // Créer le coffre depuis l'écran de création : on atterrit sur l'assistant.
+    let created = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/setup")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(format!(
+                    "passphrase={PASSPHRASE}&confirm={PASSPHRASE}"
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::OK);
+    let landing = body_text(created).await;
+    assert!(landing.contains("premiers-pas"), "{landing}");
+    assert!(landing.contains("1. Ma société"), "{landing}");
+    assert!(landing.contains("Dites qui vous êtes"), "{landing}");
+
+    // Le tableau de bord porte le bandeau « prochaine étape ».
+    let dashboard = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/view/dashboard")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(dashboard.contains("id=\"next-step\""), "{dashboard}");
+
+    // Le profil complet, depuis le formulaire de l'écran société.
+    let form = "name=Nova+Dev&legal_form=SASU&siren=889112348&vat_number=FR16889112348\
+                &street=3+all%C3%A9e+des+Tanneurs&postal_code=44000&city=Nantes&country=FR\
+                &share_capital=1000&share_count=100&rcs_city=Nantes&iban=\
+                &fiscal_year_end=30%2F09&vat_regime=real_simplified\
+                &president_name=Nova+Martin&sole_shareholder_name=Nova+Martin\
+                &sole_shareholder_address=3+all%C3%A9e+des+Tanneurs+44000+Nantes\
+                &director_gross=&director_charge_ratio=";
+    let saved = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/societe")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(form))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        saved
+            .headers()
+            .get("HX-Trigger")
+            .map(|v| v.to_str().unwrap()),
+        Some("freeflow:saved")
+    );
+    let saved = body_text(saved).await;
+    assert!(saved.contains("profil enregistré"), "{saved}");
+
+    // Un SIREN faux : erreur de champ, rien d'enregistré de plus.
+    let refused = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/societe")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from("name=X&legal_form=SASU&siren=123&country=FR"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(refused.contains("aria-invalid"), "{refused}");
+
+    // « Société existante » : l'assistant renvoie au bilan d'ouverture ; « société nouvelle »
+    // règle l'origine.
+    let assistant = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/premiers-pas")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        assistant.contains("recopier le bilan du cabinet"),
+        "{assistant}"
+    );
+    assert!(
+        assistant.contains("Nova+Dev") || assistant.contains("Nova Dev"),
+        "{assistant}"
+    );
+    let declared = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/premiers-pas/nouvelle")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        declared.contains("Société nouvelle : pas de bilan à reprendre"),
+        "{declared}"
+    );
+    assert!(
+        declared.contains("Importez l'export de votre banque"),
+        "{declared}"
+    );
+
+    // Le parcours de clôture connaît la bonne clôture (30/09) et l'étape profil est faite.
+    let journey = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/cloture/checklist?period=2026")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(journey.contains("2025-10-01"), "{journey}");
+    assert!(journey.contains("2026-09-30"), "{journey}");
+    assert!(!journey.contains("renseigner le profil"), "{journey}");
+
+    // Le lexique est à portée de l'en-tête et de la palette.
+    let lexique = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/lexique")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(lexique.contains("Report à nouveau"), "{lexique}");
+    assert!(dashboard.contains("hx-get=\"/lexique\""), "{dashboard}");
+
+    // La console répond à « aide ».
+    let help = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/console/run")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from("line=aide"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(help.contains("year checklist 2026"), "{help}");
+
+    // Un formulaire illisible reçoit une phrase en français, pas un 400 nu.
+    let rejected = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/societe")
+                .header("content-type", "text/plain")
+                .body(Body::from("n'importe quoi"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(rejected.status().is_client_error());
+    let rejected = body_text(rejected).await;
+    assert!(rejected.contains("formulaire illisible"), "{rejected}");
+}
+
+/// Lot 39 : les justificatifs sont chiffrés dans `<coffre>.receipts/`, une pièce se joint
+/// après l'approbation de l'exercice, et la fenêtre la déchiffre à la volée.
+#[tokio::test]
+async fn receipts_are_encrypted_beside_the_vault_and_attachable_after_approval() {
+    let db_path = test_db_path("receipts-encrypted");
+    let state = unlocked_state_with_activity(&db_path)
+        .await
+        .with_today(time::macros::date!(2027 - 06 - 01));
+    // Une dépense datée 2026, avec justificatif.
+    let (content_type, body) = multipart_form(
+        &[
+            ("label", "Honoraires cabinet"),
+            ("category", "fees"),
+            ("amount", "600.00"),
+            ("vat_rate", "standard"),
+            ("vat_deductible", "100.00"),
+            ("incurred_on", "2026-03-05"),
+        ],
+        Some(("facture-cabinet.pdf", b"%PDF-1.4 facture du cabinet")),
+    );
+    let router = freeflow_web::router(state);
+    let created = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/depenses")
+                .header("content-type", content_type)
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        created
+            .headers()
+            .get("HX-Trigger")
+            .map(|v| v.to_str().unwrap()),
+        Some("freeflow:saved")
+    );
+    let receipts_dir = {
+        let mut name = db_path.as_os_str().to_owned();
+        name.push(".receipts");
+        std::path::PathBuf::from(name)
+    };
+    assert!(receipts_dir.is_dir(), "<coffre>.receipts/ existe");
+    assert!(
+        !db_path.with_file_name("receipts").exists(),
+        "plus de receipts/ en clair"
+    );
+    let stored = std::fs::read_dir(&receipts_dir)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap();
+    let raw = std::fs::read(stored.path()).unwrap();
+    assert!(
+        !raw.windows(4).any(|w| w == b"%PDF"),
+        "la pièce n'est pas en clair sur le disque"
+    );
+
+    // Clore puis approuver 2026, puis joindre une nouvelle pièce : accepté.
+    let closed = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/cloture")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(
+                    "starts_on=2026-01-01&ends_on=2026-12-31&legal_reserve=0&dividends=0",
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(closed.status(), StatusCode::OK);
+    let id = fiscal_year_id(&db_path);
+    let approved = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/cloture/{id}/approve"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from("approved_on=2027-05-15"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        approved
+            .headers()
+            .get("HX-Trigger")
+            .map(|v| v.to_str().unwrap()),
+        Some("freeflow:saved")
+    );
+    let expense_id = {
+        let store = Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+        freeflow_core::expenses::list_expenses(store.connection()).unwrap()[0].id
+    };
+    // Joindre après approbation passe par `AttachReceipt` (CLI/MCP) ; depuis la fenêtre, la
+    // fiche montre la pièce déchiffrée.
+    let shown = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/depenses/{expense_id}/receipt"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(shown.status(), StatusCode::OK);
+    assert_eq!(
+        shown
+            .headers()
+            .get("content-type")
+            .map(|v| v.to_str().unwrap()),
+        Some("application/pdf")
+    );
+    let bytes = shown.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(&bytes[..], b"%PDF-1.4 facture du cabinet");
 }

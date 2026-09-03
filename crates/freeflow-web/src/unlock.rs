@@ -157,7 +157,9 @@ pub async fn submit_setup(State(state): State<AppState>, Form(form): Form<SetupF
     let passphrase = Passphrase::from(form.passphrase);
     let remember = form.remember.is_some();
     match state.create(&passphrase, remember).await {
-        Ok(()) => Html(dashboard_page(&state).await).into_response(),
+        // Lot 39 : un coffre neuf atterrit sur l'assistant de premier lancement, pas sur un
+        // tableau de bord vide.
+        Ok(()) => Html(crate::premiers_pas::page(&state).await).into_response(),
         Err(e) => setup_page(Some(&e.to_string())).into_response(),
     }
 }

@@ -54,6 +54,16 @@ impl HumanRender for CompanyProfileWithVatFiling {
                 ),
             ),
             ("Dirigeant", director),
+            ("Président", or_dash(p.president_name.as_deref())),
+            (
+                "Associé unique",
+                match (&p.sole_shareholder_name, &p.sole_shareholder_address) {
+                    (None, _) => "—".to_string(),
+                    (Some(n), None) => n.clone(),
+                    (Some(n), Some(a)) => format!("{n}, {a}"),
+                },
+            ),
+            ("Actions", or_dash(p.share_count)),
             ("Télédéclaration TVA", self.vat_filing.note.clone()),
         ])
     }
@@ -140,12 +150,33 @@ pub struct SetProfileArgs {
     /// Ratio charges/net du dirigeant, en pourcentage (ex. `80`), pour estimer les cotisations.
     #[arg(long, value_parser = parse_charge_ratio_bps)]
     director_charge_ratio: Option<u32>,
+    /// Nom du président (signataire du PV et des comptes).
+    #[arg(long)]
+    president: Option<String>,
+    /// Nom de l'associé unique (souvent le président lui-même).
+    #[arg(long)]
+    sole_shareholder: Option<String>,
+    /// Adresse de l'associé unique, pour le PV des décisions.
+    #[arg(long)]
+    sole_shareholder_address: Option<String>,
+    /// Nombre d'actions (ou de parts) composant le capital.
+    #[arg(long)]
+    share_count: Option<u32>,
 }
 
 #[derive(Debug, Subcommand)]
 pub enum CompanyCommand {
     /// Définit (ou remplace) l'identité légale de l'émetteur — nécessaire aux mentions
     /// obligatoires d'une facture (`freeflow invoice render`).
+    ///
+    /// La date de clôture est sur vos statuts et votre dernier bilan (`--fiscal-year-end 30/09`).
+    /// Régimes de TVA (`--vat-regime`) : `real_normal_monthly`, une déclaration CA3 par mois
+    /// (le cas général au-delà de 254 000 € de prestations, ou sur option) ;
+    /// `real_normal_quarterly`, une CA3 par trimestre (TVA annuelle inférieure à 4 000 €) ;
+    /// `real_simplified`, deux acomptes (juillet, décembre) et une déclaration annuelle CA12 —
+    /// régime supprimé pour les exercices ouverts à compter de 2027 ; `franchise`, aucune TVA
+    /// facturée ni déclarée (sous 37 500 € de prestations). L'associé unique et le président
+    /// (`--sole-shareholder`, `--president`) figurent sur le PV d'approbation des comptes.
     SetProfile(Box<SetProfileArgs>),
     /// Affiche l'identité légale actuellement configurée, et la règle de télédéclaration de TVA
     /// qui en découle (`vat_filing` : schéma déclaratif, jour de la grille officielle).
@@ -178,6 +209,10 @@ pub fn run(
                 vat_regime: args.vat_regime,
                 director_monthly_gross: args.director_gross,
                 director_charge_ratio_bps: args.director_charge_ratio,
+                president_name: args.president,
+                sole_shareholder_name: args.sole_shareholder,
+                sole_shareholder_address: args.sole_shareholder_address,
+                share_count: args.share_count,
             };
             let outcome = Executor::new(store).execute(&command, ctx)?;
             format_outcome_as(&outcome, json, |()| "profil enregistré".to_string())

@@ -18,6 +18,7 @@ mod pending;
 mod prospect;
 mod quote;
 mod refs;
+mod setup;
 mod table;
 mod vault;
 mod year;
@@ -32,8 +33,6 @@ use freeflow_core::store::Store;
 
 use error::CliError;
 use vault::PassphraseOpts;
-
-pub use expense::{ArchivedReceipt, archive_receipt_bytes};
 
 #[derive(Parser)]
 #[command(
@@ -109,6 +108,10 @@ enum TopCommand {
     /// Journal d'audit.
     #[command(subcommand)]
     Audit(pending::AuditCommand),
+    /// Premier lancement : ce qui reste à configurer (profil, point de départ, relevé) et le
+    /// prochain geste.
+    #[command(subcommand)]
+    Setup(setup::SetupCommand),
     /// Confirme une action en attente : retrouve son type de commande et l'applique.
     Confirm {
         /// Identifiant de l'action (voir `freeflow pending list`).
@@ -317,6 +320,16 @@ fn dispatch(cli: Cli, access: VaultAccess<'_>) -> Result<String, CliError> {
             {
                 eprintln!("⚠ sauvegarde automatique échouée : {e}");
             }
+            // Lot 39 : les justificatifs en clair d'avant sont chiffrés au premier passage,
+            // silencieusement et une fois pour toutes (idempotent).
+            match freeflow_core::receipts::migrate_legacy(&store) {
+                Ok(0) => {}
+                Ok(n) => eprintln!(
+                    "ℹ {n} justificatif(s) chiffré(s) dans {}",
+                    store.receipts_dir().display()
+                ),
+                Err(e) => eprintln!("⚠ chiffrement des justificatifs échoué : {e}"),
+            }
             let ctx = ExecutionContext::new(actor, dry_run);
             run_command(command, &mut store, &ctx, json)
         }
@@ -348,6 +361,7 @@ fn run_command(
         TopCommand::Bank(cmd) => invoice::run_bank(cmd, store, ctx, json),
         TopCommand::Pending(cmd) => pending::run_pending(cmd, store, json),
         TopCommand::Audit(cmd) => pending::run_audit(cmd, store, json),
+        TopCommand::Setup(cmd) => setup::run(cmd, store, ctx, json),
         TopCommand::Confirm { id, id_flag } => {
             let id = id
                 .or(id_flag)

@@ -47,8 +47,8 @@ pub enum FiscalYearError {
     NotFound(FiscalYearId),
 
     #[error(
-        "aucun profil d'entreprise défini : `freeflow company set-profile` d'abord (le résultat \
-         et la réserve légale en dépendent)"
+        "aucun profil d'entreprise défini : renseignez-le d'abord (le résultat et la réserve \
+         légale en dépendent)"
     )]
     ProfileMissing,
 
@@ -976,6 +976,10 @@ mod tests {
             vat_regime: Some(VatRegime::RealNormalMonthly),
             director_monthly_gross: None,
             director_charge_ratio_bps: None,
+            president_name: None,
+            sole_shareholder_name: None,
+            sole_shareholder_address: None,
+            share_count: None,
         };
         Executor::new(store).execute(&cmd, &human()).unwrap();
     }

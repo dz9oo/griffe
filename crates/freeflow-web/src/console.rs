@@ -26,8 +26,10 @@ pub struct ConsoleInput {
 
 pub async fn run(State(state): State<AppState>, Form(input): Form<ConsoleInput>) -> Html<String> {
     let trimmed = input.line.trim();
-    if trimmed.is_empty() {
-        return Html(String::new());
+    // Lot 39 : `aide`, `help`, `?` et la ligne vide répondent avec les commandes utiles du
+    // parcours plutôt que par le silence.
+    if trimmed.is_empty() || matches!(trimmed, "aide" | "help" | "?") {
+        return Html(crate::views::console::help(trimmed).into_string());
     }
 
     let tokens = match shell_words::split(trimmed) {

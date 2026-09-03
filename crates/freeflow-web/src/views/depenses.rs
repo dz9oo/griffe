@@ -10,8 +10,8 @@
 //! remplacer ou de le détacher (case à cocher, l'équivalent de `--clear-receipt`) — sinon il
 //! voyage tel quel dans l'état complet de la commande.
 //!
-//! Rapprochement bancaire (lot 33) : les débits du relevé importé (`freeflow bank import`, la
-//! fenêtre n'importe pas) restant à rapprocher sont listés au-dessus des dépenses ; chacun
+//! Rapprochement bancaire (lot 33) : les débits du relevé importé (depuis le lot 38, la fenêtre
+//! importe elle-même) restant à rapprocher sont listés au-dessus des dépenses ; chacun
 //! ouvre le formulaire de création pré-rempli (montant, date, libellé, champ caché
 //! `bank_transaction_id`) — la dépense est créée rapprochée. Une dépense existante se rapproche
 //! depuis sa fiche (panneau listant les débits du même montant) et le rapprochement se défait
@@ -247,8 +247,12 @@ pub fn detail_panel(detail: &ExpenseDetail, error: Option<&str>) -> Markup {
         }
         @if expense.receipt_hash.is_none() {
             div class="detail-note" {
-                "Aucun justificatif attaché — ajoutez-en un via « modifier », ou en CLI : "
-                code { "freeflow expense edit " (expense.id) " --receipt <fichier>" }
+                "Aucun justificatif attaché — ajoutez-en un via « modifier » (possible même après                  la clôture : une pièce ne change ni le montant ni la date)."
+            }
+        } @else {
+            div class="detail-note" {
+                a class="btn small" href=(format!("/depenses/{}/receipt", expense.id)) target="_blank" { "voir le justificatif" }
+                " (déchiffré à la volée depuis le coffre)"
             }
         }
         div class="detail-actions" {
@@ -290,8 +294,7 @@ pub fn reconcile_panel(
         }
         @if candidates.is_empty() {
             div class="empty-state" {
-                "aucun débit de ce montant à rapprocher — importez d'abord le relevé : "
-                code { "freeflow bank import --format csv|ofx <fichier>" }
+                "aucun débit de ce montant à rapprocher — importez d'abord le relevé (bouton « importer un relevé » de l'écran dépenses)"
             }
         } @else {
             form hx-post=(format!("/depenses/{}/reconcile", expense.id)) hx-target="#panel" hx-swap="innerHTML" {

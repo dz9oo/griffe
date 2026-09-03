@@ -8,6 +8,8 @@ Usage: freeflow expense [OPTIONS] <COMMAND>
 
 Commands:
   record     Enregistre une dépense professionnelle
+  attach     Joint (ou remplace) le justificatif d'une dépense — **même dans un exercice clôturé** : la pièce ne change ni le montant ni la date, et la facture du cabinet arrive souvent après la clôture. Le fichier est archivé chiffré dans `<coffre>.receipts/`
+  receipt    Déchiffre le justificatif d'une dépense : dans `--out`, ou dans un fichier temporaire (0600) ouvert par le visualiseur par défaut
   list       Liste les dépenses, les plus récentes d'abord
   show       Affiche une dépense
   edit       Modifie une dépense existante — seuls les champs fournis changent, le reste est conservé tel quel. Refusé si sa date tombe dans un exercice déjà clôturé

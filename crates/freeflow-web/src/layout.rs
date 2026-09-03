@@ -14,6 +14,7 @@ pub enum ViewId {
     Facturation,
     Depenses,
     Clients,
+    Societe,
     Cloture,
     Console,
 }
@@ -29,6 +30,7 @@ impl ViewId {
             Self::Facturation => "/view/facturation",
             Self::Depenses => "/view/depenses",
             Self::Clients => "/view/clients",
+            Self::Societe => "/view/societe",
             Self::Cloture => "/view/cloture",
             Self::Console => "/view/console",
         }
@@ -44,6 +46,7 @@ impl ViewId {
             Self::Facturation => "facturation",
             Self::Depenses => "depenses",
             Self::Clients => "clients",
+            Self::Societe => "societe",
             Self::Cloture => "cloture",
             Self::Console => "console",
         }
@@ -55,7 +58,7 @@ impl ViewId {
     }
 
     // L'ordre suit le flux de travail : prospecter → deviser → réaliser → facturer → dépenser.
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 10] = [
         Self::Dashboard,
         Self::Prospection,
         Self::Devis,
@@ -63,6 +66,7 @@ impl ViewId {
         Self::Facturation,
         Self::Depenses,
         Self::Clients,
+        Self::Societe,
         Self::Cloture,
         Self::Console,
     ];
@@ -129,6 +133,14 @@ fn palette() -> Markup {
                       hx-get="/cloture/new" hx-target="#panel" hx-swap="innerHTML" {
                         "+ clore un exercice"
                     }
+                    a class="palette-item" data-label="configurer ma société premiers pas"
+                      href="/premiers-pas" hx-get="/premiers-pas" hx-target="#content" hx-push-url="true" hx-swap="innerHTML" {
+                        "→ configurer ma société (premiers pas)"
+                    }
+                    button class="palette-item" type="button" data-label="lexique aide mots"
+                      hx-get="/lexique" hx-target="#panel" hx-swap="innerHTML" {
+                        "? lexique — les mots de la comptabilité"
+                    }
                 }
             }
         }
@@ -174,6 +186,7 @@ pub fn page(active: ViewId, vault_label: &str, content: Markup) -> Markup {
                         (tabs(active))
                         div class="cmdbar-right" {
                             div class="lock" { span class="dot" {} (vault_label) }
+                            button class="lock-btn" hx-get="/lexique" hx-target="#panel" hx-swap="innerHTML" title="lexique : les mots de la comptabilité expliqués" { "?" }
                             button class="lock-btn" hx-post="/lock" hx-swap="none" title="verrouiller le coffre" { "verrouiller" }
                             div class="palette-hint" { "⌘K palette de commandes" }
                         }

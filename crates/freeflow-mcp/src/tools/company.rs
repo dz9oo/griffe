@@ -63,6 +63,13 @@ pub(crate) struct SetProfileArgs {
     /// Ratio charges/net du dirigeant, en dix-millièmes (ex. `8000` = 80 %), pour estimer les
     /// cotisations.
     director_charge_ratio_bps: Option<u32>,
+    /// Nom du président (signataire du PV et des comptes).
+    president_name: Option<String>,
+    /// Nom et adresse de l'associé unique (PV des décisions, 2033-F).
+    sole_shareholder_name: Option<String>,
+    sole_shareholder_address: Option<String>,
+    /// Nombre d'actions ou de parts composant le capital.
+    share_count: Option<u32>,
     #[serde(default)]
     dry_run: bool,
 }
@@ -131,6 +138,10 @@ impl FreeflowServer {
             vat_regime,
             director_monthly_gross: args.director_monthly_gross_cents.map(Money::from_cents),
             director_charge_ratio_bps: args.director_charge_ratio_bps,
+            president_name: args.president_name,
+            sole_shareholder_name: args.sole_shareholder_name,
+            sole_shareholder_address: args.sole_shareholder_address,
+            share_count: args.share_count,
         };
         let mut store = self.store.lock().await;
         match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {

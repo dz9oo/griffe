@@ -9,3 +9,4 @@ pub(crate) mod missions;
 pub(crate) mod pending;
 pub(crate) mod prospection;
 pub(crate) mod quotes;
+pub(crate) mod setup;

@@ -66,6 +66,7 @@ expression: "json!({\n    \"tool_names\": names, \"invoice_emit_input_schema\":\
     "clients.update",
     "company.set_profile",
     "company.show",
+    "expense.attach_receipt",
     "expense.delete",
     "expense.list",
     "expense.reconcile",
@@ -138,6 +139,8 @@ expression: "json!({\n    \"tool_names\": names, \"invoice_emit_input_schema\":\
     "quote.list",
     "quote.revise",
     "quote.send",
-    "quote.show"
+    "quote.show",
+    "setup.declare_new_company",
+    "setup.status"
   ]
 }

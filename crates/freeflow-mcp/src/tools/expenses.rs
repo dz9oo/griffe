@@ -56,6 +56,16 @@ pub(crate) struct ReconcileExpenseArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct AttachReceiptArgs {
+    /// Référence de la dépense (libellé, préfixe d'UUID).
+    expense: String,
+    /// Chemin local du justificatif — lu et archivé chiffré par le serveur (IO d'adaptateur).
+    path: String,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct ExpenseRefArgs {
     /// Référence de la dépense : UUID, préfixe d'UUID, ou libellé.
     expense: String,
@@ -255,6 +265,54 @@ impl FreeflowServer {
             incurred_on,
             receipt_hash: current.receipt_hash,
             receipt_filename: current.receipt_filename,
+        };
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
+            Ok(outcome) => ok_json(outcome_json(&outcome)),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
+    /// Joint (ou remplace) le justificatif d'une dépense depuis un fichier local — même dans un
+    /// exercice clôturé (une pièce ne change ni le montant ni la date). Le fichier est archivé
+    /// chiffré dans `<coffre>.receipts/` ; la dépense garde son hash SHA-256.
+    #[tool(
+        name = "expense.attach_receipt",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true
+        )
+    )]
+    async fn expense_attach_receipt(
+        &self,
+        Parameters(args): Parameters<AttachReceiptArgs>,
+    ) -> CallToolResult {
+        let content = ok_or_return!("path", std::fs::read(&args.path));
+        let original = std::path::Path::new(&args.path)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "justificatif".to_string());
+        let mut store = self.store.lock().await;
+        let id = ok_or_return!("expense", resolve_expense(&store, &args.expense));
+        let current = match expense_by_id(store.connection(), id) {
+            Ok(Some(e)) => e,
+            Ok(None) => return err_text(format!("dépense introuvable : {id}")),
+            Err(e) => return err_text(e.to_string()),
+        };
+        let (receipt_hash, receipt_filename) = if args.dry_run {
+            (expenses::hash_receipt(&content), String::new())
+        } else {
+            let archived = ok_or_return!(
+                "path",
+                freeflow_core::receipts::archive(&store, &original, &content)
+            );
+            (archived.hash, archived.filename)
+        };
+        let cmd = expenses::AttachReceipt {
+            id,
+            revision: current.revision,
+            receipt_hash,
+            receipt_filename,
         };
         match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),

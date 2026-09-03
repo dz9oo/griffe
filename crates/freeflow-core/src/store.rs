@@ -743,6 +743,31 @@ impl Store {
         &self.db_path
     }
 
+    /// La clé de chiffrement des **justificatifs** (lot 39), dérivée de la clé maître par
+    /// HKDF-SHA256 dans un domaine séparé (`freeflow/receipts/v1`) : les pièces vivent hors de
+    /// la base (`<coffre>.receipts/`) mais sous la même protection — la promesse « un seul
+    /// coffre chiffré » du README, étendue à ce qui l'accompagne. Jamais la clé maître elle-même
+    /// : un fichier de pièce compromis ne doit rien dire de la base.
+    ///
+    #[must_use]
+    pub fn receipts_key(&self) -> VaultKey {
+        VaultKey::new(kdf::hkdf_sha256(
+            b"freeflow/receipts/v1",
+            self.key.as_bytes(),
+            b"receipts",
+        ))
+    }
+
+    /// Le répertoire des justificatifs chiffrés de ce coffre : `<coffre>.receipts/`, un
+    /// dossier **par coffre** (lot 39 — jusqu'ici `receipts/` à côté du coffre, en clair,
+    /// partagé par tous les coffres du répertoire).
+    #[must_use]
+    pub fn receipts_dir(&self) -> PathBuf {
+        let mut name = self.db_path.as_os_str().to_owned();
+        name.push(".receipts");
+        PathBuf::from(name)
+    }
+
     /// Accès mutable à la connexion sous-jacente, pour les écritures.
     pub fn connection_mut(&mut self) -> &mut Connection {
         &mut self.conn

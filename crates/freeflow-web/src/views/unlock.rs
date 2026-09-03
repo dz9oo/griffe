@@ -33,7 +33,7 @@ pub fn unlock_form(error: Option<&str>, pending: bool) -> Markup {
                 }
                 button class="auth-submit" type="submit" { "Déverrouiller" }
             }
-            div class="auth-hint" { "Pour un usage en script ou en agent : `freeflow unlock --remember`." }
+            div class="auth-hint" { "En script ou par un agent, la même passphrase s'obtient par la ligne de commande (« unlock --remember »)." }
         }
     }
 }

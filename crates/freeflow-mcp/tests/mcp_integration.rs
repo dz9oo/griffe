@@ -983,6 +983,10 @@ fn set_company_profile(store: &mut Store) {
         vat_regime: None,
         director_monthly_gross: None,
         director_charge_ratio_bps: None,
+        president_name: None,
+        sole_shareholder_name: None,
+        sole_shareholder_address: None,
+        share_count: None,
     };
     Executor::new(store)
         .execute(
@@ -1490,6 +1494,10 @@ async fn a_fiscal_year_can_be_shown_and_amended_but_approval_and_deletion_need_a
                 vat_regime: None,
                 director_monthly_gross: None,
                 director_charge_ratio_bps: None,
+                president_name: None,
+                sole_shareholder_name: None,
+                sole_shareholder_address: None,
+                share_count: None,
             },
             &human,
         )
@@ -1691,6 +1699,10 @@ async fn exporting_the_fec_writes_the_regulatory_file_and_never_overwrites() {
                 vat_regime: None,
                 director_monthly_gross: None,
                 director_charge_ratio_bps: None,
+                president_name: None,
+                sole_shareholder_name: None,
+                sole_shareholder_address: None,
+                share_count: None,
             },
             &human,
         )
@@ -2024,4 +2036,75 @@ async fn bank_import_over_mcp_detects_the_format_and_reports_what_it_understood(
     let victim = listed[0]["id"].as_str().unwrap().to_string();
     let deleted = json_of(&call(&client, "bank.delete", json!({"transaction_id": victim})).await);
     assert_eq!(deleted["status"], "pending_confirmation");
+}
+
+/// Lot 39 : `setup.status` dit où en est la configuration, `setup.declare_new_company` règle
+/// l'origine, `expense.attach_receipt` joint une pièce (chiffrée) depuis un chemin local.
+#[tokio::test]
+async fn setup_status_and_receipt_attachment_over_mcp() {
+    use freeflow_core::app::{Actor, ExecutionContext};
+    use freeflow_core::expenses::RecordExpense;
+    let db_path = test_db_path("setup-mcp");
+    let mut store = Store::create(&db_path, &Passphrase::from("s3cret")).unwrap();
+    Executor::new(&mut store)
+        .execute(
+            &RecordExpense {
+                label: "Hébergement".to_string(),
+                category: freeflow_core::domain::ExpenseCategory::Software,
+                amount: freeflow_core::domain::Money::from_cents(12_000),
+                vat_rate: freeflow_core::domain::VatRate::Standard,
+                vat_deductible: freeflow_core::domain::Money::from_cents(2_000),
+                incurred_on: time::macros::date!(2026 - 09 - 05),
+                receipt_hash: None,
+                receipt_filename: None,
+                bank_transaction_id: None,
+            },
+            &ExecutionContext::new(Actor::Human, false),
+        )
+        .unwrap();
+    let client = spawn_client(store).await;
+
+    let status = json_of(&call(&client, "setup.status", json!({})).await);
+    assert_eq!(status["next_step"], "profile");
+    assert_eq!(status["profile"]["state"], "missing");
+    let declared = json_of(
+        &call(
+            &client,
+            "setup.declare_new_company",
+            json!({"declared": true}),
+        )
+        .await,
+    );
+    assert_eq!(declared["status"], "applied");
+    let status = json_of(&call(&client, "setup.status", json!({})).await);
+    assert_eq!(status["origin"]["state"], "done");
+    assert_eq!(status["declared_new_company"], true);
+
+    let receipt = db_path.with_file_name("facture.pdf");
+    std::fs::write(&receipt, b"%PDF-1.4 piece").unwrap();
+    let attached = json_of(
+        &call(
+            &client,
+            "expense.attach_receipt",
+            json!({"expense": "Hébergement", "path": receipt.to_string_lossy()}),
+        )
+        .await,
+    );
+    assert_eq!(attached["status"], "applied");
+    assert_eq!(attached["result"], 2);
+    let shown = json_of(&call(&client, "expense.show", json!({"expense": "Hébergement"})).await);
+    assert!(
+        shown["receipt_filename"]
+            .as_str()
+            .unwrap()
+            .ends_with("-facture.pdf")
+    );
+    let receipts_dir = {
+        let mut name = db_path.as_os_str().to_owned();
+        name.push(".receipts");
+        std::path::PathBuf::from(name)
+    };
+    let raw =
+        std::fs::read(receipts_dir.join(shown["receipt_filename"].as_str().unwrap())).unwrap();
+    assert!(raw.starts_with(b"FFR1") && !raw.windows(4).any(|w| w == b"%PDF"));
 }

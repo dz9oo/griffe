@@ -138,6 +138,9 @@ impl AppState {
             // indisponible, seule la mise en cache pour la prochaine ouverture est perdue.
             let _ = store.remember(DEFAULT_SESSION_TTL);
         }
+        // Lot 39 : les justificatifs en clair d'avant sont chiffrés au premier déverrouillage
+        // (idempotent, silencieux — une pièce qui résiste sera reprise la prochaine fois).
+        let _ = freeflow_core::receipts::migrate_legacy(&store);
         *self.session.lock().await = VaultSession::Unlocked {
             store: Box::new(store),
             last_activity: Instant::now(),

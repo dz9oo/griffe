@@ -64,7 +64,7 @@ pub fn list_fragment(store: &Store, today: Date) -> Result<Markup, AppError> {
             }
             @if invoices.is_empty() {
                 div class="empty-state" {
-                    "aucune facture émise — émettez-en une depuis la CLI : " code { "freeflow invoice emit" }
+                    "aucune facture émise — l'émission d'une facture (Factur-X) se fait pour l'instant depuis la console de l'onglet « console » (tapez « aide ») ou par un agent ; elle apparaîtra ici"
                 }
             } @else {
                 div class="panel bordered" style="padding:0" {
@@ -188,7 +188,7 @@ pub fn detail_panel(
         div class="detail-section" {
             div class="detail-section-head" { span { "Encaissements" } }
             @if payments.is_empty() {
-                div class="empty-state" { "aucun encaissement — voir " code { "freeflow payment record" } " ou " code { "freeflow bank reconcile" } }
+                div class="empty-state" { "aucun encaissement — importez le relevé (bouton « importer un relevé ») puis rapprochez le virement reçu depuis la console (« aide »)" }
             } @else {
                 div class="panel bordered" style="padding:0" {
                     table {
@@ -209,8 +209,7 @@ pub fn detail_panel(
         div class="detail-note" {
             "Annuler un encaissement est une contre-écriture : il reste dans l'historique mais "
             "sort de tous les calculs, et libère sa transaction bancaire s'il venait d'un rapprochement. "
-            "La facture elle-même, immuable, ne s'annule que par un avoir ("
-            code { "freeflow invoice credit-note" } ")."
+            "La facture elle-même, immuable, ne s'annule que par un avoir (console, « aide »)."
         }
     };
     panel::sheet(&invoice.number, body)

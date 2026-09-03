@@ -64,7 +64,7 @@ fn error_banner(e: &AppError, reload_hx_get: &str) -> CloseFormErrors {
             ..Default::default()
         },
         other => CloseFormErrors {
-            banner: Some(other.to_string()),
+            banner: Some(views::errors::message(other)),
             ..Default::default()
         },
     }

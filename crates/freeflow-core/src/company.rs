@@ -34,6 +34,18 @@ pub struct CompanyProfile {
     /// Ratio charges/net paramétrable (dix-millièmes, ex. `8000` = 80 %) pour estimer, à titre
     /// indicatif, les cotisations sociales sur la rémunération du président.
     pub director_charge_ratio_bps: Option<u32>,
+    /// Nom du président (lot 39) — signataire du PV et des comptes.
+    #[serde(default)]
+    pub president_name: Option<String>,
+    /// Identité de l'associé unique (lot 39) : nom et adresse, pour le PV des décisions
+    /// (lot 41) et le tableau 2033-F. Souvent la même personne que le président.
+    #[serde(default)]
+    pub sole_shareholder_name: Option<String>,
+    #[serde(default)]
+    pub sole_shareholder_address: Option<String>,
+    /// Nombre d'actions ou de parts composant le capital (2033-F).
+    #[serde(default)]
+    pub share_count: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,6 +62,14 @@ pub struct SetCompanyProfile {
     pub vat_regime: Option<VatRegime>,
     pub director_monthly_gross: Option<Money>,
     pub director_charge_ratio_bps: Option<u32>,
+    #[serde(default)]
+    pub president_name: Option<String>,
+    #[serde(default)]
+    pub sole_shareholder_name: Option<String>,
+    #[serde(default)]
+    pub sole_shareholder_address: Option<String>,
+    #[serde(default)]
+    pub share_count: Option<u32>,
 }
 
 impl Command for SetCompanyProfile {
@@ -62,8 +82,10 @@ impl Command for SetCompanyProfile {
                 (id, name, legal_form, siren, vat_number, address_street, address_postal_code,
                  address_city, address_country, share_capital_cents, rcs_city, iban,
                  fiscal_year_end_month, fiscal_year_end_day, vat_regime,
-                 director_monthly_gross_cents, director_charge_ratio_bps, updated_at)
-             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+                 director_monthly_gross_cents, director_charge_ratio_bps, updated_at,
+                 president_name, sole_shareholder_name, sole_shareholder_address, share_count)
+             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
+                     ?18, ?19, ?20, ?21)
              ON CONFLICT (id) DO UPDATE SET
                 name = excluded.name,
                 legal_form = excluded.legal_form,
@@ -81,7 +103,11 @@ impl Command for SetCompanyProfile {
                 vat_regime = excluded.vat_regime,
                 director_monthly_gross_cents = excluded.director_monthly_gross_cents,
                 director_charge_ratio_bps = excluded.director_charge_ratio_bps,
-                updated_at = excluded.updated_at",
+                updated_at = excluded.updated_at,
+                president_name = excluded.president_name,
+                sole_shareholder_name = excluded.sole_shareholder_name,
+                sole_shareholder_address = excluded.sole_shareholder_address,
+                share_count = excluded.share_count",
             params![
                 self.name,
                 self.legal_form,
@@ -102,6 +128,10 @@ impl Command for SetCompanyProfile {
                 self.director_monthly_gross.map(Money::cents),
                 self.director_charge_ratio_bps.map(i64::from),
                 OffsetDateTime::now_utc().format(&Rfc3339)?,
+                self.president_name,
+                self.sole_shareholder_name,
+                self.sole_shareholder_address,
+                self.share_count.map(i64::from),
             ],
         )?;
         Ok(())
@@ -121,6 +151,7 @@ fn row_to_profile(row: &Row) -> rusqlite::Result<CompanyProfile> {
     let vat_regime: Option<String> = row.get("vat_regime")?;
     let director_monthly_gross_cents: Option<i64> = row.get("director_monthly_gross_cents")?;
     let director_charge_ratio_bps: Option<i64> = row.get("director_charge_ratio_bps")?;
+    let share_count: Option<i64> = row.get("share_count")?;
     // Mois et jour ne portent une clôture que présents tous les deux ; la migration les pose
     // ensemble, donc un seul renseigné signalerait une base incohérente — on le traite comme
     // « non configuré » plutôt que de deviner.
@@ -158,6 +189,13 @@ fn row_to_profile(row: &Row) -> rusqlite::Result<CompanyProfile> {
             .map_err(conv_err)?,
         director_monthly_gross: director_monthly_gross_cents.map(Money::from_cents),
         director_charge_ratio_bps: director_charge_ratio_bps
+            .map(u32::try_from)
+            .transpose()
+            .map_err(conv_err)?,
+        president_name: row.get("president_name")?,
+        sole_shareholder_name: row.get("sole_shareholder_name")?,
+        sole_shareholder_address: row.get("sole_shareholder_address")?,
+        share_count: share_count
             .map(u32::try_from)
             .transpose()
             .map_err(conv_err)?,
@@ -209,6 +247,10 @@ mod tests {
             vat_regime: Some(crate::domain::VatRegime::RealNormalMonthly),
             director_monthly_gross: Some(Money::from_cents(300_000)),
             director_charge_ratio_bps: Some(8_000),
+            president_name: None,
+            sole_shareholder_name: None,
+            sole_shareholder_address: None,
+            share_count: None,
         }
     }
 

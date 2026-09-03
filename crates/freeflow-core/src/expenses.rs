@@ -69,7 +69,7 @@ pub enum ExpensesError {
 
     #[error(
         "la dépense du {0} tombe dans un exercice déjà clôturé, dont le résultat a été figé — \
-         supprimez d'abord l'exercice s'il n'est qu'un projet (freeflow year rm), ou rattachez \
+         supprimez d'abord l'exercice s'il n'est qu'un projet, ou rattachez \
          la dépense à l'exercice courant"
     )]
     FiscalYearClosed(String),
@@ -92,13 +92,13 @@ pub enum ExpensesError {
 
     #[error(
         "la transaction {0} est déjà rapprochée — défaites d'abord ce rapprochement \
-         (bank unreconcile) si elle visait la mauvaise dépense ou la mauvaise facture"
+         si elle visait la mauvaise dépense ou la mauvaise facture"
     )]
     TransactionAlreadyReconciled(BankTransactionId),
 
     #[error(
         "la dépense {0} est déjà rapprochée d'un débit du relevé — défaites d'abord ce \
-         rapprochement (bank unreconcile)"
+         rapprochement"
     )]
     ExpenseAlreadyReconciled(ExpenseId),
 
@@ -110,7 +110,7 @@ pub enum ExpensesError {
 
     #[error(
         "la dépense {0} est rapprochée d'un débit du relevé : son montant est celui du relevé — \
-         défaites d'abord le rapprochement (bank unreconcile) pour le modifier"
+         défaites d'abord le rapprochement pour le modifier"
     )]
     ReconciledAmountLocked(ExpenseId),
 }
@@ -383,6 +383,43 @@ impl Command for UpdateExpense {
                 self.vat_rate.as_str(),
                 self.vat_deductible.cents(),
                 domain::format_date(self.incurred_on),
+                self.receipt_hash,
+                self.receipt_filename,
+                new_revision,
+                self.id.to_string(),
+                self.revision,
+            ],
+        )?;
+        Ok(new_revision)
+    }
+}
+
+/// Joint (ou remplace) le justificatif d'une dépense — lot 39 : une commande distincte
+/// d'[`UpdateExpense`], **non soumise à la garde « exercice clôturé »** : une pièce ne change ni
+/// le montant ni la date, donc jamais le résultat figé — et la facture du cabinet arrive
+/// souvent après la clôture. Le fichier lui-même est archivé par l'adaptateur (hash + copie
+/// chiffrée), jamais ici ; `receipt_hash`/`receipt_filename` sont ce qu'il en reste à persister.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttachReceipt {
+    pub id: ExpenseId,
+    /// Révision lue avant modification.
+    pub revision: i64,
+    pub receipt_hash: String,
+    pub receipt_filename: String,
+}
+
+impl Command for AttachReceipt {
+    /// La révision résultante.
+    type Output = i64;
+    const NAME: &'static str = "expenses.attach_receipt";
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        expense_by_id(conn, self.id)?.ok_or(ExpensesError::NotFound(self.id))?;
+        let new_revision = require_expense_revision(conn, self.id, self.revision)?;
+        conn.execute(
+            "UPDATE expenses SET receipt_hash = ?1, receipt_filename = ?2, revision = ?3
+              WHERE id = ?4 AND revision = ?5",
+            params![
                 self.receipt_hash,
                 self.receipt_filename,
                 new_revision,

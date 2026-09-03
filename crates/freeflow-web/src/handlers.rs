@@ -142,6 +142,20 @@ pub async fn cloture(State(state): State<AppState>, headers: HeaderMap) -> Html<
     respond(headers, ViewId::Cloture, content).await
 }
 
+pub async fn societe(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
+    let content = state
+        .with_store(|store| {
+            views::societe::render(store).unwrap_or_else(|e| error_markup(ViewId::Societe, e))
+        })
+        .await
+        .unwrap_or_else(|| locked_markup(ViewId::Societe));
+    respond(headers, ViewId::Societe, content).await
+}
+
+pub async fn lexique() -> Html<String> {
+    Html(views::lexique::panel().into_string())
+}
+
 pub async fn console(headers: HeaderMap) -> Html<String> {
     respond(headers, ViewId::Console, views::console::render()).await
 }
