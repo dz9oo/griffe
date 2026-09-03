@@ -6,8 +6,9 @@
 //! l'expert-comptable qui télédéclare.
 
 use freeflow_core::company::CompanyProfile;
+use freeflow_core::domain::Money;
 use freeflow_core::fiscal_year::FiscalYearRecord;
-use freeflow_core::ledger::BalanceSheet;
+use freeflow_core::ledger::{BalanceSheet, Ledger};
 use serde::Serialize;
 use time::Date;
 
@@ -177,8 +178,18 @@ fn tax_loss_entries(year: &FiscalYearRecord) -> Vec<LiasseEntry> {
 pub fn liasse_export(
     profile: &CompanyProfile,
     year: &FiscalYearRecord,
-    balance_sheet: Option<&BalanceSheet>,
+    ledger: Option<&Ledger>,
 ) -> LiasseExport {
+    // Lot 37 : les impôts et taxes (635) sortent des « autres charges externes » pour la case
+    // 244 — lus dans la balance du grand livre, le snapshot ne connaissant que le total.
+    let taxes = ledger.map_or(Money::ZERO, |l| {
+        l.trial_balance()
+            .rows
+            .iter()
+            .filter(|r| r.account.number.starts_with("635"))
+            .map(|r| r.balance)
+            .sum()
+    });
     let mut entries = vec![
         LiasseEntry {
             form: "2033-B",
@@ -189,8 +200,14 @@ pub fn liasse_export(
         LiasseEntry {
             form: "2033-B",
             case: "242",
-            label: "Autres charges externes (nettes de TVA déductible)",
-            amount_cents: year.expenses.cents(),
+            label: "Autres charges externes (nettes de TVA déductible, hors impôts et taxes)",
+            amount_cents: (year.expenses - taxes).cents(),
+        },
+        LiasseEntry {
+            form: "2033-B",
+            case: "244",
+            label: "Impôts, taxes et versements assimilés",
+            amount_cents: taxes.cents(),
         },
         LiasseEntry {
             form: "2033-B",
@@ -225,8 +242,8 @@ pub fn liasse_export(
         },
     ];
     entries.extend(tax_loss_entries(year));
-    if let Some(sheet) = balance_sheet {
-        entries.extend(balance_sheet_entries(sheet));
+    if let Some(ledger) = ledger {
+        entries.extend(balance_sheet_entries(&ledger.balance_sheet()));
     }
     LiasseExport {
         company: profile.name.clone(),

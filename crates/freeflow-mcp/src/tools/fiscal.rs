@@ -740,10 +740,9 @@ impl FreeflowServer {
                 )
             }
             "liasse" => {
-                let sheet =
-                    ok_or_return!("ledger", build_ledger(store.connection(), record.period()))
-                        .balance_sheet();
-                let export = freeflow_docs::liasse_export(&profile, &record, Some(&sheet));
+                let ledger =
+                    ok_or_return!("ledger", build_ledger(store.connection(), record.period()));
+                let export = freeflow_docs::liasse_export(&profile, &record, Some(&ledger));
                 let mut bytes = ok_or_return!("liasse", serde_json::to_vec_pretty(&export));
                 bytes.push(b'\n');
                 bytes

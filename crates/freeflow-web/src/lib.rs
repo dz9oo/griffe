@@ -171,6 +171,14 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/depenses/{id}/unreconcile", post(depenses::unreconcile))
         .route(
+            "/depenses/transaction/{id}/settle",
+            get(depenses::settle_panel).post(depenses::settle),
+        )
+        .route(
+            "/depenses/transaction/{id}/unsettle",
+            post(depenses::unsettle),
+        )
+        .route(
             "/depenses/{id}/delete",
             get(depenses::delete_confirm_panel).post(depenses::delete),
         )

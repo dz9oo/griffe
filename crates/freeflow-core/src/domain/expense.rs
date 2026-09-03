@@ -24,6 +24,10 @@ pub enum ExpenseCategory {
     /// Frais bancaires (tenue de compte, commissions) — lot 33 : compte 627000 ; le plus souvent
     /// exonérés de TVA, d'où un taux `zero` attendu mais jamais imposé.
     BankCharges,
+    /// Impôts et taxes (lot 37) : CFE, CVAE, taxe sur les véhicules, taxes foncières… — compte
+    /// 635000, case 244 du 2033-B. **Pas l'IS ni la TVA**, qui ne sont pas des charges : le
+    /// solde d'IS se règle depuis le relevé sur le 444 (`bank settle`), la TVA sur 4455.
+    Taxes,
     Other,
 }
 
@@ -33,7 +37,7 @@ pub struct UnknownExpenseCategory(pub String);
 
 impl ExpenseCategory {
     /// Toutes les catégories, dans l'ordre de présentation des façades.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Software,
         Self::Equipment,
         Self::Travel,
@@ -42,6 +46,7 @@ impl ExpenseCategory {
         Self::Professional,
         Self::Fees,
         Self::BankCharges,
+        Self::Taxes,
         Self::Other,
     ];
 
@@ -56,6 +61,7 @@ impl ExpenseCategory {
             Self::Professional => "professional",
             Self::Fees => "fees",
             Self::BankCharges => "bank_charges",
+            Self::Taxes => "taxes",
             Self::Other => "other",
         }
     }
@@ -73,6 +79,7 @@ impl std::str::FromStr for ExpenseCategory {
             "professional" => Ok(Self::Professional),
             "fees" => Ok(Self::Fees),
             "bank_charges" => Ok(Self::BankCharges),
+            "taxes" => Ok(Self::Taxes),
             "other" => Ok(Self::Other),
             other => Err(UnknownExpenseCategory(other.to_string())),
         }

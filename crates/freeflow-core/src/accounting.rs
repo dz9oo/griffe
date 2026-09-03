@@ -653,9 +653,9 @@ mod tests {
                 &RecordExpense {
                     label: "Matériel".to_string(),
                     category: ExpenseCategory::Equipment,
-                    amount: Money::from_cents(100_000),
+                    amount: Money::from_cents(96_000),
                     vat_rate: VatRate::Standard,
-                    vat_deductible: Money::from_cents(20_000),
+                    vat_deductible: Money::from_cents(16_000),
                     incurred_on: date(2026, TimeMonth::October, 5),
                     receipt_hash: None,
                     receipt_filename: None,
@@ -682,10 +682,10 @@ mod tests {
         assert_eq!(result.corporate_tax, Money::from_cents(80_625));
         assert_eq!(result.net_result, Money::from_cents(456_875));
 
-        // TVA de l'exercice : 20 % de 6 175 € collectés (1 235 €) − 200 € déductibles = 1 035 €.
+        // TVA de l'exercice : 20 % de 6 175 € collectés (1 235 €) − 160 € déductibles = 1 075 €.
         let vat = vat_due_for_period(store.connection(), period.start(), period.end()).unwrap();
         assert_eq!(vat.collected, Money::from_cents(123_500));
-        assert_eq!(vat.deductible, Money::from_cents(20_000));
-        assert_eq!(vat.due, Money::from_cents(103_500));
+        assert_eq!(vat.deductible, Money::from_cents(16_000));
+        assert_eq!(vat.due, Money::from_cents(107_500));
     }
 }

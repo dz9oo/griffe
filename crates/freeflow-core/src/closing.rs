@@ -395,7 +395,7 @@ pub fn closing_checklist(
     steps.push(previous_year_step(&facts, chain.as_ref()));
     steps.push(invoices_step(conn, &facts, today)?);
     steps.push(expenses_step(conn, &facts)?);
-    steps.push(bank_step(conn, &facts)?);
+    steps.push(bank_step(conn, &facts, opening.as_ref())?);
 
     // Résultat : figé si clos, prévisionnel sinon — et ce que la chaîne en fait (réserve
     // minimale, report en arrière possible).
@@ -746,7 +746,33 @@ fn expenses_step(conn: &Connection, facts: &Facts) -> Result<ClosingStep, AppErr
     }
 }
 
-fn bank_step(conn: &Connection, facts: &Facts) -> Result<ClosingStep, AppError> {
+/// Un compte de tiers repris au bilan d'ouverture (classe 4) : c'est lui qu'un mouvement du
+/// relevé vient régler — on propose le règlement pour tout compte de classe 4 du même montant.
+fn is_third_party_account(account: &crate::domain::AccountCode) -> bool {
+    account.class() == 4
+}
+
+/// Une **dette exigible** reprise au bilan d'ouverture — fournisseurs (40), personnel (42),
+/// organismes sociaux (43), IS (444), TVA à décaisser (4455) : normalement payée dans
+/// l'exercice, donc soldée au dernier jour. Un compte courant d'associé (455) ou un crédit de
+/// TVA (445670), eux, peuvent légitimement rester ouverts d'un exercice sur l'autre.
+fn is_short_term_debt(account: &crate::domain::AccountCode) -> bool {
+    ["40", "42", "43", "444", "4455"]
+        .iter()
+        .any(|prefix| account.starts_with(prefix))
+}
+
+/// Lot 37 : l'étape rapprochement sait désormais qu'un débit du relevé peut être le règlement
+/// d'une dette reprise au bilan d'ouverture (et un crédit celui d'une créance reprise) — elle le
+/// propose avant la dépense, qui compterait la charge deux fois — et signale les comptes de
+/// tiers repris encore ouverts au dernier jour, le signal qui manquait à l'expert-comptable.
+#[allow(clippy::too_many_lines)]
+fn bank_step(
+    conn: &Connection,
+    facts: &Facts,
+    opening: Option<&crate::domain::OpeningBalance>,
+) -> Result<ClosingStep, AppError> {
+    use std::fmt::Write as _;
     let exercise = facts.exercise;
     let transactions: Vec<_> = list_bank_transactions(conn)?
         .into_iter()
@@ -761,34 +787,123 @@ fn bank_step(conn: &Connection, facts: &Facts) -> Result<ClosingStep, AppError> 
              (bank import) pour rapprocher.",
         ));
     }
+    let reprises: Vec<&crate::domain::OpeningBalanceLine> = opening
+        .filter(|o| o.opens_on == exercise.start())
+        .map(|o| {
+            o.lines
+                .iter()
+                .filter(|l| is_third_party_account(&l.account))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Comptes de tiers repris encore ouverts au dernier jour (le grand livre exige un profil ;
+    // sans lui, l'étape « profil » bloque déjà).
+    let still_open: Vec<String> = build_ledger(conn, exercise)
+        .ok()
+        .map(|ledger| {
+            ledger
+                .trial_balance()
+                .rows
+                .into_iter()
+                .filter(|r| {
+                    !r.balance.is_zero()
+                        && reprises.iter().any(|l| {
+                            l.account.as_str() == r.account.number && is_short_term_debt(&l.account)
+                        })
+                })
+                .map(|r| {
+                    format!(
+                        "{} {} {} ({})",
+                        r.account.number,
+                        r.account.label,
+                        if r.balance.is_negative() {
+                            -r.balance
+                        } else {
+                            r.balance
+                        },
+                        if r.balance.is_negative() {
+                            "créditeur"
+                        } else {
+                            "débiteur"
+                        }
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
     let unmatched: Vec<_> = transactions.iter().filter(|t| !t.is_matched()).collect();
-    if unmatched.is_empty() {
-        return Ok(ClosingStep::new(
-            ClosingStepKey::Bank,
-            StepStatus::Done,
-            format!(
-                "{} sur l'exercice, tous rapprochés (encaissements et dépenses).",
-                plural(
-                    transactions.len(),
-                    "mouvement du relevé",
-                    "mouvements du relevé"
-                )
-            ),
-        ));
-    }
-    let debits = unmatched.iter().filter(|t| t.is_debit()).count();
-    let credits = unmatched.len() - debits;
-    Ok(ClosingStep::new(
-        ClosingStepKey::Bank,
-        StepStatus::Warning,
+    let settled = transactions.iter().filter(|t| t.is_settled()).count();
+    let mut detail = if unmatched.is_empty() {
         format!(
+            "{} sur l'exercice, tous rapprochés (encaissements, dépenses{}).",
+            plural(
+                transactions.len(),
+                "mouvement du relevé",
+                "mouvements du relevé"
+            ),
+            if settled > 0 {
+                format!(", {settled} règlement(s) de compte de bilan")
+            } else {
+                String::new()
+            }
+        )
+    } else {
+        let debits = unmatched.iter().filter(|t| t.is_debit()).count();
+        let credits = unmatched.len() - debits;
+        let mut text = format!(
             "{} non rapproché(s) sur {} ({debits} débit(s), {credits} crédit(s)) : un crédit non \
              rapproché est un encaissement non enregistré, un débit une dépense manquante ou non \
-             appariée — le compte 512 dérivé ne collera pas au relevé.",
+             appariée — ou le règlement d'un compte de bilan (dette reprise, compte courant, \
+             virement interne : bank settle), qui n'est pas une charge. Le compte 512 dérivé ne \
+             collera pas au relevé tant qu'ils restent.",
             unmatched.len(),
             transactions.len()
-        ),
-    ))
+        );
+        // Un mouvement du même montant qu'un compte de tiers repris : c'est presque toujours
+        // son règlement — le proposer avant la dépense, qui compterait la charge deux fois.
+        for tx in &unmatched {
+            let amount = Money::from_cents(tx.amount_cents.abs());
+            let side = if tx.is_debit() {
+                crate::domain::Side::Credit
+            } else {
+                crate::domain::Side::Debit
+            };
+            if let Some(reprise) = reprises
+                .iter()
+                .find(|l| l.side == side && l.amount == amount)
+            {
+                let _ = write!(
+                    text,
+                    " Le {} de {amount} du {} ({}) correspond au solde repris {} {} : réglez-le \
+                     sur ce compte (bank settle) plutôt que de le saisir en dépense.",
+                    if tx.is_debit() { "débit" } else { "crédit" },
+                    format_date(tx.occurred_on),
+                    tx.description,
+                    reprise.account,
+                    reprise.label
+                );
+            }
+        }
+        text
+    };
+    if !still_open.is_empty() {
+        let _ = write!(
+            detail,
+            " Dettes reprises au bilan d'ouverture encore ouvertes au {} : {} — une dette payée \
+             dans l'exercice doit être réglée depuis le relevé (bank settle), sinon elle reste au \
+             passif et la banque est surestimée.",
+            format_date(exercise.end()),
+            still_open.join(" ; ")
+        );
+    }
+    let status = if unmatched.is_empty() && still_open.is_empty() {
+        StepStatus::Done
+    } else {
+        StepStatus::Warning
+    };
+    Ok(ClosingStep::new(ClosingStepKey::Bank, status, detail))
 }
 
 fn result_step(
@@ -1465,7 +1580,7 @@ mod tests {
     }
 
     /// Une facture de 6 175 € HT (7 410 € TTC) le 30 septembre `year`, et une dépense de
-    /// 1 000 € TTC (TVA déductible 200 €) le 5 octobre, sans justificatif : résultat avant IS
+    /// 960 € TTC (TVA déductible 160 €, lot 37 : la TVA contenue à 20 %) le 5 octobre, sans justificatif : résultat avant IS
     /// 5 375 €, IS 806,25 €, net 4 568,75 € (chiffres du test d'intégration d'`accounting.rs`).
     fn seed_activity(store: &mut Store, year: i32) -> crate::domain::InvoiceId {
         let client_id = client(store);
@@ -1495,9 +1610,9 @@ mod tests {
                 &RecordExpense {
                     label: "Matériel".to_string(),
                     category: ExpenseCategory::Equipment,
-                    amount: Money::from_cents(100_000),
+                    amount: Money::from_cents(96_000),
                     vat_rate: VatRate::Standard,
-                    vat_deductible: Money::from_cents(20_000),
+                    vat_deductible: Money::from_cents(16_000),
                     incurred_on: date(year, TimeMonth::October, 5),
                     receipt_hash: None,
                     receipt_filename: None,
@@ -2020,5 +2135,82 @@ mod tests {
             Some(Money::ZERO),
             "pas de dotation sur une perte"
         );
+    }
+
+    /// Lot 37 : un débit du relevé du même montant qu'une dette reprise au bilan d'ouverture
+    /// est proposé comme règlement (pas comme dépense), et un compte de tiers repris encore
+    /// ouvert au dernier jour est signalé — jusqu'à ce que le règlement soit enregistré.
+    #[test]
+    fn a_debit_matching_a_reprised_debt_is_proposed_as_a_settlement_until_settled() {
+        use crate::billing::SettleBankTransaction;
+        let mut store = test_store("settlement-proposal");
+        set_profile(&mut store, Some(100_000));
+        Executor::new(&mut store)
+            .execute(
+                &RecordOpeningBalance {
+                    opens_on: date(2026, TimeMonth::January, 1),
+                    source: None,
+                    lines: vec![
+                        "101000:Capital social:C:1000.00".parse().unwrap(),
+                        "401000:Fournisseurs (cabinet, facture 12/2025):C:600.00"
+                            .parse()
+                            .unwrap(),
+                        "512000:Banque:D:1600.00".parse().unwrap(),
+                    ],
+                    tax_losses: Money::ZERO,
+                },
+                &human(),
+            )
+            .unwrap();
+        Executor::new(&mut store)
+            .execute(
+                &ImportBankTransactions {
+                    transactions: vec![ParsedTransaction {
+                        occurred_on: date(2026, TimeMonth::January, 12),
+                        amount_cents: -60_000,
+                        description: "VIR CABINET".to_string(),
+                    }],
+                },
+                &human(),
+            )
+            .unwrap();
+        let today = date(2027, TimeMonth::January, 5);
+        let before = closing_checklist(store.connection(), 2026, today).unwrap();
+        let bank = before.step(ClosingStepKey::Bank).unwrap();
+        assert_eq!(bank.status, StepStatus::Warning);
+        assert!(
+            bank.detail.contains(
+                "correspond au solde repris 401000 Fournisseurs (cabinet, facture 12/2025)"
+            ),
+            "{}",
+            bank.detail
+        );
+        assert!(
+            bank.detail
+                .contains("encore ouvertes au 2026-12-31 : 401000 Fournisseurs 600,00"),
+            "{}",
+            bank.detail
+        );
+
+        let tx = crate::billing::list_bank_transactions(store.connection()).unwrap()[0].id;
+        Executor::new(&mut store)
+            .execute(
+                &SettleBankTransaction {
+                    transaction_id: tx,
+                    account: "401000".parse().unwrap(),
+                    label: None,
+                },
+                &human(),
+            )
+            .unwrap();
+        let after = closing_checklist(store.connection(), 2026, today).unwrap();
+        let bank = after.step(ClosingStepKey::Bank).unwrap();
+        assert_eq!(bank.status, StepStatus::Done, "{}", bank.detail);
+        assert!(
+            bank.detail.contains("1 règlement(s) de compte de bilan"),
+            "{}",
+            bank.detail
+        );
+        assert!(!bank.detail.contains("encore ouvertes"), "{}", bank.detail);
     }
 }

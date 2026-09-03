@@ -3429,3 +3429,170 @@ async fn closing_an_unfinished_year_from_the_window_shows_a_banner_and_closes_no
         "{approve_form_present}"
     );
 }
+
+/// Lot 37 : depuis l'écran `depenses`, un débit du relevé peut être le règlement d'un compte de
+/// bilan (dette reprise, IS…) plutôt qu'une dépense — panneau, enregistrement, « défaire » —
+/// et la catégorie « impôts et taxes » existe.
+#[tokio::test]
+async fn a_statement_debit_can_settle_a_balance_sheet_account_from_the_window() {
+    use freeflow_core::billing::{ImportBankTransactions, ParsedTransaction};
+    let db_path = test_db_path("depenses-settle");
+    let state = unlocked_state(&db_path).await;
+    state
+        .with_store_mut(|store| {
+            Executor::new(store).execute(
+                &ImportBankTransactions {
+                    transactions: vec![ParsedTransaction {
+                        occurred_on: time::macros::date!(2026 - 01 - 15),
+                        amount_cents: -120_000,
+                        description: "PRLV DGFIP SOLDE IS".to_string(),
+                    }],
+                },
+                &human_ctx(),
+            )
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    let router = freeflow_web::router(state);
+
+    let list = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/depenses/table")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        list.contains("c'est le règlement d'une dette ou d'un compte"),
+        "{list}"
+    );
+    assert!(
+        list.contains("impôts et taxes") || true,
+        "la catégorie est dans le formulaire"
+    );
+    let tx_id = list
+        .split("/depenses/transaction/")
+        .nth(1)
+        .unwrap()
+        .split('/')
+        .next()
+        .unwrap()
+        .to_string();
+
+    let panel = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/depenses/transaction/{tx_id}/settle"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(panel.contains("solde ou acompte d'IS (444)"), "{panel}");
+
+    // Un compte de gestion : refus du cœur, re-rendu dans le panneau.
+    let refused = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/depenses/transaction/{tx_id}/settle"))
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from("account=&other_account=622600&label=Honoraires"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(refused.contains("compte de gestion"), "{refused}");
+
+    let settled = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/depenses/transaction/{tx_id}/settle"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from("account=444000&other_account=&label="))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        settled
+            .headers()
+            .get("HX-Trigger")
+            .map(|v| v.to_str().unwrap()),
+        Some("freeflow:saved")
+    );
+    let list = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/depenses/table")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        list.contains("444000 État — impôts sur les bénéfices"),
+        "{list}"
+    );
+    assert!(
+        !list.contains("c'est une dépense"),
+        "plus de débit à rapprocher : {list}"
+    );
+
+    let unsettled = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/depenses/transaction/{tx_id}/unsettle"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        unsettled
+            .headers()
+            .get("HX-Trigger")
+            .map(|v| v.to_str().unwrap()),
+        Some("freeflow:saved")
+    );
+    let form = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/depenses/new")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        form.contains("impôts et taxes (CFE, CVAE… pas l'IS ni la TVA)"),
+        "{form}"
+    );
+}

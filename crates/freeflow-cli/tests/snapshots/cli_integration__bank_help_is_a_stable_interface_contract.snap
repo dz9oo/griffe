@@ -11,6 +11,8 @@ Commands:
   list         Liste les transactions importées, les plus récentes d'abord (`--unmatched` pour ne voir que celles restant à rapprocher)
   reconcile    Rapproche un crédit importé avec une facture (crée l'encaissement correspondant) — pour un débit et une dépense, voir `expense reconcile` / `expense record --transaction`
   unreconcile  Défait un rapprochement : libère la transaction et annule l'encaissement qui en était issu (pour un rapprochement historique sans lignée, seule la transaction est libérée — annulez le paiement via `payment void`). Pour un débit rapproché d'une dépense, la dépense reste, seule la transaction est libérée
+  settle       Règle un compte de bilan depuis un mouvement du relevé (lot 37) — ni charge ni produit : une dette reprise au bilan d'ouverture (401 honoraires, 444 solde d'IS, 4455 TVA), un compte courant d'associé (455), des dividendes (457), un virement entre vos comptes (580), un emprunt (164). Le libellé vient du plan de comptes ; `--label` pour un compte hors plan. Nécessite confirmation humaine quand `--actor agent:...`
+  unsettle     Défait un règlement de compte de bilan : la transaction redevient « à rapprocher »
   help         Print this message or the help of the given subcommand(s)
 
 Options:

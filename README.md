@@ -143,6 +143,22 @@ implémentation.
   télédéclaration dérivée du profil (`vat_filing`).
 - Prévisionnel de trésorerie sur 12 mois (factures émises non payées + missions signées non
   facturées + pipeline pondéré − charges connues).
+- **Règlement d'un compte de bilan depuis le relevé** (lot 37) : un mouvement du relevé n'est pas
+  toujours une dépense ni un encaissement — le paiement des honoraires de septembre repris au bilan
+  d'ouverture (401), le solde d'IS de l'an dernier (444), la TVA à décaisser (4455), un apport ou
+  un remboursement de compte courant (455), des dividendes (457), un virement entre vos comptes
+  (580), un emprunt (164). Saisir ces lignes en dépense compterait la charge deux fois et
+  laisserait la dette au passif ; les ignorer surestimerait la banque. `freeflow bank settle <id>
+  --account 401000` (`--label` pour un compte hors du plan de FreeFlow), `bank unsettle`, outils
+  MCP `bank.settle`/`bank.unsettle` (proposés par l'agent, confirmés par un humain), et dans
+  l'écran `depenses` chaque débit offre « c'est une dépense » ou « c'est le règlement d'une dette
+  ou d'un compte » (liste en français des comptes usuels). Le grand livre passe une écriture `BQ`
+  `compte / 512` (ou `512 / compte` pour un crédit) sans charge ; le parcours de clôture
+  reconnaît un mouvement du montant exact d'une dette reprise et propose le règlement avant la
+  dépense, et signale les dettes reprises (40, 42, 43, 444, 4455) encore ouvertes au dernier
+  jour. Catégorie de dépense **impôts et taxes** (`taxes`, compte 635, case 244 du 2033-B) pour la
+  CFE et consorts — pas l'IS ni la TVA, qui se règlent. La TVA déductible est bornée par le taux
+  (`TTC − TTC / (1 + taux)`, arrondi au centime supérieur), plus seulement par le TTC.
 - **Grand livre dérivé, balance et bilan** : FreeFlow ne tient pas de comptabilité, il *dérive*
   les écritures de ses faits — bilan d'ouverture (journal `AN`), factures et avoirs (`VE`),
   encaissements et annulations (`BQ`), dépenses (`AC` ; une dépense rapprochée d'un débit du
@@ -462,7 +478,21 @@ Le reste du vocabulaire est expliqué au fil de l'app : `freeflow year glossary`
    Une dépense saisie avant l'import se rapproche après coup (`freeflow expense reconcile
    <libellé> --transaction <id>`), à condition que le montant soit exactement celui du relevé.
    Dans la fenêtre : écran `depenses`, bloc « débits du relevé à rapprocher », bouton
-   « + dépense » (le formulaire arrive pré-rempli).
+   « c'est une dépense » (le formulaire arrive pré-rempli).
+
+   **Attention aux lignes qui ne sont pas des dépenses.** Le virement de 600 € au cabinet en
+   octobre paie la facture de *septembre*, déjà dans le bilan d'ouverture (compte 401) ; le
+   prélèvement de 1 200 € de janvier est le solde d'IS de l'exercice précédent (compte 444). Les
+   saisir en dépense les compterait deux fois. Le parcours te le dit (« correspond au solde
+   repris 401000 ») ; la bonne réponse est un **règlement**, qui solde le compte sans charge :
+
+   ```bash
+   freeflow bank settle <id> --account 401000     # honoraires repris au bilan
+   freeflow bank settle <id> --account 444000     # solde d'IS repris au bilan
+   ```
+
+   Dans la fenêtre, le même débit offre « c'est le règlement d'une dette ou d'un compte ». La CFE,
+   elle, est bien une charge : `--category taxes`.
 
 4. **Le 1er octobre, demande le parcours.** C'est la seule commande à retenir : elle te dit où
    tu en es, ce qui bloque, ce qui mérite un coup d'œil, et **la commande exacte à taper ensuite**.

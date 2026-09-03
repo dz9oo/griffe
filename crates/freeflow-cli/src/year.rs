@@ -402,10 +402,20 @@ pub(crate) fn pre_approve_backup(store: &Store, period: i32) -> Result<PathBuf, 
             "[year][month][day]T[hour][minute][second]Z"
         ))
         .map_err(|e| CliError::Unexpected(e.to_string()))?;
-    let dest = store
-        .db_path()
-        .with_file_name("backups")
-        .join(format!("pre-approve-{period}-{stamp}.db"));
+    // Un nom neuf : `backup_to` refuse d'écraser, et deux approbations dans la même seconde
+    // (une refusée par le cœur puis une acceptée, par exemple) partagent l'horodatage.
+    let backups = store.db_path().with_file_name("backups");
+    let dest = (0u32..)
+        .map(|n| {
+            let suffix = if n == 0 {
+                String::new()
+            } else {
+                format!("-{n}")
+            };
+            backups.join(format!("pre-approve-{period}-{stamp}{suffix}.db"))
+        })
+        .find(|p| !p.exists() && !p.with_extension("db.kdf").exists())
+        .expect("un suffixe libre finit toujours par exister");
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
             CliError::Unexpected(format!(
@@ -717,8 +727,8 @@ fn render(
                         .into(),
                 ));
             }
-            let sheet = build_ledger(store.connection(), record.period())?.balance_sheet();
-            let export = freeflow_docs::liasse_export(&profile, &record, Some(&sheet));
+            let ledger = build_ledger(store.connection(), record.period())?;
+            let export = freeflow_docs::liasse_export(&profile, &record, Some(&ledger));
             let mut bytes = serde_json::to_vec_pretty(&export)
                 .map_err(|e| CliError::Unexpected(e.to_string()))?;
             bytes.push(b'\n');

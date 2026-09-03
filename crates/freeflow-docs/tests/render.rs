@@ -162,7 +162,7 @@ fn the_balance_sheet_renders_to_pdf_and_feeds_the_2033a_cases_of_the_liasse() {
     let pdf = render_balance_sheet(&profile, &sheet, &ledger.trial_balance()).unwrap();
     assert_is_pdf(&pdf, "bilan");
 
-    let export = liasse_export(&profile, &record(false), Some(&sheet));
+    let export = liasse_export(&profile, &record(false), Some(&ledger));
     let case = |c: &str| {
         export
             .entries

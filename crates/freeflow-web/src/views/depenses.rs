@@ -18,7 +18,7 @@
 //! depuis la fiche aussi (la dépense reste, le débit redevient « à rapprocher »).
 
 use freeflow_core::app::AppError;
-use freeflow_core::billing::unmatched_debits;
+use freeflow_core::billing::{list_bank_transactions, unmatched_debits};
 use freeflow_core::domain::{
     BankTransaction, Expense, ExpenseCategory, ExpenseId, Money, VatRate, format_date,
 };
@@ -29,7 +29,7 @@ use maud::{Markup, html};
 use crate::layout::{ViewId, view_head};
 use crate::views::{form, panel};
 
-pub const CATEGORY_OPTIONS: [(&str, &str); 9] = [
+pub const CATEGORY_OPTIONS: [(&str, &str); 10] = [
     ("software", "logiciels & abonnements"),
     ("equipment", "matériel"),
     ("travel", "déplacements"),
@@ -38,7 +38,28 @@ pub const CATEGORY_OPTIONS: [(&str, &str); 9] = [
     ("professional", "professionnel (formation, assurance…)"),
     ("fees", "honoraires (expert-comptable, avocat…)"),
     ("bank_charges", "frais bancaires"),
+    ("taxes", "impôts et taxes (CFE, CVAE… pas l'IS ni la TVA)"),
     ("other", "autre"),
+];
+
+/// Les comptes de bilan usuels qu'un mouvement du relevé règle (lot 37), en français : le
+/// numéro est la valeur, le libellé dit à quoi il sert. « autre compte » ouvre la saisie libre.
+pub const SETTLEMENT_OPTIONS: [(&str, &str); 9] = [
+    (
+        "401000",
+        "honoraires ou facture reprise au bilan (401 fournisseurs)",
+    ),
+    ("444000", "solde ou acompte d'IS (444)"),
+    ("445510", "TVA à décaisser reprise au bilan (4455)"),
+    ("445670", "crédit de TVA remboursé (445670)"),
+    (
+        "455000",
+        "compte courant d'associé — apport ou remboursement (455)",
+    ),
+    ("457000", "dividendes payés (457)"),
+    ("580000", "virement entre mes comptes (580)"),
+    ("164000", "emprunt — remboursement ou déblocage (164)"),
+    ("", "autre compte de bilan…"),
 ];
 
 pub const VAT_RATE_OPTIONS: [(&str, &str); 5] = [
@@ -282,6 +303,43 @@ pub fn reconcile_panel(
     panel::sheet(&format!("Rapprocher « {} »", expense.label), body)
 }
 
+/// Le panneau de règlement d'un mouvement du relevé (lot 37) : le compte de bilan réglé, choisi
+/// dans une liste en français, ou saisi pour un compte hors liste (avec son libellé).
+pub fn settle_panel(
+    tx: &BankTransaction,
+    values: &SettleFormValues,
+    error: Option<&str>,
+) -> Markup {
+    let body = html! {
+        @if let Some(msg) = error {
+            (form::error_banner(msg))
+        }
+        div class="detail-note" {
+            "Mouvement du " (format_date(tx.occurred_on)) " : " (tx.description) ", "
+            (Money::from_cents(tx.amount_cents)) ". "
+            "Un règlement solde un compte du bilan sans passer par une charge : c'est le bon \
+             geste pour une dette reprise du cabinet (honoraires, IS, TVA), un mouvement de \
+             compte courant, un virement entre vos comptes. Une charge de l'exercice, elle, se \
+             saisit en dépense."
+        }
+        form hx-post=(format!("/depenses/transaction/{}/settle", tx.id)) hx-target="#panel" hx-swap="innerHTML" {
+            (form::select("account", "Compte réglé", &SETTLEMENT_OPTIONS, &values.account, None))
+            (form::text("other_account", "Autre compte (numéro, classes 1 à 5)", &values.other_account, None))
+            (form::text("label", "Libellé du compte (requis hors liste)", &values.label, None))
+            (form::actions("Enregistrer le règlement"))
+        }
+    };
+    panel::sheet("Régler un compte depuis le relevé", body)
+}
+
+/// Valeurs du formulaire de règlement.
+#[derive(Default, Clone)]
+pub struct SettleFormValues {
+    pub account: String,
+    pub other_account: String,
+    pub label: String,
+}
+
 pub fn delete_confirm_panel(expense: &Expense) -> Markup {
     let body = html! {
         div class="detail-note" {
@@ -306,6 +364,14 @@ pub fn list_fragment(store: &Store) -> Result<Markup, AppError> {
     let expenses = list_expenses(store.connection())?;
     let reconciled = reconciled_debits(store.connection())?;
     let debits = unmatched_debits(store.connection())?;
+    // Les crédits non rapprochés se règlent aussi (remboursement de crédit de TVA, apport en
+    // compte courant) ; un encaissement de facture, lui, reste `bank reconcile` (CLI/MCP).
+    let all = list_bank_transactions(store.connection())?;
+    let credits: Vec<&BankTransaction> = all
+        .iter()
+        .filter(|t| !t.is_debit() && !t.is_matched())
+        .collect();
+    let settled: Vec<&BankTransaction> = all.iter().filter(|t| t.is_settled()).collect();
     Ok(html! {
         div id="depenses-list"
             hx-get="/depenses/table"
@@ -330,7 +396,55 @@ pub fn list_fragment(store: &Store) -> Result<Markup, AppError> {
                                 td { (tx.description) }
                                 td class="mono" { (Money::from_cents(-tx.amount_cents)) }
                                 td style="padding-right:18px" {
-                                    button class="btn" hx-get=(format!("/depenses/new?transaction={}", tx.id)) hx-target="#panel" hx-swap="innerHTML" { "+ dépense" }
+                                    button class="btn" hx-get=(format!("/depenses/new?transaction={}", tx.id)) hx-target="#panel" hx-swap="innerHTML" title="Une charge : logiciel, honoraires, frais…" { "c'est une dépense" }
+                                    " "
+                                    button class="btn" hx-get=(format!("/depenses/transaction/{}/settle", tx.id)) hx-target="#panel" hx-swap="innerHTML" title="Ni charge ni produit : dette reprise au bilan, IS, TVA, compte courant, virement interne" { "c'est le règlement d'une dette ou d'un compte" }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            @if !credits.is_empty() {
+                div class="panel bordered" style="padding:0;margin-bottom:12px" {
+                    table {
+                        tr {
+                            th style="padding-left:18px" { "crédit du relevé à rapprocher" }
+                            th { "libellé" }
+                            th { "montant" }
+                            th style="padding-right:18px" { }
+                        }
+                        @for tx in &credits {
+                            tr {
+                                td style="padding-left:18px" class="mono" { (format_date(tx.occurred_on)) }
+                                td { (tx.description) }
+                                td class="mono" { (Money::from_cents(tx.amount_cents)) }
+                                td style="padding-right:18px" {
+                                    button class="btn" hx-get=(format!("/depenses/transaction/{}/settle", tx.id)) hx-target="#panel" hx-swap="innerHTML" title="Remboursement d'un crédit de TVA, apport en compte courant, virement interne… (un règlement de facture se rapproche depuis l'écran facturation)" { "c'est le règlement d'un compte" }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            @if !settled.is_empty() {
+                div class="panel bordered" style="padding:0;margin-bottom:12px" {
+                    table {
+                        tr {
+                            th style="padding-left:18px" { "règlement de compte de bilan" }
+                            th { "libellé" }
+                            th { "montant" }
+                            th { "compte réglé" }
+                            th style="padding-right:18px" { }
+                        }
+                        @for tx in &settled {
+                            tr {
+                                td style="padding-left:18px" class="mono" { (format_date(tx.occurred_on)) }
+                                td { (tx.description) }
+                                td class="mono" { (Money::from_cents(tx.amount_cents)) }
+                                td { (tx.settlement_account.as_ref().map_or(String::new(), ToString::to_string)) " " (tx.settlement_label.as_deref().unwrap_or_default()) }
+                                td style="padding-right:18px" {
+                                    button class="btn" hx-post=(format!("/depenses/transaction/{}/unsettle", tx.id)) hx-target="#panel" hx-swap="innerHTML" { "défaire" }
                                 }
                             }
                         }

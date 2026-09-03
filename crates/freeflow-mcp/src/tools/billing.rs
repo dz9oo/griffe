@@ -110,6 +110,20 @@ pub(crate) struct BankUnreconcileArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct BankSettleArgs {
+    transaction_id: String,
+    /// Compte de bilan réglé (classes 1 à 5, hors 512), ex. `401000` (fournisseurs / honoraires
+    /// repris au bilan), `444000` (solde d'IS repris), `445510` (TVA à décaisser), `445670`
+    /// (crédit de TVA remboursé), `455000` (compte courant d'associé), `457000` (dividendes
+    /// payés), `580000` (virement entre les comptes de la société), `164000` (emprunt).
+    account: String,
+    /// Libellé du compte, requis seulement s'il n'est pas dans le plan de comptes de FreeFlow.
+    label: Option<String>,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct BankListArgs {
     /// Ne renvoie que les transactions restant à rapprocher si vrai (défaut : faux).
     #[serde(default)]
@@ -415,6 +429,61 @@ impl FreeflowServer {
                 }
                 ok_json(transactions)
             }
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
+    /// Règle un compte de bilan depuis un mouvement du relevé (lot 37) — ni charge ni produit,
+    /// là où `expense.record` compterait une charge : dette reprise au bilan d'ouverture (401
+    /// honoraires, 444 solde d'IS, 4455 TVA), compte courant d'associé (455), dividendes (457),
+    /// virement entre les comptes de la société (580), emprunt (164). Le libellé vient du plan
+    /// de comptes ; `label` pour un compte hors plan. Action sensible : un agent la propose,
+    /// seul un humain (`freeflow confirm`) l'applique.
+    #[tool(
+        name = "bank.settle",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false
+        )
+    )]
+    async fn bank_settle(&self, Parameters(args): Parameters<BankSettleArgs>) -> CallToolResult {
+        let transaction_id: BankTransactionId =
+            ok_or_return!("transaction_id", args.transaction_id.parse());
+        let account: freeflow_core::domain::SettlementAccount =
+            ok_or_return!("account", args.account.parse());
+        let cmd = billing::SettleBankTransaction {
+            transaction_id,
+            account,
+            label: args.label,
+        };
+        let mut store = self.store.lock().await;
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
+            Ok(outcome) => ok_json(outcome_json(&outcome)),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
+    /// Défait un règlement de compte de bilan (`bank.settle`) : la transaction redevient « à
+    /// rapprocher ». Même exigence de confirmation.
+    #[tool(
+        name = "bank.unsettle",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false
+        )
+    )]
+    async fn bank_unsettle(
+        &self,
+        Parameters(args): Parameters<BankUnreconcileArgs>,
+    ) -> CallToolResult {
+        let transaction_id: BankTransactionId =
+            ok_or_return!("transaction_id", args.transaction_id.parse());
+        let cmd = billing::UnsettleBankTransaction { transaction_id };
+        let mut store = self.store.lock().await;
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
+            Ok(outcome) => ok_json(outcome_json(&outcome)),
             Err(e) => err_text(e.to_string()),
         }
     }

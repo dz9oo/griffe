@@ -1869,3 +1869,80 @@ async fn an_agent_setting_the_opening_balance_only_deposits_a_pending_action() {
     let deleted = call(&client, "fiscal.delete_opening_balance", json!({})).await;
     assert_eq!(deleted.is_error, Some(true), "rien à supprimer");
 }
+
+/// Lot 37 : `bank.settle` règle un compte de bilan depuis un mouvement du relevé — proposé par
+/// l'agent, confirmé par un humain — et `bank.unsettle` le défait ; `bank.list` montre le
+/// compte réglé.
+#[tokio::test]
+async fn settling_a_balance_sheet_account_over_mcp_needs_a_human() {
+    use freeflow_core::app::{Actor, ExecutionContext};
+    use freeflow_core::billing::{
+        ImportBankTransactions, ParsedTransaction, SettleBankTransaction,
+    };
+
+    let db_path = test_db_path("bank-settle");
+    let mut store = Store::create(&db_path, &Passphrase::from("s3cret")).unwrap();
+    let human = ExecutionContext::new(Actor::Human, false);
+    Executor::new(&mut store)
+        .execute(
+            &ImportBankTransactions {
+                transactions: vec![ParsedTransaction {
+                    occurred_on: time::Date::from_calendar_date(2026, time::Month::January, 15)
+                        .unwrap(),
+                    amount_cents: -120_000,
+                    description: "PRLV DGFIP SOLDE IS".to_string(),
+                }],
+            },
+            &human,
+        )
+        .unwrap();
+    let client = spawn_client(store).await;
+
+    let listed = json_of(&call(&client, "bank.list", json!({"unmatched": true})).await);
+    let tx = listed[0]["id"].as_str().unwrap().to_string();
+
+    // Un compte de gestion est refusé avant même de déposer une action.
+    let refused = call(
+        &client,
+        "bank.settle",
+        json!({"transaction_id": tx, "account": "622600"}),
+    )
+    .await;
+    assert_eq!(refused.is_error, Some(true));
+
+    let proposed = call(
+        &client,
+        "bank.settle",
+        json!({"transaction_id": tx, "account": "444000"}),
+    )
+    .await;
+    assert_eq!(proposed.is_error, Some(false));
+    let body = json_of(&proposed);
+    assert_eq!(body["status"], "pending_confirmation");
+    let pending_id: freeflow_core::app::PendingActionId =
+        body["pending_action_id"].as_str().unwrap().parse().unwrap();
+
+    let mut confirming_store =
+        Store::open_with_passphrase(&db_path, &Passphrase::from("s3cret")).unwrap();
+    let confirmed = Executor::new(&mut confirming_store)
+        .confirm::<SettleBankTransaction>(pending_id)
+        .unwrap();
+    assert!(matches!(confirmed, Outcome::Applied(())));
+    drop(confirming_store);
+
+    let listed = json_of(&call(&client, "bank.list", json!({})).await);
+    assert_eq!(listed[0]["settlement_account"], "444000");
+    assert_eq!(
+        listed[0]["settlement_label"],
+        "État — impôts sur les bénéfices"
+    );
+    assert!(
+        json_of(&call(&client, "bank.list", json!({"unmatched": true})).await)
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    let unsettled = call(&client, "bank.unsettle", json!({"transaction_id": tx})).await;
+    assert_eq!(json_of(&unsettled)["status"], "pending_confirmation");
+}

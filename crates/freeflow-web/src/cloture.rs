@@ -444,10 +444,19 @@ fn pre_approve_backup(
             "[year][month][day]T[hour][minute][second]Z"
         ))
         .map_err(|e| e.to_string())?;
-    let dest = store
-        .db_path()
-        .with_file_name("backups")
-        .join(format!("pre-approve-{period}-{stamp}.db"));
+    let backups = store.db_path().with_file_name("backups");
+    // Un nom neuf (même règle que la CLI) : `backup_to` refuse d'écraser.
+    let dest = (0u32..)
+        .map(|n| {
+            let suffix = if n == 0 {
+                String::new()
+            } else {
+                format!("-{n}")
+            };
+            backups.join(format!("pre-approve-{period}-{stamp}{suffix}.db"))
+        })
+        .find(|p| !p.exists() && !p.with_extension("db.kdf").exists())
+        .expect("un suffixe libre finit toujours par exister");
     let failed = |e: &dyn std::fmt::Display| {
         format!(
             "sauvegarde préalable impossible ({}) : {e} — approbation abandonnée",
@@ -633,10 +642,10 @@ pub async fn document(
             let years = fiscal_year::list_fiscal_years(store.connection())?;
             // Le bilan 2033-A de la liasse est dérivé du grand livre (lot 31).
             let sheet = match (&record, &profile) {
-                (Some(r), Some(_)) => Some(
-                    freeflow_core::ledger::build_ledger(store.connection(), r.period())?
-                        .balance_sheet(),
-                ),
+                (Some(r), Some(_)) => Some(freeflow_core::ledger::build_ledger(
+                    store.connection(),
+                    r.period(),
+                )?),
                 _ => None,
             };
             Ok((record, profile, years, sheet))

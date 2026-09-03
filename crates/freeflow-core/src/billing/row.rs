@@ -272,6 +272,7 @@ fn row_to_bank_transaction(row: &Row) -> rusqlite::Result<BankTransaction> {
     let occurred_on: String = row.get("occurred_on")?;
     let matched_invoice_id: Option<String> = row.get("matched_invoice_id")?;
     let matched_expense_id: Option<String> = row.get("matched_expense_id")?;
+    let settlement_account: Option<String> = row.get("settlement_account")?;
     Ok(BankTransaction {
         id: id.parse().map_err(conv_err)?,
         occurred_on: domain::parse_date(&occurred_on).map_err(conv_err)?,
@@ -285,7 +286,28 @@ fn row_to_bank_transaction(row: &Row) -> rusqlite::Result<BankTransaction> {
             .map(|s| s.parse())
             .transpose()
             .map_err(conv_err)?,
+        settlement_account: settlement_account
+            .map(|s| s.parse())
+            .transpose()
+            .map_err(conv_err)?,
+        settlement_label: row.get("settlement_label")?,
     })
+}
+
+/// Marque la transaction réglée sur un compte de bilan (lot 37) — les gardes (non rapprochée,
+/// compte valide) sont celles de `SettleBankTransaction`.
+pub(super) fn mark_transaction_settled(
+    conn: &Connection,
+    id: BankTransactionId,
+    account: &crate::domain::SettlementAccount,
+    label: &str,
+) -> Result<(), AppError> {
+    conn.execute(
+        "UPDATE bank_transactions SET settlement_account = ?1, settlement_label = ?2
+          WHERE id = ?3",
+        params![account.as_str(), label, id.to_string()],
+    )?;
+    Ok(())
 }
 
 pub(super) fn mark_transaction_matched(
@@ -300,13 +322,15 @@ pub(super) fn mark_transaction_matched(
     Ok(())
 }
 
-/// Libère la transaction, quel que soit le côté rapproché (facture ou dépense, lot 33).
+/// Libère la transaction, quel que soit le côté rapproché (facture ou dépense, lot 33 ;
+/// règlement, lot 37).
 pub(crate) fn clear_transaction_match(
     conn: &Connection,
     id: BankTransactionId,
 ) -> Result<(), AppError> {
     conn.execute(
-        "UPDATE bank_transactions SET matched_invoice_id = NULL, matched_expense_id = NULL
+        "UPDATE bank_transactions SET matched_invoice_id = NULL, matched_expense_id = NULL,
+                settlement_account = NULL, settlement_label = NULL
           WHERE id = ?1",
         [id.to_string()],
     )?;

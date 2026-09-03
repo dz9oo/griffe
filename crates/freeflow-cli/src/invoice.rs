@@ -128,6 +128,27 @@ pub enum BankCommand {
         #[arg(long, value_parser = clap::value_parser!(BankTransactionId))]
         transaction: BankTransactionId,
     },
+    /// Règle un compte de bilan depuis un mouvement du relevé (lot 37) — ni charge ni
+    /// produit : une dette reprise au bilan d'ouverture (401 honoraires, 444 solde d'IS, 4455
+    /// TVA), un compte courant d'associé (455), des dividendes (457), un virement entre vos
+    /// comptes (580), un emprunt (164). Le libellé vient du plan de comptes ; `--label` pour un
+    /// compte hors plan. Nécessite confirmation humaine quand `--actor agent:...`.
+    Settle {
+        /// Identifiant de la transaction (voir `bank list --unmatched`).
+        #[arg(value_parser = clap::value_parser!(BankTransactionId))]
+        transaction: BankTransactionId,
+        /// Compte de bilan réglé (classes 1 à 5, hors 512), ex. `401000`.
+        #[arg(long, value_parser = clap::value_parser!(freeflow_core::domain::SettlementAccount))]
+        account: freeflow_core::domain::SettlementAccount,
+        /// Libellé du compte, requis s'il n'est pas dans le plan de comptes de FreeFlow.
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// Défait un règlement de compte de bilan : la transaction redevient « à rapprocher ».
+    Unsettle {
+        #[arg(value_parser = clap::value_parser!(BankTransactionId))]
+        transaction: BankTransactionId,
+    },
 }
 
 pub fn run_invoice(
@@ -353,13 +374,18 @@ fn bank_table(transactions: &[freeflow_core::domain::BankTransaction]) -> String
                     "rapprochée (facture)".to_string()
                 } else if t.matched_expense_id.is_some() {
                     "rapprochée (dépense)".to_string()
+                } else if let Some(account) = &t.settlement_account {
+                    format!(
+                        "réglée ({account} {})",
+                        t.settlement_label.as_deref().unwrap_or_default()
+                    )
                 } else {
                     "à rapprocher".to_string()
                 },
             ]
         })
         .collect::<Vec<_>>();
-    crate::table::render(&["id", "date", "montant", "libellé", "statut"], &rows)
+    crate::table::render(&["id", "date", "montant", "libellé", "affectation"], &rows)
 }
 
 pub fn run_bank(
@@ -412,6 +438,30 @@ pub fn run_bank(
             format_outcome_as(&outcome, json, |payment| match payment {
                 Some(id) => format!("transaction libérée, encaissement {id} annulé"),
                 None => "transaction libérée".to_string(),
+            })
+        }
+        BankCommand::Settle {
+            transaction,
+            account,
+            label,
+        } => {
+            let command = billing::SettleBankTransaction {
+                transaction_id: transaction,
+                account: account.clone(),
+                label,
+            };
+            let outcome = Executor::new(store).execute(&command, ctx)?;
+            format_outcome_as(&outcome, json, |()| {
+                format!("transaction {transaction} réglée sur le compte {account}")
+            })
+        }
+        BankCommand::Unsettle { transaction } => {
+            let command = billing::UnsettleBankTransaction {
+                transaction_id: transaction,
+            };
+            let outcome = Executor::new(store).execute(&command, ctx)?;
+            format_outcome_as(&outcome, json, |()| {
+                format!("règlement défait : la transaction {transaction} est à rapprocher")
             })
         }
     };

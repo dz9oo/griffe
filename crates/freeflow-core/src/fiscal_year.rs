@@ -1015,9 +1015,9 @@ mod tests {
                 &RecordExpense {
                     label: "Matériel".to_string(),
                     category: ExpenseCategory::Equipment,
-                    amount: Money::from_cents(100_000),
+                    amount: Money::from_cents(96_000),
                     vat_rate: VatRate::Standard,
-                    vat_deductible: Money::from_cents(20_000),
+                    vat_deductible: Money::from_cents(16_000),
                     incurred_on: date(year, TimeMonth::October, 5),
                     receipt_hash: None,
                     receipt_filename: None,

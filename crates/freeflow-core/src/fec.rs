@@ -893,8 +893,14 @@ mod tests {
             labels[2].starts_with("Avoir FA-2025-0002 sur FA-2025-0001"),
             "{labels:?}"
         );
-        assert_eq!(labels[3], "Train");
-        assert_eq!(fec.entries[3].piece_ref, "billet.pdf");
+        // Lot 37 : la pièce est l'UUID de la dépense, le justificatif est nommé dans le libellé.
+        assert_eq!(labels[3], "Train — billet.pdf");
+        assert!(
+            fec.entries[3].piece_ref.starts_with("DEP-"),
+            "{}",
+            fec.entries[3].piece_ref
+        );
+        assert_eq!(fec.entries[3].piece_ref.len(), 4 + 36);
         assert_eq!(fec.entries[3].lines[0].account, accounts::TRAVEL);
         assert_eq!(fec.entries[3].lines[0].amount, Money::from_cents(10_000));
         assert!(fec.entries.iter().all(FecEntry::is_balanced));

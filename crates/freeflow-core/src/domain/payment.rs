@@ -85,13 +85,29 @@ pub struct BankTransaction {
     /// `matched_invoice_id` : un crédit règle une facture, un débit paie une dépense.
     #[serde(default)]
     pub matched_expense_id: Option<ExpenseId>,
+    /// Compte de bilan que ce mouvement règle (lot 37, migration `0017`) — la troisième lecture
+    /// d'une ligne de relevé, exclusive avec les deux autres : dette reprise au bilan
+    /// d'ouverture, compte courant, virement interne… `compte / 512` sans charge.
+    #[serde(default)]
+    pub settlement_account: Option<super::SettlementAccount>,
+    /// Libellé du règlement (celui du plan fixe par défaut, ou saisi pour un compte hors plan).
+    #[serde(default)]
+    pub settlement_label: Option<String>,
 }
 
 impl BankTransaction {
-    /// Rapprochée, d'une facture ou d'une dépense.
+    /// Rapprochée — d'une facture, d'une dépense, ou réglée sur un compte de bilan.
     #[must_use]
     pub const fn is_matched(&self) -> bool {
-        self.matched_invoice_id.is_some() || self.matched_expense_id.is_some()
+        self.matched_invoice_id.is_some()
+            || self.matched_expense_id.is_some()
+            || self.settlement_account.is_some()
+    }
+
+    /// Réglée sur un compte de bilan (lot 37).
+    #[must_use]
+    pub const fn is_settled(&self) -> bool {
+        self.settlement_account.is_some()
     }
 
     /// Une sortie d'argent — ce qui peut payer une dépense.

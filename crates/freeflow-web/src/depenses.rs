@@ -653,6 +653,120 @@ pub async fn reconcile(
     }
 }
 
+// -- Règlement d'un compte de bilan depuis le relevé (lot 37) ---------------------------------
+
+async fn current_transaction(
+    state: &AppState,
+    id: freeflow_core::domain::BankTransactionId,
+) -> Option<Result<Option<freeflow_core::domain::BankTransaction>, AppError>> {
+    state
+        .with_store(|store| billing::bank_transaction_by_id(store.connection(), id))
+        .await
+}
+
+/// `GET /depenses/transaction/{id}/settle` : le panneau de règlement d'un mouvement.
+pub async fn settle_panel(State(state): State<AppState>, Path(id): Path<String>) -> Html<String> {
+    let Some(id) = parse_id::<freeflow_core::domain::BankTransactionId>(&id) else {
+        return message_fragment("identifiant de transaction invalide");
+    };
+    match current_transaction(&state, id).await {
+        None => locked_fragment(),
+        Some(Err(e)) => message_fragment(&e.to_string()),
+        Some(Ok(None)) => message_fragment("transaction introuvable"),
+        Some(Ok(Some(tx))) => Html(
+            views::depenses::settle_panel(
+                &tx,
+                &views::depenses::SettleFormValues {
+                    account: "401000".to_string(),
+                    ..Default::default()
+                },
+                None,
+            )
+            .into_string(),
+        ),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SettleForm {
+    #[serde(default)]
+    account: String,
+    #[serde(default)]
+    other_account: String,
+    #[serde(default)]
+    label: String,
+}
+
+/// `POST /depenses/transaction/{id}/settle` : `billing::SettleBankTransaction` — les gardes
+/// (compte de bilan hors 512, transaction libre, libellé requis hors plan) sont celles du
+/// cœur, re-rendues dans le panneau en cas de refus.
+pub async fn settle(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    axum::Form(form): axum::Form<SettleForm>,
+) -> Response {
+    let Some(id) = parse_id::<freeflow_core::domain::BankTransactionId>(&id) else {
+        return message_fragment("identifiant de transaction invalide").into_response();
+    };
+    let tx = match current_transaction(&state, id).await {
+        None => return locked_fragment().into_response(),
+        Some(Err(e)) => return message_fragment(&e.to_string()).into_response(),
+        Some(Ok(None)) => return message_fragment("transaction introuvable").into_response(),
+        Some(Ok(Some(tx))) => tx,
+    };
+    let values = views::depenses::SettleFormValues {
+        account: form.account.clone(),
+        other_account: form.other_account.clone(),
+        label: form.label.clone(),
+    };
+    let chosen = if form.account.trim().is_empty() {
+        form.other_account.trim()
+    } else {
+        form.account.trim()
+    };
+    let account = match chosen.parse::<freeflow_core::domain::SettlementAccount>() {
+        Ok(a) => a,
+        Err(e) => {
+            return Html(
+                views::depenses::settle_panel(&tx, &values, Some(&e.to_string())).into_string(),
+            )
+            .into_response();
+        }
+    };
+    let label = Some(form.label.trim().to_string()).filter(|l| !l.is_empty());
+    let cmd = billing::SettleBankTransaction {
+        transaction_id: id,
+        account,
+        label,
+    };
+    match execute(&state, cmd).await {
+        None => locked_fragment().into_response(),
+        Some(Ok(_)) => saved(),
+        Some(Err(e)) => {
+            Html(views::depenses::settle_panel(&tx, &values, Some(&e.to_string())).into_string())
+                .into_response()
+        }
+    }
+}
+
+/// `POST /depenses/transaction/{id}/unsettle` : défait un règlement, la transaction redevient
+/// « à rapprocher ».
+pub async fn unsettle(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let Some(id) = parse_id::<freeflow_core::domain::BankTransactionId>(&id) else {
+        return message_fragment("identifiant de transaction invalide").into_response();
+    };
+    match execute(
+        &state,
+        billing::UnsettleBankTransaction { transaction_id: id },
+    )
+    .await
+    {
+        None => locked_fragment().into_response(),
+        Some(Ok(_)) => saved(),
+        Some(Err(e)) => message_fragment(&e.to_string()).into_response(),
+    }
+}
+
 /// Défait le rapprochement de la dépense — `billing::UnreconcileTransaction` sur son débit :
 /// la dépense reste, le débit redevient « à rapprocher ».
 pub async fn unreconcile(State(state): State<AppState>, Path(id): Path<String>) -> Response {

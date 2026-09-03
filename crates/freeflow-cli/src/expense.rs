@@ -66,7 +66,8 @@ pub struct RecordArgs {
     #[arg(long)]
     label: String,
     /// `software`, `equipment`, `travel`, `meals`, `office`, `professional`, `fees`
-    /// (honoraires), `bank_charges` (frais bancaires) ou `other`.
+    /// (honoraires), `bank_charges` (frais bancaires), `taxes` (impôts et taxes : CFE, CVAE…
+    /// — pas l'IS ni la TVA, qui se règlent par `bank settle`) ou `other`.
     #[arg(long, value_parser = clap::value_parser!(ExpenseCategory))]
     category: ExpenseCategory,
     /// Montant TTC — repris du débit du relevé si omis avec `--transaction`.

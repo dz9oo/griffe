@@ -56,8 +56,16 @@ pub enum ExpensesError {
     #[error("dépense introuvable : {0}")]
     NotFound(ExpenseId),
 
-    #[error("la TVA déductible ne peut pas dépasser le montant total de la dépense")]
-    VatExceedsAmount,
+    #[error(
+        "la TVA déductible ({requested}) dépasse la TVA contenue dans {amount} au taux {rate} : \
+         au plus {max} (montant TTC − montant TTC / (1 + taux))"
+    )]
+    VatExceedsRate {
+        requested: Money,
+        amount: Money,
+        rate: &'static str,
+        max: Money,
+    },
 
     #[error(
         "la dépense du {0} tombe dans un exercice déjà clôturé, dont le résultat a été figé — \
@@ -155,9 +163,37 @@ fn ensure_not_before_opening_balance(conn: &Connection, date: time::Date) -> Res
     Ok(())
 }
 
-fn ensure_vat_within_amount(vat_deductible: Money, amount: Money) -> Result<(), AppError> {
-    if vat_deductible.cents() > amount.cents() {
-        return Err(ExpensesError::VatExceedsAmount.into());
+/// La TVA qu'un montant TTC peut contenir au plus à ce taux : `TTC − TTC / (1 + taux)`, soit
+/// `TTC × taux / (1 + taux)`, arrondi au centime **supérieur** pour la borne — une facture
+/// arrondie au centime peut porter un centime de TVA de plus que le calcul exact. Taux zéro :
+/// aucune TVA. Lot 37 : jusqu'ici seule `vat_deductible ≤ amount` était vérifiée, et 150 € de
+/// TVA sur 600 € à 20 % passaient.
+#[must_use]
+pub fn max_deductible_vat(amount: Money, rate: VatRate) -> Money {
+    let bps = i128::from(rate.basis_points());
+    if bps == 0 || amount.cents() <= 0 {
+        return Money::ZERO;
+    }
+    let ttc = i128::from(amount.cents());
+    let (product, divisor) = (ttc * bps, 10_000 + bps);
+    let max = product / divisor + i128::from(product % divisor != 0);
+    Money::from_cents(i64::try_from(max).unwrap_or(i64::MAX))
+}
+
+fn ensure_vat_within_amount(
+    vat_deductible: Money,
+    amount: Money,
+    rate: VatRate,
+) -> Result<(), AppError> {
+    let max = max_deductible_vat(amount, rate);
+    if vat_deductible > max {
+        return Err(ExpensesError::VatExceedsRate {
+            requested: vat_deductible,
+            amount,
+            rate: rate.as_str(),
+            max,
+        }
+        .into());
     }
     Ok(())
 }
@@ -231,7 +267,7 @@ impl Command for RecordExpense {
     }
 
     fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
-        ensure_vat_within_amount(self.vat_deductible, self.amount)?;
+        ensure_vat_within_amount(self.vat_deductible, self.amount, self.vat_rate)?;
         ensure_outside_closed_fiscal_year(conn, self.incurred_on)?;
         ensure_not_before_opening_balance(conn, self.incurred_on)?;
         if let Some(transaction_id) = self.bank_transaction_id {
@@ -318,7 +354,7 @@ impl Command for UpdateExpense {
     const NAME: &'static str = "expenses.update";
 
     fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
-        ensure_vat_within_amount(self.vat_deductible, self.amount)?;
+        ensure_vat_within_amount(self.vat_deductible, self.amount, self.vat_rate)?;
         let current = expense_by_id(conn, self.id)?.ok_or(ExpensesError::NotFound(self.id))?;
         // Les deux dates comptent : sortir une dépense d'un exercice clos (ancienne date) le
         // viderait autant que d'en faire entrer une (nouvelle date).
@@ -590,7 +626,63 @@ mod tests {
         let err = Executor::new(&mut store)
             .execute(&cmd, &human_ctx())
             .unwrap_err();
-        assert!(matches!(err, AppError::Domain(msg) if msg.contains("ne peut pas dépasser")));
+        assert!(matches!(err, AppError::Domain(msg) if msg.contains("dépasse la TVA contenue")));
+    }
+
+    /// Lot 37 : la TVA déductible est bornée par le taux, pas seulement par le TTC — 150 € sur
+    /// 600 € à 20 % est refusé (au plus 100 €), 100 € passe ; à taux zéro, rien.
+    #[test]
+    fn deductible_vat_is_bounded_by_the_rate() {
+        assert_eq!(
+            max_deductible_vat(Money::from_cents(60_000), VatRate::Standard),
+            Money::from_cents(10_000)
+        );
+        // 119,88 € TTC à 20 % contiennent 19,98 € de TVA exactement.
+        assert_eq!(
+            max_deductible_vat(Money::from_cents(11_988), VatRate::Standard),
+            Money::from_cents(1_998)
+        );
+        // 10 € à 5,5 % : 0,5213… → borne arrondie au centime supérieur, 0,53 €.
+        assert_eq!(
+            max_deductible_vat(Money::from_cents(1_000), VatRate::Reduced),
+            Money::from_cents(53)
+        );
+        assert_eq!(
+            max_deductible_vat(Money::from_cents(1_000), VatRate::Zero),
+            Money::ZERO
+        );
+
+        let mut store = test_store("vat-rate-bound");
+        let refused = RecordExpense {
+            amount: Money::from_cents(60_000),
+            vat_deductible: Money::from_cents(15_000),
+            ..sample()
+        };
+        let err = Executor::new(&mut store)
+            .execute(&refused, &human_ctx())
+            .unwrap_err();
+        assert!(err.to_string().contains("au plus 100,00"), "{err}");
+        let accepted = RecordExpense {
+            amount: Money::from_cents(60_000),
+            vat_deductible: Money::from_cents(10_000),
+            ..sample()
+        };
+        assert!(matches!(
+            Executor::new(&mut store)
+                .execute(&accepted, &human_ctx())
+                .unwrap(),
+            Outcome::Applied(_)
+        ));
+        let zero_rate = RecordExpense {
+            vat_rate: VatRate::Zero,
+            vat_deductible: Money::from_cents(1),
+            ..sample()
+        };
+        assert!(
+            Executor::new(&mut store)
+                .execute(&zero_rate, &human_ctx())
+                .is_err()
+        );
     }
 
     #[test]
@@ -760,7 +852,7 @@ mod tests {
         let err = Executor::new(&mut store)
             .execute(&update, &human_ctx())
             .unwrap_err();
-        assert!(matches!(err, AppError::Domain(msg) if msg.contains("ne peut pas dépasser")));
+        assert!(matches!(err, AppError::Domain(msg) if msg.contains("dépasse la TVA contenue")));
     }
 
     #[test]

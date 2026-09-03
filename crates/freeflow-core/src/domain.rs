@@ -14,6 +14,7 @@ mod payment;
 mod period;
 mod quote;
 pub mod serde_date;
+mod settlement;
 mod siren;
 mod time_entry;
 mod vat;
@@ -48,6 +49,7 @@ pub use period::{
 pub use quote::{
     Discount, LineKind, Quote, QuoteLine, QuoteLineParseError, QuoteStatus, UnknownQuoteStatus,
 };
+pub use settlement::{SettlementAccount, SettlementAccountError};
 pub use siren::{Siren, SirenError, VatNumber, VatNumberError};
 pub use time_entry::{TimeCategory, TimeEntry, UnknownTimeCategory};
 pub use vat::{UnknownVatRate, VatRate};

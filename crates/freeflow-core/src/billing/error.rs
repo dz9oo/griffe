@@ -39,6 +39,18 @@ pub enum BillingError {
 
     #[error("la transaction {0} n'est pas rapprochée : rien à défaire")]
     TransactionNotReconciled(BankTransactionId),
+
+    #[error(
+        "la transaction {0} n'est pas un règlement de compte de bilan : rien à défaire (pour un \
+         rapprochement de facture ou de dépense, voir bank unreconcile)"
+    )]
+    TransactionNotSettled(BankTransactionId),
+
+    #[error(
+        "le compte {0} n'est pas dans le plan de comptes de FreeFlow : donnez-lui un libellé \
+         (--label), comme au bilan d'ouverture"
+    )]
+    SettlementLabelRequired(String),
 }
 
 impl From<BillingError> for AppError {

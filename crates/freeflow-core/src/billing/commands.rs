@@ -370,3 +370,80 @@ impl Command for UnreconcileTransaction {
         Ok(voided)
     }
 }
+
+/// Règle un compte de bilan depuis un mouvement du relevé (lot 37) : le débit de 600 € qui
+/// paie les honoraires repris au bilan d'ouverture solde le 401, celui de 1 200 € le solde
+/// d'IS repris solde le 444, un virement vers un autre compte de la société passe par 580 —
+/// **sans charge ni produit**, là où une dépense compterait la charge une seconde fois et
+/// laisserait la dette au passif. Un crédit se règle de la même façon (remboursement d'un
+/// crédit de TVA sur 445670, apport en compte courant sur 455).
+///
+/// Le lien est porté par la transaction, comme les deux autres rapprochements : pas de
+/// `revision`, les gardes sont sémantiques (« déjà rapprochée »). Le libellé vient du plan fixe
+/// du grand livre quand le compte y figure, sinon de `label` (obligatoire alors).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SettleBankTransaction {
+    pub transaction_id: BankTransactionId,
+    pub account: crate::domain::SettlementAccount,
+    /// Libellé du compte — facultatif pour un compte du plan fixe (`ledger::accounts`), requis
+    /// pour un compte hors plan.
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+impl Command for SettleBankTransaction {
+    type Output = ();
+    const NAME: &'static str = "billing.settle_transaction";
+
+    /// Même rail que `ReconcileTransaction` : un agent propose, un humain confirme.
+    fn requires_confirmation(&self) -> bool {
+        true
+    }
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        let tx = row::bank_transaction_by_id(conn, self.transaction_id)?
+            .ok_or(BillingError::TransactionNotFound)?;
+        if tx.is_matched() {
+            return Err(BillingError::AlreadyReconciled(self.transaction_id).into());
+        }
+        let label = crate::ledger::Account::for_number(self.account.as_str(), None)
+            .map(|a| a.label.into_owned())
+            .or_else(|| {
+                self.label
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty())
+                    .map(str::to_string)
+            })
+            .ok_or_else(|| BillingError::SettlementLabelRequired(self.account.to_string()))?;
+        row::mark_transaction_settled(conn, self.transaction_id, &self.account, &label)?;
+        Ok(())
+    }
+}
+
+/// Défait un règlement (lot 37) : la transaction redevient « à rapprocher ». Rien d'autre à
+/// annuler — un règlement n'a créé ni encaissement ni dépense.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnsettleBankTransaction {
+    pub transaction_id: BankTransactionId,
+}
+
+impl Command for UnsettleBankTransaction {
+    type Output = ();
+    const NAME: &'static str = "billing.unsettle_transaction";
+
+    /// Le miroir de `SettleBankTransaction`, même barrière que `UnreconcileTransaction`.
+    fn requires_confirmation(&self) -> bool {
+        true
+    }
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        let tx = row::bank_transaction_by_id(conn, self.transaction_id)?
+            .ok_or(BillingError::TransactionNotFound)?;
+        if !tx.is_settled() {
+            return Err(BillingError::TransactionNotSettled(self.transaction_id).into());
+        }
+        row::clear_transaction_match(conn, self.transaction_id)?;
+        Ok(())
+    }
+}

@@ -13,7 +13,8 @@ mod totals;
 
 pub use commands::{
     EmitInvoice, EmittedInvoice, ImportBankTransactions, IssueCreditNote, ReconcileTransaction,
-    RecordPayment, UnreconcileTransaction, VoidPayment,
+    RecordPayment, SettleBankTransaction, UnreconcileTransaction, UnsettleBankTransaction,
+    VoidPayment,
 };
 pub use error::BillingError;
 pub use import::{
@@ -772,5 +773,138 @@ mod tests {
             !list_payments(store.connection()).unwrap()[0].is_voided(),
             "le paiement orphelin reste intact, à annuler explicitement via VoidPayment"
         );
+    }
+
+    /// Lot 37 : un mouvement du relevé peut régler un compte de bilan — dette reprise (401),
+    /// solde d'IS (444), crédit de TVA remboursé (445670) — sans charge ni produit. Une
+    /// transaction déjà rapprochée ne se règle pas ; un compte hors plan exige un libellé ;
+    /// défaire un règlement rend la transaction « à rapprocher ».
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn a_statement_line_can_settle_a_balance_sheet_account_and_be_unsettled() {
+        let (mut store, _client) = test_store("settle");
+        let Outcome::Applied(2) = Executor::new(&mut store)
+            .execute(
+                &ImportBankTransactions {
+                    transactions: vec![
+                        ParsedTransaction {
+                            occurred_on: date(2026, Month::October, 10),
+                            amount_cents: -60_000,
+                            description: "VIR CABINET COMPTA".to_string(),
+                        },
+                        ParsedTransaction {
+                            occurred_on: date(2026, Month::November, 2),
+                            amount_cents: 21_000,
+                            description: "REMBOURSEMENT CREDIT TVA".to_string(),
+                        },
+                    ],
+                },
+                &human_ctx(),
+            )
+            .unwrap()
+        else {
+            panic!("expected two imported transactions")
+        };
+        let transactions = list_bank_transactions(store.connection()).unwrap();
+        let debit = transactions.iter().find(|t| t.is_debit()).unwrap().id;
+        let credit = transactions.iter().find(|t| !t.is_debit()).unwrap().id;
+
+        // Un agent propose, un humain confirme.
+        let agent = ExecutionContext::new(
+            Actor::Agent {
+                session: "s".into(),
+            },
+            false,
+        );
+        assert!(matches!(
+            Executor::new(&mut store)
+                .execute(
+                    &SettleBankTransaction {
+                        transaction_id: debit,
+                        account: "401000".parse().unwrap(),
+                        label: None,
+                    },
+                    &agent
+                )
+                .unwrap(),
+            Outcome::PendingConfirmation(_)
+        ));
+
+        // Compte hors plan sans libellé : refus explicite.
+        let err = Executor::new(&mut store)
+            .execute(
+                &SettleBankTransaction {
+                    transaction_id: debit,
+                    account: "467100".parse().unwrap(),
+                    label: None,
+                },
+                &human_ctx(),
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("libellé"), "{err}");
+
+        Executor::new(&mut store)
+            .execute(
+                &SettleBankTransaction {
+                    transaction_id: debit,
+                    account: "401000".parse().unwrap(),
+                    label: Some("ignoré : le plan fixe prime".into()),
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+        Executor::new(&mut store)
+            .execute(
+                &SettleBankTransaction {
+                    transaction_id: credit,
+                    account: "445670".parse().unwrap(),
+                    label: None,
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+        let settled = bank_transaction_by_id(store.connection(), debit)
+            .unwrap()
+            .unwrap();
+        assert!(settled.is_matched() && settled.is_settled());
+        assert_eq!(settled.settlement_account.unwrap().as_str(), "401000");
+        assert_eq!(settled.settlement_label.as_deref(), Some("Fournisseurs"));
+        assert!(unmatched_debits(store.connection()).unwrap().is_empty());
+
+        // Déjà réglée : ni un second règlement, ni un rapprochement de facture.
+        let err = Executor::new(&mut store)
+            .execute(
+                &SettleBankTransaction {
+                    transaction_id: debit,
+                    account: "444000".parse().unwrap(),
+                    label: None,
+                },
+                &human_ctx(),
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("déjà rapprochée"), "{err}");
+
+        Executor::new(&mut store)
+            .execute(
+                &UnsettleBankTransaction {
+                    transaction_id: debit,
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+        let freed = bank_transaction_by_id(store.connection(), debit)
+            .unwrap()
+            .unwrap();
+        assert!(!freed.is_matched());
+        assert_eq!(freed.settlement_label, None);
+        let err = Executor::new(&mut store)
+            .execute(
+                &UnsettleBankTransaction {
+                    transaction_id: debit,
+                },
+                &human_ctx(),
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("n'est pas un règlement"), "{err}");
     }
 }

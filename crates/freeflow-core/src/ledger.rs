@@ -135,6 +135,23 @@ pub struct Account {
 }
 
 impl Account {
+    /// Le compte du plan fixe portant ce numéro, s'il y figure ; sinon un compte dynamique
+    /// avec `label` — `None` si aucun libellé n'est disponible. C'est la règle « un libellé par
+    /// compte » du lot 37 : le plan fixe prime toujours sur un libellé saisi.
+    #[must_use]
+    pub fn for_number(number: &str, label: Option<&str>) -> Option<Self> {
+        accounts::FIXED_PLAN
+            .iter()
+            .find(|a| a.number == number)
+            .cloned()
+            .or_else(|| {
+                label.map(|label| Self {
+                    number: Cow::Owned(number.to_string()),
+                    label: Cow::Owned(label.to_string()),
+                })
+            })
+    }
+
     #[must_use]
     pub const fn fixed(number: &'static str, label: &'static str) -> Self {
         Self {
@@ -184,7 +201,20 @@ pub mod accounts {
         Account::fixed("618000", "Divers : formation, documentation, cotisations");
     pub const FEES: Account = Account::fixed("622600", "Honoraires");
     pub const BANK_CHARGES: Account = Account::fixed("627000", "Services bancaires et assimilés");
+    /// Impôts et taxes (lot 37) : CFE, CVAE… — case 244 du 2033-B.
+    pub const TAXES: Account = Account::fixed("635000", "Impôts, taxes et versements assimilés");
     pub const OTHER: Account = Account::fixed("658000", "Charges diverses de gestion courante");
+
+    // Comptes de bilan que le relevé règle (lot 37) — repris d'un bilan de cabinet, ou mouvements
+    // qui ne sont ni une charge ni un produit.
+    pub const VAT_DUE: Account = Account::fixed("445510", "État — TVA à décaisser");
+    pub const VAT_CREDIT: Account = Account::fixed("445670", "Crédit de TVA à reporter");
+    pub const SHAREHOLDER_ACCOUNT: Account =
+        Account::fixed("455000", "Associés — comptes courants");
+    pub const INTERNAL_TRANSFER: Account = Account::fixed("580000", "Virements internes");
+    pub const LOANS: Account =
+        Account::fixed("164000", "Emprunts auprès des établissements de crédit");
+    pub const SHARE_CAPITAL: Account = Account::fixed("101000", "Capital social");
 
     // Opérations de clôture (lot 31).
     pub const DIRECTOR_PAY: Account = Account::fixed("641100", "Rémunération du dirigeant");
@@ -207,6 +237,46 @@ pub mod accounts {
     pub const RETAINED_DEBIT: Account =
         Account::fixed("119000", "Report à nouveau (solde débiteur)");
     pub const DIVIDENDS_DUE: Account = Account::fixed("457000", "Associés — dividendes à payer");
+
+    /// Tout le plan fixe — la source unique du libellé d'un compte (lot 37 : un `CompteNum` du
+    /// FEC n'a qu'un seul `CompteLib`, celui-ci ; un libellé saisi au bilan d'ouverture ne
+    /// sert qu'à un compte hors de cette liste).
+    pub const FIXED_PLAN: [Account; 34] = [
+        SHARE_CAPITAL,
+        LEGAL_RESERVE,
+        RETAINED_CREDIT,
+        RETAINED_DEBIT,
+        PROFIT,
+        LOSS,
+        LOANS,
+        SUPPLIERS,
+        CLIENTS,
+        PAY_DUE,
+        SOCIAL_DUE,
+        CORPORATE_TAX_DUE,
+        VAT_DUE,
+        VAT_DEDUCTIBLE,
+        VAT_COLLECTED,
+        VAT_CREDIT,
+        SHAREHOLDER_ACCOUNT,
+        DIVIDENDS_DUE,
+        BANK,
+        INTERNAL_TRANSFER,
+        SMALL_EQUIPMENT,
+        OFFICE,
+        PROFESSIONAL,
+        FEES,
+        TRAVEL,
+        MEALS,
+        BANK_CHARGES,
+        TAXES,
+        DIRECTOR_PAY,
+        SOCIAL_CHARGES,
+        SOFTWARE,
+        OTHER,
+        CORPORATE_TAX,
+        CARRY_BACK_INCOME,
+    ];
 }
 
 /// Le compte de charge d'une catégorie de dépense.
@@ -221,6 +291,7 @@ pub const fn charge_account(category: ExpenseCategory) -> Account {
         ExpenseCategory::Professional => accounts::PROFESSIONAL,
         ExpenseCategory::Fees => accounts::FEES,
         ExpenseCategory::BankCharges => accounts::BANK_CHARGES,
+        ExpenseCategory::Taxes => accounts::TAXES,
         ExpenseCategory::Other => accounts::OTHER,
     }
 }
@@ -301,7 +372,14 @@ pub struct OpeningLines {
 }
 
 impl OpeningLines {
-    /// Les lignes du bilan d'ouverture saisi (lot 30), telles quelles.
+    /// Les lignes du bilan d'ouverture saisi (lot 30), telles quelles — au libellé près : un
+    /// compte du plan fixe reprend le libellé du plan (lot 37), le libellé saisi ne sert qu'aux
+    /// comptes hors plan.
+    ///
+    /// # Panics
+    ///
+    /// Jamais : `Account::for_number` ne renvoie `None` que sans libellé, et chaque ligne du
+    /// bilan en porte un.
     #[must_use]
     pub fn from_opening_balance(opening: &OpeningBalance) -> Self {
         Self {
@@ -313,10 +391,8 @@ impl OpeningLines {
                 .lines
                 .iter()
                 .map(|l| LedgerLine {
-                    account: Account {
-                        number: Cow::Owned(l.account.to_string()),
-                        label: Cow::Owned(l.label.clone()),
-                    },
+                    account: Account::for_number(l.account.as_str(), Some(&l.label))
+                        .expect("un libellé est toujours fourni"),
                     aux: None,
                     amount: l.signed(),
                 })
@@ -568,10 +644,14 @@ impl Facts<'_> {
             .collect();
         let mut entries = Vec::new();
         for expense in expenses {
-            let piece = expense
-                .receipt_filename
-                .clone()
-                .unwrap_or_else(|| format!("DEP-{}", short_id(expense.id).to_ascii_uppercase()));
+            // Lot 37 : une pièce **unique** par dépense (l'UUID complet — huit caractères d'un
+            // UUIDv7 sont un horodatage à la seconde, partagé par tout un import), la même pour
+            // la charge et son décaissement ; le justificatif, lui, est nommé dans le libellé.
+            let piece = format!("DEP-{}", expense.id);
+            let label = expense.receipt_filename.as_ref().map_or_else(
+                || expense.label.clone(),
+                |file| format!("{} — {file}", expense.label),
+            );
             let charge = expense.amount - expense.vat_deductible;
             let debit = debits.get(&expense.id).copied();
             let paid_through = debit.map_or(accounts::BANK, |_| accounts::SUPPLIERS);
@@ -580,7 +660,7 @@ impl Facts<'_> {
                     Journal::Purchases,
                     expense.incurred_on,
                     piece.clone(),
-                    expense.label.clone(),
+                    label,
                     vec![
                         line(charge_account(expense.category), charge),
                         line(accounts::VAT_DEDUCTIBLE, expense.vat_deductible),
@@ -608,6 +688,41 @@ impl Facts<'_> {
                     ],
                 ));
             }
+        }
+        entries
+    }
+
+    /// Règlements de comptes de bilan depuis le relevé (lot 37) : `compte / 512` pour un débit,
+    /// `512 / compte` pour un crédit, à la date du relevé, pièce `BQ-<uuid de la transaction>`.
+    /// Ni charge ni produit : le solde d'un 401 ou d'un 444 repris tombe, la banque suit le
+    /// relevé.
+    fn settlement_entries(&self, bank_transactions: &[BankTransaction]) -> Vec<LedgerEntry> {
+        let mut entries = Vec::new();
+        for tx in bank_transactions
+            .iter()
+            .filter(|t| self.exercise.contains(t.occurred_on))
+        {
+            let Some(account) = &tx.settlement_account else {
+                continue;
+            };
+            let account = Account::for_number(account.as_str(), tx.settlement_label.as_deref())
+                .unwrap_or_else(|| Account {
+                    number: Cow::Owned(account.to_string()),
+                    label: Cow::Owned(account.to_string()),
+                });
+            let amount = Money::from_cents(tx.amount_cents);
+            entries.extend(entry(
+                Journal::Bank,
+                tx.occurred_on,
+                format!("BQ-{}", tx.id),
+                format!(
+                    "Règlement {} — relevé du {} ({})",
+                    account.label,
+                    format_date(tx.occurred_on),
+                    tx.description
+                ),
+                vec![line(account.clone(), -amount), line(accounts::BANK, amount)],
+            ));
         }
         entries
     }
@@ -755,6 +870,7 @@ impl Ledger {
         entries.extend(index.sales_entries(facts.invoices));
         entries.extend(index.bank_entries(facts.payments));
         entries.extend(index.purchase_entries(facts.expenses, facts.bank_transactions));
+        entries.extend(index.settlement_entries(facts.bank_transactions));
         entries.extend(index.appropriation_entries(facts.appropriations));
 
         let director_total = facts.snapshot.map_or_else(
@@ -872,13 +988,37 @@ impl Ledger {
     #[must_use]
     pub fn closing_opening_lines(&self) -> OpeningLines {
         let net = self.net_result();
-        let mut lines: Vec<LedgerLine> = self
-            .trial_balance()
-            .rows
-            .into_iter()
-            .filter(|r| !r.account.is_income_statement() && !r.balance.is_zero())
-            .map(|r| line(r.account, r.balance))
-            .collect();
+        // Lot 37 : le report à nouveau se présente **net**, sur 110 (créditeur) ou 119
+        // (débiteur), jamais les deux à la fois ; de même pour un résultat encore en 120/129 —
+        // un bilan qui porte 110 C 6 350 et 119 D 1 226,90 est arithmétiquement juste mais ne
+        // se lit pas.
+        let mut retained = Money::ZERO;
+        let mut prior_result = Money::ZERO;
+        let mut lines: Vec<LedgerLine> = Vec::new();
+        for r in self.trial_balance().rows {
+            if r.account.is_income_statement() || r.balance.is_zero() {
+                continue;
+            }
+            if r.account.number.starts_with("110") || r.account.number.starts_with("119") {
+                retained += r.balance;
+            } else if r.account.number.starts_with("120") || r.account.number.starts_with("129") {
+                prior_result += r.balance;
+            } else {
+                lines.push(line(r.account, r.balance));
+            }
+        }
+        if !retained.is_zero() {
+            let account = if retained.is_negative() {
+                accounts::RETAINED_CREDIT
+            } else {
+                accounts::RETAINED_DEBIT
+            };
+            lines.push(line(account, retained));
+        }
+        if !prior_result.is_zero() {
+            // Un solde débiteur en 120/129 est une perte (129), un solde créditeur un bénéfice.
+            lines.push(line(result_account(-prior_result), prior_result));
+        }
         if !net.is_zero() {
             lines.push(line(result_account(net), -net));
         }
@@ -1620,6 +1760,8 @@ mod tests {
     /// Un débit du relevé rapproché de `expense`, daté de `on` (lot 33).
     fn debit_for(expense: &Expense, on: Date) -> BankTransaction {
         BankTransaction {
+            settlement_account: None,
+            settlement_label: None,
             id: BankTransactionId::new(),
             occurred_on: on,
             amount_cents: -expense.amount.cents(),
@@ -2497,5 +2639,303 @@ mod tests {
             Ledger::build(facts(&p, exercise, &[], &[], Some(opening))).unwrap_err(),
             LedgerError::Overflow
         );
+    }
+
+    // --- Lot 37 : règlements de comptes de bilan, libellés, pièces, report à nouveau net. ---
+
+    fn settled(
+        on: Date,
+        amount_cents: i64,
+        description: &str,
+        account: &str,
+        label: Option<&str>,
+    ) -> BankTransaction {
+        BankTransaction {
+            id: BankTransactionId::new(),
+            occurred_on: on,
+            amount_cents,
+            description: description.to_string(),
+            matched_invoice_id: None,
+            matched_expense_id: None,
+            settlement_account: Some(account.parse().unwrap()),
+            settlement_label: label.map(str::to_string),
+        }
+    }
+
+    /// Le scénario de l'expert-comptable (audit du 2 septembre 2026), posé à la main : bilan
+    /// repris au 1er octobre 2025 avec 401 C 600, 444 C 1 200, 455 C 500, 445670 D 210, banque
+    /// D 9 540 ; dans l'exercice, le débit de 600 règle le 401, celui de 1 200 le 444, sans
+    /// charge. Attendu : 401 = 0, 444 = 0, banque 9 540 − 1 800 = 7 740, résultat nul, deux
+    /// écritures `BQ` équilibrées, pièces `BQ-<uuid>`.
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn settling_reprised_debts_clears_them_without_any_charge() {
+        let p = profile(None, None);
+        let exercise = FiscalYear::new(
+            date(2025, TimeMonth::October, 1),
+            date(2026, TimeMonth::September, 30),
+        );
+        let opening = OpeningBalance {
+            opens_on: date(2025, TimeMonth::October, 1),
+            source: Some("bilan au 30/09/2025, cabinet".to_string()),
+            lines: vec![
+                "101000:Capital social:C:1000.00".parse().unwrap(),
+                "106100:Réserve légale:C:100.00".parse().unwrap(),
+                "110000:Report à nouveau:C:6350.00".parse().unwrap(),
+                "401000:Fournisseurs (honoraires cabinet, facture 09/2025):C:600.00"
+                    .parse()
+                    .unwrap(),
+                "444000:État - IS à payer (solde IS 2025):C:1200.00"
+                    .parse()
+                    .unwrap(),
+                "455000:Compte courant d'associé:C:500.00".parse().unwrap(),
+                "445670:Crédit de TVA:D:210.00".parse().unwrap(),
+                "512000:Banque:D:9540.00".parse().unwrap(),
+            ],
+            tax_losses: Money::ZERO,
+        };
+        let transactions = vec![
+            settled(
+                date(2025, TimeMonth::October, 15),
+                -60_000,
+                "VIR CABINET",
+                "401000",
+                None,
+            ),
+            settled(
+                date(2026, TimeMonth::January, 15),
+                -120_000,
+                "PRLV DGFIP IS",
+                "444000",
+                None,
+            ),
+        ];
+        let ledger = Ledger::build(LedgerFacts {
+            bank_transactions: &transactions,
+            ..facts(
+                &p,
+                exercise,
+                &[],
+                &[],
+                Some(OpeningLines::from_opening_balance(&opening)),
+            )
+        })
+        .unwrap();
+        assert!(ledger.entries.iter().all(LedgerEntry::is_balanced));
+        let settlements: Vec<_> = ledger
+            .entries
+            .iter()
+            .filter(|e| e.piece_ref.starts_with("BQ-"))
+            .collect();
+        assert_eq!(settlements.len(), 2);
+        assert!(settlements.iter().all(|e| e.journal == Journal::Bank));
+        assert_eq!(
+            settlements[0].piece_ref,
+            format!("BQ-{}", transactions[0].id)
+        );
+        assert!(
+            settlements[0]
+                .label
+                .starts_with("Règlement Fournisseurs — relevé du 2025-10-15"),
+            "{}",
+            settlements[0].label
+        );
+        let balance = ledger.trial_balance();
+        let of = |n: &str| {
+            balance
+                .rows
+                .iter()
+                .find(|r| r.account.number == n)
+                .map_or(Money::ZERO, |r| r.balance)
+        };
+        assert_eq!(of("401000"), Money::ZERO);
+        assert_eq!(of("444000"), Money::ZERO);
+        assert_eq!(of("512000"), Money::from_cents(774_000));
+        assert_eq!(of("455000"), Money::from_cents(-50_000));
+        assert_eq!(ledger.net_result(), Money::ZERO);
+        let sheet = ledger.balance_sheet();
+        assert!(sheet.is_balanced());
+        assert_eq!(sheet.liability(LiabilityRubric::Suppliers), Money::ZERO);
+        assert_eq!(sheet.total_liabilities, Money::from_cents(795_000));
+
+        // Un libellé par compte : celui du plan fixe, jamais celui saisi au bilan d'ouverture.
+        let supplier_labels: std::collections::BTreeSet<&str> = ledger
+            .entries
+            .iter()
+            .flat_map(|e| e.lines.iter())
+            .filter(|l| l.account.number == "401000")
+            .map(|l| l.account.label.as_ref())
+            .collect();
+        assert_eq!(
+            supplier_labels.into_iter().collect::<Vec<_>>(),
+            vec!["Fournisseurs"]
+        );
+        // Un compte hors plan garde son libellé saisi.
+        let custom = Account::for_number("467100", Some("Débiteurs divers")).unwrap();
+        assert_eq!(custom.label, "Débiteurs divers");
+        assert!(Account::for_number("467100", None).is_none());
+    }
+
+    /// Un crédit du relevé règle aussi : le remboursement du crédit de TVA repris (445670 D
+    /// 210) est `512 / 445670`, et ramène ce compte à zéro.
+    #[test]
+    fn a_credit_can_settle_a_reprised_receivable() {
+        let p = profile(None, None);
+        let exercise = FiscalYear::calendar(2026);
+        let opening = OpeningBalance {
+            opens_on: date(2026, TimeMonth::January, 1),
+            source: None,
+            lines: vec![
+                "101000:Capital:C:1210.00".parse().unwrap(),
+                "445670:Crédit de TVA:D:210.00".parse().unwrap(),
+                "512000:Banque:D:1000.00".parse().unwrap(),
+            ],
+            tax_losses: Money::ZERO,
+        };
+        let transactions = vec![settled(
+            date(2026, TimeMonth::February, 3),
+            21_000,
+            "REMB TVA",
+            "445670",
+            None,
+        )];
+        let ledger = Ledger::build(LedgerFacts {
+            bank_transactions: &transactions,
+            ..facts(
+                &p,
+                exercise,
+                &[],
+                &[],
+                Some(OpeningLines::from_opening_balance(&opening)),
+            )
+        })
+        .unwrap();
+        let balance = ledger.trial_balance();
+        let credit = balance
+            .rows
+            .iter()
+            .find(|r| r.account.number == "445670")
+            .unwrap();
+        assert_eq!(credit.balance, Money::ZERO);
+        assert_eq!(credit.account.label, "Crédit de TVA à reporter");
+        assert_eq!(
+            balance
+                .rows
+                .iter()
+                .find(|r| r.account.number == "512000")
+                .unwrap()
+                .balance,
+            Money::from_cents(121_000)
+        );
+        assert!(ledger.balance_sheet().is_balanced());
+    }
+
+    /// Chaque dépense a sa propre pièce (UUID complet), la même pour la charge et son
+    /// décaissement ; le justificatif est nommé dans le libellé, pas dans la pièce.
+    #[test]
+    fn expense_pieces_are_unique_and_the_receipt_is_named_in_the_label() {
+        let p = profile(None, None);
+        let exercise = FiscalYear::calendar(2026);
+        let mut with_receipt = expense(12_000, 2_000, date(2026, TimeMonth::March, 1));
+        with_receipt.receipt_filename = Some("facture-ovh.pdf".to_string());
+        let expenses = vec![
+            with_receipt.clone(),
+            expense(12_000, 2_000, date(2026, TimeMonth::March, 1)),
+            expense(12_000, 2_000, date(2026, TimeMonth::March, 1)),
+        ];
+        let debit = debit_for(&with_receipt, date(2026, TimeMonth::March, 4));
+        let ledger = Ledger::build(LedgerFacts {
+            bank_transactions: std::slice::from_ref(&debit),
+            ..facts(&p, exercise, &[], &expenses, None)
+        })
+        .unwrap();
+        let pieces: std::collections::BTreeSet<&str> = ledger
+            .entries
+            .iter()
+            .filter(|e| e.piece_ref.starts_with("DEP-"))
+            .map(|e| e.piece_ref.as_str())
+            .collect();
+        assert_eq!(
+            pieces.len(),
+            3,
+            "une pièce par dépense, partagée charge/décaissement"
+        );
+        assert!(pieces.contains(format!("DEP-{}", with_receipt.id).as_str()));
+        let charge = ledger
+            .entries
+            .iter()
+            .find(|e| e.journal == Journal::Purchases && e.label.contains("facture-ovh.pdf"))
+            .expect("le justificatif est nommé dans le libellé");
+        assert_eq!(charge.piece_ref, format!("DEP-{}", with_receipt.id));
+    }
+
+    /// Le report à nouveau des à-nouveaux dérivés est **net** : 110 C 6 350 repris et une
+    /// perte de 1 226,90 affectée ne donnent pas « 110 C 6 350 + 119 D 1 226,90 » mais
+    /// 110 C 5 123,10.
+    #[test]
+    fn derived_opening_lines_present_the_retained_earnings_net_on_a_single_account() {
+        let p = profile(None, None);
+        let exercise = FiscalYear::calendar(2027);
+        let opening = OpeningLines {
+            label: "AN".to_string(),
+            lines: vec![
+                line(accounts::RETAINED_CREDIT, Money::from_cents(-635_000)),
+                line(accounts::RETAINED_DEBIT, Money::from_cents(122_690)),
+                line(accounts::BANK, Money::from_cents(512_310)),
+            ],
+        };
+        let ledger = Ledger::build(facts(&p, exercise, &[], &[], Some(opening))).unwrap();
+        let next = ledger.closing_opening_lines();
+        let retained: Vec<_> = next
+            .lines
+            .iter()
+            .filter(|l| l.account.number.starts_with("11"))
+            .collect();
+        assert_eq!(retained.len(), 1);
+        assert_eq!(retained[0].account, accounts::RETAINED_CREDIT);
+        assert_eq!(retained[0].amount, Money::from_cents(-512_310));
+        assert_eq!(
+            next.lines.iter().map(|l| l.amount).sum::<Money>(),
+            Money::ZERO
+        );
+    }
+
+    proptest! {
+        /// Des règlements arbitraires sur des comptes de bilan arbitraires (classes 1 à 5,
+        /// hors 512) laissent le bilan équilibré et les à-nouveaux dérivés à somme nulle.
+        #[test]
+        fn settlements_on_arbitrary_accounts_keep_the_balance_sheet_balanced(
+            balances in prop::collection::vec((account_strategy(), -5_000_000i64..5_000_000), 0..8),
+            settlements in prop::collection::vec(
+                (prop::sample::select(vec!["101000", "164000", "401000", "421000", "444000", "445510", "445670", "455000", "457000", "467100", "580000"]), -300_000i64..300_000),
+                0..8,
+            ),
+        ) {
+            let p = profile(None, None);
+            let exercise = FiscalYear::calendar(2026);
+            let mut lines: Vec<LedgerLine> = balances
+                .iter()
+                .map(|(n, cents)| line(Account::for_number(n, Some("x")).unwrap(), Money::from_cents(*cents)))
+                .collect();
+            let sum: Money = lines.iter().map(|l| l.amount).sum();
+            lines.push(line(accounts::BANK, -sum));
+            let transactions: Vec<BankTransaction> = settlements
+                .iter()
+                .filter(|(_, cents)| *cents != 0)
+                .map(|(account, cents)| settled(date(2026, TimeMonth::May, 2), *cents, "x", account, Some("Compte saisi")))
+                .collect();
+            let ledger = Ledger::build(LedgerFacts {
+                bank_transactions: &transactions,
+                ..facts(&p, exercise, &[], &[], Some(OpeningLines { label: "AN".to_string(), lines }))
+            }).unwrap();
+            prop_assert!(ledger.entries.iter().all(LedgerEntry::is_balanced));
+            let balance = ledger.trial_balance();
+            prop_assert_eq!(balance.total_debit, balance.total_credit);
+            let sheet = ledger.balance_sheet();
+            prop_assert!(sheet.is_balanced(), "{:#?}", sheet);
+            prop_assert_eq!(ledger.net_result(), Money::ZERO);
+            let carried: Money = ledger.closing_opening_lines().lines.iter().map(|l| l.amount).sum();
+            prop_assert_eq!(carried, Money::ZERO);
+        }
     }
 }
