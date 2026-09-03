@@ -56,13 +56,17 @@ pub struct AccountingResult {
     pub director_remuneration: Money,
     /// Résultat **comptable** avant impôt : produits − charges.
     pub result_before_tax: Money,
+    /// Charges comptabilisées mais non déductibles fiscalement (art. 39-4 CGI : amendes,
+    /// dépenses somptuaires…), réintégrées au résultat fiscal — déclarées à la clôture,
+    /// mentionnées au PV (art. 223 quater CGI). Lot 41.
+    pub non_deductible_expenses: Money,
     /// Déficits des exercices antérieurs encore reportables à l'ouverture de l'exercice.
     pub prior_losses_available: Money,
     /// Fraction de ces déficits imputée sur le bénéfice de l'exercice (report en avant,
     /// ligne 360 du 2033-B) — nulle sur un exercice déficitaire.
     pub losses_imputed: Money,
-    /// Résultat **fiscal** : `result_before_tax − losses_imputed`, base de l'IS (négatif =
-    /// déficit fiscal de l'exercice, ligne 372 du 2033-B).
+    /// Résultat **fiscal** : `result_before_tax + non_deductible_expenses − losses_imputed`,
+    /// base de l'IS (négatif = déficit fiscal de l'exercice, ligne 372 du 2033-B).
     pub taxable_result: Money,
     pub corporate_tax: Money,
     /// Déficit de l'exercice reporté en arrière sur le bénéfice de l'exercice précédent
@@ -228,13 +232,29 @@ pub fn corporate_income_tax(result_before_tax: Money) -> Money {
     if result_before_tax.cents() <= 0 {
         return Money::ZERO;
     }
-    let reduced_base = result_before_tax.min(REDUCED_RATE_CEILING);
+    // Art. 1657 CGI (lot 41) : les bases d'imposition et les cotisations d'impôts directs sont
+    // arrondies à l'euro le plus proche, la fraction d'euro égale à 0,50 comptée pour 1 — le
+    // résultat fiscal du 2065 s'écrit en euros, l'IS aussi (1 315,96 € affiché avant ce lot pour
+    // un résultat de 8 773,10 € : 1 316 € en réalité).
+    let base = round_to_euro(result_before_tax);
+    let reduced_base = base.min(REDUCED_RATE_CEILING);
     let mut tax = reduced_base.apply_rate_bps(REDUCED_RATE_BPS);
-    if result_before_tax > REDUCED_RATE_CEILING {
-        let upper_base = result_before_tax - REDUCED_RATE_CEILING;
+    if base > REDUCED_RATE_CEILING {
+        let upper_base = base - REDUCED_RATE_CEILING;
         tax += upper_base.apply_rate_bps(NORMAL_RATE_BPS);
     }
-    tax
+    round_to_euro(tax)
+}
+
+/// Arrondi à l'euro le plus proche, 0,50 € compté pour 1 (art. 1657 CGI) ; symétrique pour un
+/// montant négatif.
+#[must_use]
+pub fn round_to_euro(amount: Money) -> Money {
+    let cents = amount.cents();
+    let sign = cents.signum();
+    let magnitude = cents.abs();
+    let euros = (magnitude + 50) / 100;
+    Money::from_cents(sign * euros * 100)
 }
 
 /// Nombre de mois entiers couverts par un exercice (12 pour un exercice plein).
@@ -298,6 +318,23 @@ pub fn compute_result_with_losses(
     profile: &CompanyProfile,
     prior_losses_available: Money,
 ) -> Result<AccountingResult, AppError> {
+    compute_result_with(conn, period, profile, prior_losses_available, Money::ZERO)
+}
+
+/// [`compute_result_with_losses`] avec, en plus, les charges non déductibles à réintégrer au
+/// résultat fiscal (lot 41) : le résultat comptable ne change pas, la base de l'IS augmente
+/// d'autant — les déficits antérieurs s'imputent sur la base réintégrée.
+///
+/// # Errors
+///
+/// Erreur de lecture SQLite.
+pub fn compute_result_with(
+    conn: &Connection,
+    period: FiscalYear,
+    profile: &CompanyProfile,
+    prior_losses_available: Money,
+    non_deductible_expenses: Money,
+) -> Result<AccountingResult, AppError> {
     let revenue_ht: Money = list_invoices(conn)?
         .iter()
         .filter(|inv| period.contains(inv.issued_on))
@@ -312,7 +349,11 @@ pub fn compute_result_with_losses(
     let director_remuneration = director_cost(profile, period);
 
     let result_before_tax = revenue_ht - expenses - director_remuneration;
-    let imputation = impute_prior_losses(result_before_tax, prior_losses_available);
+    let non_deductible_expenses = non_deductible_expenses.max(Money::ZERO);
+    let imputation = impute_prior_losses(
+        result_before_tax + non_deductible_expenses,
+        prior_losses_available,
+    );
     let corporate_tax = corporate_income_tax(imputation.taxable_result);
     let net_result = result_before_tax - corporate_tax;
 
@@ -322,6 +363,7 @@ pub fn compute_result_with_losses(
         expenses,
         director_remuneration,
         result_before_tax,
+        non_deductible_expenses,
         prior_losses_available: prior_losses_available.max(Money::ZERO),
         losses_imputed: imputation.imputed,
         taxable_result: imputation.taxable_result,
@@ -663,6 +705,7 @@ mod tests {
                     incurred_on: date(2026, TimeMonth::October, 5),
                     receipt_hash: None,
                     receipt_filename: None,
+                    supplier: None,
                     bank_transaction_id: None,
                 },
                 &human(),
@@ -682,14 +725,63 @@ mod tests {
         assert_eq!(result.expenses, Money::from_cents(80_000));
         assert_eq!(result.director_remuneration, Money::ZERO);
         assert_eq!(result.result_before_tax, Money::from_cents(537_500));
-        // 15 % de 5 375 € = 806,25 €.
-        assert_eq!(result.corporate_tax, Money::from_cents(80_625));
-        assert_eq!(result.net_result, Money::from_cents(456_875));
+        // 15 % de 5 375 € = 806,25 € → 806 € (art. 1657 CGI, lot 41).
+        assert_eq!(result.corporate_tax, Money::from_cents(80_600));
+        assert_eq!(result.net_result, Money::from_cents(456_900));
 
         // TVA de l'exercice : 20 % de 6 175 € collectés (1 235 €) − 160 € déductibles = 1 075 €.
         let vat = vat_due_for_period(store.connection(), period.start(), period.end()).unwrap();
         assert_eq!(vat.collected, Money::from_cents(123_500));
         assert_eq!(vat.deductible, Money::from_cents(16_000));
         assert_eq!(vat.due, Money::from_cents(107_500));
+    }
+
+    // --- Lot 41 : arrondi à l'euro (art. 1657 CGI). ---
+
+    #[test]
+    fn corporate_income_tax_is_rounded_to_the_euro_like_the_2065() {
+        // 5 375 € × 15 % = 806,25 € → 806 € (fraction < 0,50 abandonnée).
+        assert_eq!(
+            corporate_income_tax(Money::from_cents(537_500)),
+            Money::from_cents(80_600)
+        );
+        // Base 5 375,50 € → arrondie à 5 376 € d'abord ; 15 % = 806,40 € → 806 €.
+        assert_eq!(
+            corporate_income_tax(Money::from_cents(537_550)),
+            Money::from_cents(80_600)
+        );
+        // 10 003,33 € → 10 003 € → 1 500,45 € → 1 500 €.
+        assert_eq!(
+            corporate_income_tax(Money::from_cents(1_000_333)),
+            Money::from_cents(150_000)
+        );
+        // La fraction égale à 0,50 compte pour 1 : 0,50 € → 1 € ; 0,49 € → 0 ; −0,50 € → −1 €.
+        assert_eq!(round_to_euro(Money::from_cents(50)), Money::from_cents(100));
+        assert_eq!(round_to_euro(Money::from_cents(49)), Money::ZERO);
+        assert_eq!(
+            round_to_euro(Money::from_cents(-50)),
+            Money::from_cents(-100)
+        );
+        assert_eq!(
+            round_to_euro(Money::from_cents(123_449)),
+            Money::from_cents(123_400)
+        );
+    }
+
+    proptest! {
+        #[test]
+        fn the_rounded_tax_is_a_whole_number_of_euros_within_half_a_euro_of_the_exact_one(
+            cents in 0_i64..1_000_000_000
+        ) {
+            let tax = corporate_income_tax(Money::from_cents(cents));
+            prop_assert_eq!(tax.cents() % 100, 0);
+            let base = round_to_euro(Money::from_cents(cents)).cents();
+            let exact = if base <= REDUCED_RATE_CEILING.cents() {
+                base * 15 / 100
+            } else {
+                REDUCED_RATE_CEILING.cents() * 15 / 100 + (base - REDUCED_RATE_CEILING.cents()) * 25 / 100
+            };
+            prop_assert!((tax.cents() - exact).abs() <= 50, "{tax} vs {exact}");
+        }
     }
 }

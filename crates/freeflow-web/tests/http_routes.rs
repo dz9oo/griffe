@@ -334,6 +334,7 @@ async fn every_screen_renders_successfully_against_a_freshly_seeded_vault() {
                         .unwrap(),
                     receipt_hash: None,
                     receipt_filename: None,
+                    supplier: None,
                     bank_transaction_id: None,
                 },
                 &human_ctx(),

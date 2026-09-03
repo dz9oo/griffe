@@ -22,6 +22,7 @@
 //!   calendrier chiffré, dérivé de l'exercice réel.
 
 use rusqlite::Connection;
+use std::fmt::Write as _;
 use time::Date;
 
 use crate::accounting::{compute_result, vat_due_for_period};
@@ -60,6 +61,12 @@ pub enum FiscalDeadlineKind {
     AccountsFiling,
     /// Déclaration sociale nominative mensuelle (président rémunéré uniquement).
     Dsn,
+    /// Déclaration des honoraires (DAS2, art. 240 CGI) : cumul par bénéficiaire et par année
+    /// civile au-delà de 2 400 € (lot 41).
+    Das2,
+    /// Prélèvement forfaitaire et prélèvements sociaux retenus sur des dividendes (formulaire
+    /// 2777), avant le 15 du mois suivant la mise en paiement (lot 41).
+    Dividends2777,
 }
 
 impl FiscalDeadlineKind {
@@ -76,6 +83,8 @@ impl FiscalDeadlineKind {
             Self::ApprovalMeeting => "approval_meeting",
             Self::AccountsFiling => "accounts_filing",
             Self::Dsn => "dsn",
+            Self::Das2 => "das2",
+            Self::Dividends2777 => "dividends_2777",
         }
     }
 }
@@ -221,6 +230,60 @@ pub const SIMPLIFIED_REGIME_REPEAL: Date =
         Ok(date) => date,
         Err(_) => panic!("le 1er janvier 2027 est une date valide"),
     };
+
+/// Seuil de remboursement d'un crédit de TVA sur la CA12 (formulaire 3519) : 150 € (lot 41).
+pub const CA12_REFUND_THRESHOLD: Money = Money::from_cents(15_000);
+
+/// Seuil de la déclaration des honoraires (DAS2) par bénéficiaire et par année civile — 2 400 €
+/// depuis les sommes versées en 2024 (art. 240 CGI, BOI-BIC-DECLA-30-70-20 § 140 ; c'était
+/// 1 200 € avant). Lot 41.
+pub const DAS2_THRESHOLD: Money = Money::from_cents(240_000);
+
+/// Prélèvement forfaitaire non libératoire retenu sur les dividendes (12,8 %), et prélèvements
+/// sociaux : 17,2 % jusqu'en 2025, 18,6 % pour les revenus perçus à compter du 1er janvier
+/// 2026 (loi de financement de la sécurité sociale pour 2026) — lot 41.
+pub const DIVIDEND_INCOME_TAX_BPS: u32 = 1_280;
+
+/// Le taux de prélèvements sociaux applicable à des dividendes mis en paiement à `paid_on`.
+#[must_use]
+pub fn dividend_social_charges_bps(paid_on: Date) -> u32 {
+    if paid_on.year() >= 2026 { 1_860 } else { 1_720 }
+}
+
+/// L'échéance de la déclaration des honoraires (DAS2) pour les sommes de l'année civile `year`
+/// : avec la déclaration de résultats pour un exercice civil (2e jour ouvré suivant le 1er mai
+/// de N+1, BOI-BIC-DECLA-30-70-20 § 400), sinon dans les trois mois de la clôture de l'exercice
+/// qui suit la fin de l'année civile (même §).
+///
+/// # Panics
+///
+/// Jamais en pratique : le 1er mai et le 31 décembre existent chaque année.
+#[must_use]
+pub fn das2_due_on(fye: FiscalYearEnd, year: i32) -> Date {
+    if fye == FiscalYearEnd::CALENDAR {
+        let may_first = Date::from_calendar_date(year + 1, time::Month::May, 1)
+            .expect("le 1er mai existe chaque année");
+        return second_business_day_after(may_first);
+    }
+    let dec_31 = Date::from_calendar_date(year, time::Month::December, 31)
+        .expect("le 31 décembre existe chaque année");
+    let closing = fye.containing(dec_31).end();
+    add_months(closing, 3)
+}
+
+/// L'échéance du formulaire 2777 pour des dividendes mis en paiement à `paid_on` : le 15 du
+/// mois suivant, reporté au jour ouvré.
+///
+/// # Panics
+///
+/// Jamais en pratique : le 15 existe dans chaque mois.
+#[must_use]
+pub fn dividends_2777_due_on(paid_on: Date) -> Date {
+    let next = add_months(paid_on, 1);
+    let fifteenth =
+        Date::from_calendar_date(next.year(), next.month(), 15).expect("le 15 existe chaque mois");
+    next_french_business_day_on_or_after(fifteenth)
+}
 
 /// Seuil de dispense des acomptes de TVA du régime simplifié : aucun acompte n'est dû si la TVA
 /// due au titre de l'exercice précédent est inférieure à 1 000 € (art. 287, 3 du CGI).
@@ -695,7 +758,6 @@ fn push_simplified_vat_deadlines(
     deadlines: &mut Vec<FiscalDeadline>,
     window: SimplifiedVatWindow,
 ) -> Result<(), AppError> {
-    use std::fmt::Write as _;
     let SimplifiedVatWindow {
         today,
         horizon,
@@ -782,7 +844,20 @@ fn push_simplified_vat_deadlines(
         if due_on < today || due_on > horizon {
             continue;
         }
-        let vat = vat_of(exercise)?;
+        // Lot 41 : le crédit de TVA repris au bilan d'ouverture (445670) vient en déduction de
+        // la première CA12 — sans lui, la régularisation surestimait la TVA à payer.
+        let opening_credit = reprise
+            .as_ref()
+            .filter(|o| o.balance.opens_on == exercise.start())
+            .map_or(Money::ZERO, |o| {
+                o.balance
+                    .lines
+                    .iter()
+                    .filter(|l| l.account.starts_with("44567"))
+                    .map(crate::domain::OpeningBalanceLine::signed)
+                    .sum()
+            });
+        let vat = vat_of(exercise)?.map(|v| v - opening_credit);
         let base = vat_of(fye.previous(exercise))?;
         let instalments: Option<Money> = base.map(|b| {
             VatInstalment::ALL
@@ -801,11 +876,16 @@ fn push_simplified_vat_deadlines(
             )
         };
         let mut note = format!(
-            "CA12 : TVA due au titre de l'exercice {} – {} ({}) − acomptes de juillet et \
+            "CA12 : TVA due au titre de l'exercice {} – {} ({}{}) − acomptes de juillet et \
              décembre ({}) ; {}",
             exercise.start(),
             exercise.end(),
             unknown(vat),
+            if opening_credit.is_zero() {
+                String::new()
+            } else {
+                format!(", crédit de TVA repris à l'ouverture déduit : {opening_credit}")
+            },
             unknown(instalments),
             if exercise.end().month() == time::Month::December && exercise.end().day() == 31 {
                 "le 2e jour ouvré suivant le 1er mai"
@@ -819,6 +899,13 @@ fn push_simplified_vat_deadlines(
         let successor = fye.containing(add_months(exercise.end(), 1));
         if !simplified_regime_applies_to(successor) {
             let _ = write!(note, " ; dernière CA12 — {REPEAL_NOTE}");
+        }
+        if amount.is_some_and(|a| a < -CA12_REFUND_THRESHOLD) {
+            let _ = write!(
+                note,
+                " ; crédit supérieur à 150 € : remboursement possible sur demande (formulaire \
+                 3519) plutôt que report"
+            );
         }
         deadlines.push(FiscalDeadline {
             kind: FiscalDeadlineKind::Ca12,
@@ -886,7 +973,18 @@ pub fn fiscal_calendar(conn: &Connection, today: Date) -> Result<Vec<FiscalDeadl
     // CA12), s'il commence dans l'horizon.
     let scheme = VatFilingScheme::for_exercise(vat_regime, current);
     let ca3 = match scheme.ca3_periodicity() {
-        Some(periodicity) => Some((periodicity, None)),
+        // Lot 41 : quand l'exercice précédent était encore au réel simplifié (sa CA12 E couvre
+        // tout jusqu'à sa clôture), la première CA3 ne déclare rien d'antérieur au début de
+        // l'exercice courant — sinon le trimestre qui chevauche la clôture décalée serait
+        // déclaré deux fois (constat de l'audit sur une clôture au 30/09).
+        Some(periodicity) => Some((
+            periodicity,
+            simplified_regime_applies_to(previous).then(|| {
+                let start = current.start();
+                Month::new(start.year(), u8::from(start.month()))
+                    .expect("un début d'exercice a un mois valide")
+            }),
+        )),
         None if scheme == VatFilingScheme::Simplified => {
             let next = fye.containing(add_months(current.end(), 1));
             (!simplified_regime_applies_to(next)).then(|| {
@@ -1021,10 +1119,12 @@ pub fn fiscal_calendar(conn: &Connection, today: Date) -> Result<Vec<FiscalDeadl
         .as_ref()
         .and_then(|p| p.director_monthly_gross.map(|g| (p, g)));
     if let Some((profile, gross)) = director {
+        // Lot 41 : le montant de la DSN est ce que la société *verse aux organismes*, les
+        // cotisations estimées (coût − brut), pas le coût total incluant le salaire.
         let employer = profile
             .director_charge_ratio_bps
             .map_or(Money::ZERO, |bps| gross.apply_rate_bps(bps));
-        let monthly_cost = gross + employer;
+        let monthly_cost = employer;
         // La DSN d'un mois se dépose le 5 ou le 15 du mois suivant ; on retient le 15 (indicatif)
         // du mois courant si à venir, sinon du mois suivant.
         let this_month = Month::new(today.year(), u8::from(today.month())).unwrap();
@@ -1038,7 +1138,99 @@ pub fn fiscal_calendar(conn: &Connection, today: Date) -> Result<Vec<FiscalDeadl
             kind: FiscalDeadlineKind::Dsn,
             due_on: dsn_due,
             amount: Some(monthly_cost),
-            note: Some("cotisations sociales mensuelles du dirigeant (estimation)".to_string()),
+            note: Some(
+                "cotisations sociales mensuelles du dirigeant (estimation : charges patronales et \
+                 salariales selon le ratio du profil, hors salaire net)"
+                    .to_string(),
+            ),
+        });
+    }
+
+    // --- DAS2 (lot 41) : les honoraires de chaque année civile dont l'échéance tombe dans
+    // l'horizon, par bénéficiaire, au-delà du seuil. ---
+    for year in [today.year() - 1, today.year()] {
+        let due_on = das2_due_on(fye, year);
+        if due_on < today || due_on > horizon {
+            continue;
+        }
+        let fees = crate::expenses::fees_by_supplier(conn, year)?;
+        let total: Money = fees.iter().map(|(_, m)| *m).sum();
+        if total.is_zero() {
+            continue;
+        }
+        let above: Vec<String> = fees
+            .iter()
+            .filter(|(s, m)| s.is_some() && *m >= DAS2_THRESHOLD)
+            .map(|(s, m)| format!("{} ({m})", s.as_deref().unwrap_or_default()))
+            .collect();
+        let unnamed: Money = fees
+            .iter()
+            .filter(|(s, _)| s.is_none())
+            .map(|(_, m)| *m)
+            .sum();
+        let mut note = if above.is_empty() {
+            format!(
+                "DAS2 {year} : aucun bénéficiaire d'honoraires au-delà de {DAS2_THRESHOLD} sur \
+                 l'année civile (cumul par bénéficiaire, art. 240 CGI) — rien à déclarer"
+            )
+        } else {
+            format!(
+                "DAS2 {year} : honoraires à déclarer par bénéficiaire (plus de {DAS2_THRESHOLD} \
+                 sur l'année civile, art. 240 CGI) : {}",
+                above.join(", ")
+            )
+        };
+        if !unnamed.is_zero() {
+            let _ = write!(
+                note,
+                " ; {unnamed} d'honoraires sans bénéficiaire renseigné — nommez-le sur chaque \
+                 dépense (expense edit --supplier) pour que le cumul soit juste"
+            );
+        }
+        deadlines.push(FiscalDeadline {
+            kind: FiscalDeadlineKind::Das2,
+            due_on,
+            amount: Some(if above.is_empty() {
+                Money::ZERO
+            } else {
+                fees.iter()
+                    .filter(|(s, m)| s.is_some() && *m >= DAS2_THRESHOLD)
+                    .map(|(_, m)| *m)
+                    .sum()
+            }),
+            note: Some(note),
+        });
+    }
+
+    // --- 2777 (lot 41) : dès qu'une affectation approuvée distribue des dividendes, le
+    // prélèvement retenu à la source se déclare et se paie avant le 15 du mois suivant la mise
+    // en paiement (réputée à la date d'approbation). ---
+    for record in crate::fiscal_year::list_fiscal_years(conn)? {
+        let (Some(approved_on), false) = (record.approved_on, record.dividends.is_zero()) else {
+            continue;
+        };
+        let due_on = dividends_2777_due_on(approved_on);
+        if due_on < today || due_on > horizon {
+            continue;
+        }
+        let social_bps = dividend_social_charges_bps(approved_on);
+        let income_tax = record.dividends.apply_rate_bps(DIVIDEND_INCOME_TAX_BPS);
+        let social = record.dividends.apply_rate_bps(social_bps);
+        deadlines.push(FiscalDeadline {
+            kind: FiscalDeadlineKind::Dividends2777,
+            due_on,
+            amount: Some(income_tax + social),
+            note: Some(format!(
+                "dividendes de {} mis en paiement le {} (exercice clos le {}) : la société \
+                 retient et verse le prélèvement forfaitaire non libératoire de 12,8 % \
+                 ({income_tax}) et les prélèvements sociaux de {},{} % ({social}) — formulaire \
+                 2777, avant le 15 du mois suivant",
+                record.dividends,
+                approved_on,
+                record.ends_on,
+                social_bps / 100,
+                social_bps % 100 / 10,
+            )),
         });
     }
 
@@ -1319,7 +1511,7 @@ mod tests {
         Executor::new(&mut store)
             .execute(&calendar_profile(), &human)
             .unwrap();
-        // Facture de l'exercice CLOS (2025) : 6 175 € HT → IS 15 % = 926,25 €.
+        // Facture de l'exercice CLOS (2025) : 6 175 € HT → IS 15 % = 926,25 € → 926 €.
         emit(
             &mut store,
             client_id,
@@ -1342,7 +1534,7 @@ mod tests {
             .find(|d| d.kind == FiscalDeadlineKind::IsSolde)
             .expect("le solde d'IS de l'exercice clos doit figurer au calendrier");
         assert_eq!(solde.due_on, date(2026, TimeMonth::May, 15));
-        assert_eq!(solde.amount, Some(Money::from_cents(92_625)));
+        assert_eq!(solde.amount, Some(Money::from_cents(92_600)));
         // La CA3 d'une SASU parisienne au SIREN 55… tombe le 23 (grille officielle), pas le 15.
         let ca3 = calendar
             .iter()
@@ -1751,5 +1943,230 @@ mod tests {
         // Aucune CA3 : le réel normal ne commence qu'avec l'exercice ouvert le 1er juillet 2027,
         // dont la première CA3 (octobre 2027) dépasse l'horizon.
         assert!(calendar.iter().all(|d| d.kind != FiscalDeadlineKind::Ca3));
+    }
+
+    // --- Lot 41 : DAS2, 2777, première CA3 après un exercice au réel simplifié. ---
+
+    #[test]
+    fn the_das2_is_due_with_the_tax_return_or_three_months_after_an_offset_close() {
+        // Exercice civil : sommes de 2025, déclarées avec la liasse, le 2e jour ouvré suivant
+        // le 1er mai 2026 (vendredi férié) → mardi 5 mai.
+        assert_eq!(
+            das2_due_on(FiscalYearEnd::CALENDAR, 2025),
+            date(2026, TimeMonth::May, 5)
+        );
+        // Clôture au 30 septembre : les sommes de 2025 se déclarent dans les trois mois de la
+        // clôture de l'exercice qui suit le 31 décembre 2025 (30 septembre 2026) → 30 décembre.
+        assert_eq!(
+            das2_due_on(FiscalYearEnd::new(9, 30).unwrap(), 2025),
+            date(2026, TimeMonth::December, 30)
+        );
+    }
+
+    #[test]
+    fn the_2777_is_due_on_the_15th_of_the_month_after_payment_moved_to_a_business_day() {
+        assert_eq!(
+            dividends_2777_due_on(date(2026, TimeMonth::June, 10)),
+            date(2026, TimeMonth::July, 15)
+        );
+        // 15 août 2026 : samedi et férié → lundi 17.
+        assert_eq!(
+            dividends_2777_due_on(date(2026, TimeMonth::July, 20)),
+            date(2026, TimeMonth::August, 17)
+        );
+        assert_eq!(
+            dividend_social_charges_bps(date(2025, TimeMonth::December, 31)),
+            1_720
+        );
+        assert_eq!(
+            dividend_social_charges_bps(date(2026, TimeMonth::January, 1)),
+            1_860
+        );
+    }
+
+    fn fees(store: &mut Store, supplier: Option<&str>, cents: i64, on: Date) {
+        Executor::new(store)
+            .execute(
+                &crate::expenses::RecordExpense {
+                    label: "Honoraires".to_string(),
+                    category: crate::domain::ExpenseCategory::Fees,
+                    amount: Money::from_cents(cents),
+                    vat_rate: VatRate::Standard,
+                    vat_deductible: Money::ZERO,
+                    incurred_on: on,
+                    receipt_hash: None,
+                    receipt_filename: None,
+                    supplier: supplier.map(str::to_string),
+                    bank_transaction_id: None,
+                },
+                &ExecutionContext::new(Actor::Human, false),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn the_das2_cumulates_fees_per_beneficiary_and_per_calendar_year() {
+        let (mut store, _) = fresh_store("das2");
+        let human = ExecutionContext::new(Actor::Human, false);
+        Executor::new(&mut store)
+            .execute(&calendar_profile(), &human)
+            .unwrap();
+        // 600 € en octobre 2025 + 900 € en mars 2026 au même cabinet : 1 500 € sur deux années
+        // civiles, jamais 2 400 € sur une seule — rien à déclarer.
+        fees(
+            &mut store,
+            Some("Cabinet Lumen"),
+            60_000,
+            date(2025, TimeMonth::October, 3),
+        );
+        fees(
+            &mut store,
+            Some("Cabinet Lumen"),
+            90_000,
+            date(2026, TimeMonth::March, 3),
+        );
+        let calendar =
+            fiscal_calendar(store.connection(), date(2026, TimeMonth::April, 1)).unwrap();
+        let das2: Vec<_> = calendar
+            .iter()
+            .filter(|d| d.kind == FiscalDeadlineKind::Das2)
+            .collect();
+        assert_eq!(das2.len(), 1, "{das2:?}");
+        assert_eq!(das2[0].due_on, date(2026, TimeMonth::May, 5));
+        assert_eq!(das2[0].amount, Some(Money::ZERO));
+        assert!(das2[0].note.as_deref().unwrap().contains("rien à déclarer"));
+
+        // 1 300 € deux fois de plus en 2026 : 3 500 € au même bénéficiaire → à déclarer le
+        // 4 mai 2027 (1er mai 2027 un samedi : lundi 3 puis mardi 4), et 500 € sans
+        // bénéficiaire signalés.
+        fees(
+            &mut store,
+            Some("Cabinet Lumen"),
+            130_000,
+            date(2026, TimeMonth::June, 1),
+        );
+        fees(
+            &mut store,
+            Some("Cabinet Lumen"),
+            130_000,
+            date(2026, TimeMonth::September, 1),
+        );
+        fees(&mut store, None, 50_000, date(2026, TimeMonth::November, 1));
+        let calendar =
+            fiscal_calendar(store.connection(), date(2027, TimeMonth::January, 10)).unwrap();
+        let das2 = calendar
+            .iter()
+            .find(|d| d.kind == FiscalDeadlineKind::Das2)
+            .expect("la DAS2 2026 doit figurer au calendrier");
+        assert_eq!(das2.due_on, date(2027, TimeMonth::May, 4));
+        assert_eq!(das2.amount, Some(Money::from_cents(350_000)));
+        let note = das2.note.as_deref().unwrap();
+        assert!(
+            note.contains(&format!("Cabinet Lumen ({})", Money::from_cents(350_000))),
+            "{note}"
+        );
+        assert!(
+            note.contains(&format!(
+                "{} d'honoraires sans bénéficiaire",
+                Money::from_cents(50_000)
+            )),
+            "{note}"
+        );
+    }
+
+    #[test]
+    fn approved_dividends_open_a_2777_deadline_priced_at_the_flat_tax() {
+        let (mut store, client_id) = fresh_store("2777");
+        let human = ExecutionContext::new(Actor::Human, false);
+        Executor::new(&mut store)
+            .execute(&calendar_profile(), &human)
+            .unwrap();
+        emit(
+            &mut store,
+            client_id,
+            1_000_000,
+            1.0,
+            date(2025, TimeMonth::June, 1),
+        );
+        let crate::app::Outcome::Applied(id) = Executor::new(&mut store)
+            .execute(
+                &crate::fiscal_year::CloseFiscalYear {
+                    starts_on: date(2025, TimeMonth::January, 1),
+                    ends_on: date(2025, TimeMonth::December, 31),
+                    legal_reserve: Money::from_cents(10_000),
+                    dividends: Money::from_cents(400_000),
+                    carry_back: false,
+                    today: None,
+                    non_deductible_expenses: Money::ZERO,
+                },
+                &human,
+            )
+            .unwrap()
+        else {
+            panic!("expected Applied")
+        };
+        Executor::new(&mut store)
+            .execute(
+                &crate::fiscal_year::ApproveFiscalYear {
+                    id,
+                    revision: 1,
+                    approved_on: date(2026, TimeMonth::June, 10),
+                    today: None,
+                },
+                &human,
+            )
+            .unwrap();
+        let calendar =
+            fiscal_calendar(store.connection(), date(2026, TimeMonth::June, 15)).unwrap();
+        let d = calendar
+            .iter()
+            .find(|d| d.kind == FiscalDeadlineKind::Dividends2777)
+            .expect("les dividendes approuvés ouvrent une échéance 2777");
+        assert_eq!(d.due_on, date(2026, TimeMonth::July, 15));
+        // 4 000 € × (12,8 % + 18,6 %) = 512 € + 744 € = 1 256 €.
+        assert_eq!(d.amount, Some(Money::from_cents(125_600)));
+        let note = d.note.as_deref().unwrap();
+        assert!(note.contains("18,6 %"), "{note}");
+        assert!(
+            note.contains(&Money::from_cents(51_200).to_string()),
+            "{note}"
+        );
+    }
+
+    #[test]
+    fn the_first_quarterly_ca3_after_a_simplified_exercise_starts_with_the_new_exercise() {
+        // Réel simplifié, clôture au 30 juin : l'exercice 2026-27 (ouvert avant 2027) reste
+        // au RSI et se solde par une CA12 E ; l'exercice ouvert le 1er juillet 2027 passe en
+        // CA3 trimestrielle — la première déclare le T3 2027 (dépôt en octobre), jamais le
+        // T2 2027 déjà couvert par la CA12 E.
+        let (mut store, client_id) = fresh_store("first-ca3");
+        let mut profile = calendar_profile();
+        profile.vat_regime = Some(VatRegime::RealSimplified);
+        profile.fiscal_year_end = Some(FiscalYearEnd::new(6, 30).unwrap());
+        Executor::new(&mut store)
+            .execute(&profile, &ExecutionContext::new(Actor::Human, false))
+            .unwrap();
+        emit(
+            &mut store,
+            client_id,
+            1_000_000,
+            1.0,
+            date(2027, TimeMonth::May, 15),
+        );
+        let calendar = fiscal_calendar(store.connection(), date(2027, TimeMonth::July, 5)).unwrap();
+        let ca12 = calendar
+            .iter()
+            .find(|d| d.kind == FiscalDeadlineKind::Ca12)
+            .expect("CA12 E de l'exercice clos au 30 juin 2027");
+        assert_eq!(ca12.due_on, date(2027, TimeMonth::September, 30));
+        let ca3 = calendar
+            .iter()
+            .find(|d| d.kind == FiscalDeadlineKind::Ca3)
+            .expect("première CA3 trimestrielle de l'exercice 2027-28");
+        // SASU parisienne au SIREN 55… : le 24 (grille SA/SAS), dimanche → lundi 25.
+        assert_eq!(ca3.due_on, date(2027, TimeMonth::October, 25));
+        let note = ca3.note.as_deref().unwrap();
+        assert!(note.contains("2027-07"), "{note}");
+        assert!(!note.contains("2027-04"), "{note}");
     }
 }

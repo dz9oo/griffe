@@ -1834,6 +1834,7 @@ mod tests {
             incurred_on: on,
             receipt_hash: None,
             receipt_filename: None,
+            supplier: None,
             created_at: OffsetDateTime::UNIX_EPOCH,
             revision: 1,
         }
@@ -1897,6 +1898,7 @@ mod tests {
             legal_reserve: Money::from_cents(reserve),
             dividends: Money::from_cents(dividends),
             retained_earnings: Money::from_cents(net - reserve - dividends),
+            non_deductible_expenses: Money::ZERO,
             approved_on: approved,
             revision: 1,
             created_at: OffsetDateTime::UNIX_EPOCH,
@@ -2499,6 +2501,7 @@ mod tests {
                     dividends: Money::ZERO,
                     carry_back: false,
                     today: None,
+                    non_deductible_expenses: Money::ZERO,
                 },
                 &human,
             )

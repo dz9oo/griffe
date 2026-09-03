@@ -86,6 +86,10 @@ pub enum YearCommand {
         /// net. Refusé sans déficit, sans exercice précédent ou sans bénéfice d'imputation.
         #[arg(long)]
         carry_back: bool,
+        /// Charges non déductibles fiscalement (art. 39-4 CGI : amendes, dépenses somptuaires…),
+        /// à réintégrer — reportées sur le PV (art. 223 quater) et la 2033-B. Euros, défaut 0.
+        #[arg(long, value_parser = parse_money, default_value = "0")]
+        non_deductible: Money,
         /// Date du jour (défaut : aujourd'hui, heure locale) — la clôture est refusée tant que
         /// l'exercice n'est pas écoulé.
         #[arg(long, value_parser = parse_date)]
@@ -691,6 +695,13 @@ fn cli_hint(checklist: &ClosingChecklist, step: &ClosingStep) -> Option<String> 
              --out … ; freeflow fec export {period} --out …"
         ),
         ClosingStepKey::Liasse => format!("freeflow year render {period} liasse --out …"),
+        ClosingStepKey::Vat => "freeflow fiscal calendar (CA3/CA12 à venir) ; company \
+                                set-profile --vat-regime … si le régime manque"
+            .to_string(),
+        ClosingStepKey::Das2 => match step.status {
+            StepStatus::Warning => "freeflow expense edit <RÉF> --supplier <nom>".to_string(),
+            _ => return None,
+        },
         ClosingStepKey::CorporateTax | ClosingStepKey::Filing => return None,
     };
     Some(hint)
@@ -921,6 +932,7 @@ pub fn run(
             legal_reserve,
             dividends,
             carry_back,
+            non_deductible,
             today,
         } => {
             let (starts_on, ends_on) = resolve_close_period(store, period, starts_on, ends_on)?;
@@ -931,6 +943,7 @@ pub fn run(
                 dividends,
                 carry_back,
                 today: Some(today.unwrap_or_else(today_local)),
+                non_deductible_expenses: non_deductible,
             };
             let outcome = Executor::new(store).execute(&command, ctx)?;
             format_outcome_as(&outcome, json, |id| {

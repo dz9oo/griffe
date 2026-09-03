@@ -481,6 +481,7 @@ mod tests {
             incurred_on: time::Date::from_calendar_date(2026, time::Month::September, day).unwrap(),
             receipt_hash: None,
             receipt_filename: None,
+            supplier: None,
             bank_transaction_id: None,
         };
         let crate::app::Outcome::Applied(id) = Executor::new(store)

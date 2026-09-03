@@ -253,6 +253,9 @@ pub struct RecordExpense {
     /// les entrées d'audit antérieures restent lisibles.
     #[serde(default)]
     pub bank_transaction_id: Option<BankTransactionId>,
+    /// Bénéficiaire (honoraires : le cabinet, l'avocat…), pour la DAS2 (lot 41).
+    #[serde(default)]
+    pub supplier: Option<String>,
 }
 
 impl Command for RecordExpense {
@@ -283,6 +286,7 @@ impl Command for RecordExpense {
             incurred_on: self.incurred_on,
             receipt_hash: self.receipt_hash.clone(),
             receipt_filename: self.receipt_filename.clone(),
+            supplier: self.supplier.clone(),
             created_at: OffsetDateTime::now_utc(),
             revision: 1,
         };
@@ -346,6 +350,8 @@ pub struct UpdateExpense {
     pub incurred_on: time::Date,
     pub receipt_hash: Option<String>,
     pub receipt_filename: Option<String>,
+    #[serde(default)]
+    pub supplier: Option<String>,
 }
 
 impl Command for UpdateExpense {
@@ -374,7 +380,7 @@ impl Command for UpdateExpense {
             "UPDATE expenses
                 SET label = ?1, category = ?2, amount_cents = ?3, vat_rate = ?4,
                     vat_deductible_cents = ?5, incurred_on = ?6, receipt_hash = ?7,
-                    receipt_filename = ?8, revision = ?9
+                    receipt_filename = ?8, revision = ?9, supplier = ?12
               WHERE id = ?10 AND revision = ?11",
             params![
                 self.label,
@@ -388,6 +394,7 @@ impl Command for UpdateExpense {
                 new_revision,
                 self.id.to_string(),
                 self.revision,
+                self.supplier,
             ],
         )?;
         Ok(new_revision)
@@ -470,8 +477,8 @@ fn insert_expense(conn: &Connection, expense: &Expense) -> Result<(), AppError> 
     conn.execute(
         "INSERT INTO expenses
             (id, label, category, amount_cents, vat_rate, vat_deductible_cents, incurred_on,
-             receipt_hash, receipt_filename, created_at, revision)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+             receipt_hash, receipt_filename, created_at, revision, supplier)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             expense.id.to_string(),
             expense.label,
@@ -484,6 +491,7 @@ fn insert_expense(conn: &Connection, expense: &Expense) -> Result<(), AppError> 
             expense.receipt_filename,
             expense.created_at.format(&Rfc3339)?,
             expense.revision,
+            expense.supplier,
         ],
     )?;
     Ok(())
@@ -504,9 +512,43 @@ fn row_to_expense(row: &Row) -> rusqlite::Result<Expense> {
         incurred_on: domain::parse_date(&incurred_on).map_err(conv_err)?,
         receipt_hash: row.get("receipt_hash")?,
         receipt_filename: row.get("receipt_filename")?,
+        supplier: row.get("supplier")?,
         created_at: OffsetDateTime::parse(&created_at, &Rfc3339).map_err(conv_err)?,
         revision: row.get("revision")?,
     })
+}
+
+/// Les honoraires (`fees`) d'une **année civile**, cumulés par bénéficiaire (lot 41, DAS2) —
+/// `None` regroupe les honoraires sans bénéficiaire renseigné. Montants TTC (c'est ce que la
+/// DAS2 déclare), datés de l'engagement faute de date de paiement.
+///
+/// # Errors
+///
+/// Erreur de lecture SQLite.
+pub fn fees_by_supplier(
+    conn: &Connection,
+    calendar_year: i32,
+) -> Result<Vec<(Option<String>, Money)>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT supplier, sum(amount_cents) FROM expenses
+          WHERE category = 'fees' AND incurred_on >= ?1 AND incurred_on <= ?2
+          GROUP BY supplier ORDER BY sum(amount_cents) DESC",
+    )?;
+    let rows = stmt.query_map(
+        params![
+            format!("{calendar_year:04}-01-01"),
+            format!("{calendar_year:04}-12-31")
+        ],
+        |row| {
+            let supplier: Option<String> = row.get(0)?;
+            let cents: i64 = row.get(1)?;
+            Ok((
+                supplier.filter(|s| !s.trim().is_empty()),
+                Money::from_cents(cents),
+            ))
+        },
+    )?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
 }
 
 /// # Errors
@@ -631,6 +673,7 @@ mod tests {
             incurred_on: date(2026, Month::September, 5),
             receipt_hash: Some("deadbeef".to_string()),
             receipt_filename: Some("facture.pdf".to_string()),
+            supplier: None,
             bank_transaction_id: None,
         }
     }
@@ -775,6 +818,7 @@ mod tests {
             incurred_on: expense.incurred_on,
             receipt_hash: expense.receipt_hash.clone(),
             receipt_filename: expense.receipt_filename.clone(),
+            supplier: None,
         }
     }
 

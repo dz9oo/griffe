@@ -89,6 +89,8 @@ pub struct ExpenseFormValues {
     pub vat_rate: String,
     pub vat_deductible: String,
     pub incurred_on: String,
+    /// Bénéficiaire (fournisseur), lot 41 — vide = aucun.
+    pub supplier: String,
     /// Nom du justificatif déjà archivé (édition seulement) — affiché, jamais persisté depuis
     /// le formulaire.
     pub current_receipt: Option<String>,
@@ -107,6 +109,7 @@ impl From<&Expense> for ExpenseFormValues {
             vat_rate: e.vat_rate.as_str().to_string(),
             vat_deductible: e.vat_deductible.to_decimal_string(),
             incurred_on: format_date(e.incurred_on),
+            supplier: e.supplier.clone().unwrap_or_default(),
             current_receipt: e.receipt_filename.clone(),
             bank_transaction_id: None,
             bank_transaction_note: None,
@@ -136,6 +139,7 @@ pub fn form_values_from_debit(tx: &BankTransaction) -> ExpenseFormValues {
         vat_rate: VatRate::Standard.as_str().to_string(),
         vat_deductible: Money::ZERO.to_decimal_string(),
         incurred_on: format_date(tx.occurred_on),
+        supplier: String::new(),
         current_receipt: None,
         bank_transaction_id: Some(tx.id.to_string()),
         bank_transaction_note: Some(debit_summary(tx)),
@@ -184,6 +188,8 @@ fn expense_form(
                 (form::number("vat_deductible", "TVA déductible (€)", &values.vat_deductible, "0.01", errors.vat_deductible.as_deref()))
                 (form::field_help("La TVA effectivement déductible peut être inférieure à montant × taux (véhicules, restauration…)."))
                 (form::date("incurred_on", "Date d'engagement", &values.incurred_on, errors.incurred_on.as_deref()))
+                (form::text("supplier", "Bénéficiaire (fournisseur)", &values.supplier, None))
+                (form::field_help("Pour des honoraires, c'est ce nom qui cumule sur la DAS2 (seuil 2 400 € par bénéficiaire et par année civile)."))
                 @if let Some(current) = &values.current_receipt {
                     (form::hidden("current_receipt", current))
                     (form::file("receipt", "Remplacer le justificatif", RECEIPT_ACCEPT))
@@ -233,6 +239,9 @@ pub fn detail_panel(detail: &ExpenseDetail, error: Option<&str>) -> Markup {
             dt { "TVA déductible" } dd class="mono" { (expense.vat_deductible) }
             dt { "Taux de TVA" } dd { (expense.vat_rate.as_str()) }
             dt { "Engagée le" } dd { (format_date(expense.incurred_on)) }
+            @if let Some(supplier) = &expense.supplier {
+                dt { "Bénéficiaire" } dd { (supplier) }
+            }
             @if let Some(filename) = &expense.receipt_filename {
                 dt { "Justificatif" } dd class="mono" { (filename) }
             } @else if expense.receipt_hash.is_some() {

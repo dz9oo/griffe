@@ -22,6 +22,9 @@ pub fn render_appropriation_decision(
     let prior_retained =
         year.retained_earnings - year.net_result + year.legal_reserve + year.dividends;
     let distributable = year.net_result + prior_retained;
+    // Lot 41 : une perte ne se « distribue » pas — le tableau d'origine parle alors du solde à
+    // reporter, et l'affectation se réduit au report à nouveau.
+    let is_loss = year.net_result.is_negative();
 
     let mut b = Bindings::new();
     let header = company_header(&mut b, profile);
@@ -33,6 +36,25 @@ pub fn render_appropriation_decision(
         fr_date(year.ends_on)
     ));
     let net_result_v = b.bind(&year.net_result.to_string());
+    let result_label_v = b.bind(if is_loss {
+        "Perte de l'exercice"
+    } else {
+        "Résultat net de l'exercice"
+    });
+    let total_label_v = b.bind(if is_loss {
+        "Solde à reporter"
+    } else {
+        "Total distribuable"
+    });
+    let decision_note = if is_loss {
+        let note_v = b.bind(
+            "La perte de l'exercice est affectée en totalité au compte « report à nouveau » ; \
+             aucune dotation ni distribution n'est décidée.",
+        );
+        format!("#{note_v}\n#v(0.6em)\n")
+    } else {
+        String::new()
+    };
     let prior_retained_v = b.bind(&prior_retained.to_string());
     let distributable_v = b.bind(&distributable.to_string());
     let legal_reserve_v = b.bind(&year.legal_reserve.to_string());
@@ -58,14 +80,15 @@ pub fn render_appropriation_decision(
   columns: (1fr, auto),
   align: (left, right),
   stroke: 0.5pt,
-  [Résultat net de l'exercice], [#{net_result_v}],
+  [#{result_label_v}], [#{net_result_v}],
   [Report à nouveau antérieur], [#{prior_retained_v}],
-  [*Total distribuable*], [*#{distributable_v}*],
+  [*#{total_label_v}*], [*#{distributable_v}*],
 )
 
 #v(1em)
 *Affectation décidée*
 
+{decision_note}
 #table(
   columns: (1fr, auto),
   align: (left, right),

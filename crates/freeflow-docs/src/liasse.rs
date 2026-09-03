@@ -5,6 +5,7 @@
 //! DGFiP, via partenaire agréé), hors périmètre : cet export sert à transmettre les chiffres à
 //! l'expert-comptable qui télédéclare.
 
+use freeflow_core::accounting::director_gross;
 use freeflow_core::company::CompanyProfile;
 use freeflow_core::domain::Money;
 use freeflow_core::fiscal_year::FiscalYearRecord;
@@ -19,8 +20,63 @@ pub struct LiasseEntry {
     pub form: &'static str,
     /// Référence de case sur le formulaire.
     pub case: &'static str,
-    pub label: &'static str,
+    pub label: String,
     pub amount_cents: i64,
+}
+
+/// Composition du capital social (formulaire 2033-F-SD, lot 41) : cadre I, nombre d'associés
+/// et de parts détenus par des personnes morales (P1/P3) et physiques (P2/P4) ; cadre II, les
+/// personnes physiques détenant au moins 10 % du capital. Une SASU n'a qu'un associé, qui
+/// détient tout : renseigné dès que le profil nomme l'associé unique.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CapitalComposition {
+    pub form: &'static str,
+    /// Case P1 — associés personnes morales.
+    pub legal_entity_shareholders: u32,
+    /// Case P2 — associés personnes physiques.
+    pub individual_shareholders: u32,
+    /// Case P3 — parts détenues par des personnes morales.
+    pub shares_held_by_legal_entities: u32,
+    /// Case P4 — parts détenues par des personnes physiques (`null` si le nombre d'actions
+    /// n'est pas renseigné au profil).
+    pub shares_held_by_individuals: Option<u32>,
+    /// Cadre II — détenteurs personnes physiques d'au moins 10 %.
+    pub holders: Vec<CapitalHolder>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CapitalHolder {
+    pub name: String,
+    pub address: Option<String>,
+    pub shares: Option<u32>,
+    /// Quote-part du capital en points de base (`10000` = 100 %).
+    pub percent_bps: u32,
+}
+
+impl CapitalComposition {
+    fn from_profile(profile: &CompanyProfile) -> Option<Self> {
+        let name = profile
+            .sole_shareholder_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| !n.is_empty())?;
+        Some(Self {
+            form: "2033-F",
+            legal_entity_shareholders: 0,
+            individual_shareholders: 1,
+            shares_held_by_legal_entities: 0,
+            shares_held_by_individuals: profile.share_count,
+            holders: vec![CapitalHolder {
+                name: name.to_string(),
+                address: profile.sole_shareholder_address.clone().or_else(|| {
+                    let a = &profile.address;
+                    Some(format!("{}, {} {}", a.street, a.postal_code, a.city))
+                }),
+                shares: profile.share_count,
+                percent_bps: 10_000,
+            }],
+        })
+    }
 }
 
 /// L'export complet, prêt à être sérialisé en JSON pour l'expert-comptable.
@@ -33,6 +89,8 @@ pub struct LiasseExport {
     /// L'exercice est-il approuvé (chiffres définitifs) ou encore en projet ?
     pub approved: bool,
     pub entries: Vec<LiasseEntry>,
+    /// Composition du capital (2033-F), `null` tant que le profil ne nomme pas l'associé unique.
+    pub capital: Option<CapitalComposition>,
     /// Limite de l'export, répétée dans la donnée elle-même pour voyager avec le fichier.
     pub note: &'static str,
 }
@@ -42,12 +100,12 @@ pub struct LiasseExport {
 /// rubrique et les totaux. Les cases à zéro sont omises, comme sur un formulaire.
 fn balance_sheet_entries(sheet: &BalanceSheet) -> Vec<LiasseEntry> {
     let mut entries = Vec::new();
-    let mut push = |case: &'static str, label: &'static str, cents: i64| {
+    let mut push = |case: &'static str, label: &str, cents: i64| {
         if cents != 0 {
             entries.push(LiasseEntry {
                 form: "2033-A",
                 case,
-                label,
+                label: label.to_string(),
                 amount_cents: cents,
             });
         }
@@ -109,12 +167,12 @@ fn balance_sheet_entries(sheet: &BalanceSheet) -> Vec<LiasseEntry> {
 /// 870 total restant à reporter). Cases à zéro omises, comme sur un formulaire.
 fn tax_loss_entries(year: &FiscalYearRecord) -> Vec<LiasseEntry> {
     let mut entries = Vec::new();
-    let mut push = |form: &'static str, case: &'static str, label: &'static str, cents: i64| {
+    let mut push = |form: &'static str, case: &'static str, label: &str, cents: i64| {
         if cents != 0 {
             entries.push(LiasseEntry {
                 form,
                 case,
-                label,
+                label: label.to_string(),
                 amount_cents: cents,
             });
         }
@@ -190,57 +248,85 @@ pub fn liasse_export(
             .map(|r| r.balance)
             .sum()
     });
+    // Lot 41, vérifié sur la notice 2033-SD : 218 production vendue de services (210 est la
+    // vente de marchandises), 250 salaires et traitements, 252 charges sociales, 306 IS. Le
+    // brut du dirigeant vient du profil (comme le grand livre, `director_gross`), les charges
+    // sociales en sont le complément dans le coût figé au snapshot ; si le profil ne s'y prête
+    // plus, tout le coût va en 250.
+    let period = year.period();
+    let director_gross = director_gross(profile, period)
+        .filter(|g| *g <= year.director_remuneration)
+        .unwrap_or(year.director_remuneration);
+    let director_charges = year.director_remuneration - director_gross;
+    let entry = |form: &'static str, case: &'static str, label: &str, amount: Money| LiasseEntry {
+        form,
+        case,
+        label: label.to_string(),
+        amount_cents: amount.cents(),
+    };
     let mut entries = vec![
-        LiasseEntry {
-            form: "2033-B",
-            case: "210",
-            label: "Chiffre d'affaires — prestations de services (HT)",
-            amount_cents: year.revenue_ht.cents(),
-        },
-        LiasseEntry {
-            form: "2033-B",
-            case: "242",
-            label: "Autres charges externes (nettes de TVA déductible, hors impôts et taxes)",
-            amount_cents: (year.expenses - taxes).cents(),
-        },
-        LiasseEntry {
-            form: "2033-B",
-            case: "244",
-            label: "Impôts, taxes et versements assimilés",
-            amount_cents: taxes.cents(),
-        },
-        LiasseEntry {
-            form: "2033-B",
-            case: "250",
-            label: "Rémunération du dirigeant (coût employeur)",
-            amount_cents: year.director_remuneration.cents(),
-        },
-        LiasseEntry {
-            form: "2033-B",
-            case: "310",
-            label: "Résultat comptable de l'exercice",
-            amount_cents: year.result_before_tax.cents(),
-        },
-        LiasseEntry {
-            form: "2065",
-            case: "C1",
-            label: "Résultat fiscal (bénéfice imposable après imputation des déficits \
-                    antérieurs, négatif = déficit)",
-            amount_cents: year.taxable_result().cents(),
-        },
-        LiasseEntry {
-            form: "2065",
-            case: "IS",
-            label: "Impôt sur les sociétés (barème 15 % / 25 %)",
-            amount_cents: year.corporate_tax.cents(),
-        },
-        LiasseEntry {
-            form: "2065",
-            case: "NET",
-            label: "Résultat net après impôt",
-            amount_cents: year.net_result.cents(),
-        },
+        entry(
+            "2033-B",
+            "218",
+            "Production vendue — services (HT)",
+            year.revenue_ht,
+        ),
+        entry(
+            "2033-B",
+            "242",
+            "Autres charges externes (nettes de TVA déductible, hors impôts et taxes)",
+            year.expenses - taxes,
+        ),
+        entry(
+            "2033-B",
+            "244",
+            "Impôts, taxes et versements assimilés",
+            taxes,
+        ),
+        entry(
+            "2033-B",
+            "250",
+            "Salaires et traitements (rémunération brute du dirigeant)",
+            director_gross,
+        ),
+        entry(
+            "2033-B",
+            "252",
+            "Charges sociales (cotisations sur la rémunération du dirigeant)",
+            director_charges,
+        ),
+        entry(
+            "2033-B",
+            "306",
+            "Impôt sur les bénéfices (barème 15 % / 25 %, arrondi à l'euro — art. 1657 CGI)",
+            year.corporate_tax,
+        ),
+        entry(
+            "2033-B",
+            "310",
+            "Bénéfice ou perte — résultat comptable de l'exercice (après IS)",
+            year.net_result,
+        ),
+        entry(
+            "2065",
+            "C1",
+            &format!(
+                "Résultat fiscal (bénéfice imposable après réintégration de {} de charges non \
+                 déductibles et imputation des déficits antérieurs, négatif = déficit)",
+                year.non_deductible_expenses
+            ),
+            year.taxable_result(),
+        ),
     ];
+    if !year.dividends.is_zero() {
+        entries.push(entry(
+            "2065",
+            "distributions",
+            "Répartition des produits distribués — montant net des dividendes décidés au titre \
+             de l'exercice (ouvre la déclaration 2777 le 15 du mois suivant leur paiement)",
+            year.dividends,
+        ));
+    }
     entries.extend(tax_loss_entries(year));
     if let Some(ledger) = ledger {
         entries.extend(balance_sheet_entries(&ledger.balance_sheet()));
@@ -252,9 +338,10 @@ pub fn liasse_export(
         period_end: year.ends_on,
         approved: year.is_approved(),
         entries,
-        note: "Export indicatif des cases principales (2065, 2033-A, 2033-B) à destination de \
-               l'expert-comptable — le bilan 2033-A est dérivé du grand livre (sans \
-               amortissement, provision ni régularisation) ; le dépôt réel de la liasse passe \
-               par EDI-TDFC, hors périmètre de FreeFlow.",
+        capital: CapitalComposition::from_profile(profile),
+        note: "Export indicatif des cases principales (2065, 2033-A, 2033-B, 2033-D, 2033-F) à \
+               destination de l'expert-comptable — le bilan 2033-A est dérivé du grand livre \
+               (sans amortissement, provision ni régularisation) ; le dépôt réel de la liasse \
+               passe par EDI-TDFC, hors périmètre de FreeFlow.",
     }
 }

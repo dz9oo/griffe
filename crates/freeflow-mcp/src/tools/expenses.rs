@@ -41,6 +41,9 @@ pub(crate) struct RecordExpenseArgs {
     /// exact du débit. Action de rapprochement : dépose une action en attente de confirmation
     /// humaine.
     bank_transaction_id: Option<String>,
+    /// Bénéficiaire (fournisseur) — pour les honoraires, le nom qui cumule sur la DAS2
+    /// (seuil 2 400 € par bénéficiaire et par année civile).
+    supplier: Option<String>,
     #[serde(default)]
     dry_run: bool,
 }
@@ -87,6 +90,11 @@ pub(crate) struct UpdateExpenseArgs {
     vat_rate: Option<String>,
     vat_deductible_cents: Option<i64>,
     incurred_on: Option<String>,
+    /// Bénéficiaire (fournisseur), pour la DAS2 ; inchangé si absent.
+    supplier: Option<String>,
+    /// Efface le bénéficiaire (défaut : faux).
+    #[serde(default)]
+    clear_supplier: bool,
     #[serde(default)]
     dry_run: bool,
 }
@@ -151,6 +159,7 @@ impl FreeflowServer {
             incurred_on,
             receipt_hash: None,
             receipt_filename: None,
+            supplier: args.supplier,
             bank_transaction_id,
         };
         match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
@@ -265,6 +274,11 @@ impl FreeflowServer {
             incurred_on,
             receipt_hash: current.receipt_hash,
             receipt_filename: current.receipt_filename,
+            supplier: if args.clear_supplier {
+                None
+            } else {
+                args.supplier.or(current.supplier)
+            },
         };
         match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),

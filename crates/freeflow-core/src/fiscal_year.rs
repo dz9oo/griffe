@@ -28,7 +28,7 @@ use thiserror::Error;
 use time::format_description::well_known::Rfc3339;
 use time::{Date, OffsetDateTime};
 
-use crate::accounting::{AccountingResult, CarryBackBase, carry_back, compute_result_with_losses};
+use crate::accounting::{AccountingResult, CarryBackBase, carry_back, compute_result_with};
 use crate::app::{AppError, Command};
 use crate::company::{CompanyProfile, company_profile};
 use crate::domain::{FiscalYear, FiscalYearId, Money, format_date, parse_date};
@@ -176,6 +176,8 @@ pub struct FiscalYearRecord {
     pub dividends: Money,
     /// Report à nouveau cumulé après cette affectation (peut être négatif).
     pub retained_earnings: Money,
+    /// Dépenses non déductibles mentionnées au PV (art. 223 quater CGI), zéro = néant (lot 41).
+    pub non_deductible_expenses: Money,
     /// Déficits fiscaux reportables en avant **après** cet exercice (case 870 du 2033-D) —
     /// dérivés de la chaîne à la lecture, jamais stockés.
     pub losses_carried_forward: Money,
@@ -198,11 +200,12 @@ impl FiscalYearRecord {
         self.approved_on.is_some()
     }
 
-    /// Résultat fiscal : le résultat comptable avant IS diminué des déficits antérieurs imputés
-    /// (négatif = déficit fiscal de l'exercice).
+    /// Résultat fiscal : le résultat comptable avant IS, augmenté des charges non déductibles
+    /// réintégrées (lot 41) et diminué des déficits antérieurs imputés (négatif = déficit fiscal
+    /// de l'exercice).
     #[must_use]
     pub fn taxable_result(&self) -> Money {
-        self.result_before_tax - self.losses_imputed
+        self.result_before_tax + self.non_deductible_expenses - self.losses_imputed
     }
 
     /// Déficit fiscal de l'exercice (positif), ou zéro sur un bénéfice.
@@ -228,6 +231,7 @@ impl FiscalYearRecord {
             expenses: self.expenses,
             director_remuneration: self.director_remuneration,
             result_before_tax: self.result_before_tax,
+            non_deductible_expenses: self.non_deductible_expenses,
             prior_losses_available: self.losses_available_before(),
             losses_imputed: self.losses_imputed,
             taxable_result: self.taxable_result(),
@@ -451,7 +455,7 @@ pub fn previous_year(
 // Commandes
 // ---------------------------------------------------------------------------------------------
 
-/// Clôt un exercice : recalcule le résultat via [`crate::accounting::compute_result_with_losses`]
+/// Clôt un exercice : recalcule le résultat via [`crate::accounting::compute_result_with`]
 /// (déficits antérieurs de la chaîne imputés sur le bénéfice), le fige en snapshot, et
 /// enregistre la décision d'affectation en **projet** (non approuvé). Le report à nouveau
 /// résultant est `report antérieur + résultat net − réserve légale − dividendes`.
@@ -479,6 +483,10 @@ pub struct CloseFiscalYear {
     /// lisibles.
     #[serde(default, with = "crate::domain::serde_date::date::option")]
     pub today: Option<Date>,
+    /// Dépenses et charges non déductibles de l'exercice (art. 39-4 CGI), à mentionner au PV
+    /// d'approbation (art. 223 quater CGI) — « néant » par défaut (lot 41).
+    #[serde(default)]
+    pub non_deductible_expenses: Money,
 }
 
 impl Command for CloseFiscalYear {
@@ -532,11 +540,12 @@ impl Command for CloseFiscalYear {
         }
 
         let chain = prior_chain(conn, self.starts_on)?;
-        let mut result = compute_result_with_losses(
+        let mut result = compute_result_with(
             conn,
             FiscalYear::new(self.starts_on, self.ends_on),
             &profile,
             chain.tax_losses,
+            self.non_deductible_expenses,
         )?;
         if self.carry_back {
             result = result.with_carry_back(self.carry_back_of(conn, &result)?);
@@ -557,9 +566,9 @@ impl Command for CloseFiscalYear {
                  director_remuneration_cents, result_before_tax_cents, corporate_tax_cents,
                  net_result_cents, legal_reserve_cents, dividends_cents, retained_earnings_cents,
                  approved_on, revision, created_at, losses_imputed_cents, carried_back_cents,
-                 carry_back_credit_cents)
+                 carry_back_credit_cents, non_deductible_expenses_cents)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, NULL, 1, ?13, ?14, ?15,
-                     ?16)",
+                     ?16, ?17)",
             params![
                 id.to_string(),
                 format_date(self.starts_on),
@@ -577,6 +586,7 @@ impl Command for CloseFiscalYear {
                 result.losses_imputed.cents(),
                 result.carried_back.cents(),
                 result.carry_back_credit.cents(),
+                self.non_deductible_expenses.cents(),
             ],
         )?;
         Ok(id)
@@ -829,8 +839,8 @@ fn conv_err(e: impl std::error::Error + Send + Sync + 'static) -> rusqlite::Erro
 /// été reporté en arrière ou imputé, plus les déficits repris au bilan d'ouverture — qui ouvre
 /// nécessairement la chaîne dès qu'un exercice existe, voir [`prior_chain`]).
 const RECORD_SELECT: &str = "SELECT fy.*,
-    (SELECT coalesce(sum(max(0, -p.result_before_tax_cents) - p.carried_back_cents \
-                         - p.losses_imputed_cents), 0)
+    (SELECT coalesce(sum(max(0, -(p.result_before_tax_cents + p.non_deductible_expenses_cents)) \
+                         - p.carried_back_cents - p.losses_imputed_cents), 0)
        FROM fiscal_years p WHERE p.ends_on <= fy.ends_on)
     + coalesce((SELECT tax_losses_cents FROM opening_balance WHERE id = 1), 0)
     AS losses_carried_forward_cents
@@ -858,6 +868,7 @@ fn row_to_record(row: &Row) -> rusqlite::Result<FiscalYearRecord> {
         legal_reserve: Money::from_cents(row.get("legal_reserve_cents")?),
         dividends: Money::from_cents(row.get("dividends_cents")?),
         retained_earnings: Money::from_cents(row.get("retained_earnings_cents")?),
+        non_deductible_expenses: Money::from_cents(row.get("non_deductible_expenses_cents")?),
         losses_carried_forward: Money::from_cents(row.get("losses_carried_forward_cents")?),
         approved_on: approved_on
             .map(|s| parse_date(&s))
@@ -985,7 +996,7 @@ mod tests {
     }
 
     /// Une facture de 6 175 € HT en septembre `year` et une dépense nette de 800 € en octobre :
-    /// résultat avant IS 5 375 €, IS 806,25 €, net 4 568,75 € (mêmes chiffres que le test
+    /// résultat avant IS 5 375 €, IS 806 € (arrondi à l'euro), net 4 569 € (mêmes chiffres que le test
     /// d'intégration de `accounting.rs`).
     fn seed_activity(store: &mut Store, year: i32) {
         let client_id = ClientId::new();
@@ -1025,6 +1036,7 @@ mod tests {
                     incurred_on: date(year, TimeMonth::October, 5),
                     receipt_hash: None,
                     receipt_filename: None,
+                    supplier: None,
                     bank_transaction_id: None,
                 },
                 &human(),
@@ -1040,6 +1052,7 @@ mod tests {
             dividends: Money::from_cents(dividends),
             carry_back: false,
             today: None,
+            non_deductible_expenses: Money::ZERO,
         };
         let Outcome::Applied(id) = Executor::new(store).execute(&cmd, &human()).unwrap() else {
             panic!("expected Applied")
@@ -1060,10 +1073,10 @@ mod tests {
         assert_eq!(record.revenue_ht, Money::from_cents(617_500));
         assert_eq!(record.expenses, Money::from_cents(80_000));
         assert_eq!(record.result_before_tax, Money::from_cents(537_500));
-        assert_eq!(record.corporate_tax, Money::from_cents(80_625));
-        assert_eq!(record.net_result, Money::from_cents(456_875));
-        // Report à nouveau : 4 568,75 − 50 − 1 000 = 3 518,75 €.
-        assert_eq!(record.retained_earnings, Money::from_cents(351_875));
+        assert_eq!(record.corporate_tax, Money::from_cents(80_600));
+        assert_eq!(record.net_result, Money::from_cents(456_900));
+        // Report à nouveau : 4 569 − 50 − 1 000 = 3 519 €.
+        assert_eq!(record.retained_earnings, Money::from_cents(351_900));
         assert_eq!(record.approved_on, None);
         assert_eq!(record.revision, 1);
 
@@ -1071,7 +1084,7 @@ mod tests {
         assert_eq!(
             latest_retained_earnings(store.connection(), date(2027, TimeMonth::January, 1))
                 .unwrap(),
-            Money::from_cents(351_875)
+            Money::from_cents(351_900)
         );
         // Et la liste le contient.
         assert_eq!(list_fiscal_years(store.connection()).unwrap().len(), 1);
@@ -1094,6 +1107,7 @@ mod tests {
             dividends: Money::ZERO,
             carry_back: false,
             today: None,
+            non_deductible_expenses: Money::ZERO,
         };
         let err = Executor::new(&mut store)
             .execute(&cmd, &human())
@@ -1115,6 +1129,7 @@ mod tests {
             dividends: Money::ZERO,
             carry_back: false,
             today: None,
+            non_deductible_expenses: Money::ZERO,
         };
         let err = Executor::new(&mut store)
             .execute(&overlapping, &human())
@@ -1128,7 +1143,7 @@ mod tests {
         set_profile(&mut store, None);
         seed_activity(&mut store, 2026);
 
-        // Net 4 568,75 € : demander 5 000 € de dividendes dépasse le distribuable.
+        // Net 4 569 € : demander 5 000 € de dividendes dépasse le distribuable.
         let cmd = CloseFiscalYear {
             starts_on: date(2026, TimeMonth::January, 1),
             ends_on: date(2026, TimeMonth::December, 31),
@@ -1136,6 +1151,7 @@ mod tests {
             dividends: Money::from_cents(500_000),
             carry_back: false,
             today: None,
+            non_deductible_expenses: Money::ZERO,
         };
         let err = Executor::new(&mut store)
             .execute(&cmd, &human())
@@ -1157,6 +1173,7 @@ mod tests {
             dividends: Money::ZERO,
             carry_back: false,
             today: None,
+            non_deductible_expenses: Money::ZERO,
         };
         let err = Executor::new(&mut store)
             .execute(&cmd, &human())
@@ -1190,10 +1207,10 @@ mod tests {
         let record = fiscal_year_by_id(store.connection(), id).unwrap().unwrap();
         assert_eq!(record.legal_reserve, Money::from_cents(10_000));
         assert_eq!(record.dividends, Money::from_cents(200_000));
-        // 4 568,75 − 100 − 2 000 = 2 468,75 €.
-        assert_eq!(record.retained_earnings, Money::from_cents(246_875));
+        // 4 569 − 100 − 2 000 = 2 469 €.
+        assert_eq!(record.retained_earnings, Money::from_cents(246_900));
         // Le snapshot, lui, n'a pas bougé.
-        assert_eq!(record.net_result, Money::from_cents(456_875));
+        assert_eq!(record.net_result, Money::from_cents(456_900));
     }
 
     #[test]
@@ -1317,6 +1334,7 @@ mod tests {
             dividends: Money::ZERO,
             carry_back: false,
             today: None,
+            non_deductible_expenses: Money::ZERO,
         };
         Executor::new(&mut store).execute(&cmd, &human()).unwrap();
 
@@ -1371,6 +1389,7 @@ mod tests {
             dividends: Money::ZERO,
             carry_back: false,
             today: None,
+            non_deductible_expenses: Money::ZERO,
         };
         let agent = ExecutionContext::new(
             Actor::Agent {
@@ -1423,16 +1442,17 @@ mod tests {
             dividends: Money::ZERO,
             carry_back: false,
             today: None,
+            non_deductible_expenses: Money::ZERO,
         };
         let err = Executor::new(&mut store)
             .execute(&too_much, &human())
             .unwrap_err();
         assert!(matches!(err, AppError::Domain(msg) if msg.contains("réserve légale cumulée")));
 
-        // 40 € passent ; report = 250 (repris) + 4 568,75 − 40 = 4 778,75 €.
+        // 40 € passent ; report = 250 (repris) + 4 569 − 40 = 4 779 €.
         let id = close_2026(&mut store, 4_000, 0);
         let record = fiscal_year_by_id(store.connection(), id).unwrap().unwrap();
-        assert_eq!(record.retained_earnings, Money::from_cents(477_875));
+        assert_eq!(record.retained_earnings, Money::from_cents(477_900));
 
         // Le bilan d'ouverture est désormais figé par ce snapshot.
         let delete = crate::opening_balance::DeleteOpeningBalance { revision: 1 };
@@ -1451,6 +1471,7 @@ mod tests {
             dividends: Money::ZERO,
             carry_back: false,
             today: None,
+            non_deductible_expenses: Money::ZERO,
         };
         let err = Executor::new(&mut store)
             .execute(&next, &human())
@@ -1475,6 +1496,7 @@ mod tests {
             dividends: Money::ZERO,
             carry_back: false,
             today: None,
+            non_deductible_expenses: Money::ZERO,
         };
         let err = Executor::new(&mut store)
             .execute(&cmd, &human())
@@ -1507,6 +1529,7 @@ mod tests {
                     incurred_on: date(2026, TimeMonth::March, 5),
                     receipt_hash: None,
                     receipt_filename: None,
+                    supplier: None,
                     bank_transaction_id: None,
                 },
                 &human(),
@@ -1520,6 +1543,7 @@ mod tests {
             dividends: Money::from_cents(100),
             carry_back: false,
             today: None,
+            non_deductible_expenses: Money::ZERO,
         };
         let err = Executor::new(&mut store)
             .execute(&with_dividends, &human())
@@ -1556,6 +1580,7 @@ mod tests {
                     incurred_on: date(year, TimeMonth::March, 5),
                     receipt_hash: None,
                     receipt_filename: None,
+                    supplier: None,
                     bank_transaction_id: None,
                 },
                 &human(),
@@ -1571,6 +1596,7 @@ mod tests {
             dividends: Money::ZERO,
             carry_back,
             today: None,
+            non_deductible_expenses: Money::ZERO,
         };
         let Outcome::Applied(id) = Executor::new(store).execute(&cmd, &human()).unwrap() else {
             panic!("expected Applied")
@@ -1591,22 +1617,22 @@ mod tests {
             Money::from_cents(80_000)
         );
 
-        // 2027 : bénéfice comptable de 5 375 € → résultat fiscal 4 575 €, IS 15 % = 686,25 €
-        // (au lieu de 806,25 € sans imputation), net = 5 375 − 686,25 = 4 688,75 €.
+        // 2027 : bénéfice comptable de 5 375 € → résultat fiscal 4 575 €, IS 15 % = 686,25 € → 686 €
+        // (au lieu de 806 € sans imputation), net = 5 375 − 686 = 4 689 €.
         seed_activity(&mut store, 2027);
         let profit_year = close_year(&mut store, 2027, false);
         assert_eq!(profit_year.result_before_tax, Money::from_cents(537_500));
         assert_eq!(profit_year.losses_imputed, Money::from_cents(80_000));
         assert_eq!(profit_year.taxable_result(), Money::from_cents(457_500));
-        assert_eq!(profit_year.corporate_tax, Money::from_cents(68_625));
-        assert_eq!(profit_year.net_result, Money::from_cents(468_875));
+        assert_eq!(profit_year.corporate_tax, Money::from_cents(68_600));
+        assert_eq!(profit_year.net_result, Money::from_cents(468_900));
         assert_eq!(
             profit_year.losses_available_before(),
             Money::from_cents(80_000)
         );
         assert_eq!(profit_year.losses_carried_forward, Money::ZERO);
-        // Report à nouveau comptable : −800 + 4 688,75 = 3 888,75 €.
-        assert_eq!(profit_year.retained_earnings, Money::from_cents(388_875));
+        // Report à nouveau comptable : −800 + 4 689 = 3 889 €.
+        assert_eq!(profit_year.retained_earnings, Money::from_cents(388_900));
         // Le stock relu sur l'exercice déficitaire n'a pas bougé : c'est un stock *après* lui.
         let loss_year = fiscal_year_by_id(store.connection(), loss_year.id)
             .unwrap()
@@ -1646,12 +1672,12 @@ mod tests {
             Money::ZERO
         );
 
-        // Bénéfice 5 375 € : 3 000 € imputés, IS sur 2 375 € = 356,25 €.
+        // Bénéfice 5 375 € : 3 000 € imputés, IS sur 2 375 € = 356,25 € → 356 €.
         seed_activity(&mut store, 2026);
         let year = close_year(&mut store, 2026, false);
         assert_eq!(year.losses_imputed, Money::from_cents(300_000));
         assert_eq!(year.taxable_result(), Money::from_cents(237_500));
-        assert_eq!(year.corporate_tax, Money::from_cents(35_625));
+        assert_eq!(year.corporate_tax, Money::from_cents(35_600));
         assert_eq!(year.losses_carried_forward, Money::ZERO);
         assert_eq!(year.losses_available_before(), Money::from_cents(300_000));
         assert_eq!(
@@ -1664,13 +1690,13 @@ mod tests {
     fn carrying_a_deficit_back_creates_an_is_credit_in_the_net_result() {
         let mut store = test_store("carry-back");
         set_profile(&mut store, Some(100_000));
-        // 2026 : bénéfice fiscal 5 375 €, IS 806,25 €, 1 000 € distribués.
+        // 2026 : bénéfice fiscal 5 375 €, IS 806 €, 1 000 € distribués.
         seed_activity(&mut store, 2026);
         let profit_year = close_2026(&mut store, 0, 100_000);
         let profit_year = fiscal_year_by_id(store.connection(), profit_year)
             .unwrap()
             .unwrap();
-        assert_eq!(profit_year.retained_earnings, Money::from_cents(356_875));
+        assert_eq!(profit_year.retained_earnings, Money::from_cents(356_900));
 
         // 2027 : déficit de 800 €, reporté en arrière sur les 4 375 € non distribués de 2026,
         // entièrement au taux réduit : créance de 15 % × 800 = 120 €.
@@ -1680,9 +1706,9 @@ mod tests {
         assert_eq!(loss_year.carried_back, Money::from_cents(80_000));
         assert_eq!(loss_year.carry_back_credit, Money::from_cents(12_000));
         assert_eq!(loss_year.corporate_tax, Money::ZERO);
-        // Net comptable = −800 + 120 = −680 € ; report = 3 568,75 − 680 = 2 888,75 €.
+        // Net comptable = −800 + 120 = −680 € ; report = 3 569 − 680 = 2 889 €.
         assert_eq!(loss_year.net_result, Money::from_cents(-68_000));
-        assert_eq!(loss_year.retained_earnings, Money::from_cents(288_875));
+        assert_eq!(loss_year.retained_earnings, Money::from_cents(288_900));
         // Le déficit reporté en arrière ne l'est plus en avant.
         assert_eq!(loss_year.losses_carried_forward, Money::ZERO);
         assert_eq!(
@@ -1708,6 +1734,7 @@ mod tests {
             dividends: Money::ZERO,
             carry_back: true,
             today: None,
+            non_deductible_expenses: Money::ZERO,
         };
         let err = Executor::new(&mut store)
             .execute(&cmd, &human())
@@ -1728,6 +1755,7 @@ mod tests {
             dividends: Money::ZERO,
             carry_back: true,
             today: None,
+            non_deductible_expenses: Money::ZERO,
         };
         let err = Executor::new(&mut store)
             .execute(&cmd, &human())
@@ -1756,6 +1784,7 @@ mod tests {
             dividends: Money::ZERO,
             carry_back: true,
             today: None,
+            non_deductible_expenses: Money::ZERO,
         };
         let err = Executor::new(&mut store)
             .execute(&cmd, &human())
@@ -1782,6 +1811,7 @@ mod tests {
                     dividends: Money::ZERO,
                     carry_back: false,
                     today: Some(today),
+                    non_deductible_expenses: Money::ZERO,
                 },
                 &human(),
             )
@@ -1813,6 +1843,7 @@ mod tests {
                     dividends: Money::ZERO,
                     carry_back: false,
                     today: None,
+                    non_deductible_expenses: Money::ZERO,
                 },
                 &human(),
             )
@@ -1828,6 +1859,7 @@ mod tests {
                     dividends: Money::ZERO,
                     carry_back: false,
                     today: None,
+                    non_deductible_expenses: Money::ZERO,
                 },
                 &human(),
             )

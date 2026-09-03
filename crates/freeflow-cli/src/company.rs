@@ -147,7 +147,9 @@ pub struct SetProfileArgs {
     /// Rémunération mensuelle brute du président (assimilé salarié). Absent = non rémunéré.
     #[arg(long, value_parser = parse_money)]
     director_gross: Option<Money>,
-    /// Ratio charges/net du dirigeant, en pourcentage (ex. `80`), pour estimer les cotisations.
+    /// Ratio (charges patronales + salariales) / brut du dirigeant, en pourcentage (ex. `45`),
+    /// pour estimer les cotisations : le coût employeur vaut brut × (1 + ratio), la DSN affiche
+    /// brut × ratio.
     #[arg(long, value_parser = parse_charge_ratio_bps)]
     director_charge_ratio: Option<u32>,
     /// Nom du président (signataire du PV et des comptes).

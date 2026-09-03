@@ -53,15 +53,15 @@
 //! | Frais de tenue de compte (30/06/2027)    | 96,00     | 0,00     | 96,00     |
 //!
 //! CA HT 12 000,00 ; charges 796,00 ; résultat avant IS **11 204,00** ; déficit antérieur
-//! imputé 816,00 → résultat fiscal **10 388,00** ; IS 15 % = **1 558,20** ; résultat net
-//! = 11 204 − 1 558,20 = **9 645,80**. Réserve légale minimale : un vingtième de 9 645,80 =
+//! imputé 816,00 → résultat fiscal **10 388,00** ; IS 15 % = 1 558,20 → **1 558** (arrondi à l'euro, art. 1657 CGI) ; résultat net
+//! = 11 204 − 1 558 = **9 646**. Réserve légale minimale : un vingtième de 9 646 =
 //! 482,29, plafonné à 10 % du capital (100,00) − 0 déjà doté = **100,00**. Affectation : réserve
-//! 100, dividendes 3 000, report à nouveau = 1 584 + 9 645,80 − 100 − 3 000 = **8 129,80**.
+//! 100, dividendes 3 000, report à nouveau = 1 584 + 9 646 − 100 − 3 000 = **8 130**.
 //!
 //! Bilan au 30 septembre 2027 (à-nouveaux dérivés de la clôture 2026) : actif = banque
 //! 2 440 + 9 600 − 840 − 96 = 11 104,00 + clients 4 800,00 + TVA déductible 144 + 140 = 284,00
-//! = **16 188,00** ; passif = capital 1 000 + report à nouveau 1 584 + résultat 9 645,80 + TVA
-//! collectée 2 400 + IS dû 1 558,20 = **16 188,00**.
+//! = **16 188,00** ; passif = capital 1 000 + report à nouveau 1 584 + résultat 9 646 + TVA
+//! collectée 2 400 + IS dû 1 558 = **16 188,00**.
 
 use std::path::Path;
 
@@ -98,6 +98,14 @@ fn set_profile(db: &Path) {
             "1000",
             "--rcs-city",
             "Lyon",
+            "--president",
+            "Nora Lumen",
+            "--sole-shareholder",
+            "Nora Lumen",
+            "--sole-shareholder-address",
+            "4 allée des Tilleuls, 69003 Lyon",
+            "--share-count",
+            "100",
             "--fiscal-year-end",
             "30/09",
             "--vat-regime",
@@ -243,6 +251,34 @@ fn render_everything(db: &Path, period: &str) -> serde_json::Value {
     serde_json::from_slice(&std::fs::read(dir.join("liasse.json")).unwrap()).unwrap()
 }
 
+/// Le texte d'un PDF via `pdftotext` (poppler), ou `None` si l'outil manque sur la machine —
+/// le scénario dit alors sur stderr ce qu'il n'a pas pu vérifier.
+fn pdf_text(pdf: &Path) -> Option<String> {
+    match std::process::Command::new("pdftotext")
+        .arg("-layout")
+        .arg(pdf)
+        .arg("-")
+        .output()
+    {
+        Ok(output) => {
+            assert!(
+                output.status.success(),
+                "pdftotext a échoué sur {}",
+                pdf.display()
+            );
+            Some(String::from_utf8_lossy(&output.stdout).replace('\u{a0}', " "))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!(
+                "pdftotext absent : contenu de {} non vérifié",
+                pdf.display()
+            );
+            None
+        }
+        Err(e) => panic!("pdftotext : {e}"),
+    }
+}
+
 fn liasse_case(liasse: &serde_json::Value, form: &str, case: &str) -> Option<i64> {
     liasse["entries"]
         .as_array()
@@ -325,6 +361,8 @@ fn a_preexisting_sasu_closes_two_exercises_alone_from_the_cli() {
             "Honoraires cabinet Fiducia — bilan 2025",
             "--category",
             "fees",
+            "--supplier",
+            "Cabinet Fiducia",
             "--vat-rate",
             "standard",
             "--vat-deductible",
@@ -455,6 +493,26 @@ fn a_preexisting_sasu_closes_two_exercises_alone_from_the_cli() {
     assert_eq!(step(&ready, "approve")["due_on"], "2027-03-30");
     assert_eq!(step(&ready, "liasse")["due_on"], "2026-12-30");
     assert_eq!(step(&ready, "corporate_tax")["due_on"], "2027-01-15");
+    // Lot 41 : la TVA de l'exercice (aucune facture : crédit, CA3 « néant » à déposer quand
+    // même) et la DAS2 (720 € au cabinet : sous le seuil de 2 400 €, rien à déclarer).
+    assert_eq!(step(&ready, "vat")["status"], "info");
+    assert!(
+        step(&ready, "vat")["detail"]
+            .as_str()
+            .unwrap()
+            .contains("néant"),
+        "{}",
+        step(&ready, "vat")["detail"]
+    );
+    assert_eq!(step(&ready, "das2")["status"], "info");
+    assert!(
+        step(&ready, "das2")["detail"]
+            .as_str()
+            .unwrap()
+            .contains("rien à déclarer"),
+        "{}",
+        step(&ready, "das2")["detail"]
+    );
     assert_eq!(ready["result"]["revenue_ht_cents"], 0);
     assert_eq!(ready["result"]["expenses_cents"], 81_600);
     assert_eq!(ready["result"]["net_result_cents"], -81_600);
@@ -524,6 +582,30 @@ fn a_preexisting_sasu_closes_two_exercises_alone_from_the_cli() {
     assert_eq!(liasse_case(&liasse, "2033-D", "860"), Some(81_600));
     assert_eq!(liasse_case(&liasse, "2033-D", "870"), Some(81_600));
     assert_eq!(liasse_case(&liasse, "2065", "C1"), Some(-81_600));
+    // Lot 41 : 218 (prestations, ici aucune), 306 (IS, nul), 2033-F depuis le profil, et un PV
+    // nominatif qui porte l'associée unique, le 223 quater et le registre des décisions.
+    assert_eq!(liasse_case(&liasse, "2033-B", "218"), Some(0));
+    assert_eq!(liasse_case(&liasse, "2033-B", "306"), Some(0));
+    assert_eq!(liasse_case(&liasse, "2065", "IS"), None);
+    assert_eq!(liasse["capital"]["form"], "2033-F");
+    assert_eq!(liasse["capital"]["shares_held_by_individuals"], 100);
+    assert_eq!(liasse["capital"]["holders"][0]["name"], "Nora Lumen");
+    assert_eq!(liasse["capital"]["holders"][0]["percent_bps"], 10_000);
+    if let Some(text) = pdf_text(&db.with_file_name("cloture-2026").join("minutes.pdf")) {
+        let squeezed: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        for expected in [
+            "Nora Lumen",
+            "223 quater",
+            "registre des décisions",
+            "L227-9 al. 3",
+            "perte de 816,00 €",
+        ] {
+            assert!(
+                squeezed.contains(expected),
+                "« {expected} » absent du PV : {squeezed}"
+            );
+        }
+    }
     let fec = std::fs::read_to_string(
         db.with_file_name("cloture-2026")
             .join(format!("{SIREN}FEC20260930.txt")),
@@ -574,6 +656,8 @@ fn a_preexisting_sasu_closes_two_exercises_alone_from_the_cli() {
             "Honoraires cabinet Fiducia — relecture bilan 2026",
             "--category",
             "fees",
+            "--supplier",
+            "Cabinet Fiducia",
             "--vat-rate",
             "standard",
             "--vat-deductible",
@@ -712,8 +796,8 @@ fn a_preexisting_sasu_closes_two_exercises_alone_from_the_cli() {
     assert_eq!(ready["result"]["prior_losses_available_cents"], 81_600);
     assert_eq!(ready["result"]["losses_imputed_cents"], 81_600);
     assert_eq!(ready["result"]["taxable_result_cents"], 1_038_800);
-    assert_eq!(ready["result"]["corporate_tax_cents"], 155_820);
-    assert_eq!(ready["result"]["net_result_cents"], 964_580);
+    assert_eq!(ready["result"]["corporate_tax_cents"], 155_800);
+    assert_eq!(ready["result"]["net_result_cents"], 964_600);
     assert_eq!(ready["minimum_legal_reserve_cents"], 10_000);
     assert_eq!(step(&ready, "close")["amount_cents"], 10_000);
     freeflow()
@@ -746,11 +830,11 @@ fn a_preexisting_sasu_closes_two_exercises_alone_from_the_cli() {
     assert_eq!(closed["revenue_ht_cents"], 1_200_000);
     assert_eq!(closed["losses_imputed_cents"], 81_600);
     assert_eq!(closed["taxable_result_cents"], 1_038_800);
-    assert_eq!(closed["corporate_tax_cents"], 155_820);
-    assert_eq!(closed["net_result_cents"], 964_580);
+    assert_eq!(closed["corporate_tax_cents"], 155_800);
+    assert_eq!(closed["net_result_cents"], 964_600);
     assert_eq!(closed["legal_reserve_cents"], 10_000);
     assert_eq!(closed["dividends_cents"], 300_000);
-    assert_eq!(closed["retained_earnings_cents"], 812_980);
+    assert_eq!(closed["retained_earnings_cents"], 813_000);
     assert_eq!(closed["losses_carried_forward_cents"], 0);
 
     // Le bilan au 30 septembre 2027 s'ouvre sur la clôture 2026 et retombe sur le calcul manuel.
@@ -758,12 +842,12 @@ fn a_preexisting_sasu_closes_two_exercises_alone_from_the_cli() {
     assert_eq!(sheet["balance_sheet"]["balanced"], true);
     assert_eq!(sheet["balance_sheet"]["total_assets_net_cents"], 1_618_800);
     assert_eq!(sheet["balance_sheet"]["total_liabilities_cents"], 1_618_800);
-    assert_eq!(sheet["balance_sheet"]["result_cents"], 964_580);
+    assert_eq!(sheet["balance_sheet"]["result_cents"], 964_600);
     assert_eq!(account_balance(&sheet, "512000"), 1_110_400);
     assert_eq!(account_balance(&sheet, "411000"), 480_000);
     assert_eq!(account_balance(&sheet, "445660"), 28_400);
     assert_eq!(account_balance(&sheet, "445710"), -240_000);
-    assert_eq!(account_balance(&sheet, "444000"), -155_820);
+    assert_eq!(account_balance(&sheet, "444000"), -155_800);
     assert_eq!(account_balance(&sheet, "706000"), -1_200_000);
     assert_eq!(account_balance(&sheet, "101000"), -100_000);
     assert_eq!(
@@ -773,7 +857,7 @@ fn a_preexisting_sasu_closes_two_exercises_alone_from_the_cli() {
     );
     assert_eq!(liability(&sheet, "120"), 100_000);
     assert_eq!(liability(&sheet, "134"), 158_400);
-    assert_eq!(liability(&sheet, "136"), 964_580);
+    assert_eq!(liability(&sheet, "136"), 964_600);
 
     freeflow()
         .env("FREEFLOW_DB", &db)
@@ -793,14 +877,16 @@ fn a_preexisting_sasu_closes_two_exercises_alone_from_the_cli() {
     assert_eq!(step(&approved, "appropriation")["status"], "done");
     let tax = step(&approved, "corporate_tax");
     assert_eq!(tax["status"], "todo");
-    assert_eq!(tax["amount_cents"], 155_820);
+    assert_eq!(tax["amount_cents"], 155_800);
     assert_eq!(tax["due_on"], "2028-01-15");
     assert_eq!(step(&approved, "liasse")["due_on"], "2027-12-30");
     assert_eq!(step(&approved, "filing")["due_on"], "2028-01-10");
 
     let liasse = render_everything(&db, "2027");
     assert_eq!(liasse_case(&liasse, "2065", "C1"), Some(1_038_800));
-    assert_eq!(liasse_case(&liasse, "2065", "IS"), Some(155_820));
+    assert_eq!(liasse_case(&liasse, "2033-B", "218"), Some(1_200_000));
+    assert_eq!(liasse_case(&liasse, "2033-B", "306"), Some(155_800));
+    assert_eq!(liasse_case(&liasse, "2065", "distributions"), Some(300_000));
     assert_eq!(liasse_case(&liasse, "2033-B", "360"), Some(81_600));
     assert_eq!(liasse_case(&liasse, "2033-D", "982"), Some(81_600));
     assert_eq!(liasse_case(&liasse, "2033-D", "983"), Some(81_600));
@@ -832,7 +918,7 @@ fn a_preexisting_sasu_closes_two_exercises_alone_from_the_cli() {
     assert_eq!(previous["status"], "done");
     assert!(
         previous["detail"].as_str().unwrap().contains(
-            "report à nouveau 8\u{202f}129,80\u{a0}€, réserve légale cumulée 100,00\u{a0}€, \
+            "report à nouveau 8\u{202f}130,00\u{a0}€, réserve légale cumulée 100,00\u{a0}€, \
              déficits reportables 0,00\u{a0}€"
         ),
         "{previous}"

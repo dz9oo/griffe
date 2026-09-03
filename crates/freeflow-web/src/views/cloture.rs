@@ -32,6 +32,8 @@ pub struct CloseFormValues {
     pub dividends: String,
     /// Option de report en arrière du déficit (lot 32).
     pub carry_back: bool,
+    /// Charges non déductibles à réintégrer (lot 41, art. 223 quater CGI).
+    pub non_deductible: String,
 }
 
 #[derive(Default)]
@@ -40,6 +42,7 @@ pub struct CloseFormErrors {
     pub ends_on: Option<String>,
     pub legal_reserve: Option<String>,
     pub dividends: Option<String>,
+    pub non_deductible: Option<String>,
     pub banner: Option<String>,
     pub conflict: Option<(String, String)>,
 }
@@ -91,6 +94,7 @@ pub fn default_close_values(store: &Store, today: time::Date) -> CloseFormValues
         legal_reserve: "0".to_string(),
         dividends: "0".to_string(),
         carry_back: false,
+        non_deductible: "0".to_string(),
     }
 }
 
@@ -108,6 +112,11 @@ fn close_form(action: &str, values: &CloseFormValues, errors: &CloseFormErrors) 
                 (form::number("legal_reserve", "Dotation à la réserve légale (€)", &values.legal_reserve, "0.01", errors.legal_reserve.as_deref()))
                 (form::number("dividends", "Dividendes distribués (€)", &values.dividends, "0.01", errors.dividends.as_deref()))
                 (form::checkbox_checked("carry_back", "Reporter le déficit en arrière (art. 220 quinquies CGI)", values.carry_back))
+                (form::number("non_deductible", "Charges non déductibles à réintégrer (€)", &values.non_deductible, "0.01", errors.non_deductible.as_deref()))
+                (form::field_help(
+                    "Amendes, pénalités, dépenses somptuaires (art. 39-4 CGI) : réintégrées au \
+                     résultat fiscal et mentionnées dans le PV (art. 223 quater). Zéro si aucune."
+                ))
                 (form::field_help(
                     "Le résultat (CA, charges, IS) est recalculé et figé à la clôture ; le \
                      report à nouveau enchaîne sur l'exercice précédent, et les déficits \
@@ -490,9 +499,14 @@ fn step_action(checklist: &ClosingChecklist, step: &ClosingStep) -> Markup {
             || html! {},
             |id| panel_button(format!("/cloture/{id}"), "documents de l'exercice"),
         ),
+        ClosingStepKey::Vat => nav_link("/view/societe", "régime de TVA du profil"),
+        ClosingStepKey::Das2 if step.status == StepStatus::Warning => {
+            nav_link("/view/depenses", "nommer les bénéficiaires")
+        }
         ClosingStepKey::Close
         | ClosingStepKey::PeriodEnded
         | ClosingStepKey::CorporateTax
+        | ClosingStepKey::Das2
         | ClosingStepKey::Filing => html! {},
     }
 }

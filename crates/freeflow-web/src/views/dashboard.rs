@@ -29,6 +29,8 @@ fn deadline_label(kind: FiscalDeadlineKind) -> &'static str {
         FiscalDeadlineKind::ApprovalMeeting => "AG d'approbation",
         FiscalDeadlineKind::AccountsFiling => "Dépôt des comptes",
         FiscalDeadlineKind::Dsn => "DSN (dirigeant)",
+        FiscalDeadlineKind::Das2 => "Honoraires (DAS2)",
+        FiscalDeadlineKind::Dividends2777 => "Dividendes (2777)",
     }
 }
 

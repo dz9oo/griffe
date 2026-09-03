@@ -80,6 +80,8 @@ pub struct ExpenseForm {
     vat_rate: String,
     vat_deductible: String,
     incurred_on: String,
+    /// Bénéficiaire (fournisseur), lot 41 — vide = aucun.
+    supplier: String,
     /// Nom du justificatif actuellement archivé — affiché par le panneau d'édition, jamais lu
     /// pour persister quoi que ce soit (l'état de référence est toujours relu dans le coffre).
     current_receipt: Option<String>,
@@ -137,6 +139,7 @@ async fn read_multipart_form(
             "vat_rate" => form.vat_rate = value,
             "vat_deductible" => form.vat_deductible = value,
             "incurred_on" => form.incurred_on = value,
+            "supplier" => form.supplier = value,
             "current_receipt" => form.current_receipt = Some(value).filter(|v| !v.is_empty()),
             "clear_receipt" => form.clear_receipt = value == "on" || value == "true",
             "bank_transaction_id" => {
@@ -178,6 +181,7 @@ impl From<&ExpenseForm> for ExpenseFormValues {
             vat_rate: f.vat_rate.clone(),
             vat_deductible: f.vat_deductible.clone(),
             incurred_on: f.incurred_on.clone(),
+            supplier: f.supplier.clone(),
             current_receipt: f.current_receipt.clone(),
             bank_transaction_id: f.bank_transaction_id.clone(),
             bank_transaction_note: None,
@@ -212,6 +216,7 @@ struct ParsedExpenseForm {
     vat_rate: VatRate,
     vat_deductible: Money,
     incurred_on: time::Date,
+    supplier: Option<String>,
 }
 
 /// Validations attribuables à un champ précis (montants, date, libellé) — au-delà (TVA
@@ -274,6 +279,7 @@ fn parse_expense_form(form: &ExpenseForm) -> Result<ParsedExpenseForm, Box<Expen
             vat_rate,
             vat_deductible,
             incurred_on,
+            supplier: Some(form.supplier.trim().to_string()).filter(|s| !s.is_empty()),
         }),
         _ => Err(Box::new(errors)),
     }
@@ -421,6 +427,7 @@ pub async fn create(State(state): State<AppState>, multipart: Multipart) -> Resp
         receipt_hash,
         receipt_filename,
         bank_transaction_id,
+        supplier: parsed.supplier,
     };
     match execute(&state, cmd).await {
         None => locked_fragment().into_response(),
@@ -544,6 +551,7 @@ pub async fn update(
         incurred_on: parsed.incurred_on,
         receipt_hash,
         receipt_filename,
+        supplier: parsed.supplier,
     };
     match execute(&state, cmd).await {
         None => locked_fragment().into_response(),

@@ -1279,10 +1279,10 @@ fn year_lifecycle_close_amend_approve_then_immutable() {
     let year = &years.as_array().unwrap()[0];
     assert_eq!(year["starts_on"], "2026-01-01");
     assert_eq!(year["ends_on"], "2026-12-31");
-    // CA 6 175 € HT, aucune charge : IS 15 % (926,25 €) → net 5 248,75 € ; dividendes
-    // 1 000 € → report 4 248,75 €.
-    assert_eq!(year["net_result_cents"], 524_875);
-    assert_eq!(year["retained_earnings_cents"], 424_875);
+    // CA 6 175 € HT, aucune charge : IS 15 % (926,25 € → 926 €) → net 5 249 € ; dividendes
+    // 1 000 € → report 4 249 €.
+    assert_eq!(year["net_result_cents"], 524_900);
+    assert_eq!(year["retained_earnings_cents"], 424_900);
     assert_eq!(year["approved_on"], serde_json::Value::Null);
 
     // Amender le projet : seule la valeur fournie change (patch CLI, état complet au cœur).
@@ -2128,8 +2128,8 @@ fn year_deficits_are_carried_forward_then_back_from_the_cli() {
     assert_eq!(shown["result_before_tax_cents"], 617_500);
     assert_eq!(shown["losses_imputed_cents"], 3_000);
     assert_eq!(shown["taxable_result_cents"], 614_500);
-    assert_eq!(shown["corporate_tax_cents"], 92_175);
-    assert_eq!(shown["net_result_cents"], 525_325);
+    assert_eq!(shown["corporate_tax_cents"], 92_200);
+    assert_eq!(shown["net_result_cents"], 525_300);
     assert_eq!(shown["carried_back_cents"], 0);
     assert_eq!(shown["losses_carried_forward_cents"], 0);
 
@@ -2320,8 +2320,8 @@ fn year_opening_balance_set_show_then_chains_into_the_first_close() {
         .failure()
         .stderr(predicate::str::contains("déséquilibré"));
 
-    // La clôture du premier exercice hérite du report repris : CA 6 175 € HT, IS 926,25 €,
-    // net 5 248,75 € ; report = 250 + 5 248,75 = 5 498,75 €.
+    // La clôture du premier exercice hérite du report repris : CA 6 175 € HT, IS 926 €,
+    // net 5 249 € ; report = 250 + 5 249 = 5 499 €.
     let client_id = create_client(&db, "Kappa Software");
     let lines =
         r#"[{"description":"Prestation","quantity":9.5,"unit_price":65000,"vat_rate":"Standard"}]"#;
@@ -2378,9 +2378,9 @@ fn year_opening_balance_set_show_then_chains_into_the_first_close() {
     assert_eq!(ready["stage"], "ready");
     assert_eq!(ready["blocked"], 0);
     assert_eq!(ready["minimum_legal_reserve_cents"], 4_000);
-    assert_eq!(ready["result"]["net_result_cents"], 524_875);
+    assert_eq!(ready["result"]["net_result_cents"], 524_900);
     let steps = ready["steps"].as_array().unwrap();
-    assert_eq!(steps.len(), 16);
+    assert_eq!(steps.len(), 18);
     let step = |key: &str| steps.iter().find(|s| s["key"] == key).unwrap().clone();
     assert_eq!(step("opening_balance")["status"], "done");
     assert_eq!(step("previous_year")["status"], "info");
@@ -2427,7 +2427,7 @@ fn year_opening_balance_set_show_then_chains_into_the_first_close() {
         .get_output()
         .stdout
         .clone();
-    assert_eq!(json_result(&year_out)["retained_earnings_cents"], 549_875);
+    assert_eq!(json_result(&year_out)["retained_earnings_cents"], 549_900);
 
     // Le bilan est figé par ce snapshot ; le FEC de l'exercice porte ses à-nouveaux.
     freeflow()
@@ -2451,9 +2451,9 @@ fn year_opening_balance_set_show_then_chains_into_the_first_close() {
     );
     // Lot 31 : l'IS de clôture est une écriture OD du FEC, et le bilan dérivé est équilibré —
     // actif = clients 7 410 + banque 1 310 = 8 720 € ; passif = capitaux propres repris + résultat
-    // net 5 248,75 + TVA collectée 1 235 + IS dû 926,25.
+    // net 5 249 + TVA collectée 1 235 + IS dû 926.
     assert!(
-        fec.contains("OD|Opérations diverses|1|20261231|695000|Impôts sur les bénéfices|||OD-IS|20261231|Impôt sur les sociétés de l'exercice|926,25|0,00|"),
+        fec.contains("OD|Opérations diverses|1|20261231|695000|Impôts sur les bénéfices|||OD-IS|20261231|Impôt sur les sociétés de l'exercice|926,00|0,00|"),
         "{fec}"
     );
     let balance_out = freeflow()
@@ -2467,11 +2467,11 @@ fn year_opening_balance_set_show_then_chains_into_the_first_close() {
     let balance = json_result(&balance_out);
     assert_eq!(balance["balance_sheet"]["balanced"], true);
     assert_eq!(balance["balance_sheet"]["total_assets_net_cents"], 872_000);
-    assert_eq!(balance["balance_sheet"]["result_cents"], 524_875);
+    assert_eq!(balance["balance_sheet"]["result_cents"], 524_900);
     let rows = balance["trial_balance"]["rows"].as_array().unwrap();
     assert!(
         rows.iter()
-            .any(|r| r["account"] == "444000" && r["balance_cents"] == -92_625)
+            .any(|r| r["account"] == "444000" && r["balance_cents"] == -92_600)
     );
     freeflow()
         .env("FREEFLOW_DB", &db)

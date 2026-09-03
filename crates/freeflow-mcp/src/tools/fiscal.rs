@@ -99,6 +99,10 @@ pub(crate) struct CloseYearArgs {
     /// d'imputation (défaut : faux).
     #[serde(default)]
     carry_back: bool,
+    /// Charges non déductibles fiscalement (art. 39-4 CGI), en centimes, à réintégrer —
+    /// reportées sur le PV (art. 223 quater) et la 2033-B (défaut : 0).
+    #[serde(default)]
+    non_deductible_expenses_cents: i64,
     /// Date du jour (`AAAA-MM-JJ`, défaut : aujourd'hui, heure locale) : la clôture est refusée
     /// tant que l'exercice n'est pas écoulé.
     today: Option<String>,
@@ -583,6 +587,7 @@ impl FreeflowServer {
             dividends: Money::from_cents(args.dividends_cents),
             carry_back: args.carry_back,
             today: Some(today),
+            non_deductible_expenses: Money::from_cents(args.non_deductible_expenses_cents),
         };
         match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),

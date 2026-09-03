@@ -119,6 +119,10 @@ pub enum ClosingStepKey {
     Approve,
     Documents,
     CorporateTax,
+    /// TVA de l'exercice : collectée, déductible, déclarations dues (lot 41).
+    Vat,
+    /// Honoraires versés par bénéficiaire (DAS2, lot 41).
+    Das2,
     Liasse,
     Filing,
 }
@@ -141,6 +145,8 @@ impl ClosingStepKey {
             Self::Approve => "approve",
             Self::Documents => "documents",
             Self::CorporateTax => "corporate_tax",
+            Self::Vat => "vat",
+            Self::Das2 => "das2",
             Self::Liasse => "liasse",
             Self::Filing => "filing",
         }
@@ -160,9 +166,12 @@ impl ClosingStepKey {
             | Self::BalanceSheet => ClosingPhase::Prepare,
             Self::Close => ClosingPhase::Close,
             Self::Appropriation | Self::Approve => ClosingPhase::Approve,
-            Self::Documents | Self::CorporateTax | Self::Liasse | Self::Filing => {
-                ClosingPhase::Report
-            }
+            Self::Documents
+            | Self::CorporateTax
+            | Self::Vat
+            | Self::Das2
+            | Self::Liasse
+            | Self::Filing => ClosingPhase::Report,
         }
     }
 
@@ -183,6 +192,8 @@ impl ClosingStepKey {
             Self::Approve => "Approbation des comptes",
             Self::Documents => "Documents de clôture",
             Self::CorporateTax => "Solde d'IS",
+            Self::Vat => "TVA de l'exercice",
+            Self::Das2 => "Honoraires versés (DAS2)",
             Self::Liasse => "Liasse fiscale",
             Self::Filing => "Dépôt des comptes au greffe",
         }
@@ -386,7 +397,7 @@ pub fn closing_checklist(
         years: list_fiscal_years(conn)?,
     };
 
-    let mut steps = Vec::with_capacity(16);
+    let mut steps = Vec::with_capacity(18);
     steps.push(profile_step(&facts));
     steps.push(period_ended_step(&facts, today));
     let opening = opening_balance(conn)?.map(|r| r.balance);
@@ -439,6 +450,8 @@ pub fn closing_checklist(
     steps.push(approve_step(&facts, today));
     steps.push(documents_step(&facts));
     steps.push(corporate_tax_step(&facts, result.as_ref(), today));
+    steps.push(vat_step(conn, &facts)?);
+    steps.push(das2_step(conn, &facts, today)?);
     steps.push(liasse_step(&facts, today));
     steps.push(filing_step(&facts, today));
 
@@ -1091,6 +1104,22 @@ fn appropriation_step(facts: &Facts, minimum_reserve: Option<Money>) -> ClosingS
 
 fn approve_step(facts: &Facts, today: Date) -> ClosingStep {
     let due = approval_meeting_due_on(facts.exercise.end());
+    // Lot 41, art. L227-9 al. 3 du Code de commerce : quand l'associé unique, personne
+    // physique, est aussi président, le dépôt au greffe de l'inventaire et des comptes signés
+    // dans les six mois vaut approbation — la voie simple ; le PV reste disponible.
+    let simple_way = facts.profile.as_ref().is_some_and(|p| {
+        matches!(
+            (&p.sole_shareholder_name, &p.president_name),
+            (Some(a), Some(b)) if !a.trim().is_empty() && a.trim().eq_ignore_ascii_case(b.trim())
+        )
+    });
+    let simple_note = if simple_way {
+        " L'associé unique étant aussi président, déposer au greffe les comptes signés dans \
+         les six mois vaut approbation sans PV (art. L227-9 al. 3) — le PV reste conseillé, et \
+         la décision se consigne au registre des décisions (art. L227-9)."
+    } else {
+        " La décision se consigne au registre des décisions de l'associé unique (art. L227-9)."
+    };
     let Some(record) = &facts.record else {
         return ClosingStep::new(
             ClosingStepKey::Approve,
@@ -1122,7 +1151,7 @@ fn approve_step(facts: &Facts, today: Date) -> ClosingStep {
             StepStatus::Warning,
             format!(
                 "Délai d'approbation dépassé (six mois après la clôture, soit le {}) : approuvez \
-                 les comptes sans attendre — le dépôt au greffe en dépend.",
+                 les comptes sans attendre — le dépôt au greffe en dépend.{simple_note}",
                 format_date(due)
             ),
         )
@@ -1133,7 +1162,7 @@ fn approve_step(facts: &Facts, today: Date) -> ClosingStep {
             StepStatus::Todo,
             format!(
                 "À approuver par décision de l'associé unique avant le {} (six mois après la \
-                 clôture) ; la date d'approbation scelle l'exercice.",
+                 clôture) ; la date d'approbation scelle l'exercice.{simple_note}",
                 format_date(due)
             ),
         )
@@ -1190,8 +1219,13 @@ fn corporate_tax_step(
         (Some(_), Some(tax)) if tax.is_zero() => ClosingStep::new(
             ClosingStepKey::CorporateTax,
             StepStatus::Info,
-            "Aucun IS dû (résultat fiscal nul ou déficitaire) : pas de solde à verser.",
-        ),
+            format!(
+                "Aucun IS dû (résultat fiscal nul ou déficitaire) : rien à verser, mais le \
+                 relevé de solde 2572 se télédéclare quand même, à zéro, avant le {}.",
+                format_date(due)
+            ),
+        )
+        .due(due),
         (Some(_), tax) => {
             let amount = tax.unwrap_or(Money::ZERO);
             let status = if today > due {
@@ -1238,9 +1272,11 @@ fn liasse_step(facts: &Facts, today: Date) -> ClosingStep {
             StepStatus::Todo
         },
         format!(
-            "Déclaration de résultats 2065 et tableaux 2033 à télétransmettre (EDI-TDFC, via \
-             l'expert-comptable ou un partenaire EDI) avant le {} (indicatif) ; l'export liasse \
-             (JSON) en pré-remplit les cases.{}",
+            "Déclaration de résultats 2065 et tableaux 2033 (2033-A bilan, 2033-B compte de \
+             résultat — prestations en 218, impôts et taxes en 244, IS en 306 —, 2033-D déficits, \
+             2033-F composition du capital) à télétransmettre (EDI-TDFC, via l'expert-comptable \
+             ou un partenaire EDI) avant le {} (indicatif) ; l'export liasse (JSON) en \
+             pré-remplit les cases.{}",
             format_date(due),
             if late { " Échéance dépassée." } else { "" }
         ),
@@ -1263,7 +1299,10 @@ fn filing_step(facts: &Facts, today: Date) -> ClosingStep {
                 },
                 format!(
                     "Comptes annuels, décision d'affectation et PV à déposer au greffe dans le \
-                     mois suivant l'approbation, avant le {} (deux mois par voie électronique).{}",
+                     mois suivant l'approbation, avant le {} (deux mois par voie électronique). \
+                     Une petite société peut joindre une déclaration de confidentialité \
+                     (art. L232-25 du Code de commerce) pour que les comptes ne soient pas \
+                     publiés.{}",
                     format_date(due),
                     if late { " Échéance dépassée." } else { "" }
                 ),
@@ -1278,13 +1317,170 @@ fn filing_step(facts: &Facts, today: Date) -> ClosingStep {
                 format!(
                     "Après l'approbation : dépôt des comptes au greffe dans le mois suivant \
                      l'assemblée (au plus tard le {} si l'assemblée se tient au dernier jour du \
-                     délai).",
+                     délai), avec, pour une petite société, la déclaration de confidentialité \
+                     de l'art. L232-25 du Code de commerce si l'on ne veut pas que les comptes \
+                     soient publiés.",
                     format_date(due)
                 ),
             )
             .due(due)
         }
     }
+}
+
+/// TVA de l'exercice (lot 41) : ce que l'exercice a collecté et déduit, ce qu'il en résulte
+/// (dette ou crédit), et les déclarations dues sur la période selon le schéma déclaratif — une
+/// CA3 « néant » se dépose aussi.
+fn vat_step(conn: &Connection, facts: &Facts) -> Result<ClosingStep, AppError> {
+    use crate::fiscal::VatFilingScheme;
+    let exercise = facts.exercise;
+    let vat = crate::accounting::vat_due_for_period(conn, exercise.start(), exercise.end())?;
+    let regime = facts.profile.as_ref().and_then(|p| p.vat_regime);
+    let scheme = VatFilingScheme::for_exercise(regime, exercise);
+    let months =
+        crate::domain::Month::new(exercise.start().year(), u8::from(exercise.start().month()))
+            .map_or(12, |start| {
+                let end = crate::domain::Month::new(
+                    exercise.end().year(),
+                    u8::from(exercise.end().month()),
+                )
+                .expect("mois de fin valide");
+                (end.year() - start.year()) * 12 + i32::from(end.month()) - i32::from(start.month())
+                    + 1
+            });
+    let filings = match scheme {
+        VatFilingScheme::Ca3Monthly => format!(
+            "{months} déclarations CA3 mensuelles{}",
+            if vat.collected.is_zero() {
+                ", toutes « néant » — elles se déposent quand même"
+            } else {
+                ""
+            }
+        ),
+        VatFilingScheme::Ca3Quarterly => format!(
+            "{} déclarations CA3 trimestrielles{}",
+            (months + 2) / 3,
+            if vat.collected.is_zero() {
+                ", toutes « néant » — elles se déposent quand même"
+            } else {
+                ""
+            }
+        ),
+        VatFilingScheme::Simplified => "deux acomptes (3514, juillet et décembre) et la \
+                                        déclaration annuelle CA12 (CA12 E dans les trois mois \
+                                        d'une clôture décalée)"
+            .to_string(),
+        VatFilingScheme::NoFiling => "aucune déclaration (franchise en base)".to_string(),
+    };
+    let balance = if vat.due.is_negative() {
+        format!(
+            "crédit de TVA de {} à reporter{}",
+            -vat.due,
+            if -vat.due > crate::fiscal::CA12_REFUND_THRESHOLD {
+                " (ou remboursable sur demande au-delà de 150 €, formulaire 3519)"
+            } else {
+                ""
+            }
+        )
+    } else {
+        format!("TVA nette à reverser sur l'exercice : {}", vat.due)
+    };
+    let status = if regime.is_none() && scheme != VatFilingScheme::NoFiling {
+        StepStatus::Warning
+    } else {
+        StepStatus::Info
+    };
+    Ok(ClosingStep::new(
+        ClosingStepKey::Vat,
+        status,
+        format!(
+            "TVA collectée {}, déductible {} — {balance}. Déclarations dues sur l'exercice : \
+             {filings}.{}",
+            vat.collected,
+            vat.deductible,
+            if regime.is_none() && scheme != VatFilingScheme::NoFiling {
+                " Régime de TVA non renseigné au profil : mensuel supposé — renseignez-le."
+            } else {
+                ""
+            }
+        ),
+    ))
+}
+
+/// Honoraires versés (lot 41, DAS2 — art. 240 CGI) : cumul par bénéficiaire et par **année
+/// civile**, seuil 2 400 € ; le parcours signale des honoraires sans bénéficiaire renseigné et
+/// date la déclaration (trois mois après la clôture pour un exercice décalé, avec la liasse
+/// sinon — BOI-BIC-DECLA-30-70-20 § 400).
+fn das2_step(conn: &Connection, facts: &Facts, today: Date) -> Result<ClosingStep, AppError> {
+    use crate::fiscal::{DAS2_THRESHOLD, das2_due_on};
+    let exercise = facts.exercise;
+    let mut years: Vec<i32> = vec![exercise.start().year()];
+    if exercise.end().year() != exercise.start().year() {
+        years.push(exercise.end().year());
+    }
+    let mut lines = Vec::new();
+    let mut unnamed = Money::ZERO;
+    let mut any_fees = false;
+    let mut due: Option<Date> = None;
+    for year in years {
+        let fees = crate::expenses::fees_by_supplier(conn, year)?;
+        for (supplier, amount) in fees {
+            any_fees = true;
+            match supplier {
+                None => unnamed += amount,
+                Some(name) if amount >= DAS2_THRESHOLD => {
+                    lines.push(format!("{name} : {amount} en {year}"));
+                    let d = das2_due_on(facts.fye(), year);
+                    due = Some(due.map_or(d, |current| current.min(d)));
+                }
+                Some(_) => {}
+            }
+        }
+    }
+    if !any_fees {
+        return Ok(ClosingStep::new(
+            ClosingStepKey::Das2,
+            StepStatus::Info,
+            "Aucun honoraire sur l'exercice : pas de déclaration DAS2 (elle ne concerne que les \
+             honoraires, commissions et courtages dépassant 2 400 € par bénéficiaire et par année \
+             civile).",
+        ));
+    }
+    let mut detail = if lines.is_empty() {
+        format!(
+            "Honoraires versés, mais aucun bénéficiaire au-delà de {DAS2_THRESHOLD} sur une \
+             année civile : rien à déclarer en DAS2."
+        )
+    } else {
+        format!(
+            "À déclarer en DAS2 (par bénéficiaire, année civile) : {}.",
+            lines.join(" ; ")
+        )
+    };
+    let mut status = if lines.is_empty() {
+        StepStatus::Info
+    } else {
+        StepStatus::Todo
+    };
+    if !unnamed.is_zero() {
+        status = StepStatus::Warning;
+        let _ = std::fmt::Write::write_fmt(
+            &mut detail,
+            format_args!(
+                " {unnamed} d'honoraires sans bénéficiaire renseigné : nommez-le sur chaque \
+                 dépense pour que le cumul par bénéficiaire soit juste."
+            ),
+        );
+    }
+    let mut step = ClosingStep::new(ClosingStepKey::Das2, status, detail);
+    if let Some(due) = due {
+        if today > due && status == StepStatus::Todo {
+            step.status = StepStatus::Warning;
+            step.detail.push_str(" Échéance dépassée.");
+        }
+        step = step.due(due);
+    }
+    Ok(step)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1600,7 +1796,7 @@ mod tests {
 
     /// Une facture de 6 175 € HT (7 410 € TTC) le 30 septembre `year`, et une dépense de
     /// 960 € TTC (TVA déductible 160 €, lot 37 : la TVA contenue à 20 %) le 5 octobre, sans justificatif : résultat avant IS
-    /// 5 375 €, IS 806,25 €, net 4 568,75 € (chiffres du test d'intégration d'`accounting.rs`).
+    /// 5 375 €, IS 806 € (arrondi à l'euro), net 4 569 € (chiffres du test d'intégration d'`accounting.rs`).
     fn seed_activity(store: &mut Store, year: i32) -> crate::domain::InvoiceId {
         let client_id = client(store);
         let Outcome::Applied(emitted) = Executor::new(store)
@@ -1635,6 +1831,7 @@ mod tests {
                     incurred_on: date(year, TimeMonth::October, 5),
                     receipt_hash: None,
                     receipt_filename: None,
+                    supplier: None,
                     bank_transaction_id: None,
                 },
                 &human(),
@@ -1651,6 +1848,7 @@ mod tests {
             dividends: Money::ZERO,
             carry_back: false,
             today: None,
+            non_deductible_expenses: Money::ZERO,
         };
         let Outcome::Applied(id) = Executor::new(store).execute(&cmd, &human()).unwrap() else {
             panic!("expected Applied")
@@ -1765,7 +1963,7 @@ mod tests {
         let mut sorted = phases.clone();
         sorted.sort_by_key(|p| ClosingPhase::ALL.iter().position(|q| q == p));
         assert_eq!(phases, sorted);
-        assert_eq!(checklist.steps.len(), 16);
+        assert_eq!(checklist.steps.len(), 18);
     }
 
     #[test]
@@ -1841,13 +2039,13 @@ mod tests {
             status_of(&checklist, ClosingStepKey::BalanceSheet),
             StepStatus::Done
         );
-        // Prêt à clore, avec la dotation minimale (5 % de 4 568,75 € = 228,44 €).
+        // Prêt à clore, avec la dotation minimale (5 % de 4 569 € = 228,45 €).
         let close = checklist.step(ClosingStepKey::Close).unwrap();
         assert_eq!(close.status, StepStatus::Todo);
-        assert_eq!(close.amount, Some(Money::from_cents(22_844)));
+        assert_eq!(close.amount, Some(Money::from_cents(22_845)));
         assert_eq!(
             checklist.minimum_legal_reserve,
-            Some(Money::from_cents(22_844))
+            Some(Money::from_cents(22_845))
         );
         assert!(
             checklist.carry_back_available.is_none(),
@@ -1928,6 +2126,7 @@ mod tests {
                 dividends: Money::ZERO,
                 carry_back: false,
                 today: None,
+                non_deductible_expenses: Money::ZERO,
             },
             &human(),
         );
@@ -2011,7 +2210,7 @@ mod tests {
         );
         let appropriation = draft.step(ClosingStepKey::Appropriation).unwrap();
         assert_eq!(appropriation.status, StepStatus::Warning);
-        assert_eq!(appropriation.amount, Some(Money::from_cents(22_844)));
+        assert_eq!(appropriation.amount, Some(Money::from_cents(22_845)));
         assert!(
             appropriation.detail.contains("Révisez l'affectation"),
             "{}",
@@ -2022,7 +2221,7 @@ mod tests {
         assert_eq!(approve.due_on, Some(date(2027, TimeMonth::June, 30)));
         let tax = draft.step(ClosingStepKey::CorporateTax).unwrap();
         assert_eq!(tax.status, StepStatus::Todo);
-        assert_eq!(tax.amount, Some(Money::from_cents(80_625)));
+        assert_eq!(tax.amount, Some(Money::from_cents(80_600)));
         assert_eq!(status_of(&draft, ClosingStepKey::Liasse), StepStatus::Todo);
         assert_eq!(status_of(&draft, ClosingStepKey::Filing), StepStatus::Later);
         assert_eq!(
@@ -2096,9 +2295,9 @@ mod tests {
         assert_eq!(json["stage"], "approved");
         assert_eq!(json["fiscal_year_id"], id.to_string());
         assert_eq!(json["approved_on"], "2027-04-15");
-        assert_eq!(json["result"]["corporate_tax_cents"], 80_625);
-        assert_eq!(json["minimum_legal_reserve_cents"], 22_844);
-        assert_eq!(json["steps"].as_array().unwrap().len(), 16);
+        assert_eq!(json["result"]["corporate_tax_cents"], 80_600);
+        assert_eq!(json["minimum_legal_reserve_cents"], 22_845);
+        assert_eq!(json["steps"].as_array().unwrap().len(), 18);
         assert_eq!(json["steps"][0]["key"], "profile");
         assert_eq!(json["steps"][0]["status"], "done");
     }
@@ -2121,6 +2320,7 @@ mod tests {
                     incurred_on: date(2027, TimeMonth::March, 3),
                     receipt_hash: Some("abc".to_string()),
                     receipt_filename: Some("honoraires.pdf".to_string()),
+                    supplier: None,
                     bank_transaction_id: None,
                 },
                 &human(),
@@ -2238,5 +2438,227 @@ mod tests {
             bank.detail
         );
         assert!(!bank.detail.contains("encore ouvertes"), "{}", bank.detail);
+    }
+
+    // -- Lot 41 : étapes TVA et DAS2, charges non déductibles, mentions du PV ----------------
+
+    fn fees(store: &mut Store, supplier: Option<&str>, cents: i64, on: Date) {
+        Executor::new(store)
+            .execute(
+                &RecordExpense {
+                    label: "Honoraires".to_string(),
+                    category: ExpenseCategory::Fees,
+                    amount: Money::from_cents(cents),
+                    vat_rate: VatRate::Standard,
+                    vat_deductible: Money::ZERO,
+                    incurred_on: on,
+                    receipt_hash: None,
+                    receipt_filename: None,
+                    supplier: supplier.map(str::to_string),
+                    bank_transaction_id: None,
+                },
+                &human(),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn the_vat_step_sums_the_exercise_and_counts_the_filings_due() {
+        let mut store = test_store("vat-step");
+        set_profile(&mut store, Some(1_000_000));
+        seed_activity(&mut store, 2026);
+        let checklist =
+            closing_checklist(store.connection(), 2026, date(2027, TimeMonth::January, 15))
+                .unwrap();
+        let step = checklist.step(ClosingStepKey::Vat).unwrap();
+        assert_eq!(step.status, StepStatus::Info);
+        assert_eq!(step.phase, ClosingPhase::Report);
+        // 6 175 € HT à 20 % = 1 235 € collectés, 160 € déductibles → 1 075 € à reverser.
+        assert!(
+            step.detail.contains("TVA collectée 1 235,00 €"),
+            "{}",
+            step.detail
+        );
+        assert!(
+            step.detail.contains("déductible 160,00 €"),
+            "{}",
+            step.detail
+        );
+        assert!(step.detail.contains("1 075,00 €"), "{}", step.detail);
+        assert!(
+            step.detail.contains("12 déclarations CA3 mensuelles"),
+            "{}",
+            step.detail
+        );
+        assert!(!step.detail.contains("néant"), "{}", step.detail);
+
+        // Un exercice sans facture : crédit de TVA, et les CA3 « néant » se déposent quand même.
+        let mut empty = test_store("vat-step-empty");
+        set_profile(&mut empty, Some(1_000_000));
+        fees(
+            &mut empty,
+            Some("Cabinet"),
+            12_000,
+            date(2026, TimeMonth::March, 1),
+        );
+        let checklist =
+            closing_checklist(empty.connection(), 2026, date(2027, TimeMonth::January, 15))
+                .unwrap();
+        let step = checklist.step(ClosingStepKey::Vat).unwrap();
+        assert!(step.detail.contains("« néant »"), "{}", step.detail);
+        assert!(
+            step.detail.contains("TVA collectée 0,00 €"),
+            "{}",
+            step.detail
+        );
+    }
+
+    #[test]
+    fn the_das2_step_names_beneficiaries_over_the_threshold_and_flags_unnamed_fees() {
+        let mut store = test_store("das2-step");
+        set_profile(&mut store, Some(1_000_000));
+        let today = date(2027, TimeMonth::January, 15);
+        let checklist = closing_checklist(store.connection(), 2026, today).unwrap();
+        let step = checklist.step(ClosingStepKey::Das2).unwrap();
+        assert_eq!(step.status, StepStatus::Info);
+        assert!(step.detail.contains("Aucun honoraire"), "{}", step.detail);
+
+        // 1 300 € + 1 300 € au même cabinet en 2026 : à déclarer, échéance du 4 mai 2027.
+        fees(
+            &mut store,
+            Some("Cabinet Lumen"),
+            130_000,
+            date(2026, TimeMonth::February, 1),
+        );
+        fees(
+            &mut store,
+            Some("Cabinet Lumen"),
+            130_000,
+            date(2026, TimeMonth::September, 1),
+        );
+        let checklist = closing_checklist(store.connection(), 2026, today).unwrap();
+        let step = checklist.step(ClosingStepKey::Das2).unwrap();
+        assert_eq!(step.status, StepStatus::Todo);
+        assert_eq!(step.due_on, Some(date(2027, TimeMonth::May, 4)));
+        assert!(
+            step.detail.contains(&format!(
+                "Cabinet Lumen : {} en 2026",
+                Money::from_cents(260_000)
+            )),
+            "{}",
+            step.detail
+        );
+
+        // Des honoraires sans bénéficiaire : avertissement, le cumul ne peut pas être juste.
+        fees(&mut store, None, 40_000, date(2026, TimeMonth::October, 1));
+        let checklist = closing_checklist(store.connection(), 2026, today).unwrap();
+        let step = checklist.step(ClosingStepKey::Das2).unwrap();
+        assert_eq!(step.status, StepStatus::Warning);
+        assert!(
+            step.detail.contains(&format!(
+                "{} d'honoraires sans bénéficiaire",
+                Money::from_cents(40_000)
+            )),
+            "{}",
+            step.detail
+        );
+    }
+
+    #[test]
+    fn non_deductible_expenses_raise_the_taxable_result_but_not_the_accounting_one() {
+        let mut store = test_store("non-deductible");
+        set_profile(&mut store, Some(1_000_000));
+        seed_activity(&mut store, 2026);
+        // Résultat comptable 5 375 € ; 1 000 € d'amende réintégrés → base 6 375 €, IS 15 % =
+        // 956,25 € → 956 € (art. 1657) ; net comptable 5 375 − 956 = 4 419 €.
+        let cmd = CloseFiscalYear {
+            starts_on: date(2026, TimeMonth::January, 1),
+            ends_on: date(2026, TimeMonth::December, 31),
+            legal_reserve: Money::ZERO,
+            dividends: Money::ZERO,
+            carry_back: false,
+            today: None,
+            non_deductible_expenses: Money::from_cents(100_000),
+        };
+        Executor::new(&mut store).execute(&cmd, &human()).unwrap();
+        let record = crate::fiscal_year::list_fiscal_years(store.connection())
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(record.result_before_tax, Money::from_cents(537_500));
+        assert_eq!(record.non_deductible_expenses, Money::from_cents(100_000));
+        assert_eq!(record.taxable_result(), Money::from_cents(637_500));
+        assert_eq!(record.corporate_tax, Money::from_cents(95_600));
+        assert_eq!(record.net_result, Money::from_cents(441_900));
+        assert_eq!(record.deficit(), Money::ZERO);
+        // Rejouable depuis le JSON d'audit d'avant le lot (champ absent = zéro).
+        let legacy: CloseFiscalYear = serde_json::from_str(
+            r#"{"starts_on":"2027-01-01","ends_on":"2027-12-31","legal_reserve":0,"dividends":0}"#,
+        )
+        .unwrap();
+        assert_eq!(legacy.non_deductible_expenses, Money::ZERO);
+    }
+
+    #[test]
+    fn the_approve_step_points_to_the_simple_way_when_the_sole_shareholder_presides() {
+        let mut store = test_store("approve-l227-9");
+        let mut profile = SetCompanyProfile {
+            name: "Argon Digital".to_string(),
+            legal_form: "SASU".to_string(),
+            siren: Siren::parse("552100554").unwrap(),
+            vat_number: None,
+            address: Address {
+                street: "12 rue de la Paix".to_string(),
+                postal_code: "75002".to_string(),
+                city: "Paris".to_string(),
+                country: "FR".to_string(),
+            },
+            share_capital: Some(Money::from_cents(1_000_000)),
+            rcs_city: Some("Paris".to_string()),
+            iban: None,
+            fiscal_year_end: Some(FiscalYearEnd::CALENDAR),
+            vat_regime: Some(VatRegime::RealNormalMonthly),
+            director_monthly_gross: None,
+            director_charge_ratio_bps: None,
+            president_name: Some("Nora Lumen".to_string()),
+            sole_shareholder_name: Some("Nora Lumen".to_string()),
+            sole_shareholder_address: None,
+            share_count: Some(100),
+        };
+        Executor::new(&mut store)
+            .execute(&profile, &human())
+            .unwrap();
+        seed_activity(&mut store, 2026);
+        close(&mut store, 2026, 0);
+        let checklist =
+            closing_checklist(store.connection(), 2026, date(2027, TimeMonth::February, 1))
+                .unwrap();
+        let step = checklist.step(ClosingStepKey::Approve).unwrap();
+        assert!(step.detail.contains("L227-9 al. 3"), "{}", step.detail);
+        assert!(
+            step.detail.contains("registre des décisions"),
+            "{}",
+            step.detail
+        );
+        let filing = checklist.step(ClosingStepKey::Filing).unwrap();
+        assert!(filing.detail.contains("L232-25"), "{}", filing.detail);
+        let liasse = checklist.step(ClosingStepKey::Liasse).unwrap();
+        assert!(liasse.detail.contains("2033-F"), "{}", liasse.detail);
+
+        // Un président distinct : la voie simple n'est pas proposée, le registre reste.
+        profile.president_name = Some("Sami Ortiz".to_string());
+        Executor::new(&mut store)
+            .execute(&profile, &human())
+            .unwrap();
+        let checklist =
+            closing_checklist(store.connection(), 2026, date(2027, TimeMonth::February, 1))
+                .unwrap();
+        let step = checklist.step(ClosingStepKey::Approve).unwrap();
+        assert!(!step.detail.contains("L227-9 al. 3"), "{}", step.detail);
+        assert!(
+            step.detail.contains("registre des décisions"),
+            "{}",
+            step.detail
+        );
     }
 }

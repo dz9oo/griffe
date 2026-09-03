@@ -120,6 +120,8 @@ pub struct CloseForm {
     /// Case « report en arrière » : présente (`on`) seulement si cochée.
     #[serde(default)]
     carry_back: Option<String>,
+    #[serde(default)]
+    non_deductible: String,
 }
 
 impl From<&CloseForm> for CloseFormValues {
@@ -130,6 +132,7 @@ impl From<&CloseForm> for CloseFormValues {
             legal_reserve: f.legal_reserve.clone(),
             dividends: f.dividends.clone(),
             carry_back: f.carry_back.is_some(),
+            non_deductible: f.non_deductible.clone(),
         }
     }
 }
@@ -170,10 +173,13 @@ fn parse_close_form(form: &CloseForm) -> Result<ParsedCloseForm, Box<CloseFormEr
     };
     let legal_reserve = parse_money_field(&form.legal_reserve, &mut errors.legal_reserve);
     let dividends = parse_money_field(&form.dividends, &mut errors.dividends);
+    let non_deductible = parse_money_field(&form.non_deductible, &mut errors.non_deductible);
 
     match (starts_on, ends_on) {
         (Some(starts_on), Some(ends_on))
-            if errors.legal_reserve.is_none() && errors.dividends.is_none() =>
+            if errors.legal_reserve.is_none()
+                && errors.dividends.is_none()
+                && errors.non_deductible.is_none() =>
         {
             Ok(ParsedCloseForm {
                 cmd: CloseFiscalYear {
@@ -183,6 +189,7 @@ fn parse_close_form(form: &CloseForm) -> Result<ParsedCloseForm, Box<CloseFormEr
                     dividends,
                     carry_back: form.carry_back.is_some(),
                     today: None,
+                    non_deductible_expenses: non_deductible,
                 },
             })
         }

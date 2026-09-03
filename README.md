@@ -195,6 +195,39 @@ implémentation.
   d'enregistrer. Le bilan d'ouverture porte aussi l'IS et la TVA due de l'exercice précédent
   (`--prior-is`, `--prior-vat`) : sans eux, le calendrier dit « base inconnue » pour les acomptes
   au lieu d'affirmer une dispense.
+- **Conformité des documents et des déclarations** (lot 41), chaque règle vérifiée à la source
+  (notices Cerfa 2033-SD/2033-F au `pdftotext`, BOFIP, Code de commerce) : la liasse JSON porte
+  les **vraies lignes du 2033-B** (218 production vendue de services — plus 210, qui est la
+  vente de marchandises —, 242, 244, 250 salaires bruts et 252 charges sociales du dirigeant,
+  306 IS, 310 résultat comptable), le 2065 réduit à ses cases réelles (C1 résultat fiscal, cadre
+  des distributions si dividendes ; plus de pseudo-cases « IS »/« NET ») et le **2033-F**
+  (composition du capital : associé unique, adresse, nombre d'actions, 100 %) dès que le profil
+  nomme l'associé. Le **PV est nominatif** (associé unique, adresse, président, signature — un
+  blanc à compléter si le profil ne les porte pas) et dit ce qu'un greffe attend : art. 223
+  quater CGI (charges non déductibles, « aucune » par défaut — `freeflow year close
+  --non-deductible <€>`, `non_deductible_expenses_cents` de `fiscal.close_year`, champ du
+  formulaire ; réintégrées au résultat fiscal, jamais au résultat comptable), conventions
+  réglementées (L227-10), dispense de rapport de gestion (L232-1 IV), inscription au registre
+  des décisions (L227-9) ; une perte se rédige « affectée en totalité au report à nouveau »
+  sans « total distribuable », sur le PV comme sur la décision d'affectation. **Voie simple** :
+  si l'associé unique est aussi président, le parcours et le PV rappellent que le dépôt des
+  comptes signés au greffe dans les six mois vaut approbation (L227-9 al. 3). **IS arrondi à
+  l'euro** (art. 1657 CGI : base et cotisation, la fraction de 0,50 comptée pour 1) — les
+  chiffres du guide ci-dessous ont changé de quelques centimes. Calendrier : **DAS2**
+  (honoraires cumulés *par bénéficiaire et par année civile*, seuil 2 400 € depuis les revenus
+  2024 — BOI-BIC-DECLA-30-70-20 § 140 —, déclarée avec la liasse ou dans les trois mois d'une
+  clôture décalée ; chaque dépense porte un **bénéficiaire**, `expense record --supplier`,
+  `--clear-supplier`, `supplier` en MCP, champ du formulaire, et le parcours avertit d'honoraires
+  sans bénéficiaire), **2777** (dès qu'une affectation approuvée distribue des dividendes : le
+  15 du mois suivant la mise en paiement, PFU 12,8 % + prélèvements sociaux 18,6 % à compter de
+  2026, 17,2 % avant), CA12 nette du crédit repris au bilan d'ouverture (445670, demande de
+  remboursement 3519 possible au-delà de 150 €), première CA3 trimestrielle d'un exercice décalé
+  calée sur l'exercice ouvert après le 1er janvier 2027 (plus de doublon avec la CA12 E), DSN
+  chiffrée aux cotisations estimées (coût − brut) plutôt qu'au coût total. Le parcours gagne
+  deux étapes dans « déclarer et déposer » : **TVA de l'exercice** (collectée, déductible, dette
+  ou crédit, déclarations dues sur la période — une CA3 « néant » se dépose aussi) et
+  **honoraires versés (DAS2)**, et rappelle le relevé 2572 même à zéro et la déclaration de
+  confidentialité des comptes (L232-25) au dépôt.
 - **Grand livre dérivé, balance et bilan** : FreeFlow ne tient pas de comptabilité, il *dérive*
   les écritures de ses faits — bilan d'ouverture (journal `AN`), factures et avoirs (`VE`),
   encaissements et annulations (`BQ`), dépenses (`AC` ; une dépense rapprochée d'un débit du
@@ -589,7 +622,13 @@ Le reste du vocabulaire est expliqué au fil de l'app : `freeflow year glossary`
      télétransmission passe par le mode EDI-TDFC : un expert-comptable, ou un « partenaire EDI »
      en ligne, à qui tu donnes le JSON de la liasse et le FEC ;
    - le **solde d'IS** (relevé 2572, télépaiement sur impots.gouv.fr) le 15 du quatrième mois
-     après la clôture (15 janvier 2027) — ici zéro, rien à payer ;
+     après la clôture (15 janvier 2027) — ici zéro, rien à payer, mais le relevé se dépose
+     quand même ;
+   - tes **déclarations de TVA** n'ont pas attendu la clôture (une CA3 par mois, « néant » les
+     mois sans facture — elle se dépose aussi) : l'étape « TVA de l'exercice » du parcours
+     récapitule ce que l'année a collecté et déduit ; et si tu as payé plus de 2 400 €
+     d'honoraires au même cabinet dans l'année civile, l'étape « honoraires versés (DAS2) » te
+     dit quoi déclarer — d'où le champ « bénéficiaire » sur chaque dépense d'honoraires ;
    - le **dépôt des comptes au greffe** (bilan, compte de résultat, PV, décision d'affectation)
      sur le guichet unique des formalités d'entreprises (procedures.inpi.fr), dans le mois qui
      suit l'approbation (ici avant le 15 janvier 2027 ; deux mois par voie électronique).
@@ -614,8 +653,8 @@ puis chiffre :
 | Résultat avant impôt | 11 204,00 € |
 | Perte de l'an dernier déduite | − 816,00 € |
 | Résultat imposable | 10 388,00 € |
-| IS à 15 % | 1 558,20 € |
-| Résultat net | 9 645,80 € |
+| IS à 15 % (arrondi à l'euro) | 1 558,00 € |
+| Résultat net | 9 646,00 € |
 | Réserve légale minimale (5 %, plafonnée à 10 % du capital) | 100,00 € |
 
 Il te propose la commande de clôture avec cette réserve pré-remplie ; tu décides des dividendes :
@@ -627,11 +666,11 @@ freeflow year approve 2027 --approved-on 2027-12-10
 
 Le bilan au 30 septembre 2027 s'ouvre tout seul sur celui de l'année 1 (banque 11 104 €,
 client 4 800 €, TVA à récupérer 284 € ; en face capital, report à nouveau, résultat, TVA
-collectée 2 400 € et IS dû 1 558,20 €) : 16 188 € des deux côtés. Puis les mêmes trois
-démarches qu'en année 1 — cette fois avec un solde d'IS de 1 558,20 € à payer avant le
+collectée 2 400 € et IS dû 1 558 €) : 16 188 € des deux côtés. Puis les mêmes trois
+démarches qu'en année 1 — cette fois avec un solde d'IS de 1 558 € à payer avant le
 15 janvier 2028, une liasse avant le 30 décembre 2027 et un dépôt au greffe avant le
 10 janvier 2028. Le parcours de l'exercice 2028 démarre déjà avec le report à nouveau à jour
-(8 129,80 €) et la réserve légale (100 €).
+(8 130 €) et la réserve légale (100 €).
 
 **Ce qui reste du ressort d'un professionnel.** FreeFlow dérive un bilan simplifié des faits
 qu'il connaît (factures, encaissements, dépenses, relevé) : il ne sait pas amortir un ordinateur,
@@ -754,6 +793,10 @@ existe.
       tous les chiffres attendus posés à la main (`crates/freeflow-cli/tests/closing_scenario.rs`),
       guide pas à pas pour non-comptable et lexique de la clôture dans les trois façades — voir
       « Clôturer seul son exercice, pas à pas ».
+- [x] Conformité des documents et des déclarations : vraies lignes du 2033-B, 2033-F, PV
+      nominatif avec 223 quater / L227-10 / L232-1 IV / registre des décisions, IS arrondi à
+      l'euro, DAS2 par bénéficiaire, 2777, étape TVA du parcours — voir « Dépenses & obligations
+      fiscales ».
 - [ ] Tableau de bord de rentabilité par client sur la durée (au-delà de la mission en cours).
 - [ ] Chiffrement additionnel des pièces jointes de justificatifs de dépenses sur disque (au-delà
       du hash d'intégrité SHA-256 déjà en place).

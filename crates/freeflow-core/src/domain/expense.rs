@@ -107,6 +107,11 @@ pub struct Expense {
     /// construire la commande (voir `freeflow-cli::expense::archive_receipt`).
     pub receipt_hash: Option<String>,
     pub receipt_filename: Option<String>,
+    /// Bénéficiaire des honoraires (lot 41) — le nom du cabinet, de l'avocat, du sous-traitant :
+    /// la DAS2 cumule les honoraires par bénéficiaire et par année civile (seuil 2 400 €).
+    /// Facultatif ; le parcours signale des honoraires sans bénéficiaire.
+    #[serde(default)]
+    pub supplier: Option<String>,
     #[serde(with = "crate::domain::serde_date::datetime")]
     pub created_at: OffsetDateTime,
     /// Révision optimiste (lot 21) — voir `crate::app::revision`. La colonne SQL existait depuis

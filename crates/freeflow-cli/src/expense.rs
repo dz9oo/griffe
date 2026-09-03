@@ -27,6 +27,10 @@ impl HumanRender for freeflow_core::expenses::ExpenseDetail {
             ("id", e.id.to_string()),
             ("date", freeflow_core::domain::format_date(e.incurred_on)),
             ("catégorie", e.category.as_str().to_string()),
+            (
+                "bénéficiaire",
+                crate::output::or_dash(e.supplier.as_deref()),
+            ),
             ("montant TTC", e.amount.to_string()),
             (
                 "TVA déductible",
@@ -82,6 +86,10 @@ pub struct RecordArgs {
     /// Date d'engagement — reprise de la date du débit du relevé si omise avec `--transaction`.
     #[arg(long, value_parser = parse_date, required_unless_present = "transaction")]
     incurred_on: Option<Date>,
+    /// Bénéficiaire (fournisseur) — pour les honoraires, c'est ce nom qui cumule par année
+    /// civile sur la DAS2 (seuil 2 400 € par bénéficiaire).
+    #[arg(long)]
+    supplier: Option<String>,
     /// Justificatif à archiver : haché (SHA-256) et copié **chiffré** dans `<coffre>.receipts/`.
     #[arg(long)]
     receipt: Option<PathBuf>,
@@ -155,6 +163,12 @@ pub struct EditArgs {
     vat_deductible: Option<Money>,
     #[arg(long, value_parser = parse_date)]
     incurred_on: Option<Date>,
+    /// Bénéficiaire (fournisseur) — pour les honoraires, c'est ce nom qui cumule sur la DAS2.
+    #[arg(long, conflicts_with = "clear_supplier")]
+    supplier: Option<String>,
+    /// Efface le bénéficiaire.
+    #[arg(long)]
+    clear_supplier: bool,
     /// Remplace le justificatif : le nouveau fichier est haché et archivé chiffré, l'ancien
     /// reste en place. Exclusif avec `--clear-receipt` — voir aussi `expense attach`.
     #[arg(long, conflicts_with = "clear_receipt")]
@@ -238,6 +252,7 @@ pub fn run(
                 receipt_hash,
                 receipt_filename,
                 bank_transaction_id: args.transaction,
+                supplier: args.supplier,
             };
             let outcome = Executor::new(store).execute(&command, ctx)?;
             format_outcome(&outcome, json)
@@ -296,6 +311,11 @@ pub fn run(
                 incurred_on: args.incurred_on.unwrap_or(current.incurred_on),
                 receipt_hash,
                 receipt_filename,
+                supplier: if args.clear_supplier {
+                    None
+                } else {
+                    args.supplier.or(current.supplier)
+                },
             };
             let outcome = Executor::new(store).execute(&command, ctx)?;
             format_outcome(&outcome, json)

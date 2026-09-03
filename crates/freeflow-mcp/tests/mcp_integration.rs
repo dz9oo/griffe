@@ -1511,6 +1511,7 @@ async fn a_fiscal_year_can_be_shown_and_amended_but_approval_and_deletion_need_a
                 dividends: Money::from_cents(0),
                 carry_back: false,
                 today: None,
+                non_deductible_expenses: Money::ZERO,
             },
             &human,
         )
@@ -1561,7 +1562,7 @@ async fn a_fiscal_year_can_be_shown_and_amended_but_approval_and_deletion_need_a
     assert_eq!(journey["stage"], "draft");
     assert_eq!(journey["today"], "2026-03-01");
     let steps = journey["steps"].as_array().unwrap();
-    assert_eq!(steps.len(), 16);
+    assert_eq!(steps.len(), 18);
     let step = |key: &str| steps.iter().find(|s| s["key"] == key).unwrap().clone();
     assert_eq!(step("close")["status"], "done");
     assert_eq!(step("approve")["status"], "todo");
@@ -1614,7 +1615,7 @@ async fn a_fiscal_year_can_be_shown_and_amended_but_approval_and_deletion_need_a
             .any(|e| e["term"] == "Réserve légale"),
         "{glossary}"
     );
-    assert_eq!(via_resource["steps"].as_array().unwrap().len(), 16);
+    assert_eq!(via_resource["steps"].as_array().unwrap().len(), 18);
 
     let amended = call(
         &client,
@@ -2057,6 +2058,7 @@ async fn setup_status_and_receipt_attachment_over_mcp() {
                 incurred_on: time::macros::date!(2026 - 09 - 05),
                 receipt_hash: None,
                 receipt_filename: None,
+                supplier: None,
                 bank_transaction_id: None,
             },
             &ExecutionContext::new(Actor::Human, false),
