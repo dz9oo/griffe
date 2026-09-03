@@ -170,12 +170,26 @@ fn aggregate(
         None
     };
     if has_depreciation {
-        warnings.push(
-            "Un compte d'amortissement ou de dépréciation (28x/29x) est repris : FreeFlow ne \
-             calcule pas la dotation annuelle — le résultat des exercices suivants sera \
-             surestimé de ce montant tant que les amortissements ne sont pas modélisés."
-                .to_string(),
-        );
+        let candidates = crate::domain::fixed_asset_candidates(&lines);
+        if candidates.is_empty() {
+            warnings.push(
+                "Un compte d'amortissement ou de dépréciation (28x/29x) est repris sans \
+                 immobilisation appariée : déclarez-la (durée d'usage) pour que la dotation \
+                 soit calculée."
+                    .to_string(),
+            );
+        } else {
+            warnings.push(format!(
+                "Immobilisation(s) reprise(s) : {} — déclarez chacune avec sa durée d'usage \
+                 (freeflow asset add, ou --duration à l'import) pour que l'amortissement \
+                 linéaire soit calculé ; sans ça le résultat sera surestimé.",
+                candidates
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(" ; ")
+            ));
+        }
     }
     if lines.is_empty() {
         return Err(OpeningImportError::Empty {
@@ -478,6 +492,16 @@ pub fn preview_json(preview: &ImportPreview) -> serde_json::Value {
         "dropped": preview.dropped,
         "derived_result_cents": preview.derived_result.map(Money::cents),
         "warnings": preview.warnings,
+        "asset_candidates": crate::domain::fixed_asset_candidates(&preview.lines)
+            .iter()
+            .map(|c| serde_json::json!({
+                "account": c.account.as_str(),
+                "label": c.label,
+                "gross_cents": c.gross.cents(),
+                "depreciation_cents": c.depreciation.cents(),
+                "net_cents": c.net().cents(),
+            }))
+            .collect::<Vec<_>>(),
         "balanced": preview.to_opening_balance(None).validate().is_ok(),
     })
 }

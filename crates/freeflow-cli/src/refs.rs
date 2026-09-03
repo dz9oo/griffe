@@ -5,7 +5,7 @@
 
 use std::fmt::Display;
 
-use freeflow_core::domain::{ClientId, ExpenseId, MissionId, OpportunityId, QuoteId};
+use freeflow_core::domain::{ClientId, ExpenseId, FixedAssetId, MissionId, OpportunityId, QuoteId};
 use freeflow_core::reference::{self, RefMatch};
 use freeflow_core::store::Store;
 
@@ -66,6 +66,16 @@ pub fn resolve_mission(store: &Store, needle: &str) -> Result<MissionId, CliErro
         "aucune mission",
         "missions",
         reference::resolve_mission(store.connection(), needle)?,
+    )
+}
+
+/// # Errors
+pub fn resolve_fixed_asset(store: &Store, needle: &str) -> Result<FixedAssetId, CliError> {
+    translate(
+        needle,
+        "aucune immobilisation",
+        "immobilisations",
+        reference::resolve_fixed_asset(store.connection(), needle)?,
     )
 }
 

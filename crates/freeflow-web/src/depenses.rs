@@ -18,8 +18,11 @@ use axum::http::HeaderValue;
 use axum::response::{Html, IntoResponse, Response};
 use freeflow_core::app::{AppError, Executor, Outcome};
 use freeflow_core::billing::{self, bank_transaction_by_id};
-use freeflow_core::domain::{BankTransactionId, ExpenseCategory, ExpenseId, Money, VatRate};
+use freeflow_core::domain::{
+    AccountCode, BankTransactionId, ExpenseCategory, ExpenseId, FixedAssetId, Money, VatRate,
+};
 use freeflow_core::expenses::{self, ExpenseDetail};
+use freeflow_core::fixed_assets::{self, AddFixedAsset, DeleteFixedAsset};
 use maud::html;
 use serde::Deserialize;
 
@@ -450,7 +453,10 @@ pub async fn show_panel(State(state): State<AppState>, Path(id): Path<String>) -
         Some(Ok(None)) => {
             message_fragment("dépense introuvable — elle a peut-être été supprimée entre-temps")
         }
-        Some(Ok(Some(detail))) => Html(views::depenses::detail_panel(&detail, None).into_string()),
+        Some(Ok(Some(detail))) => {
+            let asset = expense_asset(&state, id).await;
+            Html(views::depenses::detail_panel(&detail, asset.as_ref(), None).into_string())
+        }
     }
 }
 
@@ -604,7 +610,9 @@ pub async fn delete(State(state): State<AppState>, Path(id): Path<String>) -> Re
 async fn detail_with_error(state: &AppState, id: ExpenseId, error: &str) -> Response {
     match current_expense(state, id).await {
         Some(Ok(Some(detail))) => {
-            Html(views::depenses::detail_panel(&detail, Some(error)).into_string()).into_response()
+            let asset = expense_asset(state, id).await;
+            Html(views::depenses::detail_panel(&detail, asset.as_ref(), Some(error)).into_string())
+                .into_response()
         }
         _ => message_fragment(error).into_response(),
     }
@@ -632,9 +640,9 @@ pub async fn reconcile_panel(
         None => locked_fragment(),
         Some(Err(e)) => message_fragment(&e.to_string()),
         Some(Ok(None)) => message_fragment("dépense introuvable"),
-        Some(Ok(Some((detail, _)))) if detail.bank_transaction.is_some() => {
-            Html(views::depenses::detail_panel(&detail, Some("déjà rapprochée")).into_string())
-        }
+        Some(Ok(Some((detail, _)))) if detail.bank_transaction.is_some() => Html(
+            views::depenses::detail_panel(&detail, None, Some("déjà rapprochée")).into_string(),
+        ),
         Some(Ok(Some((detail, candidates)))) => {
             Html(views::depenses::reconcile_panel(&detail.expense, &candidates, None).into_string())
         }
@@ -857,5 +865,129 @@ pub async fn receipt(State(state): State<AppState>, Path(id): Path<String>) -> R
             }
             response
         }
+    }
+}
+
+async fn expense_asset(
+    state: &AppState,
+    id: ExpenseId,
+) -> Option<freeflow_core::domain::FixedAsset> {
+    state
+        .with_store(|store| fixed_assets::asset_for_expense(store.connection(), id))
+        .await
+        .and_then(Result::ok)
+        .flatten()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ImmobilizeForm {
+    account: String,
+    duration: String,
+}
+
+pub async fn immobilize_panel(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Html<String> {
+    let Some(id) = parse_id::<ExpenseId>(&id) else {
+        return message_fragment("identifiant de dépense invalide");
+    };
+    match current_expense(&state, id).await {
+        None => locked_fragment(),
+        Some(Err(e)) => message_fragment(&e.to_string()),
+        Some(Ok(None)) => message_fragment("dépense introuvable"),
+        Some(Ok(Some(detail))) => {
+            Html(views::depenses::immobilize_panel(&detail.expense, None).into_string())
+        }
+    }
+}
+
+pub async fn immobilize(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Form(form): Form<ImmobilizeForm>,
+) -> Response {
+    let Some(id) = parse_id::<ExpenseId>(&id) else {
+        return message_fragment("identifiant de dépense invalide").into_response();
+    };
+    let Some(Ok(Some(detail))) = current_expense(&state, id).await else {
+        return message_fragment("dépense introuvable").into_response();
+    };
+    let expense = &detail.expense;
+    let account = match form.account.parse::<AccountCode>() {
+        Ok(a) => a,
+        Err(e) => {
+            return Html(
+                views::depenses::immobilize_panel(expense, Some(&e.to_string())).into_string(),
+            )
+            .into_response();
+        }
+    };
+    let duration = form.duration.parse::<u32>().unwrap_or(36);
+    let cmd = AddFixedAsset {
+        label: expense.label.clone(),
+        account,
+        acquired_on: expense.incurred_on,
+        base: fixed_assets::expense_net(expense),
+        duration_months: duration,
+        prior_depreciation: Money::ZERO,
+        expense_id: Some(id),
+    };
+    match execute(&state, cmd).await {
+        None => locked_fragment().into_response(),
+        Some(Ok(_)) => saved(),
+        Some(Err(e)) => Html(
+            views::depenses::immobilize_panel(expense, Some(&views::errors::message(&e)))
+                .into_string(),
+        )
+        .into_response(),
+    }
+}
+
+pub async fn asset_panel(State(state): State<AppState>, Path(id): Path<String>) -> Html<String> {
+    let Some(id) = parse_id::<FixedAssetId>(&id) else {
+        return message_fragment("identifiant d'immobilisation invalide");
+    };
+    let today = state.today();
+    match state
+        .with_store(|store| {
+            let asset = fixed_assets::fixed_asset_by_id(store.connection(), id)?;
+            let fye = freeflow_core::company::company_profile(store.connection())?
+                .and_then(|p| p.fiscal_year_end)
+                .unwrap_or(freeflow_core::domain::FiscalYearEnd::CALENDAR);
+            let fy = fye.containing(today);
+            Ok::<_, AppError>(asset.map(|a| {
+                let dep = a.depreciation_for(fy);
+                (a, dep)
+            }))
+        })
+        .await
+    {
+        None => locked_fragment(),
+        Some(Err(e)) => message_fragment(&e.to_string()),
+        Some(Ok(None)) => message_fragment("immobilisation introuvable"),
+        Some(Ok(Some((asset, dep)))) => {
+            Html(views::depenses::asset_panel(&asset, dep, None).into_string())
+        }
+    }
+}
+
+pub async fn delete_asset(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let Some(id) = parse_id::<FixedAssetId>(&id) else {
+        return message_fragment("identifiant d'immobilisation invalide").into_response();
+    };
+    let revision = match state
+        .with_store(|store| fixed_assets::fixed_asset_by_id(store.connection(), id))
+        .await
+    {
+        None => return locked_fragment().into_response(),
+        Some(Err(e)) => return message_fragment(&e.to_string()).into_response(),
+        Some(Ok(None)) => return message_fragment("immobilisation introuvable").into_response(),
+        Some(Ok(Some(asset))) => asset.revision,
+    };
+    match execute(&state, DeleteFixedAsset { id, revision }).await {
+        None => locked_fragment().into_response(),
+        Some(Ok(_)) => saved(),
+        Some(Err(e)) => message_fragment(&views::errors::message(&e)).into_response(),
     }
 }

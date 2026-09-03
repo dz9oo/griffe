@@ -363,6 +363,7 @@ pub fn run(
             let original = filename
                 .split_once('-')
                 .map_or(filename.as_str(), |(_, n)| n);
+            let open_viewer = out.is_none();
             let target = match out {
                 Some(path) => path,
                 None => std::env::temp_dir()
@@ -372,7 +373,10 @@ pub fn run(
             if json {
                 format_json(&serde_json::json!({ "path": target.display().to_string() }))
             } else {
-                let opened = open_with_default_viewer(&target);
+                // `--out` : l'utilisateur a choisi la destination, on n'ouvre pas le
+                // visualiseur (un test ou un script y écrit souvent un fichier qui n'est
+                // pas un vrai PDF). Sans `--out`, on ouvre le fichier temporaire.
+                let opened = open_viewer && open_with_default_viewer(&target);
                 format!(
                     "✓ justificatif déchiffré dans {}{}",
                     target.display(),

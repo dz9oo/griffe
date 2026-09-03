@@ -108,6 +108,7 @@ impl Fec {
             clients,
             payments,
             expenses,
+            assets: &[],
             bank_transactions: &[],
             opening: opening
                 .filter(|o| o.opens_on == exercise.start())

@@ -124,6 +124,18 @@ pub(crate) fn resolve_expense(
     )
 }
 
+/// Résout une référence texte vers un identifiant d'immobilisation — voir [`resolve_opportunity`].
+pub(crate) fn resolve_fixed_asset(
+    store: &freeflow_core::store::Store,
+    needle: &str,
+) -> Result<freeflow_core::domain::FixedAssetId, String> {
+    resolve_ref(
+        freeflow_core::reference::resolve_fixed_asset(store.connection(), needle),
+        "aucune immobilisation",
+        "immobilisations",
+    )
+}
+
 /// Résout une référence texte vers un identifiant de devis (le libellé cherché est le nom du
 /// client porteur) — voir [`resolve_opportunity`].
 pub(crate) fn resolve_quote(

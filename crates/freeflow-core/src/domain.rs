@@ -1,5 +1,6 @@
 //! Types métier purs (aucune IO) : argent, TVA, identifiants, entités.
 
+mod asset;
 mod calendar;
 mod client;
 mod expense;
@@ -20,6 +21,11 @@ mod time_entry;
 mod vat;
 mod vat_filing;
 
+pub use asset::{
+    AssetCandidate, AssetRow, DEFAULT_DURATION_MONTHS, FixedAsset, FixedAssetError,
+    SMALL_EQUIPMENT_THRESHOLD, add_months, asset_account_label, days360, depreciation_account,
+    fixed_asset_candidates, inferred_acquired_on, is_depreciable_account, sub_months,
+};
 pub use calendar::{
     easter_sunday, french_business_days_in, french_public_holidays, is_french_business_day,
     next_french_business_day_on_or_after,
@@ -27,8 +33,8 @@ pub use calendar::{
 pub use client::{Address, Client, Contact};
 pub use expense::{Expense, ExpenseCategory, UnknownExpenseCategory};
 pub use ids::{
-    BankTransactionId, ClientId, ContactId, ExpenseId, FiscalYearId, InteractionId, InvoiceId,
-    MissionId, OpportunityId, PaymentId, QuoteId, TimeEntryId,
+    BankTransactionId, ClientId, ContactId, ExpenseId, FiscalYearId, FixedAssetId, InteractionId,
+    InvoiceId, MissionId, OpportunityId, PaymentId, QuoteId, TimeEntryId,
 };
 pub use interaction::{Interaction, InteractionKind, UnknownInteractionKind};
 pub use invoice::{Invoice, InvoiceLine, InvoiceStatus};

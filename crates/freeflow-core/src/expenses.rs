@@ -113,6 +113,12 @@ pub enum ExpensesError {
          défaites d'abord le rapprochement pour le modifier"
     )]
     ReconciledAmountLocked(ExpenseId),
+
+    #[error(
+        "la dépense {0} est immobilisée : son net (TTC − TVA déductible) est la base amortissable \
+         de l'immobilisation — supprimez d'abord l'immobilisation pour la modifier ou la supprimer"
+    )]
+    Immobilized(ExpenseId),
 }
 
 impl From<ExpensesError> for AppError {
@@ -375,6 +381,12 @@ impl Command for UpdateExpense {
         {
             return Err(ExpensesError::ReconciledAmountLocked(self.id).into());
         }
+        // Une dépense immobilisée (lot 42) a donné sa base amortissable : montant et TVA figés.
+        if (self.amount != current.amount || self.vat_deductible != current.vat_deductible)
+            && crate::fixed_assets::asset_for_expense(conn, self.id)?.is_some()
+        {
+            return Err(ExpensesError::Immobilized(self.id).into());
+        }
         let new_revision = require_expense_revision(conn, self.id, self.revision)?;
         conn.execute(
             "UPDATE expenses
@@ -457,6 +469,11 @@ impl Command for DeleteExpense {
     fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
         let current = expense_by_id(conn, self.id)?.ok_or(ExpensesError::NotFound(self.id))?;
         ensure_outside_closed_fiscal_year(conn, current.incurred_on)?;
+        // Lot 42 : l'immobilisation issue de cette dépense la référence (FK sans cascade) — dit
+        // en clair plutôt que laissé à l'erreur de contrainte.
+        if crate::fixed_assets::asset_for_expense(conn, self.id)?.is_some() {
+            return Err(ExpensesError::Immobilized(self.id).into());
+        }
         require_expense_revision(conn, self.id, self.revision)?;
         // Seule référence entrante depuis le lot 33 : le débit du relevé rapproché, qui est
         // libéré (il redevient « à rapprocher ») — le relevé, lui, ne ment pas. Le fichier

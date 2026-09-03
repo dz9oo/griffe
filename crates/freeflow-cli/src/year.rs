@@ -225,6 +225,10 @@ pub enum OpeningCommand {
         prior_is: Option<Money>,
         #[arg(long, value_parser = parse_money)]
         prior_vat: Option<Money>,
+        /// Durée d'usage en mois appliquée à chaque immobilisation reprise (couple 2xx/28x).
+        /// Sans elle, les candidats sont seulement signalés : `freeflow asset add` ensuite.
+        #[arg(long)]
+        duration: Option<u32>,
     },
     /// Supprime le bilan d'ouverture (tant qu'aucun exercice n'est clos).
     Rm,
@@ -436,6 +440,7 @@ fn run_opening(
             tax_losses,
             prior_is,
             prior_vat,
+            duration,
         } => {
             let bytes = std::fs::read(&file).map_err(|e| {
                 CliError::Unexpected(format!("lecture de {} impossible : {e}", file.display()))
@@ -477,10 +482,27 @@ fn run_opening(
                         .map_or(String::new(), |r| format!(", résultat dérivé {r}"))
                 )
             });
-            if json || preview.warnings.is_empty() {
-                rendered
+            let mut extra = String::new();
+            if let Some(months) = duration
+                && matches!(outcome, freeflow_core::app::Outcome::Applied(_))
+            {
+                let candidates = freeflow_core::domain::fixed_asset_candidates(&preview.lines);
+                let mut declared = 0usize;
+                for candidate in &candidates {
+                    let cmd = freeflow_core::fixed_assets::AddFixedAsset::from_candidate(
+                        candidate, months, opens_on,
+                    );
+                    Executor::new(store).execute(&cmd, ctx)?;
+                    declared += 1;
+                }
+                if declared > 0 {
+                    extra = format!("\n{declared} immobilisation(s) déclarée(s) sur {months} mois");
+                }
+            }
+            if json || (preview.warnings.is_empty() && extra.is_empty()) {
+                format!("{rendered}{extra}")
             } else {
-                format!("{rendered}\n⚠ {}", preview.warnings.join("\n⚠ "))
+                format!("{rendered}{extra}\n⚠ {}", preview.warnings.join("\n⚠ "))
             }
         }
         OpeningCommand::Rm => {
@@ -509,6 +531,7 @@ fn year_json(r: &FiscalYearRecord) -> serde_json::Value {
         "revenue_ht_cents": r.revenue_ht.cents(),
         "expenses_cents": r.expenses.cents(),
         "director_remuneration_cents": r.director_remuneration.cents(),
+        "depreciation_cents": r.depreciation.cents(),
         "result_before_tax_cents": r.result_before_tax.cents(),
         "losses_imputed_cents": r.losses_imputed.cents(),
         "taxable_result_cents": r.taxable_result().cents(),
@@ -664,7 +687,10 @@ fn cli_hint(checklist: &ClosingChecklist, step: &ClosingStep) -> Option<String> 
         ClosingStepKey::Invoices => {
             "freeflow invoice aged-balance ; freeflow payment record …".to_string()
         }
-        ClosingStepKey::Expenses => "freeflow expense edit <RÉF> --receipt <fichier>".to_string(),
+        ClosingStepKey::Expenses => {
+            "freeflow expense edit <RÉF> --receipt <fichier> ; asset add (matériel ≥ 500 € HT)"
+                .to_string()
+        }
         ClosingStepKey::Bank => {
             "freeflow bank list --unmatched ; bank reconcile / expense reconcile".to_string()
         }
@@ -999,6 +1025,7 @@ pub fn run(
                 format!(
                     "Exercice du {} au {} — {status}\n\
                      CA HT : {}\nCharges externes : {}\nRémunération dirigeant : {}\n\
+                     Dotations aux amortissements : {}\n\
                      Résultat avant IS : {}\nDéficits antérieurs imputés : {}\n\
                      Résultat fiscal : {}\nIS : {}\nDéficit reporté en arrière : {}\n\
                      Créance de report en arrière : {}\nRésultat net : {}\n\
@@ -1009,6 +1036,7 @@ pub fn run(
                     record.revenue_ht,
                     record.expenses,
                     record.director_remuneration,
+                    record.depreciation,
                     record.result_before_tax,
                     record.losses_imputed,
                     record.taxable_result(),

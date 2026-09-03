@@ -7,9 +7,9 @@
 
 use freeflow_core::accounting::director_gross;
 use freeflow_core::company::CompanyProfile;
-use freeflow_core::domain::Money;
+use freeflow_core::domain::{AssetRow, Money};
 use freeflow_core::fiscal_year::FiscalYearRecord;
-use freeflow_core::ledger::{BalanceSheet, Ledger};
+use freeflow_core::ledger::{BalanceSheet, Journal, Ledger};
 use serde::Serialize;
 use time::Date;
 
@@ -230,6 +230,118 @@ fn tax_loss_entries(year: &FiscalYearRecord) -> Vec<LiasseEntry> {
     entries
 }
 
+/// Tableau 2033-C (cadres I et II) : brut et amortissements par rubrique, dérivés du grand
+/// livre — à-nouveaux = début, acquisitions (journal AC sur un 2xx) = augmentations, dotations
+/// (`681`) = charges d'amortissement. Pas de cession dans le domaine : diminutions à zéro.
+fn asset_table_entries(ledger: &Ledger) -> Vec<LiasseEntry> {
+    #[derive(Clone, Copy, Default)]
+    struct Mov {
+        start: i64,
+        increase: i64,
+        charge: i64,
+    }
+    let mut gross = [Mov::default(); 9];
+    let mut dep = [Mov::default(); 9];
+    let idx = |row: AssetRow| AssetRow::ALL.iter().position(|r| *r == row).unwrap_or(8);
+    for entry in &ledger.entries {
+        match entry.journal {
+            Journal::Opening | Journal::Purchases => {
+                for line in &entry.lines {
+                    let number = line.account.number.as_ref();
+                    let i = idx(AssetRow::from_account(number));
+                    let cents = line.amount.cents();
+                    let is_dep = number.starts_with("28") || number.starts_with("29");
+                    if entry.journal == Journal::Opening {
+                        if is_dep {
+                            dep[i].start += -cents;
+                        } else if number.starts_with('2') {
+                            gross[i].start += cents;
+                        }
+                    } else if number.starts_with('2') && !is_dep {
+                        gross[i].increase += cents;
+                    }
+                }
+            }
+            Journal::Misc => {
+                if let (Some(charge), Some(counter)) = (
+                    entry
+                        .lines
+                        .iter()
+                        .find(|l| l.account.number.starts_with("681")),
+                    entry.lines.iter().find(|l| {
+                        l.account.number.starts_with("28") || l.account.number.starts_with("29")
+                    }),
+                ) {
+                    let j = idx(AssetRow::from_account(counter.account.number.as_ref()));
+                    dep[j].charge += charge.amount.cents();
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut entries = Vec::new();
+    let mut push = |case: &'static str, label: &str, cents: i64| {
+        if cents != 0 {
+            entries.push(LiasseEntry {
+                form: "2033-C",
+                case,
+                label: label.to_string(),
+                amount_cents: cents,
+            });
+        }
+    };
+    let mut tot_g = Mov::default();
+    let mut tot_d = Mov::default();
+    for (i, row) in AssetRow::ALL.iter().enumerate() {
+        let g = gross[i];
+        let end_g = g.start + g.increase;
+        let [s, inc, dec, e] = row.gross_cases();
+        push(s, &format!("{} — brut début", row.label()), g.start);
+        push(inc, &format!("{} — augmentations", row.label()), g.increase);
+        push(dec, &format!("{} — diminutions", row.label()), 0);
+        push(e, &format!("{} — brut fin", row.label()), end_g);
+        tot_g.start += g.start;
+        tot_g.increase += g.increase;
+        if let Some([ds, dc, dd, de]) = row.depreciation_cases() {
+            let d = dep[i];
+            let end_d = d.start + d.charge;
+            push(
+                ds,
+                &format!("{} — amortissements début", row.label()),
+                d.start,
+            );
+            push(
+                dc,
+                &format!("{} — dotations de l'exercice", row.label()),
+                d.charge,
+            );
+            push(
+                dd,
+                &format!("{} — diminutions d'amortissements", row.label()),
+                0,
+            );
+            push(de, &format!("{} — amortissements fin", row.label()), end_d);
+            tot_d.start += d.start;
+            tot_d.charge += d.charge;
+        }
+    }
+    let [gs, gi, gd, ge] = AssetRow::GROSS_TOTAL_CASES;
+    push(gs, "Total immobilisations — brut début", tot_g.start);
+    push(gi, "Total immobilisations — augmentations", tot_g.increase);
+    push(gd, "Total immobilisations — diminutions", 0);
+    push(
+        ge,
+        "Total immobilisations — brut fin",
+        tot_g.start + tot_g.increase,
+    );
+    let [ds, di, dd, de] = AssetRow::DEPRECIATION_TOTAL_CASES;
+    push(ds, "Total amortissements — début", tot_d.start);
+    push(di, "Total amortissements — dotations", tot_d.charge);
+    push(dd, "Total amortissements — diminutions", 0);
+    push(de, "Total amortissements — fin", tot_d.start + tot_d.charge);
+    entries
+}
+
 /// Construit l'export de liasse depuis le snapshot figé d'un exercice clos, et le bilan dérivé
 /// de son grand livre (`balance_sheet`) s'il est fourni.
 #[must_use]
@@ -297,6 +409,12 @@ pub fn liasse_export(
         ),
         entry(
             "2033-B",
+            "254",
+            "Dotations aux amortissements et aux provisions",
+            year.depreciation,
+        ),
+        entry(
+            "2033-B",
             "306",
             "Impôt sur les bénéfices (barème 15 % / 25 %, arrondi à l'euro — art. 1657 CGI)",
             year.corporate_tax,
@@ -330,6 +448,7 @@ pub fn liasse_export(
     entries.extend(tax_loss_entries(year));
     if let Some(ledger) = ledger {
         entries.extend(balance_sheet_entries(&ledger.balance_sheet()));
+        entries.extend(asset_table_entries(ledger));
     }
     LiasseExport {
         company: profile.name.clone(),
@@ -339,9 +458,9 @@ pub fn liasse_export(
         approved: year.is_approved(),
         entries,
         capital: CapitalComposition::from_profile(profile),
-        note: "Export indicatif des cases principales (2065, 2033-A, 2033-B, 2033-D, 2033-F) à \
-               destination de l'expert-comptable — le bilan 2033-A est dérivé du grand livre \
-               (sans amortissement, provision ni régularisation) ; le dépôt réel de la liasse \
-               passe par EDI-TDFC, hors périmètre de FreeFlow.",
+        note: "Export indicatif des cases principales (2065, 2033-A, 2033-B, 2033-C, 2033-D, \
+               2033-F) à destination de l'expert-comptable — le bilan 2033-A et le tableau \
+               2033-C sont dérivés du grand livre ; le dépôt réel de la liasse passe par \
+               EDI-TDFC, hors périmètre de FreeFlow.",
     }
 }

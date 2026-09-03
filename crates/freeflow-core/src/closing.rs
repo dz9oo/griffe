@@ -401,7 +401,8 @@ pub fn closing_checklist(
     steps.push(profile_step(&facts));
     steps.push(period_ended_step(&facts, today));
     let opening = opening_balance(conn)?.map(|r| r.balance);
-    steps.push(opening_balance_step(&facts, opening.as_ref()));
+    let assets = crate::fixed_assets::list_fixed_assets(conn)?;
+    steps.push(opening_balance_step(&facts, opening.as_ref(), &assets));
     let chain = prior_chain(conn, exercise.start()).ok();
     steps.push(previous_year_step(&facts, chain.as_ref()));
     steps.push(invoices_step(conn, &facts, today)?);
@@ -554,6 +555,7 @@ fn period_ended_step(facts: &Facts, today: Date) -> ClosingStep {
 fn opening_balance_step(
     facts: &Facts,
     opening: Option<&crate::domain::OpeningBalance>,
+    assets: &[crate::domain::FixedAsset],
 ) -> ClosingStep {
     let start = facts.exercise.start();
     if let Some(previous) = facts.previous() {
@@ -579,20 +581,37 @@ fn opening_balance_step(
         ),
         Some(o) if o.opens_on == start => {
             let equity = o.equity();
-            ClosingStep::new(
-                ClosingStepKey::OpeningBalance,
-                StepStatus::Done,
-                format!(
-                    "Repris au {} ({}) : capital {}, report à nouveau {}, réserve légale {}, \
-                     déficits fiscaux reportables {}.",
-                    format_date(o.opens_on),
-                    plural(o.lines.len(), "compte", "comptes"),
-                    equity.share_capital,
-                    equity.retained_earnings,
-                    equity.legal_reserve,
-                    o.tax_losses
-                ),
-            )
+            let undeclared: Vec<_> = crate::domain::fixed_asset_candidates(&o.lines)
+                .into_iter()
+                .filter(|c| !assets.iter().any(|a| a.account == c.account))
+                .collect();
+            let summary = format!(
+                "Repris au {} ({}) : capital {}, report à nouveau {}, réserve légale {}, \
+                 déficits fiscaux reportables {}.",
+                format_date(o.opens_on),
+                plural(o.lines.len(), "compte", "comptes"),
+                equity.share_capital,
+                equity.retained_earnings,
+                equity.legal_reserve,
+                o.tax_losses
+            );
+            if undeclared.is_empty() {
+                ClosingStep::new(ClosingStepKey::OpeningBalance, StepStatus::Done, summary)
+            } else {
+                ClosingStep::new(
+                    ClosingStepKey::OpeningBalance,
+                    StepStatus::Warning,
+                    format!(
+                        "{summary} Immobilisation(s) reprise(s) non déclarée(s) : {} — \
+                         déclarez-les avec leur durée d'usage pour que la dotation soit calculée.",
+                        undeclared
+                            .iter()
+                            .map(|c| format!("{} {}", c.account, c.label))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                )
+            }
         }
         Some(o) => ClosingStep::new(
             ClosingStepKey::OpeningBalance,
@@ -735,11 +754,33 @@ fn expenses_step(conn: &Connection, facts: &Facts) -> Result<ClosingStep, AppErr
     let total: Money = expenses.iter().map(|e| e.amount).sum();
     let vat: Money = expenses.iter().map(|e| e.vat_deductible).sum();
     let without_receipt = expenses.iter().filter(|e| e.receipt_hash.is_none()).count();
+    let assets = crate::fixed_assets::list_fixed_assets(conn)?;
+    let to_immobilize: Vec<_> = expenses
+        .iter()
+        .filter(|e| crate::fixed_assets::should_be_immobilized(e, &assets))
+        .collect();
     let summary = format!(
         "{} sur l'exercice, {total} TTC, TVA déductible {vat}",
         plural(expenses.len(), "dépense", "dépenses")
     );
-    if without_receipt == 0 {
+    let mut notes = Vec::new();
+    if without_receipt > 0 {
+        notes.push(format!(
+            "{without_receipt} sans justificatif archivé — une charge sans pièce n'est pas \
+             déductible en cas de contrôle, et sa TVA ne l'est pas non plus. Joignez les pièces \
+             avant de clore : une dépense d'un exercice clos ne se modifie plus."
+        ));
+    }
+    if !to_immobilize.is_empty() {
+        notes.push(format!(
+            "{} de matériel au-delà de {} HT encore passée en charge — au-delà de cette \
+             tolérance (BOI-BIC-CHG-20-30-10), immobilisez-la (asset add) plutôt que de la \
+             laisser en charge.",
+            plural(to_immobilize.len(), "dépense", "dépenses"),
+            crate::domain::SMALL_EQUIPMENT_THRESHOLD
+        ));
+    }
+    if notes.is_empty() {
         Ok(ClosingStep::new(
             ClosingStepKey::Expenses,
             StepStatus::Done,
@@ -749,12 +790,7 @@ fn expenses_step(conn: &Connection, facts: &Facts) -> Result<ClosingStep, AppErr
         Ok(ClosingStep::new(
             ClosingStepKey::Expenses,
             StepStatus::Warning,
-            format!(
-                "{summary} ; {without_receipt} sans justificatif archivé — une charge sans pièce \
-                 n'est pas déductible en cas de contrôle, et sa TVA ne l'est pas non plus. \
-                 Joignez les pièces avant de clore : une dépense d'un exercice clos ne se \
-                 modifie plus."
-            ),
+            format!("{summary} ; {}", notes.join(" ")),
         ))
     }
 }
@@ -1639,6 +1675,25 @@ pub const GLOSSARY: &[GlossaryEntry] = &[
                   qu'elle doit (capital, dettes, résultat non distribué) un solde au crédit — \
                   l'actif est à gauche, le passif à droite. Les deux totaux sont toujours \
                   égaux.",
+    },
+    GlossaryEntry {
+        term: "Immobilisation",
+        meaning: "Un bien durable (ordinateur, logiciel, mobilier) qui n'est pas une charge \
+                  de l'année : il entre à l'actif et s'use par petites parts. Au-delà de \
+                  500 € HT, le matériel ne peut plus passer en charge.",
+    },
+    GlossaryEntry {
+        term: "Amortissement",
+        meaning: "La part de l'immobilisation qui s'use sur l'exercice (une « dotation ») : \
+                  un ordinateur de 1 200 € sur trois ans coûte 400 € par année pleine, moins \
+                  la première et la dernière si on l'a acheté en cours d'exercice. C'est une \
+                  charge, mais pas une sortie de banque.",
+    },
+    GlossaryEntry {
+        term: "Charges constatées d'avance",
+        meaning: "Une dépense déjà payée qui concerne l'exercice suivant (un abonnement, une \
+                  assurance). Reprise au bilan d'ouverture (compte 486), elle est basculée en \
+                  charge le premier jour de l'exercice.",
     },
     GlossaryEntry {
         term: "Dépôt des comptes au greffe",

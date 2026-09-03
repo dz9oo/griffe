@@ -190,6 +190,7 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "fiscal.opening_balance",
         "fiscal.balance_sheet",
         "fiscal.checklist",
+        "fiscal.assets",
     ] {
         assert_eq!(
             by_name(read_only)
@@ -212,6 +213,7 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "mission.delete",
         "mission.time.delete",
         "fiscal.delete_year",
+        "fiscal.delete_asset",
     ] {
         let ann = by_name(destructive).annotations.as_ref().unwrap();
         assert_eq!(ann.read_only_hint, Some(false));

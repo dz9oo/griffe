@@ -3214,7 +3214,8 @@ fn receipts_are_encrypted_migrated_and_attachable_after_the_close() {
         .arg(&out)
         .assert()
         .success()
-        .stdout(predicate::str::contains("justificatif déchiffré dans"));
+        .stdout(predicate::str::contains("justificatif déchiffré dans"))
+        .stdout(predicate::str::contains("(ouvert)").not());
     assert_eq!(std::fs::read(&out).unwrap(), b"%PDF-1.4 facture definitive");
 }
 
@@ -3273,7 +3274,7 @@ fn a_cabinet_balance_is_imported_as_the_opening_balance_without_typing_a_line() 
         .success()
         .stdout(predicate::str::contains("(dry-run) bilan d'ouverture au 2025-10-01 lu depuis une balance générale — 11 compte(s)"))
         .stdout(predicate::str::contains("Résultat dérivé des comptes 6/7 : 1\u{202f}200,00\u{a0}€ (posé en 120)"))
-        .stdout(predicate::str::contains("⚠ Un compte d'amortissement"));
+        .stdout(predicate::str::contains("⚠ Immobilisation(s) reprise(s)"));
     let preview = json_result(
         &freeflow()
             .env("FREEFLOW_DB", &db)

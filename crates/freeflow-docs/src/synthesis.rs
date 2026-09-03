@@ -1,8 +1,9 @@
 //! Synthèse comptable : compte de résultat simplifié de l'exercice, avec la colonne N−1 quand
 //! l'exercice précédent est clos dans FreeFlow. Le périmètre est celui de
-//! [`freeflow_core::accounting`] — prestation de services sans immobilisations : pas
-//! d'amortissements, de provisions ni de variation de stock, et le « bilan » se limite aux
-//! capitaux propres reconstituables (capital, réserve légale, report à nouveau).
+//! [`freeflow_core::accounting`] — prestation de services : pas de provisions ni de variation
+//! de stock, et le « bilan » se limite aux capitaux propres reconstituables (capital, réserve
+//! légale, report à nouveau). Les dotations aux amortissements (lot 42) figurent au compte
+//! de résultat.
 
 use freeflow_core::accounting::AccountingResult;
 use freeflow_core::company::CompanyProfile;
@@ -34,9 +35,8 @@ pub fn render_synthesis(
     let disclaimer_v = b.bind(DISCLAIMER);
     let scope_v = b.bind(&format!(
         "Périmètre simplifié : produits = factures émises HT, charges = dépenses nettes de TVA \
-         déductible et rémunération du dirigeant. Sans amortissements, provisions, variation de \
-         stock ni produits/charges constatés d'avance. Déficits reportables en avant après \
-         l'exercice : {}{}.",
+         déductible, dotations aux amortissements et rémunération du dirigeant. Sans provisions \
+         ni variation de stock. Déficits reportables en avant après l'exercice : {}{}.",
         result.losses_carried_forward(),
         if result.carried_back.is_zero() {
             String::new()
@@ -64,6 +64,11 @@ pub fn render_synthesis(
             "Rémunération du dirigeant (coût employeur)",
             result.director_remuneration,
             prior.map(|p| p.director_remuneration),
+        ),
+        (
+            "Dotations aux amortissements",
+            result.depreciation,
+            prior.map(|p| p.depreciation),
         ),
         (
             "Résultat avant impôt",

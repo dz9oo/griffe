@@ -11,8 +11,8 @@
 use rusqlite::Connection;
 
 use crate::app::AppError;
-use crate::domain::{ClientId, ExpenseId, MissionId, OpportunityId, QuoteId};
-use crate::{clients, expenses, missions, prospection, quotes};
+use crate::domain::{ClientId, ExpenseId, FixedAssetId, MissionId, OpportunityId, QuoteId};
+use crate::{clients, expenses, fixed_assets, missions, prospection, quotes};
 
 /// Résultat de la résolution d'une référence texte vers un identifiant typé. `label` (dans
 /// `Ambiguous`) est le libellé lisible du candidat — le nom d'un client, par exemple — pour que
@@ -238,6 +238,32 @@ pub fn resolve_expense(conn: &Connection, needle: &str) -> Result<RefMatch<Expen
                     e.label,
                     crate::domain::format_date(e.incurred_on),
                     e.amount
+                )
+            })
+    }))
+}
+
+/// Résout `needle` en identifiant d'immobilisation, par libellé — l'ambiguïté est qualifiée
+/// par le compte et la date de mise en service.
+///
+/// # Errors
+pub fn resolve_fixed_asset(
+    conn: &Connection,
+    needle: &str,
+) -> Result<RefMatch<FixedAssetId>, AppError> {
+    let all = fixed_assets::list_fixed_assets(conn)?;
+    let candidates: Vec<(FixedAssetId, String)> =
+        all.iter().map(|a| (a.id, a.label.clone())).collect();
+    let result = resolve_among(needle, &candidates);
+    Ok(qualify_ambiguous(result, |id| {
+        all.iter()
+            .find(|a| a.id == id)
+            .map_or_else(String::new, |a| {
+                format!(
+                    "{} — {} (depuis {})",
+                    a.label,
+                    a.account,
+                    crate::domain::format_date(a.acquired_on)
                 )
             })
     }))

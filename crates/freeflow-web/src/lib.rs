@@ -237,6 +237,12 @@ pub fn router(state: AppState) -> Router {
             "/depenses/{id}/delete",
             get(depenses::delete_confirm_panel).post(depenses::delete),
         )
+        .route(
+            "/depenses/{id}/immobilize",
+            get(depenses::immobilize_panel).post(depenses::immobilize),
+        )
+        .route("/depenses/assets/{id}", get(depenses::asset_panel))
+        .route("/depenses/assets/{id}/delete", post(depenses::delete_asset))
         .route("/devis/table", get(devis::table))
         .route("/devis/new", get(devis::new_panel))
         .route("/devis", post(devis::create))

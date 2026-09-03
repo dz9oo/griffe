@@ -13,6 +13,7 @@ use freeflow_core::billing::{
 use freeflow_core::clients::{DeleteClient, DeleteContact};
 use freeflow_core::expenses::{DeleteExpense, ReconcileExpense, RecordExpense};
 use freeflow_core::fiscal_year::{ApproveFiscalYear, CloseFiscalYear, DeleteFiscalYear};
+use freeflow_core::fixed_assets::DeleteFixedAsset;
 use freeflow_core::missions::{DeleteMission, DeleteTimeEntry};
 use freeflow_core::opening_balance::{
     DeleteOpeningBalance, RecordOpeningBalance, UpdateOpeningBalance,
@@ -172,6 +173,9 @@ pub fn confirm(store: &mut Store, id: PendingActionId, json: bool) -> Result<Str
         Ok(format_outcome(&outcome, json))
     } else if action.command_name == DeleteOpeningBalance::NAME {
         let outcome = Executor::new(store).confirm::<DeleteOpeningBalance>(id)?;
+        Ok(format_outcome(&outcome, json))
+    } else if action.command_name == DeleteFixedAsset::NAME {
+        let outcome = Executor::new(store).confirm::<DeleteFixedAsset>(id)?;
         Ok(format_outcome(&outcome, json))
     } else {
         Err(CliError::UnknownConfirmableCommand(action.command_name))

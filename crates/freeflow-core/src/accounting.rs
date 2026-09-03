@@ -54,6 +54,10 @@ pub struct AccountingResult {
     /// Coût employeur de la rémunération du président sur la période (brut × mois + cotisations
     /// patronales estimées), à titre indicatif.
     pub director_remuneration: Money,
+    /// Dotations aux amortissements de l'exercice (lot 42, ligne 254 du 2033-B) : linéaires,
+    /// prorata temporis, sur les immobilisations déclarées — la dépense immobilisée n'est plus
+    /// dans `expenses`.
+    pub depreciation: Money,
     /// Résultat **comptable** avant impôt : produits − charges.
     pub result_before_tax: Money,
     /// Charges comptabilisées mais non déductibles fiscalement (art. 39-4 CGI : amendes,
@@ -341,14 +345,25 @@ pub fn compute_result_with(
         .map(|inv| compute_totals(&inv.lines).subtotal_ht)
         .sum();
 
+    // Lot 42 : une dépense immobilisée n'est plus une charge (elle entre à l'actif) ; sa
+    // dotation l'est. Les charges constatées d'avance reprises au bilan d'ouverture (486) sont
+    // extournées au premier jour de l'exercice qui s'ouvre sur ce bilan : une charge de plus.
+    let assets = crate::fixed_assets::list_fixed_assets(conn)?;
+    let immobilized = crate::fixed_assets::assets_by_expense(&assets);
+    let prepaid: Money = crate::opening_balance::opening_balance(conn)?
+        .filter(|o| o.balance.opens_on == period.start())
+        .map_or(Money::ZERO, |o| prepaid_expenses_of(&o.balance.lines));
     let expenses: Money = expenses_between(conn, period.start(), period.end())?
         .iter()
+        .filter(|e| !immobilized.contains_key(&e.id))
         .map(|e| e.amount - e.vat_deductible)
-        .sum();
+        .sum::<Money>()
+        + prepaid;
+    let depreciation = crate::fixed_assets::depreciation_of(&assets, period);
 
     let director_remuneration = director_cost(profile, period);
 
-    let result_before_tax = revenue_ht - expenses - director_remuneration;
+    let result_before_tax = revenue_ht - expenses - depreciation - director_remuneration;
     let non_deductible_expenses = non_deductible_expenses.max(Money::ZERO);
     let imputation = impute_prior_losses(
         result_before_tax + non_deductible_expenses,
@@ -362,6 +377,7 @@ pub fn compute_result_with(
         revenue_ht,
         expenses,
         director_remuneration,
+        depreciation,
         result_before_tax,
         non_deductible_expenses,
         prior_losses_available: prior_losses_available.max(Money::ZERO),
@@ -372,6 +388,18 @@ pub fn compute_result_with(
         carry_back_credit: Money::ZERO,
         net_result,
     })
+}
+
+/// Les charges constatées d'avance reprises au bilan d'ouverture (comptes 486, au débit) :
+/// des charges de l'exercice précédent payées d'avance pour celui-ci, extournées au premier
+/// jour (lot 42). Pure, partagée par le résultat et le grand livre.
+#[must_use]
+pub fn prepaid_expenses_of(lines: &[crate::domain::OpeningBalanceLine]) -> Money {
+    lines
+        .iter()
+        .filter(|l| l.account.starts_with("486") && l.side == crate::domain::Side::Debit)
+        .map(|l| l.amount)
+        .sum()
 }
 
 /// Déclaration de TVA d'une période (CA3) : TVA collectée sur les factures émises, TVA déductible

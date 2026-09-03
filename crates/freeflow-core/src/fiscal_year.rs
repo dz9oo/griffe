@@ -160,6 +160,8 @@ pub struct FiscalYearRecord {
     pub revenue_ht: Money,
     pub expenses: Money,
     pub director_remuneration: Money,
+    /// Dotations aux amortissements figées à la clôture (lot 42, ligne 254 du 2033-B).
+    pub depreciation: Money,
     /// Résultat comptable avant impôt.
     pub result_before_tax: Money,
     /// Déficits antérieurs imputés sur le bénéfice de l'exercice (ligne 360 du 2033-B).
@@ -230,6 +232,7 @@ impl FiscalYearRecord {
             revenue_ht: self.revenue_ht,
             expenses: self.expenses,
             director_remuneration: self.director_remuneration,
+            depreciation: self.depreciation,
             result_before_tax: self.result_before_tax,
             non_deductible_expenses: self.non_deductible_expenses,
             prior_losses_available: self.losses_available_before(),
@@ -566,9 +569,9 @@ impl Command for CloseFiscalYear {
                  director_remuneration_cents, result_before_tax_cents, corporate_tax_cents,
                  net_result_cents, legal_reserve_cents, dividends_cents, retained_earnings_cents,
                  approved_on, revision, created_at, losses_imputed_cents, carried_back_cents,
-                 carry_back_credit_cents, non_deductible_expenses_cents)
+                 carry_back_credit_cents, non_deductible_expenses_cents, depreciation_cents)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, NULL, 1, ?13, ?14, ?15,
-                     ?16, ?17)",
+                     ?16, ?17, ?18)",
             params![
                 id.to_string(),
                 format_date(self.starts_on),
@@ -587,6 +590,7 @@ impl Command for CloseFiscalYear {
                 result.carried_back.cents(),
                 result.carry_back_credit.cents(),
                 self.non_deductible_expenses.cents(),
+                result.depreciation.cents(),
             ],
         )?;
         Ok(id)
@@ -859,6 +863,7 @@ fn row_to_record(row: &Row) -> rusqlite::Result<FiscalYearRecord> {
         revenue_ht: Money::from_cents(row.get("revenue_ht_cents")?),
         expenses: Money::from_cents(row.get("expenses_cents")?),
         director_remuneration: Money::from_cents(row.get("director_remuneration_cents")?),
+        depreciation: Money::from_cents(row.get("depreciation_cents")?),
         result_before_tax: Money::from_cents(row.get("result_before_tax_cents")?),
         losses_imputed: Money::from_cents(row.get("losses_imputed_cents")?),
         corporate_tax: Money::from_cents(row.get("corporate_tax_cents")?),

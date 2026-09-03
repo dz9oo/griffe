@@ -156,6 +156,9 @@ pub(crate) struct ImportOpeningBalanceArgs {
     /// avertissements) sans rien écrire.
     #[serde(default)]
     dry_run: bool,
+    /// Durée d'usage en mois appliquée à chaque immobilisation reprise (couple 2xx/28x) après
+    /// un enregistrement réussi. Sans elle, les candidats sont seulement dans l'aperçu.
+    duration_months: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -241,6 +244,7 @@ pub(crate) fn year_json(r: &FiscalYearRecord) -> serde_json::Value {
         "revenue_ht_cents": r.revenue_ht.cents(),
         "expenses_cents": r.expenses.cents(),
         "director_remuneration_cents": r.director_remuneration.cents(),
+        "depreciation_cents": r.depreciation.cents(),
         "result_before_tax_cents": r.result_before_tax.cents(),
         "losses_imputed_cents": r.losses_imputed.cents(),
         "taxable_result_cents": r.taxable_result().cents(),
@@ -455,6 +459,27 @@ impl FreeflowServer {
         match result {
             Ok(mut body) => {
                 body["preview"] = freeflow_core::opening_balance::import::preview_json(&preview);
+                if body["status"] == "applied"
+                    && let Some(months) = args.duration_months
+                {
+                    let candidates = freeflow_core::domain::fixed_asset_candidates(&preview.lines);
+                    let mut declared = Vec::new();
+                    for candidate in &candidates {
+                        let cmd = freeflow_core::fixed_assets::AddFixedAsset::from_candidate(
+                            candidate, months, opens_on,
+                        );
+                        match Executor::new(&mut store).execute(&cmd, &ctx) {
+                            Ok(o) => declared.push(outcome_json(&o)),
+                            Err(e) => {
+                                body["asset_error"] = json!(e.to_string());
+                                break;
+                            }
+                        }
+                    }
+                    if !declared.is_empty() {
+                        body["assets"] = json!(declared);
+                    }
+                }
                 ok_json(body)
             }
             Err(e) => err_text(e.to_string()),
@@ -888,4 +913,139 @@ impl FreeflowServer {
             Err(e) => err_text(e),
         }
     }
+
+    /// Immobilisations déclarées, avec la dotation, le cumul et la valeur nette de `period`
+    /// (année civile de clôture, défaut : exercice contenant aujourd'hui).
+    #[tool(
+        name = "fiscal.assets",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    async fn fiscal_assets(&self, Parameters(args): Parameters<AssetsListArgs>) -> CallToolResult {
+        let store = self.store.lock().await;
+        let fye = company_profile(store.connection())
+            .ok()
+            .flatten()
+            .and_then(|p| p.fiscal_year_end)
+            .unwrap_or(FiscalYearEnd::CALENDAR);
+        let fy = match args.period {
+            Some(year) => fye.containing(fye.end_in_year(year)),
+            None => fye.containing(freeflow_core::clock::today_local()),
+        };
+        match freeflow_core::fixed_assets::list_fixed_assets(store.connection()) {
+            Ok(assets) => ok_json(
+                assets
+                    .iter()
+                    .map(|a| freeflow_core::fixed_assets::asset_json(a, fy))
+                    .collect::<Vec<_>>(),
+            ),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
+    /// Déclare une immobilisation (reprise de bilan ou dépense matériel à immobiliser). `base`
+    /// d'une dépense = son net (TTC − TVA déductible), exigé exactement.
+    #[tool(
+        name = "fiscal.add_asset",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false
+        )
+    )]
+    async fn fiscal_add_asset(&self, Parameters(args): Parameters<AddAssetArgs>) -> CallToolResult {
+        let acquired_on = ok_or_return!(
+            "acquired_on",
+            freeflow_core::domain::parse_date(&args.acquired_on)
+        );
+        let account = ok_or_return!(
+            "account",
+            args.account.parse::<freeflow_core::domain::AccountCode>()
+        );
+        let mut store = self.store.lock().await;
+        let expense_id = match args.expense.as_deref() {
+            None => None,
+            Some(reference) => Some(ok_or_return!(
+                "expense",
+                crate::support::resolve_expense(&store, reference)
+            )),
+        };
+        let cmd = freeflow_core::fixed_assets::AddFixedAsset {
+            label: args.label,
+            account,
+            acquired_on,
+            base: Money::from_cents(args.base_cents),
+            duration_months: args.duration_months.unwrap_or(36),
+            prior_depreciation: Money::from_cents(args.prior_depreciation_cents.unwrap_or(0)),
+            expense_id,
+        };
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
+            Ok(outcome) => ok_json(outcome_json(&outcome)),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
+    /// Supprime une immobilisation. Refusé dès qu'un exercice clos a porté une de ses
+    /// dotations. Un agent dépose une action en attente.
+    #[tool(
+        name = "fiscal.delete_asset",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false
+        )
+    )]
+    async fn fiscal_delete_asset(
+        &self,
+        Parameters(args): Parameters<DeleteAssetArgs>,
+    ) -> CallToolResult {
+        let mut store = self.store.lock().await;
+        let id = ok_or_return!(
+            "asset",
+            crate::support::resolve_fixed_asset(&store, &args.asset)
+        );
+        let asset = match freeflow_core::fixed_assets::fixed_asset_by_id(store.connection(), id) {
+            Ok(Some(a)) => a,
+            Ok(None) => return err_text("immobilisation introuvable"),
+            Err(e) => return err_text(e.to_string()),
+        };
+        let cmd = freeflow_core::fixed_assets::DeleteFixedAsset {
+            id,
+            revision: args.revision.unwrap_or(asset.revision),
+        };
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
+            Ok(outcome) => ok_json(outcome_json(&outcome)),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct AssetsListArgs {
+    /// Année civile de clôture dont afficher la dotation.
+    period: Option<i32>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct AddAssetArgs {
+    label: String,
+    /// Compte d'immobilisation (2xx : `218300`, `205000`…).
+    account: String,
+    /// Mise en service (`AAAA-MM-JJ`).
+    acquired_on: String,
+    base_cents: i64,
+    duration_months: Option<u32>,
+    prior_depreciation_cents: Option<i64>,
+    /// Référence de la dépense à immobiliser.
+    expense: Option<String>,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct DeleteAssetArgs {
+    /// Référence (UUID, préfixe ou libellé).
+    asset: String,
+    revision: Option<i64>,
+    #[serde(default)]
+    dry_run: bool,
 }

@@ -2,6 +2,7 @@
 //! `freeflow` (ce crate) empruntent exactement le même chemin de code — [`run`] imprime sur
 //! stdout/stderr et renvoie un code de sortie, exactement ce qu'une console capture déjà.
 
+mod asset;
 mod backup;
 mod client;
 mod company;
@@ -124,6 +125,9 @@ enum TopCommand {
     /// Dépenses professionnelles et TVA déductible.
     #[command(subcommand)]
     Expense(expense::ExpenseCommand),
+    /// Immobilisations et amortissements (matériel, logiciels, reprises de bilan).
+    #[command(subcommand)]
+    Asset(asset::AssetCommand),
     /// Échéances fiscales indicatives (CA3, IS, CFE).
     #[command(subcommand)]
     Fiscal(fiscal::FiscalCommand),
@@ -369,6 +373,7 @@ fn run_command(
             pending::confirm(store, id, json)
         }
         TopCommand::Expense(cmd) => expense::run(cmd, store, ctx, json),
+        TopCommand::Asset(cmd) => asset::run(cmd, store, ctx, json),
         TopCommand::Fiscal(cmd) => fiscal::run(cmd, store, json),
         TopCommand::Forecast(cmd) => forecast::run(cmd, store, json),
         TopCommand::Year(cmd) => year::run(cmd, store, ctx, json),

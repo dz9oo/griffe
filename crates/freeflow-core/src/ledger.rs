@@ -39,11 +39,15 @@
 //! réputée payée à sa date (charge contre 512 directement) : sans relevé, le domaine n'a pas de
 //! meilleure date. Le 512 dérivé suit donc le relevé exactement là où il a été rapproché.
 //!
+//! **Immobilisations** (lot 42) : une dépense `equipment` immobilisée entre à l'actif (2xx)
+//! plutôt qu'en charge ; la dotation linéaire de l'exercice est une `OD` 681 / 28x au dernier
+//! jour. Une charge constatée d'avance reprise (486) est extournée au premier jour
+//! (`OD` 618 / 486).
+//!
 //! Limites assumées, dites dans les libellés : les dépenses non rapprochées sont réputées payées
-//! à leur date, l'équipement est passé en charge sans seuil d'immobilisation, la TVA n'est
-//! jamais liquidée (445660/445710 restent bruts, aucune CA3 n'étant un fait daté), pas
-//! d'amortissement, de provision ni de régularisation. Un export pour l'expert-comptable, qui
-//! reste maître des écritures définitives.
+//! à leur date, la TVA n'est jamais liquidée (445660/445710 restent bruts, aucune CA3 n'étant
+//! un fait daté), pas de provision ni de cession d'immobilisation. Un export pour
+//! l'expert-comptable, qui reste maître des écritures définitives.
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
@@ -79,7 +83,8 @@ use crate::clients::list_clients;
 use crate::company::{CompanyProfile, company_profile};
 use crate::domain::{
     BankTransaction, Client, ClientId, Expense, ExpenseCategory, ExpenseId, FiscalYear,
-    FiscalYearEnd, Invoice, InvoiceId, Money, OpeningBalance, Payment, PaymentMethod, format_date,
+    FiscalYearEnd, FixedAsset, Invoice, InvoiceId, Money, OpeningBalance, Payment, PaymentMethod,
+    format_date,
 };
 use crate::expenses::list_expenses;
 use crate::fiscal_year::{FiscalYearRecord, fiscal_year_ending_in, list_fiscal_years};
@@ -237,11 +242,27 @@ pub mod accounts {
     pub const RETAINED_DEBIT: Account =
         Account::fixed("119000", "Report à nouveau (solde débiteur)");
     pub const DIVIDENDS_DUE: Account = Account::fixed("457000", "Associés — dividendes à payer");
+    /// Charges constatées d'avance (lot 42) : reprises au bilan d'ouverture, extournées au
+    /// premier jour de l'exercice qui s'ouvre sur ce bilan.
+    pub const PREPAID_EXPENSES: Account = Account::fixed("486000", "Charges constatées d'avance");
+    /// Dotations aux amortissements (lot 42, ligne 254 du 2033-B).
+    pub const DEPRECIATION: Account =
+        Account::fixed("681100", "Dotations aux amortissements des immobilisations");
+    pub const COMPUTER_EQUIPMENT: Account =
+        Account::fixed("218300", "Matériel de bureau et matériel informatique");
+    pub const COMPUTER_DEPRECIATION: Account = Account::fixed(
+        "281830",
+        "Amortissements du matériel de bureau et informatique",
+    );
+    pub const INTANGIBLE_SOFTWARE: Account =
+        Account::fixed("205000", "Concessions, brevets, licences, logiciels");
+    pub const INTANGIBLE_SOFTWARE_DEPRECIATION: Account =
+        Account::fixed("280500", "Amortissements des logiciels");
 
     /// Tout le plan fixe — la source unique du libellé d'un compte (lot 37 : un `CompteNum` du
     /// FEC n'a qu'un seul `CompteLib`, celui-ci ; un libellé saisi au bilan d'ouverture ne
     /// sert qu'à un compte hors de cette liste).
-    pub const FIXED_PLAN: [Account; 34] = [
+    pub const FIXED_PLAN: [Account; 40] = [
         SHARE_CAPITAL,
         LEGAL_RESERVE,
         RETAINED_CREDIT,
@@ -276,6 +297,12 @@ pub mod accounts {
         OTHER,
         CORPORATE_TAX,
         CARRY_BACK_INCOME,
+        DEPRECIATION,
+        PREPAID_EXPENSES,
+        COMPUTER_EQUIPMENT,
+        COMPUTER_DEPRECIATION,
+        INTANGIBLE_SOFTWARE,
+        INTANGIBLE_SOFTWARE_DEPRECIATION,
     ];
 }
 
@@ -409,6 +436,9 @@ pub struct LedgerFacts<'a> {
     pub clients: &'a [Client],
     pub payments: &'a [Payment],
     pub expenses: &'a [Expense],
+    /// Immobilisations déclarées (lot 42) : une dépense liée entre à l'actif, et chaque
+    /// immobilisation produit sa dotation `681 / 28x` au dernier jour.
+    pub assets: &'a [FixedAsset],
     /// Les transactions du relevé importé (lot 33) : seules celles rapprochées d'une dépense
     /// (`matched_expense_id`) comptent ici, elles datent le décaissement de cette dépense.
     pub bank_transactions: &'a [BankTransaction],
@@ -446,6 +476,14 @@ fn short_id(id: impl std::fmt::Display) -> String {
 }
 
 /// Ligne signée sur un compte général, sans tiers.
+/// Compte du plan fixe s'il y figure, sinon un compte dynamique portant `label`.
+fn numbered_account(number: &str, label: &str) -> Account {
+    Account::for_number(number, Some(label)).unwrap_or_else(|| Account {
+        number: Cow::Owned(number.to_string()),
+        label: Cow::Owned(label.to_string()),
+    })
+}
+
 fn line(account: Account, amount: Money) -> LedgerLine {
     LedgerLine {
         account,
@@ -637,11 +675,13 @@ impl Facts<'_> {
         &self,
         expenses: &[Expense],
         bank_transactions: &[BankTransaction],
+        assets: &[FixedAsset],
     ) -> Vec<LedgerEntry> {
         let debits: HashMap<ExpenseId, &BankTransaction> = bank_transactions
             .iter()
             .filter_map(|t| t.matched_expense_id.map(|id| (id, t)))
             .collect();
+        let immobilized = crate::fixed_assets::assets_by_expense(assets);
         let mut entries = Vec::new();
         for expense in expenses {
             // Lot 37 : une pièce **unique** par dépense (l'UUID complet — huit caractères d'un
@@ -655,6 +695,11 @@ impl Facts<'_> {
             let charge = expense.amount - expense.vat_deductible;
             let debit = debits.get(&expense.id).copied();
             let paid_through = debit.map_or(accounts::BANK, |_| accounts::SUPPLIERS);
+            // Lot 42 : une dépense immobilisée entre à l'actif (2xx) au lieu du compte de charge.
+            let debit_account = immobilized.get(&expense.id).map_or_else(
+                || charge_account(expense.category),
+                |asset| numbered_account(asset.account.as_str(), &asset.label),
+            );
             if self.exercise.contains(expense.incurred_on) {
                 entries.extend(entry(
                     Journal::Purchases,
@@ -662,7 +707,7 @@ impl Facts<'_> {
                     piece.clone(),
                     label,
                     vec![
-                        line(charge_account(expense.category), charge),
+                        line(debit_account, charge),
                         line(accounts::VAT_DEDUCTIBLE, expense.vat_deductible),
                         line(paid_through, -expense.amount),
                     ],
@@ -798,6 +843,59 @@ impl Facts<'_> {
         )
     }
 
+    /// Dotations de l'exercice (lot 42) : une `OD` 681 / 28x par immobilisation, datée du
+    /// dernier jour, prorata temporis par construction de [`FixedAsset::depreciation_for`].
+    fn depreciation_entries(&self, assets: &[FixedAsset]) -> Vec<LedgerEntry> {
+        let mut entries = Vec::new();
+        for asset in assets {
+            let amount = asset.depreciation_for(self.exercise);
+            if amount.is_zero() {
+                continue;
+            }
+            let dep = numbered_account(
+                asset.depreciation_account().as_str(),
+                &format!("Amortissements — {}", asset.label),
+            );
+            entries.extend(entry(
+                Journal::Misc,
+                self.exercise.end(),
+                format!("OD-AMO-{}", asset.id),
+                format!("Dotation aux amortissements — {}", asset.label),
+                vec![line(accounts::DEPRECIATION, amount), line(dep, -amount)],
+            ));
+        }
+        entries
+    }
+
+    /// Extourne des charges constatées d'avance reprises au bilan d'ouverture (486 au débit) :
+    /// `OD` 618 / 486 au premier jour de l'exercice. Sans 486, rien.
+    fn prepaid_entries(&self, opening: Option<&OpeningLines>) -> Vec<LedgerEntry> {
+        let Some(opening) = opening else {
+            return Vec::new();
+        };
+        let mut entries = Vec::new();
+        for line_in in opening
+            .lines
+            .iter()
+            .filter(|l| l.account.number.starts_with("486") && l.amount.cents() > 0)
+        {
+            entries.extend(entry(
+                Journal::Misc,
+                self.exercise.start(),
+                format!("OD-CCA-{}", line_in.account.number),
+                format!(
+                    "Extourne des charges constatées d'avance — {}",
+                    line_in.account.label
+                ),
+                vec![
+                    line(accounts::PROFESSIONAL, line_in.amount),
+                    line(line_in.account.clone(), -line_in.amount),
+                ],
+            ));
+        }
+        entries
+    }
+
     /// Créance née du report en arrière du déficit (art. 220 quinquies) : 444 débité par le
     /// produit 699 — seulement depuis un snapshot, l'option étant une décision de clôture.
     fn carry_back_entry(&self, credit: Money) -> Option<LedgerEntry> {
@@ -866,12 +964,18 @@ impl Ledger {
             clients_by_id: facts.clients.iter().map(|c| (c.id, c)).collect(),
             invoices_by_id: facts.invoices.iter().map(|i| (i.id, i)).collect(),
         };
-        let mut entries = index.opening_entries(facts.opening);
+        let mut entries = index.prepaid_entries(facts.opening.as_ref());
+        entries.extend(index.opening_entries(facts.opening));
         entries.extend(index.sales_entries(facts.invoices));
         entries.extend(index.bank_entries(facts.payments));
-        entries.extend(index.purchase_entries(facts.expenses, facts.bank_transactions));
+        entries.extend(index.purchase_entries(
+            facts.expenses,
+            facts.bank_transactions,
+            facts.assets,
+        ));
         entries.extend(index.settlement_entries(facts.bank_transactions));
         entries.extend(index.appropriation_entries(facts.appropriations));
+        entries.extend(index.depreciation_entries(facts.assets));
 
         let director_total = facts.snapshot.map_or_else(
             || crate::accounting::director_cost(facts.profile, facts.exercise),
@@ -1631,6 +1735,7 @@ struct Loaded {
     clients: Vec<Client>,
     payments: Vec<Payment>,
     expenses: Vec<Expense>,
+    assets: Vec<FixedAsset>,
     bank_transactions: Vec<BankTransaction>,
     opening: Option<OpeningBalance>,
     fiscal_years: Vec<FiscalYearRecord>,
@@ -1650,6 +1755,7 @@ impl Loaded {
             clients: list_clients(conn)?,
             payments: list_payments(conn)?,
             expenses: list_expenses(conn)?,
+            assets: crate::fixed_assets::list_fixed_assets(conn)?,
             bank_transactions: list_bank_transactions(conn)?,
             opening: opening_balance(conn)?.map(|r| r.balance),
             fiscal_years: list_fiscal_years(conn)?,
@@ -1711,6 +1817,7 @@ impl Loaded {
             clients: &self.clients,
             payments: &self.payments,
             expenses: &self.expenses,
+            assets: &self.assets,
             bank_transactions: &self.bank_transactions,
             opening,
             snapshot,
@@ -1870,6 +1977,7 @@ mod tests {
             clients: &[],
             payments: &[],
             expenses,
+            assets: &[],
             bank_transactions: &[],
             opening,
             snapshot: None,
@@ -1892,6 +2000,7 @@ mod tests {
             revenue_ht: Money::ZERO,
             expenses: Money::ZERO,
             director_remuneration: Money::ZERO,
+            depreciation: Money::ZERO,
             result_before_tax: Money::from_cents(net),
             corporate_tax: Money::ZERO,
             net_result: Money::from_cents(net),
@@ -2073,6 +2182,7 @@ mod tests {
             clients: &[],
             payments: &[],
             expenses: &[],
+            assets: &[],
             bank_transactions: &[],
             opening: Some(ledger.closing_opening_lines()),
             snapshot: None,
@@ -2147,6 +2257,7 @@ mod tests {
             clients: &[],
             payments: &[],
             expenses: &[],
+            assets: &[],
             bank_transactions: &[],
             opening: Some(OpeningLines {
                 label: "AN".to_string(),
@@ -2884,6 +2995,93 @@ mod tests {
         assert_eq!(charge.piece_ref, format!("DEP-{}", with_receipt.id));
     }
 
+    /// Lot 42 : un ordinateur immobilisé entre en 2183, pas en charge ; la dotation 681/28x
+    /// du premier exercice (prorata 15 mars → 30 septembre) est 217,78 € ; une 486 reprise
+    /// est extournée au 1er janvier.
+    #[test]
+    fn an_immobilized_expense_enters_the_asset_and_is_depreciated_and_prepaid_is_reversed() {
+        let p = profile(None, None);
+        let exercise = FiscalYear::new(
+            date(2025, TimeMonth::October, 1),
+            date(2026, TimeMonth::September, 30),
+        );
+        let mut laptop = expense(144_000, 24_000, date(2026, TimeMonth::March, 15));
+        laptop.category = ExpenseCategory::Equipment;
+        laptop.label = "Ordinateur portable".to_string();
+        let asset = FixedAsset {
+            id: crate::domain::FixedAssetId::new(),
+            label: "Ordinateur portable".to_string(),
+            account: crate::domain::AccountCode::parse("218300").unwrap(),
+            acquired_on: date(2026, TimeMonth::March, 15),
+            base: Money::from_cents(120_000),
+            duration_months: 36,
+            depreciated_from: date(2026, TimeMonth::March, 15),
+            prior_depreciation: Money::ZERO,
+            expense_id: Some(laptop.id),
+            revision: 1,
+            created_at: OffsetDateTime::UNIX_EPOCH,
+        };
+        let opening = OpeningBalance {
+            opens_on: date(2025, TimeMonth::October, 1),
+            source: None,
+            lines: vec![
+                "101000:Capital social:C:1600.00".parse().unwrap(),
+                "486000:Charges constatées d'avance:D:400.00"
+                    .parse()
+                    .unwrap(),
+                "512000:Banque:D:1200.00".parse().unwrap(),
+            ],
+            tax_losses: Money::ZERO,
+        };
+        let assets = [asset];
+        let expenses = [laptop];
+        let ledger = Ledger::build(LedgerFacts {
+            assets: &assets,
+            ..facts(
+                &p,
+                exercise,
+                &[],
+                &expenses,
+                Some(OpeningLines::from_opening_balance(&opening)),
+            )
+        })
+        .unwrap();
+        assert!(ledger.entries.iter().all(LedgerEntry::is_balanced));
+        let purchase = ledger
+            .entries
+            .iter()
+            .find(|e| e.journal == Journal::Purchases)
+            .expect("entrée à l'actif");
+        assert_eq!(purchase.lines[0].account.number.as_ref(), "218300");
+        assert_eq!(purchase.lines[0].amount, Money::from_cents(120_000));
+        let amo = ledger
+            .entries
+            .iter()
+            .find(|e| e.piece_ref.starts_with("OD-AMO-"))
+            .expect("dotation");
+        assert_eq!(amo.date, exercise.end());
+        assert_eq!(amo.lines[0].account, accounts::DEPRECIATION);
+        assert_eq!(amo.lines[0].amount, Money::from_cents(21_778));
+        assert_eq!(amo.lines[1].account.number.as_ref(), "281830");
+        let cca = ledger
+            .entries
+            .iter()
+            .find(|e| e.piece_ref.starts_with("OD-CCA-"))
+            .expect("extourne 486");
+        assert_eq!(cca.date, date(2025, TimeMonth::October, 1));
+        assert_eq!(cca.lines[0].account, accounts::PROFESSIONAL);
+        assert_eq!(cca.lines[0].amount, Money::from_cents(40_000));
+        assert_eq!(cca.lines[1].account, accounts::PREPAID_EXPENSES);
+        // Pas de 6063 : le matériel n'est plus une charge.
+        assert!(
+            ledger
+                .entries
+                .iter()
+                .flat_map(|e| e.lines.iter())
+                .all(|l| l.account != accounts::SMALL_EQUIPMENT)
+        );
+    }
+
     /// Le report à nouveau des à-nouveaux dérivés est **net** : 110 C 6 350 repris et une
     /// perte de 1 226,90 affectée ne donnent pas « 110 C 6 350 + 119 D 1 226,90 » mais
     /// 110 C 5 123,10.
@@ -2934,6 +3132,13 @@ mod tests {
                 .collect();
             let sum: Money = lines.iter().map(|l| l.amount).sum();
             lines.push(line(accounts::BANK, -sum));
+            // Une 486 reprise est extournée en charge (lot 42) : le résultat n'est plus zéro,
+            // c'est exactement le montant débiteur des 486 d'ouverture.
+            let prepaid: Money = lines
+                .iter()
+                .filter(|l| l.account.number.starts_with("486") && l.amount.cents() > 0)
+                .map(|l| l.amount)
+                .sum();
             let transactions: Vec<BankTransaction> = settlements
                 .iter()
                 .filter(|(_, cents)| *cents != 0)
@@ -2948,7 +3153,7 @@ mod tests {
             prop_assert_eq!(balance.total_debit, balance.total_credit);
             let sheet = ledger.balance_sheet();
             prop_assert!(sheet.is_balanced(), "{:#?}", sheet);
-            prop_assert_eq!(ledger.net_result(), Money::ZERO);
+            prop_assert_eq!(ledger.net_result(), -prepaid);
             let carried: Money = ledger.closing_opening_lines().lines.iter().map(|l| l.amount).sum();
             prop_assert_eq!(carried, Money::ZERO);
         }

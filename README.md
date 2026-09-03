@@ -228,6 +228,17 @@ implémentation.
   ou crédit, déclarations dues sur la période — une CA3 « néant » se dépose aussi) et
   **honoraires versés (DAS2)**, et rappelle le relevé 2572 même à zéro et la déclaration de
   confidentialité des comptes (L232-25) au dépôt.
+- **Immobilisations et amortissements** (lot 42) : une immobilisation (matériel, logiciel,
+  mobilier) n'est plus une charge de l'année — elle entre à l'actif (2xx) et s'use par une
+  **dotation linéaire** (`OD` 681 / 28x au dernier jour), prorata temporis en jours 360 le
+  premier et le dernier exercice (BOI-BIC-AMT-20-10). Au-delà de **500 € HT** (BOI-BIC-CHG-20-30-10),
+  une dépense `equipment` propose « immobiliser » plutôt que de rester en charge. Une reprise de
+  bilan de cabinet (couple 2xx/28x) se déclare avec sa durée d'usage (`year opening import
+  --duration 36`, ou `asset add`) : le cumul repris est le 28x, les dotations suivantes
+  amortissent le net restant. Une **charge constatée d'avance** (486) reprise au bilan
+  d'ouverture est extournée au premier jour. La liasse gagne la case **254** du 2033-B et le
+  **tableau 2033-C** (cadres I et II). `freeflow asset list|show|add|rm`, outils MCP
+  `fiscal.assets` / `fiscal.add_asset` / `fiscal.delete_asset`, panneau dans l'écran dépenses.
 - **Grand livre dérivé, balance et bilan** : FreeFlow ne tient pas de comptabilité, il *dérive*
   les écritures de ses faits — bilan d'ouverture (journal `AN`), factures et avoirs (`VE`),
   encaissements et annulations (`BQ`), dépenses (`AC` ; une dépense rapprochée d'un débit du
@@ -692,9 +703,8 @@ existe.
   précédent — le domaine ne distingue pas la TVA sur immobilisations, que la règle légale exclut.
 - **Grand livre dérivé, pas une comptabilité tenue** : une dépense non rapprochée d'un débit du
   relevé est réputée payée à sa date (le 401 n'apparaît que pour les dépenses rapprochées),
-  l'équipement passe en charge sans seuil d'immobilisation, la
-  rémunération du dirigeant est réputée due et non décaissée (aucun fait de paie), la TVA n'est
-  jamais liquidée (445660/445710 restent bruts au bilan), pas d'amortissement de l'exercice, de
+  la rémunération du dirigeant est réputée due et non décaissée (aucun fait de paie), la TVA n'est
+  jamais liquidée (445660/445710 restent bruts au bilan), pas de cession d'immobilisation, de
   provision ni de régularisation ; lettrage et devise du FEC restent vides. Un exercice qui suit
   un exercice **non** clos dans l'application n'a pas d'à-nouveaux. L'expert-comptable reste
   maître des écritures définitives et du bilan déposé.
@@ -797,6 +807,10 @@ existe.
       nominatif avec 223 quater / L227-10 / L232-1 IV / registre des décisions, IS arrondi à
       l'euro, DAS2 par bénéficiaire, 2777, étape TVA du parcours — voir « Dépenses & obligations
       fiscales ».
+- [x] Immobilisations et amortissements linéaires : table `fixed_assets`, dotation `681 / 28x`
+      prorata temporis, seuil de 500 € HT, charges constatées d'avance (486) extournées, case
+      254 et tableau 2033-C — `freeflow asset list|add|rm`, `fiscal.assets`, panneau dans
+      l'écran dépenses.
 - [ ] Tableau de bord de rentabilité par client sur la durée (au-delà de la mission en cours).
 - [ ] Chiffrement additionnel des pièces jointes de justificatifs de dépenses sur disque (au-delà
       du hash d'intégrité SHA-256 déjà en place).

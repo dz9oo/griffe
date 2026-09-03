@@ -51,6 +51,7 @@ fn record(approved: bool) -> FiscalYearRecord {
         revenue_ht: Money::from_cents(617_500),
         expenses: Money::from_cents(80_000),
         director_remuneration: Money::ZERO,
+        depreciation: Money::ZERO,
         result_before_tax: Money::from_cents(537_500),
         corporate_tax: Money::from_cents(80_625),
         net_result: Money::from_cents(456_875),
@@ -139,6 +140,7 @@ fn ledger(profile: &CompanyProfile) -> Ledger {
         clients: &[],
         payments: &[],
         expenses: &[],
+        assets: &[],
         bank_transactions: &[],
         opening: Some(OpeningLines::from_opening_balance(
             &freeflow_core::domain::OpeningBalance {
@@ -233,6 +235,7 @@ fn the_liasse_uses_the_verified_2033b_lines_and_describes_the_capital() {
     // Coût employeur figé de 43 200 € = 36 000 € brut (profil) + 7 200 € de cotisations.
     let year = FiscalYearRecord {
         director_remuneration: Money::from_cents(4_320_000),
+        depreciation: Money::ZERO,
         non_deductible_expenses: Money::from_cents(15_000),
         ..record(true)
     };
@@ -256,6 +259,7 @@ fn the_liasse_uses_the_verified_2033b_lines_and_describes_the_capital() {
     );
     assert_eq!(case("2033-B", "250"), Some(3_600_000), "salaires bruts");
     assert_eq!(case("2033-B", "252"), Some(720_000), "charges sociales");
+    assert_eq!(case("2033-B", "254"), Some(0), "pas de dotation sur ce jeu");
     assert_eq!(case("2033-B", "306"), Some(80_625), "IS");
     assert_eq!(
         case("2033-B", "310"),

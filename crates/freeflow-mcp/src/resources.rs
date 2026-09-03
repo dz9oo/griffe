@@ -33,6 +33,7 @@ const OPENING_BALANCE_URI: &str = "freeflow://opening-balance";
 const BALANCE_SHEET_PREFIX: &str = "freeflow://balance-sheet/";
 const CLOSING_CHECKLIST_PREFIX: &str = "freeflow://closing-checklist/";
 const CLOSING_GLOSSARY_URI: &str = "freeflow://closing-glossary";
+const ASSETS_URI: &str = "freeflow://assets";
 
 pub(crate) fn list() -> ListResourcesResult {
     ListResourcesResult::with_all_items(vec![
@@ -84,6 +85,12 @@ pub(crate) fn list() -> ListResourcesResult {
             .with_description(
                 "Bilan d'ouverture (reprise du dernier bilan tenu avant FreeFlow) : lignes, \
                  totaux, capitaux propres repris — ou null s'il n'est pas enregistré.",
+            )
+            .with_mime_type("application/json"),
+        Resource::new(ASSETS_URI, "assets")
+            .with_description(
+                "Immobilisations déclarées, avec la dotation de l'exercice en cours — même vue \
+                 que fiscal.assets.",
             )
             .with_mime_type("application/json"),
     ])
@@ -289,6 +296,24 @@ pub(crate) fn read(store: &Store, uri: &str) -> Result<ReadResourceResult, McpEr
 
     if uri == CLOSING_GLOSSARY_URI {
         return json_contents(uri, freeflow_core::closing::glossary_json());
+    }
+
+    if uri == ASSETS_URI {
+        let fye = freeflow_core::company::company_profile(store.connection())
+            .ok()
+            .flatten()
+            .and_then(|p| p.fiscal_year_end)
+            .unwrap_or(freeflow_core::domain::FiscalYearEnd::CALENDAR);
+        let fy = fye.containing(freeflow_core::clock::today_local());
+        let assets = freeflow_core::fixed_assets::list_fixed_assets(store.connection())
+            .map_err(|e| McpError::resource_not_found(e.to_string(), None))?;
+        return json_contents(
+            uri,
+            assets
+                .iter()
+                .map(|a| freeflow_core::fixed_assets::asset_json(a, fy))
+                .collect::<Vec<_>>(),
+        );
     }
 
     if uri == OPENING_BALANCE_URI {

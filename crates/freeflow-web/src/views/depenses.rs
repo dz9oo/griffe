@@ -20,9 +20,11 @@
 use freeflow_core::app::AppError;
 use freeflow_core::billing::{list_bank_transactions, unmatched_debits};
 use freeflow_core::domain::{
-    BankTransaction, Expense, ExpenseCategory, ExpenseId, Money, VatRate, format_date,
+    BankTransaction, DEFAULT_DURATION_MONTHS, Expense, ExpenseCategory, ExpenseId, FixedAsset,
+    Money, SMALL_EQUIPMENT_THRESHOLD, VatRate, format_date,
 };
 use freeflow_core::expenses::{ExpenseDetail, expense_detail, list_expenses, reconciled_debits};
+use freeflow_core::fixed_assets::{expense_net, list_fixed_assets, should_be_immobilized};
 use freeflow_core::store::Store;
 use maud::{Markup, html};
 
@@ -60,6 +62,14 @@ pub const SETTLEMENT_OPTIONS: [(&str, &str); 9] = [
     ("580000", "virement entre mes comptes (580)"),
     ("164000", "emprunt — remboursement ou déblocage (164)"),
     ("", "autre compte de bilan…"),
+];
+
+pub const ASSET_ACCOUNT_OPTIONS: [(&str, &str); 5] = [
+    ("218300", "matériel de bureau et informatique (2183)"),
+    ("205000", "logiciel (205)"),
+    ("218400", "mobilier (2184)"),
+    ("218200", "matériel de transport (2182)"),
+    ("215400", "matériel industriel (2154)"),
 ];
 
 pub const VAT_RATE_OPTIONS: [(&str, &str); 5] = [
@@ -224,7 +234,11 @@ pub fn edit_panel(
     )
 }
 
-pub fn detail_panel(detail: &ExpenseDetail, error: Option<&str>) -> Markup {
+pub fn detail_panel(
+    detail: &ExpenseDetail,
+    asset: Option<&FixedAsset>,
+    error: Option<&str>,
+) -> Markup {
     let expense = &detail.expense;
     let body = html! {
         @if let Some(msg) = error {
@@ -253,6 +267,23 @@ pub fn detail_panel(detail: &ExpenseDetail, error: Option<&str>) -> Markup {
             } @else {
                 dd { "non rapprochée — réputée payée à sa date dans le grand livre" }
             }
+            @if let Some(asset) = asset {
+                dt { "Immobilisation" }
+                dd {
+                    span class="badge ok" { "immobilisée" }
+                    " " (asset.account) " — " (asset.duration_months) " mois, base "
+                    (asset.base)
+                }
+            } @else if expense.category == ExpenseCategory::Equipment
+                && expense_net(expense) > SMALL_EQUIPMENT_THRESHOLD
+            {
+                dt { "Immobilisation" }
+                dd {
+                    "matériel de " (expense_net(expense)) " HT — au-delà de "
+                    (SMALL_EQUIPMENT_THRESHOLD)
+                    ", passez-le à l'actif plutôt qu'en charge"
+                }
+            }
         }
         @if expense.receipt_hash.is_none() {
             div class="detail-note" {
@@ -266,6 +297,13 @@ pub fn detail_panel(detail: &ExpenseDetail, error: Option<&str>) -> Markup {
         }
         div class="detail-actions" {
             button class="btn" hx-get=(format!("/depenses/{}/edit", expense.id)) hx-target="#panel" hx-swap="innerHTML" { "modifier" }
+            @if let Some(asset) = asset {
+                button class="btn" hx-get=(format!("/depenses/assets/{}", asset.id)) hx-target="#panel" hx-swap="innerHTML" { "voir l'immobilisation" }
+            } @else if expense.category == ExpenseCategory::Equipment
+                && expense_net(expense) > SMALL_EQUIPMENT_THRESHOLD
+            {
+                button class="btn" hx-get=(format!("/depenses/{}/immobilize", expense.id)) hx-target="#panel" hx-swap="innerHTML" { "immobiliser" }
+            }
             @if detail.bank_transaction.is_some() {
                 button class="btn" hx-post=(format!("/depenses/{}/unreconcile", expense.id)) hx-target="#panel" hx-swap="innerHTML" { "défaire le rapprochement" }
             } @else {
@@ -352,6 +390,54 @@ pub struct SettleFormValues {
     pub label: String,
 }
 
+pub fn immobilize_panel(expense: &Expense, error: Option<&str>) -> Markup {
+    let net = expense_net(expense);
+    let duration = DEFAULT_DURATION_MONTHS.to_string();
+    let body = html! {
+        @if let Some(msg) = error {
+            (form::error_banner(msg))
+        }
+        div class="detail-note" {
+            "« " (expense.label) " » coûte " (net) " HT (TTC − TVA déductible), au-delà de la "
+            "tolérance de " (SMALL_EQUIPMENT_THRESHOLD) ". Immobiliser remplace la charge par "
+            "une entrée à l'actif et une dotation linéaire chaque exercice."
+        }
+        form hx-post=(format!("/depenses/{}/immobilize", expense.id)) hx-target="#panel" hx-swap="innerHTML" {
+            (form::select("account", "Compte", &ASSET_ACCOUNT_OPTIONS, "218300", None))
+            (form::number("duration", "Durée d'usage (mois)", &duration, "1", None))
+            (form::field_help("36 mois pour du matériel informatique, 60 pour du mobilier."))
+            (form::actions("Immobiliser"))
+        }
+    };
+    panel::sheet("Immobiliser cette dépense", body)
+}
+
+pub fn asset_panel(asset: &FixedAsset, period_depreciation: Money, error: Option<&str>) -> Markup {
+    let body = html! {
+        @if let Some(msg) = error {
+            (form::error_banner(msg))
+        }
+        div class="detail-head" {
+            div class="detail-title" { (asset.label) }
+            span class="badge" { (asset.account.as_str()) }
+        }
+        dl class="detail-fields" {
+            dt { "Compte" } dd { (asset.account.as_str()) " — "
+                (freeflow_core::domain::asset_account_label(asset.account.as_str())) }
+            dt { "Amortissement" } dd class="mono" { (asset.depreciation_account().to_string()) }
+            dt { "Mise en service" } dd { (format_date(asset.acquired_on)) }
+            dt { "Base" } dd class="mono" { (asset.base) }
+            dt { "Durée" } dd { (asset.duration_months) " mois" }
+            dt { "Cumul repris" } dd class="mono" { (asset.prior_depreciation) }
+            dt { "Dotation de l'exercice" } dd class="mono" { (period_depreciation) }
+        }
+        div class="detail-actions" {
+            button class="btn danger" hx-post=(format!("/depenses/assets/{}/delete", asset.id)) hx-target="#panel" hx-swap="innerHTML" { "supprimer l'immobilisation" }
+        }
+    };
+    panel::sheet(&asset.label, body)
+}
+
 pub fn delete_confirm_panel(expense: &Expense) -> Markup {
     let body = html! {
         div class="detail-note" {
@@ -374,6 +460,11 @@ pub fn delete_confirm_panel(expense: &Expense) -> Markup {
 
 pub fn list_fragment(store: &Store) -> Result<Markup, AppError> {
     let expenses = list_expenses(store.connection())?;
+    let assets = list_fixed_assets(store.connection())?;
+    let to_immobilize: Vec<&Expense> = expenses
+        .iter()
+        .filter(|e| should_be_immobilized(e, &assets))
+        .collect();
     let reconciled = reconciled_debits(store.connection())?;
     let debits = unmatched_debits(store.connection())?;
     // Les crédits non rapprochés se règlent aussi (remboursement de crédit de TVA, apport en
@@ -393,6 +484,46 @@ pub fn list_fragment(store: &Store) -> Result<Markup, AppError> {
             div class="pipe-toolbar" {
                 button class="btn primary" hx-get="/depenses/new" hx-target="#panel" hx-swap="innerHTML" { "+ nouvelle dépense" }
                 (crate::views::banque::import_button())
+            }
+            @if !to_immobilize.is_empty() {
+                div class="panel bordered" style="padding:0;margin-bottom:12px" {
+                    table {
+                        tr {
+                            th style="padding-left:18px" { "matériel à immobiliser (> 500 € HT)" }
+                            th { "net HT" }
+                            th style="padding-right:18px" { }
+                        }
+                        @for expense in &to_immobilize {
+                            tr {
+                                td style="padding-left:18px" { (expense.label) " — " (format_date(expense.incurred_on)) }
+                                td class="mono" { (expense_net(expense)) }
+                                td style="padding-right:18px" {
+                                    button class="btn" hx-get=(format!("/depenses/{}/immobilize", expense.id)) hx-target="#panel" hx-swap="innerHTML" { "immobiliser" }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            @if !assets.is_empty() {
+                div class="panel bordered" style="padding:0;margin-bottom:12px" {
+                    table {
+                        tr {
+                            th style="padding-left:18px" { "immobilisation" }
+                            th { "compte" }
+                            th { "base" }
+                            th style="padding-right:18px" { "mise en service" }
+                        }
+                        @for asset in &assets {
+                            tr class="row-clickable" hx-get=(format!("/depenses/assets/{}", asset.id)) hx-target="#panel" hx-swap="innerHTML" {
+                                td style="padding-left:18px" { (asset.label) }
+                                td class="mono" { (asset.account.as_str()) }
+                                td class="mono" { (asset.base) }
+                                td style="padding-right:18px" class="mono" { (format_date(asset.acquired_on)) }
+                            }
+                        }
+                    }
+                }
             }
             @if !debits.is_empty() {
                 div class="panel bordered" style="padding:0;margin-bottom:12px" {
