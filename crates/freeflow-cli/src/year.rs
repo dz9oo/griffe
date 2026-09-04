@@ -59,6 +59,11 @@ pub enum DocKind {
     /// Bilan simplifié (2033-A : actif brut/amortissements/net, passif) et balance des comptes,
     /// dérivés du grand livre — PDF. L'exercice n'a pas besoin d'être clos.
     BalanceSheet,
+    /// Inventaire (L227-9 al. 3) : balance des comptes arrêtée au dernier jour — PDF. L'exercice
+    /// n'a pas besoin d'être clos.
+    Inventory,
+    /// Notice de saisie EFI : chaque case de la liasse à recopier sur impots.gouv.fr — PDF.
+    EfiNotice,
 }
 
 #[derive(Debug, Subcommand)]
@@ -785,10 +790,14 @@ fn cli_hint(checklist: &ClosingChecklist, step: &ClosingStep) -> Option<String> 
             format!("freeflow year approve {period} --approved-on AAAA-MM-JJ")
         }
         ClosingStepKey::Documents => format!(
-            "freeflow year render {period} <minutes|appropriation|synthesis|balance-sheet|liasse> \
-             --out … ; freeflow fec export {period} --out …"
+            "freeflow year render {period} <minutes|appropriation|synthesis|balance-sheet|\
+             inventory|efi-notice|liasse> --out … ; freeflow fec export {period} --out …"
         ),
-        ClosingStepKey::Liasse => format!("freeflow year render {period} liasse --out …"),
+        ClosingStepKey::Liasse => {
+            format!(
+                "freeflow year render {period} efi-notice --out … ; year render {period} liasse --out …"
+            )
+        }
         ClosingStepKey::Vat => "freeflow fiscal calendar (CA3/CA12 à venir) ; company \
                                 set-profile --vat-regime … si le régime manque"
             .to_string(),
@@ -949,21 +958,27 @@ fn render(
     out: &Path,
     today: Option<Date>,
 ) -> Result<String, CliError> {
-    if matches!(doc, DocKind::BalanceSheet) {
+    if matches!(doc, DocKind::BalanceSheet | DocKind::Inventory) {
         // Dérivé du grand livre : pas besoin d'un exercice clos, comme le FEC.
         let (profile, ledger) = ledger_ending_in(store.connection(), period)?;
-        let bytes = freeflow_docs::render_balance_sheet(
-            &profile,
-            &ledger.balance_sheet(),
-            &ledger.trial_balance(),
-        )
+        let bytes = match doc {
+            DocKind::BalanceSheet => freeflow_docs::render_balance_sheet(
+                &profile,
+                &ledger.balance_sheet(),
+                &ledger.trial_balance(),
+            ),
+            DocKind::Inventory => {
+                freeflow_docs::render_inventory(&profile, &ledger.trial_balance())
+            }
+            _ => unreachable!("filtré ci-dessus"),
+        }
         .map_err(|e| CliError::Unexpected(e.to_string()))?;
         return write_document(out, &bytes);
     }
     let record = require_year(store, period)?;
     let profile = require_profile(store)?;
     let bytes = match doc {
-        DocKind::BalanceSheet => unreachable!("traité ci-dessus"),
+        DocKind::BalanceSheet | DocKind::Inventory => unreachable!("traité ci-dessus"),
         DocKind::Minutes => {
             let today = record.approved_on.or(today).ok_or_else(|| {
                 CliError::Domain(
@@ -997,7 +1012,8 @@ fn render(
             {
                 return Err(CliError::Domain(
                     "la liasse est un fichier JSON, pas un PDF : donnez une extension `.json` \
-                     (les PDF sont minutes, appropriation, synthesis, balance-sheet)"
+                     (les PDF sont minutes, appropriation, synthesis, balance-sheet, inventory, \
+                     efi-notice)"
                         .into(),
                 ));
             }
@@ -1007,6 +1023,12 @@ fn render(
                 .map_err(|e| CliError::Unexpected(e.to_string()))?;
             bytes.push(b'\n');
             bytes
+        }
+        DocKind::EfiNotice => {
+            let ledger = build_ledger(store.connection(), record.period())?;
+            let export = freeflow_docs::liasse_export(&profile, &record, Some(&ledger));
+            freeflow_docs::render_efi_notice(&export)
+                .map_err(|e| CliError::Unexpected(e.to_string()))?
         }
     };
     write_document(out, &bytes)

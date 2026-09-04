@@ -715,6 +715,31 @@ pub async fn document(
                 Err(e) => message_fragment(&e.to_string()).into_response(),
             };
         }
+        "efi-notice" => {
+            let export = freeflow_docs::liasse_export(&profile, &record, sheet.as_ref());
+            freeflow_docs::render_efi_notice(&export).map(|pdf| {
+                document_response(
+                    pdf,
+                    "application/pdf",
+                    &format!("notice-efi-{year_label}.pdf"),
+                )
+            })
+        }
+        "inventory" => {
+            let Some(ledger) = sheet.as_ref() else {
+                return message_fragment(
+                    "le grand livre n'a pas pu être construit — renseignez d'abord le profil",
+                )
+                .into_response();
+            };
+            freeflow_docs::render_inventory(&profile, &ledger.trial_balance()).map(|pdf| {
+                document_response(
+                    pdf,
+                    "application/pdf",
+                    &format!("inventaire-{year_label}.pdf"),
+                )
+            })
+        }
         other => {
             return message_fragment(&format!("document inconnu : {other}")).into_response();
         }

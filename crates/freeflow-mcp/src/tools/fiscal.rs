@@ -230,8 +230,8 @@ pub(crate) struct RenderYearArgs {
     /// Année civile de la clôture (ex. `2026`).
     period: i32,
     /// `minutes` (PV d'AG), `appropriation` (affectation), `synthesis` (compte de résultat
-    /// simplifié), `balance_sheet` (bilan 2033-A et balance des comptes dérivés du grand livre,
-    /// exercice clos ou non) — PDF — ou `liasse` (cases 2065/2033 en JSON).
+    /// simplifié), `balance_sheet` (bilan 2033-A et balance), `inventory` (inventaire L227-9),
+    /// `efi_notice` (notice de saisie EFI) — PDF — ou `liasse` (cases 2065/2033 en JSON).
     doc: String,
     /// Chemin du fichier à écrire — refusé s'il existe déjà.
     out: String,
@@ -858,18 +858,25 @@ impl FreeflowServer {
         Parameters(args): Parameters<RenderYearArgs>,
     ) -> CallToolResult {
         let store = self.store.lock().await;
-        if args.doc == "balance_sheet" {
+        if args.doc == "balance_sheet" || args.doc == "inventory" {
             // Dérivé du grand livre : pas besoin d'un exercice clos, comme `fec.export`.
             let (profile, ledger) =
                 ok_or_return!("ledger", ledger_ending_in(store.connection(), args.period));
-            let bytes = ok_or_return!(
-                "balance_sheet",
-                freeflow_docs::render_balance_sheet(
-                    &profile,
-                    &ledger.balance_sheet(),
-                    &ledger.trial_balance()
+            let bytes = if args.doc == "inventory" {
+                ok_or_return!(
+                    "inventory",
+                    freeflow_docs::render_inventory(&profile, &ledger.trial_balance())
                 )
-            );
+            } else {
+                ok_or_return!(
+                    "balance_sheet",
+                    freeflow_docs::render_balance_sheet(
+                        &profile,
+                        &ledger.balance_sheet(),
+                        &ledger.trial_balance()
+                    )
+                )
+            };
             return match write_new_document(&args.out, &bytes) {
                 Ok(msg) => ok_json(json!({ "written": msg })),
                 Err(e) => err_text(e),
@@ -925,10 +932,16 @@ impl FreeflowServer {
                 bytes.push(b'\n');
                 bytes
             }
+            "efi_notice" => {
+                let ledger =
+                    ok_or_return!("ledger", build_ledger(store.connection(), record.period()));
+                let export = freeflow_docs::liasse_export(&profile, &record, Some(&ledger));
+                ok_or_return!("efi_notice", freeflow_docs::render_efi_notice(&export))
+            }
             other => {
                 return err_text(format!(
                     "document inconnu : {other} (attendu : minutes, appropriation, synthesis, \
-                     balance_sheet, liasse)"
+                     balance_sheet, inventory, efi_notice, liasse)"
                 ));
             }
         };

@@ -320,6 +320,8 @@ pub fn detail_panel(record: &FiscalYearRecord, editable: bool, error: Option<&st
                 a class="btn small" href=(format!("/cloture/{id}/doc/appropriation")) target="_blank" { "affectation (PDF)" }
                 a class="btn small" href=(format!("/cloture/{id}/doc/synthesis")) target="_blank" { "compte de résultat (PDF)" }
                 a class="btn small" href=(format!("/cloture/{id}/doc/liasse")) target="_blank" { "liasse (JSON)" }
+                a class="btn small" href=(format!("/cloture/{id}/doc/efi-notice")) target="_blank" { "notice EFI (PDF)" }
+                a class="btn small" href=(format!("/cloture/{id}/doc/inventory")) target="_blank" { "inventaire (PDF)" }
                 a class="btn small" href=(format!("/cloture/balance.pdf?period={}", record.ends_on.year())) target="_blank" { "bilan et balance (PDF)" }
                 a class="btn small" href=(format!("/cloture/fec?period={}", record.ends_on.year())) target="_blank" { "FEC (txt)" }
             }

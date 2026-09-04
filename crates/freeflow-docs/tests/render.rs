@@ -9,7 +9,7 @@ use freeflow_core::fiscal_year::FiscalYearRecord;
 use freeflow_core::ledger::{Ledger, LedgerFacts, LiabilityRubric, OpeningLines};
 use freeflow_docs::{
     liasse_export, render_appropriation_decision, render_approval_minutes, render_balance_sheet,
-    render_synthesis,
+    render_efi_notice, render_inventory, render_synthesis,
 };
 use time::{Date, Month, OffsetDateTime};
 
@@ -168,6 +168,11 @@ fn the_balance_sheet_renders_to_pdf_and_feeds_the_2033a_cases_of_the_liasse() {
     let sheet = ledger.balance_sheet();
     let pdf = render_balance_sheet(&profile, &sheet, &ledger.trial_balance()).unwrap();
     assert_is_pdf(&pdf, "bilan");
+    let inventory = render_inventory(&profile, &ledger.trial_balance()).unwrap();
+    assert_is_pdf(&inventory, "inventaire");
+    let notice =
+        render_efi_notice(&liasse_export(&profile, &record(false), Some(&ledger))).unwrap();
+    assert_is_pdf(&notice, "notice EFI");
 
     let export = liasse_export(&profile, &record(false), Some(&ledger));
     let case = |c: &str| {
