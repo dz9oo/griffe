@@ -139,8 +139,11 @@ pub(crate) struct SetOpeningBalanceArgs {
 pub(crate) struct ImportOpeningBalanceArgs {
     /// Premier jour de l'exercice qui s'ouvre sur ce bilan (`AAAA-MM-JJ`).
     opens_on: String,
-    /// `balance` (balance générale CSV) ou `fec` — facultatif, détecté sinon.
+    /// `balance` (CSV), `fec`, ou `2033a` (cases du formulaire, voir `boxes`).
     format: Option<String>,
+    /// Cases du 2033-A `NNN=montant` en euros, ex. `["084=9540.00","120=1000.00"]`. Si
+    /// renseigné, le fichier n'est pas lu (le PDF du cabinet n'a pas de numéros de compte).
+    boxes: Option<Vec<String>>,
     /// Contenu du fichier en texte, ou `content_base64` (octets exacts), ou `path` (fichier
     /// local lu par le serveur).
     content: Option<String>,
@@ -395,26 +398,47 @@ impl FreeflowServer {
             "opens_on",
             freeflow_core::domain::parse_date(&args.opens_on)
         );
-        let bytes: Vec<u8> = match (&args.content, &args.content_base64, &args.path) {
-            (Some(text), _, _) => text.clone().into_bytes(),
-            (None, Some(b64), _) => ok_or_return!(
-                "content_base64",
-                base64::engine::general_purpose::STANDARD.decode(b64.trim())
-            ),
-            (None, None, Some(path)) => ok_or_return!("path", std::fs::read(path)),
-            (None, None, None) => return err_text("fournissez content, content_base64 ou path"),
+        let preview = if let Some(raw_boxes) = args.boxes.as_ref() {
+            let mut mapped = freeflow_core::opening_balance::import::CerfaBoxes::new();
+            for spec in raw_boxes {
+                let Some((case, amount)) = spec.split_once('=') else {
+                    return err_text(format!(
+                        "case 2033-A invalide « {spec} » (attendu CASE=MONTANT, ex. 084=9540.00)"
+                    ));
+                };
+                let amount = ok_or_return!("boxes", Money::parse_decimal(amount.trim()));
+                mapped.insert(case.trim().to_string(), amount);
+            }
+            ok_or_return!(
+                "boxes",
+                freeflow_core::opening_balance::import::from_2033a(opens_on, &mapped)
+            )
+        } else {
+            let bytes: Vec<u8> = match (&args.content, &args.content_base64, &args.path) {
+                (Some(text), _, _) => text.clone().into_bytes(),
+                (None, Some(b64), _) => ok_or_return!(
+                    "content_base64",
+                    base64::engine::general_purpose::STANDARD.decode(b64.trim())
+                ),
+                (None, None, Some(path)) => ok_or_return!("path", std::fs::read(path)),
+                (None, None, None) => {
+                    return err_text("fournissez boxes (2033-A), content, content_base64 ou path");
+                }
+            };
+            let hint = match args.format.as_deref() {
+                None => None,
+                Some(raw) => Some(ok_or_return!(
+                    "format",
+                    raw.parse::<freeflow_core::opening_balance::import::OpeningImportFormat>()
+                )),
+            };
+            ok_or_return!(
+                "content",
+                freeflow_core::opening_balance::import::import_opening_balance(
+                    &bytes, opens_on, hint
+                )
+            )
         };
-        let hint = match args.format.as_deref() {
-            None => None,
-            Some(raw) => Some(ok_or_return!(
-                "format",
-                raw.parse::<freeflow_core::opening_balance::import::OpeningImportFormat>()
-            )),
-        };
-        let preview = ok_or_return!(
-            "content",
-            freeflow_core::opening_balance::import::import_opening_balance(&bytes, opens_on, hint)
-        );
         if args.dry_run {
             return ok_json(freeflow_core::opening_balance::import::preview_json(
                 &preview,

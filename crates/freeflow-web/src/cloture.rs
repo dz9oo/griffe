@@ -1074,3 +1074,120 @@ pub async fn opening_import(
     }
     Html(views::cloture::opening_form_panel(&values, &errors, revision).into_string())
 }
+
+#[derive(Debug, Deserialize, Default)]
+pub struct Opening2033Form {
+    #[serde(default)]
+    opens_on: String,
+    #[serde(default)]
+    box_084: String,
+    #[serde(default)]
+    box_072: String,
+    #[serde(default)]
+    box_068: String,
+    #[serde(default)]
+    box_028: String,
+    #[serde(default)]
+    box_092: String,
+    #[serde(default)]
+    box_120: String,
+    #[serde(default)]
+    box_126: String,
+    #[serde(default)]
+    box_134: String,
+    #[serde(default)]
+    box_136: String,
+    #[serde(default)]
+    box_166: String,
+    #[serde(default)]
+    box_172: String,
+    #[serde(default)]
+    box_169: String,
+    #[serde(default)]
+    box_156: String,
+}
+
+/// `POST /cloture/opening/from-2033a` (lot 43) : cases du 2033-A → lignes pré-remplies.
+pub async fn opening_from_2033a(
+    State(state): State<AppState>,
+    Form(form): Form<Opening2033Form>,
+) -> Html<String> {
+    let revision = match current_opening(&state).await {
+        Some(Ok(Some(existing))) => Some(existing.revision),
+        _ => None,
+    };
+    let mut values = OpeningFormValues {
+        opens_on: form.opens_on.clone(),
+        ..Default::default()
+    };
+    let mut errors = OpeningFormErrors::default();
+    let Ok(date) = freeflow_core::domain::parse_date(form.opens_on.trim()) else {
+        errors.opens_on = Some("date invalide (AAAA-MM-JJ)".to_string());
+        return Html(views::cloture::opening_form_panel(&values, &errors, revision).into_string());
+    };
+    let mut boxes = freeflow_core::opening_balance::import::CerfaBoxes::new();
+    let pairs = [
+        ("084", form.box_084.as_str()),
+        ("072", form.box_072.as_str()),
+        ("068", form.box_068.as_str()),
+        ("028", form.box_028.as_str()),
+        ("092", form.box_092.as_str()),
+        ("120", form.box_120.as_str()),
+        ("126", form.box_126.as_str()),
+        ("134", form.box_134.as_str()),
+        ("136", form.box_136.as_str()),
+        ("166", form.box_166.as_str()),
+        ("172", form.box_172.as_str()),
+        ("169", form.box_169.as_str()),
+        ("156", form.box_156.as_str()),
+    ];
+    for (case, raw) in pairs {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            continue;
+        }
+        match Money::parse_decimal(raw) {
+            Ok(amount) => {
+                boxes.insert(case.to_string(), amount);
+            }
+            Err(_) => {
+                errors.banner = Some(format!("montant invalide pour la case {case}"));
+                return Html(
+                    views::cloture::opening_form_panel(&values, &errors, revision).into_string(),
+                );
+            }
+        }
+    }
+    match freeflow_core::opening_balance::import::from_2033a(date, &boxes) {
+        Err(e) => {
+            errors.banner = Some(e.to_string());
+        }
+        Ok(preview) => {
+            values.source = "2033-A du cabinet".to_string();
+            values.lines = preview
+                .lines
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n");
+            values.tax_losses = "0".to_string();
+            let mut note = format!("{} compte(s) dérivés du 2033-A.", preview.lines.len());
+            if !preview.dropped.is_empty() {
+                note.push_str(&format!(
+                    " Écarté : {}.",
+                    preview
+                        .dropped
+                        .iter()
+                        .map(|(what, why)| format!("{what} ({why})"))
+                        .collect::<Vec<_>>()
+                        .join(" ; ")
+                ));
+            }
+            for w in &preview.warnings {
+                note.push_str(&format!(" ⚠ {w}"));
+            }
+            values.import_note = Some(note);
+        }
+    }
+    Html(views::cloture::opening_form_panel(&values, &errors, revision).into_string())
+}

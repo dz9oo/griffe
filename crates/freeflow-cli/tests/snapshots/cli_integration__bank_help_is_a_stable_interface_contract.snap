@@ -1,5 +1,6 @@
 ---
 source: crates/freeflow-cli/tests/cli_integration.rs
+assertion_line: 1839
 expression: "String::from_utf8(output.stdout).unwrap()"
 ---
 Relevés bancaires : import et rapprochement
@@ -7,7 +8,7 @@ Relevés bancaires : import et rapprochement
 Usage: freeflow bank [OPTIONS] <COMMAND>
 
 Commands:
-  import       Importe un relevé bancaire : l'export CSV de votre banque tel quel, ou un OFX
+  import       Importe un relevé bancaire : l'export CSV de votre banque tel quel, un OFX, ou l'Excel (xlsx) de Tiime
   rm           Supprime une transaction importée par erreur (non rapprochée). Nécessite confirmation humaine quand `--actor agent:...`
   list         Liste les transactions importées, les plus récentes d'abord (`--unmatched` pour ne voir que celles restant à rapprocher)
   reconcile    Rapproche un crédit importé avec une facture (crée l'encaissement correspondant) — pour un débit et une dépense, voir `expense reconcile` / `expense record --transaction`

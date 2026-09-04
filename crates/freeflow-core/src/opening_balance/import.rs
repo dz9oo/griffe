@@ -8,7 +8,7 @@
 //! `RecordOpeningBalance` (même rail de confirmation qu'une saisie à la main) ; l'utilisateur
 //! peut corriger les lignes avant.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -35,6 +35,9 @@ pub enum OpeningImportError {
 pub enum OpeningImportFormat {
     Balance,
     Fec,
+    /// Cases du 2033-A (rubriques, pas de numéros de compte) — lot 43.
+    #[serde(rename = "2033a")]
+    Cerfa2033A,
 }
 
 impl std::str::FromStr for OpeningImportFormat {
@@ -43,7 +46,10 @@ impl std::str::FromStr for OpeningImportFormat {
         match s.trim().to_ascii_lowercase().as_str() {
             "balance" => Ok(Self::Balance),
             "fec" => Ok(Self::Fec),
-            other => Err(format!("format inconnu : {other} (attendu balance ou fec)")),
+            "2033a" | "2033-a" | "cerfa" => Ok(Self::Cerfa2033A),
+            other => Err(format!(
+                "format inconnu : {other} (attendu balance, fec ou 2033a)"
+            )),
         }
     }
 }
@@ -451,6 +457,228 @@ pub fn from_fec(bytes: &[u8], opens_on: Date) -> Result<ImportPreview, OpeningIm
     aggregate(OpeningImportFormat::Fec, opens_on, &accounts, dropped)
 }
 
+/// Une case du 2033-A : montant signé (positif = côté naturel de la rubrique, négatif =
+/// parenthèses sur le formulaire — un report à nouveau débiteur, par exemple).
+pub type CerfaBoxes = BTreeMap<String, Money>;
+
+/// Mapping figé notice 2033-A-SD → comptes PCG. La case 169 (« dont CCA d'associés ») est un
+/// *dont* de 172 : elle est extraite de 172, jamais ajoutée en plus.
+const CERFA_ASSETS: &[(&str, &str, &str)] = &[
+    ("084", "512000", "Disponibilités"),
+    ("068", "411000", "Clients"),
+    ("072", "445670", "Autres créances (TVA)"),
+    ("028", "218300", "Autres immobilisations corporelles"),
+    ("092", "486000", "Charges constatées d'avance"),
+];
+const CERFA_LIABILITIES: &[(&str, &str, &str)] = &[
+    ("120", "101000", "Capital social"),
+    ("126", "106100", "Réserve légale"),
+    ("166", "401000", "Fournisseurs"),
+    ("156", "164000", "Emprunts et dettes assimilées"),
+];
+
+/// Reprend un 2033-A saisi case par case (le PDF du cabinet n'a pas de numéros de compte).
+///
+/// # Errors
+///
+/// [`OpeningImportError::Empty`] si aucune case n'est renseignée ;
+/// [`OpeningImportError::Unrecognized`] si la case 169 dépasse la 172.
+///
+/// # Panics
+///
+/// Jamais : les numéros de compte du mapping sont des littéraux valides (`512000`, …).
+pub fn from_2033a(opens_on: Date, boxes: &CerfaBoxes) -> Result<ImportPreview, OpeningImportError> {
+    let mut lines = Vec::new();
+    let mut dropped = Vec::new();
+    let mut warnings = Vec::new();
+    let mut known = HashSet::new();
+    for (case, account, label) in CERFA_ASSETS {
+        known.insert(*case);
+        push_cerfa_line(&mut lines, boxes, case, account, label, Side::Debit);
+    }
+    for (case, account, label) in CERFA_LIABILITIES {
+        known.insert(*case);
+        push_cerfa_line(&mut lines, boxes, case, account, label, Side::Credit);
+    }
+    known.insert("134");
+    known.insert("136");
+    known.insert("169");
+    known.insert("172");
+    push_ran(&mut lines, boxes);
+    push_result(&mut lines, boxes);
+    split_other_debts(&mut lines, &mut dropped, boxes)?;
+    for (case, amount) in boxes {
+        let key = normalize_case(case);
+        if amount.is_zero() || known.contains(key.as_str()) {
+            continue;
+        }
+        dropped.push((
+            format!("case {case}"),
+            "case 2033-A non reprise (hors mapping SASU de prestation)".to_string(),
+        ));
+    }
+    if !box_amount(boxes, "028").is_zero() {
+        warnings.push(
+            "La case 028 (immobilisations corporelles) est reprise : déclarez la durée d'usage \
+             pour que l'amortissement soit calculé (lot 42)."
+                .to_string(),
+        );
+    }
+    if lines.is_empty() {
+        return Err(OpeningImportError::Empty {
+            detail: " : aucune case 2033-A renseignée".to_string(),
+        });
+    }
+    Ok(ImportPreview {
+        format: OpeningImportFormat::Cerfa2033A,
+        opens_on,
+        lines,
+        dropped,
+        derived_result: None,
+        warnings,
+    })
+}
+
+fn normalize_case(case: &str) -> String {
+    let trimmed = case.trim();
+    if trimmed.bytes().all(|b| b.is_ascii_digit()) && !trimmed.is_empty() && trimmed.len() <= 3 {
+        format!("{trimmed:0>3}")
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn box_amount(boxes: &CerfaBoxes, case: &str) -> Money {
+    boxes
+        .iter()
+        .find(|(k, _)| normalize_case(k) == normalize_case(case))
+        .map_or(Money::ZERO, |(_, a)| *a)
+}
+
+fn push_cerfa_line(
+    lines: &mut Vec<OpeningBalanceLine>,
+    boxes: &CerfaBoxes,
+    case: &str,
+    account: &str,
+    label: &str,
+    natural: Side,
+) {
+    let amount = box_amount(boxes, case);
+    if amount.is_zero() {
+        return;
+    }
+    let (side, cents) = if amount.cents() > 0 {
+        (natural, amount.cents())
+    } else {
+        (
+            match natural {
+                Side::Debit => Side::Credit,
+                Side::Credit => Side::Debit,
+            },
+            -amount.cents(),
+        )
+    };
+    lines.push(OpeningBalanceLine {
+        account: cerfa_account(account),
+        label: label.to_string(),
+        side,
+        amount: Money::from_cents(cents),
+    });
+}
+
+/// # Panics
+///
+/// Jamais : `number` est un littéral du mapping 2033-A.
+fn cerfa_account(number: &str) -> AccountCode {
+    AccountCode::parse(number).expect("compte fixe du mapping 2033-A")
+}
+
+fn push_ran(lines: &mut Vec<OpeningBalanceLine>, boxes: &CerfaBoxes) {
+    let amount = box_amount(boxes, "134");
+    if amount.is_zero() {
+        return;
+    }
+    if amount.cents() > 0 {
+        lines.push(OpeningBalanceLine {
+            account: cerfa_account("110000"),
+            label: "Report à nouveau".to_string(),
+            side: Side::Credit,
+            amount,
+        });
+    } else {
+        lines.push(OpeningBalanceLine {
+            account: cerfa_account("119000"),
+            label: "Report à nouveau (débiteur)".to_string(),
+            side: Side::Debit,
+            amount: Money::from_cents(-amount.cents()),
+        });
+    }
+}
+
+fn push_result(lines: &mut Vec<OpeningBalanceLine>, boxes: &CerfaBoxes) {
+    let amount = box_amount(boxes, "136");
+    if amount.is_zero() {
+        return;
+    }
+    if amount.cents() > 0 {
+        lines.push(OpeningBalanceLine {
+            account: cerfa_account("120000"),
+            label: "Résultat de l'exercice (bénéfice)".to_string(),
+            side: Side::Credit,
+            amount,
+        });
+    } else {
+        lines.push(OpeningBalanceLine {
+            account: cerfa_account("129000"),
+            label: "Résultat de l'exercice (perte)".to_string(),
+            side: Side::Debit,
+            amount: Money::from_cents(-amount.cents()),
+        });
+    }
+}
+
+fn split_other_debts(
+    lines: &mut Vec<OpeningBalanceLine>,
+    dropped: &mut Vec<(String, String)>,
+    boxes: &CerfaBoxes,
+) -> Result<(), OpeningImportError> {
+    let other = box_amount(boxes, "172");
+    let of_which = box_amount(boxes, "169");
+    if of_which.cents() < 0 || other.cents() < 0 {
+        dropped.push((
+            "172/169".to_string(),
+            "les cases 172 et 169 s'écrivent en positif".to_string(),
+        ));
+        return Ok(());
+    }
+    if of_which.cents() > other.cents() {
+        return Err(OpeningImportError::Unrecognized {
+            reason: format!(
+                "la case 169 (dont comptes courants, {of_which}) dépasse la case 172 \
+                 (autres dettes, {other})"
+            ),
+        });
+    }
+    let rest = Money::from_cents(other.cents() - of_which.cents());
+    if !of_which.is_zero() {
+        lines.push(OpeningBalanceLine {
+            account: cerfa_account("455000"),
+            label: "Comptes courants d'associés".to_string(),
+            side: Side::Credit,
+            amount: of_which,
+        });
+    }
+    if !rest.is_zero() {
+        lines.push(OpeningBalanceLine {
+            account: cerfa_account("444000"),
+            label: "État — IS à payer".to_string(),
+            side: Side::Credit,
+            amount: rest,
+        });
+    }
+    Ok(())
+}
+
 /// Devine le format (FEC si l'en-tête commence par `JournalCode`, balance sinon) — `hint`
 /// force.
 ///
@@ -473,6 +701,11 @@ pub fn import_opening_balance(
     match format {
         OpeningImportFormat::Balance => from_balance_csv(bytes, opens_on),
         OpeningImportFormat::Fec => from_fec(bytes, opens_on),
+        OpeningImportFormat::Cerfa2033A => Err(OpeningImportError::Unrecognized {
+            reason: "un 2033-A se saisit case par case (year opening from-2033a), pas comme \
+                     un CSV"
+                .to_string(),
+        }),
     }
 }
 
@@ -521,6 +754,64 @@ mod tests {
             .iter()
             .find(|l| l.account.as_str() == account)
             .unwrap_or_else(|| panic!("{account} absent : {:#?}", preview.lines))
+    }
+
+    /// Le 2033-A du scénario Nova Dev (audit) : 169 est un *dont* de 172, pas une ligne en plus.
+    #[test]
+    fn a_2033a_maps_boxes_to_pcg_accounts_and_splits_case_172() {
+        let mut boxes = CerfaBoxes::new();
+        boxes.insert("084".into(), Money::from_cents(954_000));
+        boxes.insert("072".into(), Money::from_cents(21_000));
+        boxes.insert("120".into(), Money::from_cents(100_000));
+        boxes.insert("126".into(), Money::from_cents(10_000));
+        boxes.insert("134".into(), Money::from_cents(635_000));
+        boxes.insert("166".into(), Money::from_cents(60_000));
+        boxes.insert("172".into(), Money::from_cents(170_000));
+        boxes.insert("169".into(), Money::from_cents(50_000));
+        let preview = from_2033a(opens(), &boxes).unwrap();
+        assert_eq!(preview.format, OpeningImportFormat::Cerfa2033A);
+        assert_eq!(line_of(&preview, "512000").side, Side::Debit);
+        assert_eq!(
+            line_of(&preview, "512000").amount,
+            Money::from_cents(954_000)
+        );
+        assert_eq!(
+            line_of(&preview, "445670").amount,
+            Money::from_cents(21_000)
+        );
+        assert_eq!(line_of(&preview, "101000").side, Side::Credit);
+        assert_eq!(
+            line_of(&preview, "106100").amount,
+            Money::from_cents(10_000)
+        );
+        assert_eq!(
+            line_of(&preview, "110000").amount,
+            Money::from_cents(635_000)
+        );
+        assert_eq!(
+            line_of(&preview, "401000").amount,
+            Money::from_cents(60_000)
+        );
+        assert_eq!(
+            line_of(&preview, "444000").amount,
+            Money::from_cents(120_000)
+        );
+        assert_eq!(
+            line_of(&preview, "455000").amount,
+            Money::from_cents(50_000)
+        );
+        let balance = preview.to_opening_balance(Some("2033-A 2025".into()));
+        balance.validate().unwrap();
+        assert_eq!(balance.total_debit(), balance.total_credit());
+    }
+
+    #[test]
+    fn case_169_cannot_exceed_case_172() {
+        let mut boxes = CerfaBoxes::new();
+        boxes.insert("172".into(), Money::from_cents(100_000));
+        boxes.insert("169".into(), Money::from_cents(200_000));
+        let err = from_2033a(opens(), &boxes).unwrap_err();
+        assert!(err.to_string().contains("169"), "{err}");
     }
 
     /// La balance du cabinet (14 comptes, avant affectation, avec un préambule et un total) :

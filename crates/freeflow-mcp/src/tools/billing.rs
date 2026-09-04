@@ -76,7 +76,7 @@ pub(crate) struct RecordPaymentArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct BankImportArgs {
-    /// `csv` ou `ofx` — facultatif, détecté sinon.
+    /// `csv`, `ofx` ou `xlsx` — facultatif, détecté sinon.
     format: Option<String>,
     /// Contenu du relevé en texte (UTF-8). Pour un export en latin-1 ou un fichier binaire,
     /// préférez `content_base64` ou `path`.
@@ -333,12 +333,12 @@ impl FreeflowServer {
     }
 
     /// Importe un relevé bancaire — l'export CSV de la banque tel quel (Qonto, Shine,
-    /// Boursorama, Crédit Agricole, BNP, LCL, La Banque Postale…) ou un OFX : encodage,
-    /// séparateur, décimale, format de date et colonnes sont détectés ; `format` force
-    /// `csv`/`ofx`. Fournir `content` (texte), `content_base64` (octets) ou `path` (fichier
-    /// local). Les doublons (identifiant de banque, sinon date + montant + libellé) sont
-    /// ignorés. `dry_run` renvoie l'aperçu : dialecte détecté, colonnes, nombre de lignes
-    /// nouvelles et de doublons, lignes sautées.
+    /// Boursorama, Crédit Agricole, BNP, LCL, La Banque Postale…), un OFX, ou l'Excel (xlsx)
+    /// de Tiime (feuille Transactions) : encodage, séparateur, décimale, format de date et
+    /// colonnes sont détectés ; `format` force `csv`/`ofx`/`xlsx`. Fournir `content` (texte),
+    /// `content_base64` (octets) ou `path` (fichier local). Les doublons (identifiant de
+    /// banque, sinon date + montant + libellé) sont ignorés. `dry_run` renvoie l'aperçu :
+    /// dialecte détecté, colonnes, nombre de lignes nouvelles et de doublons, lignes sautées.
     #[tool(
         name = "bank.import",
         annotations(

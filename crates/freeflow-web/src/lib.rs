@@ -88,6 +88,10 @@ pub fn router(state: AppState) -> Router {
             "/cloture/opening/import",
             post(cloture::opening_import).layer(banque::body_limit()),
         )
+        .route(
+            "/cloture/opening/from-2033a",
+            post(cloture::opening_from_2033a),
+        )
         .route("/console/run", post(console::run))
         .route("/audit/recent", get(audit::recent))
         .route("/clients/table", get(clients::table))

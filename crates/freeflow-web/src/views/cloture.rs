@@ -715,6 +715,29 @@ pub fn opening_form_panel(
             ))
             (form::actions("Analyser le fichier"))
         }
+        form hx-post="/cloture/opening/from-2033a" hx-target="#panel" hx-swap="innerHTML" class="panel bordered" style="margin-bottom:12px" {
+            div class="panel-title" { "recopier le 2033-A du cabinet" }
+            (form::date("opens_on", "Premier jour de l'exercice qui s'ouvre sur ce bilan", &values.opens_on, None))
+            (form::field_help(
+                "Le PDF du cabinet n'a pas de numéros de compte : recopiez les cases du 2033-A \
+                 (euros). La case 169 (dont comptes courants d'associés) est extraite de la 172, \
+                 pas ajoutée en plus. Laissez vides les cases à zéro."
+            ))
+            (form::number("box_084", "084 Disponibilités (banque)", "", "0.01", None))
+            (form::number("box_072", "072 Autres créances (crédit de TVA…)", "", "0.01", None))
+            (form::number("box_068", "068 Clients", "", "0.01", None))
+            (form::number("box_028", "028 Autres immobilisations corporelles", "", "0.01", None))
+            (form::number("box_092", "092 Charges constatées d'avance", "", "0.01", None))
+            (form::number("box_120", "120 Capital", "", "0.01", None))
+            (form::number("box_126", "126 Réserve légale", "", "0.01", None))
+            (form::number("box_134", "134 Report à nouveau (négatif si débiteur)", "", "0.01", None))
+            (form::number("box_136", "136 Résultat (négatif si perte)", "", "0.01", None))
+            (form::number("box_166", "166 Fournisseurs", "", "0.01", None))
+            (form::number("box_172", "172 Autres dettes (IS, CCA d'associé…)", "", "0.01", None))
+            (form::number("box_169", "169 dont comptes courants d'associés", "", "0.01", None))
+            (form::number("box_156", "156 Emprunts", "", "0.01", None))
+            (form::actions("Convertir en lignes de bilan"))
+        }
         form hx-post="/cloture/opening" hx-target="#panel" hx-swap="innerHTML" {
             @if let Some((message, reload)) = &errors.conflict {
                 (form::conflict_banner(message, reload))

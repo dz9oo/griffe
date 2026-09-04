@@ -1,6 +1,6 @@
-//! Import de relevés bancaires (CSV, OFX) : uniquement des fonctions pures d'analyse, aucune
-//! IO, aucune écriture en base — c'est [`super::commands::ImportBankTransactions`] qui
-//! persiste le résultat.
+//! Import de relevés bancaires (CSV, OFX, **xlsx Tiime**) : uniquement des fonctions pures
+//! d'analyse, aucune IO, aucune écriture en base — c'est
+//! [`super::commands::ImportBankTransactions`] qui persiste le résultat.
 //!
 //! **Lot 38 : un export de banque réelle s'importe tel quel.** Jusqu'ici seul le format maison
 //! `date;description;montant` (UTF-8, dates ISO) passait ; l'audit du 2 septembre 2026 a montré
@@ -44,9 +44,11 @@ pub struct ParsedTransaction {
 /// Le format attendu, tel qu'il est dit à l'utilisateur dans chaque erreur.
 pub const EXPECTED_FORMAT: &str = "un export CSV de votre banque avec une ligne d'en-tête qui \
     nomme la date, le libellé et le montant (ou deux colonnes débit/crédit) — par exemple \
-    « date;description;montant » puis « 2026-01-15;VIR CABINET;-600,00 » — ou un fichier OFX. \
-    Séparateur (; , tabulation), décimale (, ou .), format de date (AAAA-MM-JJ, JJ/MM/AAAA, \
-    JJ-MM-AAAA, JJ.MM.AAAA) et encodage (UTF-8, Windows-1252) sont détectés automatiquement.";
+    « date;description;montant » puis « 2026-01-15;VIR CABINET;-600,00 » — un fichier OFX, \
+    ou l'export Excel (xlsx) de Tiime (feuille Transactions : date, intitulé, montant ; la \
+    feuille Soldes bancaires est ignorée). Séparateur (; , tabulation), décimale (, ou .), \
+    format de date (AAAA-MM-JJ, JJ/MM/AAAA, JJ-MM-AAAA, JJ.MM.AAAA) et encodage (UTF-8, \
+    Windows-1252) sont détectés automatiquement.";
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ImportError {
@@ -66,6 +68,7 @@ pub enum ImportError {
 pub enum StatementFormat {
     Csv,
     Ofx,
+    Xlsx,
 }
 
 impl std::str::FromStr for StatementFormat {
@@ -74,7 +77,10 @@ impl std::str::FromStr for StatementFormat {
         match s.trim().to_ascii_lowercase().as_str() {
             "csv" => Ok(Self::Csv),
             "ofx" => Ok(Self::Ofx),
-            other => Err(format!("format inconnu : {other} (attendu csv ou ofx)")),
+            "xlsx" | "xls" => Ok(Self::Xlsx),
+            other => Err(format!(
+                "format inconnu : {other} (attendu csv, ofx ou xlsx)"
+            )),
         }
     }
 }
@@ -118,6 +124,9 @@ pub fn parse_bank_statement(
     bytes: &[u8],
     hint: Option<StatementFormat>,
 ) -> Result<ParsedStatement, ImportError> {
+    if hint == Some(StatementFormat::Xlsx) || (hint.is_none() && looks_like_spreadsheet(bytes)) {
+        return parse_xlsx(bytes);
+    }
     let (text, encoding) = decode(bytes);
     let format = hint.unwrap_or_else(|| {
         if looks_like_ofx(&text) {
@@ -129,6 +138,7 @@ pub fn parse_bank_statement(
     match format {
         StatementFormat::Ofx => parse_ofx(&text, encoding),
         StatementFormat::Csv => parse_csv(&text, encoding),
+        StatementFormat::Xlsx => parse_xlsx(bytes),
     }
 }
 
@@ -189,6 +199,153 @@ fn looks_like_ofx(text: &str) -> bool {
         .collect::<String>()
         .to_ascii_uppercase();
     head.contains("<OFX") || head.contains("OFXHEADER") || head.contains("<STMTTRN>")
+}
+
+/// ZIP xlsx (`PK`) ou OLE Compound File xls (`D0 CF 11 E0`).
+fn looks_like_spreadsheet(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"PK\x03\x04") || bytes.starts_with(&[0xD0, 0xCF, 0x11, 0xE0])
+}
+
+/// Ouvre le classeur, retient la feuille Transactions (Tiime), ignore Soldes, et recycle
+/// le sniffer CSV.
+fn parse_xlsx(bytes: &[u8]) -> Result<ParsedStatement, ImportError> {
+    use std::io::Cursor;
+
+    use calamine::{Reader, open_workbook_auto_from_rs};
+
+    let mut workbook =
+        open_workbook_auto_from_rs(Cursor::new(bytes)).map_err(|e| ImportError::Unrecognized {
+            reason: format!(
+                "classeur Excel illisible ({e}). Attendu : l'export Tiime « état du compte » \
+                 (xlsx, feuille Transactions : date, intitulé, montant)"
+            ),
+        })?;
+    let names = workbook.sheet_names();
+    if names.is_empty() {
+        return Err(ImportError::Unrecognized {
+            reason: "classeur Excel sans feuille. Attendu : une feuille Transactions \
+                     (date, intitulé, montant) — l'export Tiime en a deux, Soldes ignorée"
+                .to_string(),
+        });
+    }
+    let mut last_err = None;
+    for name in ordered_sheet_names(&names) {
+        let Ok(range) = workbook.worksheet_range(name) else {
+            continue;
+        };
+        let csv = sheet_to_csv(&range);
+        if csv.trim().is_empty() {
+            continue;
+        }
+        match parse_csv(&csv, "xlsx") {
+            Ok(mut parsed) if !parsed.transactions.is_empty() => {
+                parsed.dialect.format = StatementFormat::Xlsx;
+                parsed.dialect.encoding = "xlsx".to_string();
+                if !parsed.dialect.columns.is_empty() {
+                    parsed.dialect.columns = format!("feuille {name} — {}", parsed.dialect.columns);
+                }
+                return Ok(parsed);
+            }
+            Ok(_) | Err(_) => {
+                last_err = Some(name.to_string());
+            }
+        }
+    }
+    Err(ImportError::Unrecognized {
+        reason: format!(
+            "aucune feuille exploitable{} : attendu une feuille Transactions (date, intitulé, \
+             montant). La feuille Soldes bancaires de Tiime est ignorée à dessein",
+            last_err.map_or(String::new(), |n| format!(" (essayé « {n} »)"))
+        ),
+    })
+}
+
+/// Transactions d'abord, Soldes/Balance jamais en premier.
+fn ordered_sheet_names(names: &[String]) -> Vec<&str> {
+    let mut preferred = Vec::new();
+    let mut rest = Vec::new();
+    for name in names {
+        let n = normalize(name);
+        if n.contains("solde") || n.contains("balance") {
+            continue;
+        }
+        if n.contains("transaction") {
+            preferred.push(name.as_str());
+        } else {
+            rest.push(name.as_str());
+        }
+    }
+    preferred.extend(rest);
+    preferred
+}
+
+fn sheet_to_csv(range: &calamine::Range<calamine::Data>) -> String {
+    range
+        .rows()
+        .filter_map(|row| {
+            let fields: Vec<String> = row.iter().map(cell_text).collect();
+            if fields.iter().all(String::is_empty) {
+                None
+            } else {
+                Some(csv_join(&fields))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn csv_join(fields: &[String]) -> String {
+    fields
+        .iter()
+        .map(|f| {
+            if f.contains([';', '"', '\n']) {
+                format!("\"{}\"", f.replace('"', "\"\""))
+            } else {
+                f.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
+fn cell_text(cell: &calamine::Data) -> String {
+    match cell {
+        calamine::Data::Empty | calamine::Data::Error(_) => String::new(),
+        calamine::Data::String(s)
+        | calamine::Data::DateTimeIso(s)
+        | calamine::Data::DurationIso(s) => s.trim().to_string(),
+        calamine::Data::Int(i) => i.to_string(),
+        calamine::Data::Bool(b) => b.to_string(),
+        calamine::Data::Float(f) => format_excel_number(*f),
+        calamine::Data::DateTime(dt) => excel_serial_date(dt.as_f64()),
+    }
+}
+
+fn format_excel_number(value: f64) -> String {
+    if value.is_finite() && (value - value.round()).abs() < 1e-9 {
+        format!("{value:.0}")
+    } else {
+        format!("{value:.2}")
+    }
+}
+
+/// Série Excel (jours depuis le 1899-12-30) → `AAAA-MM-JJ`. Les durées et les hors-plage
+/// deviennent une chaîne vide : le sniffer CSV les sautera.
+fn excel_serial_date(serial: f64) -> String {
+    if !serial.is_finite() {
+        return String::new();
+    }
+    let Ok(days) = format!("{:.0}", serial.trunc()).parse::<i64>() else {
+        return String::new();
+    };
+    // Excel : 1 = 1900-01-01 ; 80 000 ≈ 2119 — hors d'un relevé bancaire.
+    if !(1..=80_000).contains(&days) {
+        return String::new();
+    }
+    let Ok(base) = Date::from_calendar_date(1899, time::Month::December, 30) else {
+        return String::new();
+    };
+    base.saturating_add(time::Duration::days(days)).to_string()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1059,6 +1216,47 @@ mod tests {
     }
 
     #[test]
+    fn a_tiime_xlsx_export_reads_the_transactions_sheet_and_ignores_balances() {
+        let parsed = parse_bank_statement(include_bytes!("fixtures/tiime-transactions.xlsx"), None)
+            .expect("un export Tiime xlsx doit s'importer");
+        assert_eq!(parsed.dialect.format, StatementFormat::Xlsx);
+        assert_eq!(parsed.transactions.len(), 3);
+        assert_eq!(
+            parsed
+                .transactions
+                .iter()
+                .map(|t| t.amount_cents)
+                .collect::<Vec<_>>(),
+            vec![-1_250, -60_000, 120_000]
+        );
+        assert_eq!(parsed.transactions[0].occurred_on, date(2026, 1, 15));
+        assert!(
+            parsed.transactions[1]
+                .description
+                .to_uppercase()
+                .contains("CABINET"),
+            "{}",
+            parsed.transactions[1].description
+        );
+        // La feuille « Soldes bancaires » (5 000 €, 5 587,50 €) ne doit pas devenir des mouvements.
+        assert!(
+            parsed
+                .transactions
+                .iter()
+                .all(|t| t.amount_cents.abs() != 500_000 && t.amount_cents.abs() != 558_750),
+            "{:?}",
+            parsed.transactions
+        );
+    }
+
+    #[test]
+    fn a_truncated_xlsx_gives_a_message_with_the_expected_format() {
+        let err = parse_bank_statement(b"PK\x03\x04not-a-workbook", None).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("Attendu :"), "{err}");
+    }
+
+    #[test]
     fn a_binary_or_truncated_file_gives_a_message_with_the_expected_format() {
         let err = parse_bank_statement(b"\x00\x01\x02\xff\xfe garbage", None).unwrap_err();
         assert!(err.to_string().contains("Attendu :"), "{err}");
@@ -1092,7 +1290,7 @@ mod tests {
         #[test]
         fn statement_parser_never_panics_on_arbitrary_bytes(
             bytes in proptest::collection::vec(any::<u8>(), 0..400),
-            hint in prop_oneof![Just(None), Just(Some(StatementFormat::Csv)), Just(Some(StatementFormat::Ofx))],
+            hint in prop_oneof![Just(None), Just(Some(StatementFormat::Csv)), Just(Some(StatementFormat::Ofx)), Just(Some(StatementFormat::Xlsx))],
         ) {
             let _ = parse_bank_statement(&bytes, hint);
         }

@@ -1292,8 +1292,8 @@ fn liasse_step(facts: &Facts, today: Date) -> ClosingStep {
             ClosingStepKey::Liasse,
             StepStatus::Later,
             format!(
-                "Après la clôture : déclaration de résultats 2065 et tableaux 2033 à \
-                 télétransmettre (EDI-TDFC) avant le {} (indicatif).",
+                "Après la clôture : déclaration de résultats 2065 et tableaux 2033 à saisir \
+                 en ligne (EFI, impots.gouv.fr, régime simplifié) avant le {} (indicatif).",
                 format_date(due)
             ),
         )
@@ -1310,9 +1310,9 @@ fn liasse_step(facts: &Facts, today: Date) -> ClosingStep {
         format!(
             "Déclaration de résultats 2065 et tableaux 2033 (2033-A bilan, 2033-B compte de \
              résultat — prestations en 218, impôts et taxes en 244, IS en 306 —, 2033-D déficits, \
-             2033-F composition du capital) à télétransmettre (EDI-TDFC, via l'expert-comptable \
-             ou un partenaire EDI) avant le {} (indicatif) ; l'export liasse (JSON) en \
-             pré-remplit les cases.{}",
+             2033-F composition du capital) à saisir en ligne (EFI, espace professionnel \
+             impots.gouv.fr — régime simplifié, gratuit, pas de partenaire EDI) avant le {} \
+             (indicatif) ; l'export liasse (JSON) en pré-remplit les cases.{}",
             format_date(due),
             if late { " Échéance dépassée." } else { "" }
         ),
@@ -1334,11 +1334,11 @@ fn filing_step(facts: &Facts, today: Date) -> ClosingStep {
                     StepStatus::Todo
                 },
                 format!(
-                    "Comptes annuels, décision d'affectation et PV à déposer au greffe dans le \
-                     mois suivant l'approbation, avant le {} (deux mois par voie électronique). \
-                     Une petite société peut joindre une déclaration de confidentialité \
-                     (art. L232-25 du Code de commerce) pour que les comptes ne soient pas \
-                     publiés.{}",
+                    "Comptes annuels, décision d'affectation et PV à déposer au greffe via le \
+                     guichet unique (procedures.inpi.fr) dans le mois suivant l'approbation, \
+                     avant le {} (deux mois par voie électronique, ~44 €). Cochez la \
+                     déclaration de confidentialité (art. L232-25) pour que les comptes d'une \
+                     petite société ne soient pas publiés.{}",
                     format_date(due),
                     if late { " Échéance dépassée." } else { "" }
                 ),

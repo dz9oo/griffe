@@ -28,6 +28,7 @@ fn parse_lines(json: &str) -> Result<Vec<InvoiceLine>, CliError> {
 pub enum ImportFormat {
     Csv,
     Ofx,
+    Xlsx,
 }
 
 #[derive(Debug, Subcommand)]
@@ -99,21 +100,22 @@ pub enum PaymentCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum BankCommand {
-    /// Importe un relevé bancaire : l'export CSV de votre banque tel quel, ou un OFX.
+    /// Importe un relevé bancaire : l'export CSV de votre banque tel quel, un OFX, ou l'Excel
+    /// (xlsx) de Tiime.
     ///
-    /// Tout est détecté (lot 38) : l'encodage (UTF-8 avec ou sans BOM, Windows-1252/latin-1),
+    /// Tout est détecté (lots 38 et 43) : l'encodage (UTF-8 avec ou sans BOM, Windows-1252/latin-1),
     /// le séparateur (`;`, `,`, tabulation), la décimale (`,` ou `.`), les milliers, le format
     /// de date (AAAA-MM-JJ, JJ/MM/AAAA, JJ-MM-AAAA, JJ.MM.AAAA), les guillemets, les lignes de
     /// préambule et de solde, et les colonnes par leur nom — date (d'opération), libellé /
-    /// label / description, montant / amount, ou débit + crédit séparés, identifiant de
-    /// transaction. Exports vérifiés : Qonto, Shine, Boursorama, Crédit Agricole, BNP, LCL
-    /// (sans en-tête), La Banque Postale, OFX 1.x et 2.x. Un fichier sans en-tête reconnu se
-    /// lit `date;description;montant`. Les doublons (identifiant de banque, sinon date +
-    /// montant + libellé) sont ignorés : réimporter ne duplique rien. `--dry-run` montre ce qui
-    /// a été compris (dialecte, colonnes, lignes retenues, doublons, lignes sautées) sans rien
-    /// écrire.
+    /// label / intitulé / description, montant / amount, ou débit + crédit séparés, identifiant de
+    /// transaction. Exports vérifiés : **Tiime (xlsx, feuille Transactions)** , Qonto, Shine,
+    /// Boursorama, Crédit Agricole, BNP, LCL (sans en-tête), La Banque Postale, OFX 1.x et 2.x.
+    /// Un fichier sans en-tête reconnu se lit `date;description;montant`. Les doublons
+    /// (identifiant de banque, sinon date + montant + libellé) sont ignorés : réimporter ne
+    /// duplique rien. `--dry-run` montre ce qui a été compris (dialecte, colonnes, lignes
+    /// retenues, doublons, lignes sautées) sans rien écrire.
     Import {
-        /// Force le format (`csv`, `ofx`) si la détection se trompe.
+        /// Force le format (`csv`, `ofx`, `xlsx`) si la détection se trompe.
         #[arg(long, value_enum)]
         format: Option<ImportFormat>,
         file: PathBuf,
@@ -424,6 +426,7 @@ fn import_preview(
         match d.format {
             billing::StatementFormat::Csv => "CSV",
             billing::StatementFormat::Ofx => "OFX",
+            billing::StatementFormat::Xlsx => "Excel (xlsx)",
         },
         d.encoding,
         d.separator.map_or(String::new(), |s| format!(
@@ -508,6 +511,7 @@ pub fn run_bank(
             let hint = format.map(|f| match f {
                 ImportFormat::Csv => billing::StatementFormat::Csv,
                 ImportFormat::Ofx => billing::StatementFormat::Ofx,
+                ImportFormat::Xlsx => billing::StatementFormat::Xlsx,
             });
             let parsed = billing::parse_bank_statement(&bytes, hint)
                 .map_err(|e| CliError::Domain(e.to_string()))?;

@@ -230,8 +230,34 @@ pub enum OpeningCommand {
         #[arg(long)]
         duration: Option<u32>,
     },
+    /// Reprend le bilan d'ouverture depuis les **cases du 2033-A** du cabinet (le PDF n'a pas
+    /// de numéros de compte). `--box 084=9540.00` répétable ; la case 169 (dont CCA d'associés)
+    /// est extraite de la 172, jamais ajoutée en plus. `--dry-run` montre l'aperçu.
+    From2033a {
+        #[arg(long, value_parser = parse_date)]
+        opens_on: Date,
+        /// Case 2033-A `NNN=montant` (euros), répétable — ex. `--box 084=9540.00`.
+        #[arg(long = "box", value_name = "CASE=MONTANT", value_parser = parse_cerfa_box, required = true)]
+        boxes: Vec<(String, Money)>,
+        #[arg(long)]
+        source: Option<String>,
+        #[arg(long, value_parser = parse_money, default_value = "0")]
+        tax_losses: Money,
+        #[arg(long, value_parser = parse_money)]
+        prior_is: Option<Money>,
+        #[arg(long, value_parser = parse_money)]
+        prior_vat: Option<Money>,
+    },
     /// Supprime le bilan d'ouverture (tant qu'aucun exercice n'est clos).
     Rm,
+}
+
+fn parse_cerfa_box(s: &str) -> Result<(String, Money), String> {
+    let (case, amount) = s
+        .split_once('=')
+        .ok_or_else(|| format!("attendu CASE=MONTANT (ex. 084=9540.00), reçu « {s} »"))?;
+    let amount = Money::parse_decimal(amount.trim()).map_err(|e| e.to_string())?;
+    Ok((case.trim().to_string(), amount))
 }
 
 /// Enregistrer ou remplacer : la CLI offre la sémantique « set », la commande envoyée au cœur
@@ -297,6 +323,9 @@ fn import_preview_human(preview: &freeflow_core::opening_balance::import::Import
                 "une balance générale"
             }
             freeflow_core::opening_balance::import::OpeningImportFormat::Fec => "un FEC",
+            freeflow_core::opening_balance::import::OpeningImportFormat::Cerfa2033A => {
+                "un 2033-A"
+            }
         },
         preview.lines.len(),
         table::render(&["Compte", "Libellé", "Débit", "Crédit"], &rows),
@@ -504,6 +533,45 @@ fn run_opening(
             } else {
                 format!("{rendered}{extra}\n⚠ {}", preview.warnings.join("\n⚠ "))
             }
+        }
+        OpeningCommand::From2033a {
+            opens_on,
+            boxes,
+            source,
+            tax_losses,
+            prior_is,
+            prior_vat,
+        } => {
+            let mapped: freeflow_core::opening_balance::import::CerfaBoxes =
+                boxes.into_iter().collect();
+            let preview = freeflow_core::opening_balance::import::from_2033a(opens_on, &mapped)
+                .map_err(|e| CliError::Domain(e.to_string()))?;
+            if ctx.dry_run {
+                return Ok(if json {
+                    format_json(&freeflow_core::opening_balance::import::preview_json(
+                        &preview,
+                    ))
+                } else {
+                    import_preview_human(&preview)
+                });
+            }
+            let source = source.or_else(|| Some("2033-A du cabinet".to_string()));
+            let outcome = record_or_replace(
+                store,
+                ctx,
+                opens_on,
+                source,
+                preview.lines.clone(),
+                tax_losses,
+                prior_is,
+                prior_vat,
+            )?;
+            format_outcome_as(&outcome, json, |revision| {
+                format!(
+                    "bilan d'ouverture repris du 2033-A : {} compte(s) (révision {revision})",
+                    preview.lines.len()
+                )
+            })
         }
         OpeningCommand::Rm => {
             let existing = opening_balance(store.connection())?.ok_or_else(|| {

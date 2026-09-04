@@ -12,7 +12,11 @@ use crate::views::{form, panel};
 
 /// Où trouver l'export dans les banques courantes — une ligne par banque, pour que l'utilisateur
 /// n'ait pas à chercher.
-const WHERE_TO_EXPORT: [(&str, &str); 7] = [
+const WHERE_TO_EXPORT: [(&str, &str); 8] = [
+    (
+        "Tiime",
+        "Banque → ⋮ sur le compte → Exporter l'état du compte (xlsx)",
+    ),
     ("Qonto", "Transactions → Exporter → CSV (toutes colonnes)"),
     ("Shine", "Transactions → Exporter → CSV"),
     ("Boursorama", "Mes comptes → Mouvements → Télécharger (CSV)"),
@@ -31,7 +35,7 @@ const WHERE_TO_EXPORT: [(&str, &str); 7] = [
 /// Le bouton « importer un relevé », partagé par les écrans `depenses` et `facturation`.
 pub fn import_button() -> Markup {
     html! {
-        button class="btn" hx-get="/banque/import" hx-target="#panel" hx-swap="innerHTML" title="L'export CSV ou OFX de votre banque, tel quel" { "importer un relevé" }
+        button class="btn" hx-get="/banque/import" hx-target="#panel" hx-swap="innerHTML" title="L'export CSV, OFX ou Excel (Tiime) de votre banque, tel quel" { "importer un relevé" }
     }
 }
 
@@ -41,13 +45,13 @@ pub fn import_panel(error: Option<&str>) -> Markup {
             (form::error_banner(msg))
         }
         form hx-post="/banque/import/preview" hx-target="#panel" hx-swap="innerHTML" hx-encoding="multipart/form-data" {
-            (form::file("statement", "Fichier de relevé (CSV ou OFX)", ".csv,.txt,.ofx,.qfx,text/csv,application/x-ofx"))
+            (form::file("statement", "Fichier de relevé (CSV, OFX ou Excel Tiime)", ".csv,.txt,.ofx,.qfx,.xlsx,.xls,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
             (form::field_help(
                 "L'export de votre banque tel quel : encodage, séparateur, décimale, format de \
-                 date et colonnes sont reconnus automatiquement (Qonto, Shine, Boursorama, Crédit \
-                 Agricole, BNP, LCL, La Banque Postale, OFX). Vous verrez d'abord ce qui a été \
-                 compris, puis vous confirmerez l'import. Réimporter un relevé ne crée pas de \
-                 doublon."
+                 date et colonnes sont reconnus automatiquement (Tiime xlsx, Qonto, Shine, \
+                 Boursorama, Crédit Agricole, BNP, LCL, La Banque Postale, OFX). Vous verrez \
+                 d'abord ce qui a été compris, puis vous confirmerez l'import. Réimporter un \
+                 relevé ne crée pas de doublon."
             ))
             (form::actions("Analyser le fichier"))
         }
@@ -79,6 +83,7 @@ pub fn preview_panel(
         match d.format {
             StatementFormat::Csv => "CSV",
             StatementFormat::Ofx => "OFX",
+            StatementFormat::Xlsx => "Excel (xlsx)",
         },
         d.encoding,
         d.separator.map_or(String::new(), |s| format!(
