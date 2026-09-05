@@ -1,7 +1,6 @@
-//! La coque commune à tous les écrans : barre de commandes (navigation), grille à deux
-//! colonnes (contenu + rail d'audit persistant), palette ⌘K. Chaque écran ne fournit que le
-//! contenu de `.content` — cette fonction assemble le reste, à l'identique de la maquette
-//! Studio retenue.
+//! La coque commune à tous les écrans : barre de commandes, contenu, journal d'audit
+//! repliable, palette ⌘K. Lot 46 : libellés français, nav primaire + « Plus », thème clair
+//! par défaut. Chaque écran ne fournit que le contenu de `.content`.
 
 use maud::{DOCTYPE, Markup, html};
 
@@ -54,10 +53,44 @@ impl ViewId {
 
     #[must_use]
     pub const fn title(self) -> &'static str {
-        self.slug()
+        self.label()
     }
 
-    // L'ordre suit le flux de travail : prospecter → deviser → réaliser → facturer → dépenser.
+    /// Libellé français affiché dans la barre et le titre de page (lot 46).
+    /// Le [`Self::slug`] reste l'identifiant d'URL / `data-view`.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Dashboard => "Tableau de bord",
+            Self::Prospection => "Prospection",
+            Self::Devis => "Devis",
+            Self::Missions => "Missions",
+            Self::Facturation => "Facturation",
+            Self::Depenses => "Dépenses",
+            Self::Clients => "Clients",
+            Self::Societe => "Société",
+            Self::Cloture => "Clôture",
+            Self::Console => "Console",
+        }
+    }
+
+    /// Flux quotidien : prospecter → deviser → réaliser → dépenser, plus les fiches clients.
+    const PRIMARY: [Self; 5] = [
+        Self::Prospection,
+        Self::Devis,
+        Self::Missions,
+        Self::Depenses,
+        Self::Clients,
+    ];
+
+    /// Moins fréquent, derrière « Plus » — y compris Facturation (émission encore CLI/PA).
+    const MORE: [Self; 4] = [
+        Self::Facturation,
+        Self::Societe,
+        Self::Cloture,
+        Self::Console,
+    ];
+
     const ALL: [Self; 10] = [
         Self::Dashboard,
         Self::Prospection,
@@ -72,18 +105,33 @@ impl ViewId {
     ];
 }
 
+fn tab_link(view: ViewId, active: ViewId) -> Markup {
+    html! {
+        a class={ "tab" @if view == active { " active" } }
+          data-view=(view.slug())
+          href=(view.path())
+          hx-get=(view.path())
+          hx-target="#content"
+          hx-push-url="true"
+          hx-swap="innerHTML" {
+            (view.label())
+        }
+    }
+}
+
 fn tabs(active: ViewId) -> Markup {
+    let more_active = ViewId::MORE.contains(&active);
     html! {
         div class="tabs" id="tabs" {
-            @for view in ViewId::ALL {
-                a class={ "tab" @if view == active { " active" } }
-                  data-view=(view.slug())
-                  href=(view.path())
-                  hx-get=(view.path())
-                  hx-target="#content"
-                  hx-push-url="true"
-                  hx-swap="innerHTML" {
-                    (view.slug())
+            @for view in ViewId::PRIMARY {
+                (tab_link(view, active))
+            }
+            details class={ "nav-more" @if more_active { " has-active" } } id="nav-more" {
+                summary class="tab" { "Plus" }
+                div class="nav-more-menu" {
+                    @for view in ViewId::MORE {
+                        (tab_link(view, active))
+                    }
                 }
             }
         }
@@ -94,16 +142,16 @@ fn palette() -> Markup {
     html! {
         div class="palette-overlay" id="palette-overlay" {
             div class="palette" {
-                input id="palette-input" type="text" placeholder="aller à… (client, mission, facture)" autocomplete="off";
+                input id="palette-input" type="text" placeholder="Aller à… (écran, client, mission)" autocomplete="off";
                 div class="palette-results" {
                     @for view in ViewId::ALL {
-                        a class="palette-item" data-label=(view.slug())
+                        a class="palette-item" data-label=(format!("{} {}", view.label(), view.slug()))
                           href=(view.path())
                           hx-get=(view.path())
                           hx-target="#content"
                           hx-push-url="true"
                           hx-swap="innerHTML" {
-                            "→ " (view.slug())
+                            (view.label())
                         }
                     }
                     // Actions, distinctes des écrans ci-dessus : ciblent `#panel`, jamais
@@ -153,7 +201,7 @@ fn palette() -> Markup {
 fn audit_rail() -> Markup {
     html! {
         div class="audit" {
-            h3 { "journal d'audit" span { "live" } }
+            h3 { "Journal" span { "live" } }
             div id="audit-items"
                 hx-get="/audit/recent"
                 hx-trigger="load, every 2s"
@@ -180,18 +228,24 @@ pub fn page(active: ViewId, vault_label: &str, content: Markup) -> Markup {
             body {
                 div class="shell" {
                     div class="cmdbar" {
-                        a class="brand" href="/view/dashboard" hx-get="/view/dashboard" hx-target="#content" hx-push-url="true" {
-                            span class="dot" {} "freeflow"
+                        a class={ "brand" @if active == ViewId::Dashboard { " active" } }
+                          href="/view/dashboard"
+                          hx-get="/view/dashboard"
+                          hx-target="#content"
+                          hx-push-url="true" {
+                            span class="dot" {} "FreeFlow"
                         }
                         (tabs(active))
                         div class="cmdbar-right" {
                             div class="lock" { span class="dot" {} (vault_label) }
-                            button class="lock-btn" hx-get="/lexique" hx-target="#panel" hx-swap="innerHTML" title="lexique : les mots de la comptabilité expliqués" { "?" }
-                            button class="lock-btn" hx-post="/lock" hx-swap="none" title="verrouiller le coffre" { "verrouiller" }
-                            div class="palette-hint" { "⌘K palette de commandes" }
+                            button class="lock-btn" type="button" id="theme-toggle" title="Thème clair ou sombre" { "Sombre" }
+                            button class="lock-btn" type="button" id="audit-toggle" title="Afficher ou masquer le journal d'audit" { "Journal" }
+                            button class="lock-btn" hx-get="/lexique" hx-target="#panel" hx-swap="innerHTML" title="Lexique : les mots de la comptabilité expliqués" { "?" }
+                            button class="lock-btn danger-hover" hx-post="/lock" hx-swap="none" title="Verrouiller le coffre" { "Verrouiller" }
+                            div class="palette-hint" { "⌘K" }
                         }
                     }
-                    div class="body-grid" {
+                    div class="body-grid audit-collapsed" id="body-grid" {
                         div class="content" id="content" { (content) }
                         (audit_rail())
                     }
@@ -226,9 +280,9 @@ pub fn bare_page(title: &str, content: Markup) -> Markup {
 
 pub fn view_head(active: ViewId, subtitle: &str) -> Markup {
     html! {
-        div class="view-head" {
+        div class="view-head" data-view=(active.slug()) {
             div {
-                div class="view-title" { span class="prefix" { "~/" } (active.slug()) }
+                div class="view-title" { (active.label()) }
                 div class="view-sub" { (subtitle) }
             }
         }

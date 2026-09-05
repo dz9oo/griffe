@@ -191,10 +191,25 @@ async fn a_direct_navigation_returns_the_full_shell_page() {
         "chargement direct : page complète attendue"
     );
     assert!(
-        body.contains("freeflow"),
+        body.contains("FreeFlow"),
         "la barre de commandes doit être présente"
     );
-    assert!(body.contains("dashboard"), "l'onglet actif doit apparaître");
+    assert!(
+        body.contains("Tableau de bord"),
+        "le titre de l'écran d'accueil est en français"
+    );
+    assert!(
+        body.contains("data-view=\"dashboard\""),
+        "l'identifiant d'écran reste le slug"
+    );
+    assert!(
+        body.contains("audit-collapsed"),
+        "le journal d'audit est replié par défaut"
+    );
+    assert!(
+        body.contains("Aujourd'hui") || body.contains("Aujourd&#x27;hui"),
+        "le bloc aujourd'hui est rendu : {body}"
+    );
 }
 
 #[tokio::test]
@@ -219,7 +234,14 @@ async fn an_htmx_boosted_navigation_returns_only_the_view_fragment() {
         !body.contains("<!DOCTYPE html>") && !body.contains("<body"),
         "une navigation boostée ne doit renvoyer que le contenu de #content, pas la coque"
     );
-    assert!(body.contains("prospection"));
+    assert!(
+        body.contains("Prospection"),
+        "le titre de l'écran est en français : {body}"
+    );
+    assert!(
+        body.contains("data-view=\"prospection\""),
+        "le slug reste sur le fragment"
+    );
 }
 
 #[tokio::test]

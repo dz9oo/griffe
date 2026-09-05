@@ -7,11 +7,29 @@
 // déverrouillage, volontairement dépourvu de palette et de rail) : tout ici suppose que ces
 // éléments existent, mais reste défensif au cas où un futur écran partiel ne les inclurait pas.
 
+function markNav(activeSlug) {
+  document.querySelectorAll(".tab[data-view]").forEach((t) => {
+    t.classList.toggle("active", t.dataset.view === activeSlug);
+  });
+  const brand = document.querySelector(".brand");
+  brand?.classList.toggle("active", activeSlug === "dashboard");
+  const more = document.getElementById("nav-more");
+  if (more) {
+    const inMore = Boolean(more.querySelector(".tab.active"));
+    more.classList.toggle("has-active", inMore);
+    if (inMore === false || activeSlug === "dashboard") more.open = false;
+  }
+}
+
 document.body.addEventListener("click", (event) => {
   const tab = event.target.closest(".tab[data-view]");
-  if (!tab) return;
-  document.querySelectorAll(".tab[data-view]").forEach((t) => t.classList.remove("active"));
-  tab.classList.add("active");
+  const brand = event.target.closest(".brand");
+  if (tab) {
+    markNav(tab.dataset.view);
+    document.getElementById("nav-more")?.removeAttribute("open");
+    return;
+  }
+  if (brand) markNav("dashboard");
 });
 
 const paletteOverlay = document.getElementById("palette-overlay");
@@ -137,7 +155,8 @@ document.addEventListener("keydown", (event) => {
   const target = event.target;
   if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT") return;
   if (paletteOverlay?.classList.contains("open")) return;
-  const activeView = document.querySelector(".tab.active")?.dataset.view;
+  const activeView = document.querySelector(".tab.active")?.dataset.view
+    || document.querySelector(".view-head")?.dataset.view;
   const action = activeView && NEW_ACTION_BY_VIEW[activeView];
   if (!action || !panel) return;
   event.preventDefault();
@@ -165,3 +184,35 @@ document.addEventListener("keydown", (event) => {
   document.addEventListener("keydown", touchSession);
   document.addEventListener("pointerdown", touchSession);
 })();
+
+// Thème : clair par défaut, sombre sur demande (lot 46). Pas de cookie : la préférence
+// ne survit qu'à cette machine, dans ce navigateur — cohérent avec le local-only.
+const themeToggle = document.getElementById("theme-toggle");
+function applyTheme() {
+  const dark = localStorage.getItem("freeflow.theme") === "dark";
+  document.documentElement.classList.toggle("dark", dark);
+  if (themeToggle) themeToggle.textContent = dark ? "Clair" : "Sombre";
+}
+applyTheme();
+themeToggle?.addEventListener("click", () => {
+  const next = document.documentElement.classList.contains("dark") ? "light" : "dark";
+  localStorage.setItem("freeflow.theme", next);
+  applyTheme();
+});
+
+// Journal d'audit replié par défaut : la place revient au contenu. Ouvert, il reprend
+// la colonne de droite. La préférence est locale, comme le thème.
+const bodyGrid = document.getElementById("body-grid");
+const auditToggle = document.getElementById("audit-toggle");
+function applyAudit() {
+  if (!bodyGrid) return;
+  const open = localStorage.getItem("freeflow.audit") === "open";
+  bodyGrid.classList.toggle("audit-collapsed", !open);
+  if (auditToggle) auditToggle.textContent = open ? "Masquer le journal" : "Journal";
+}
+applyAudit();
+auditToggle?.addEventListener("click", () => {
+  const open = localStorage.getItem("freeflow.audit") === "open";
+  localStorage.setItem("freeflow.audit", open ? "closed" : "open");
+  applyAudit();
+});

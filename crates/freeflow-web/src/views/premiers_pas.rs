@@ -39,7 +39,7 @@ pub fn render(store: &Store) -> Result<Markup, AppError> {
     Ok(html! {
         div class="view-head" {
             div {
-                div class="view-title" { span class="prefix" { "~/" } "premiers-pas" }
+                div class="view-title" { "Premiers pas" }
                 div class="view-sub" { (status.next_step.text()) }
             }
         }

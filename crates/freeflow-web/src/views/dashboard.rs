@@ -1,11 +1,9 @@
-//! Écran `dashboard` : uniquement des chiffres réellement calculables aujourd'hui (lots 0-8).
-//! Trésorerie, runway et prévisionnel 12 mois affichés dans la maquette dépendent des dépenses
-//! et du moteur de prévisionnel (lot 11, pas encore construit) — plutôt que d'inventer des
-//! nombres, cet écran les omet et affiche ce qui est réellement dérivé de la base : pipeline
-//! pondéré, retards, capacité du mois, balance âgée, et le TJM effectif par client.
+//! Écran `dashboard` : ce qu'il y a à faire aujourd'hui, puis les indicateurs dérivés de la
+//! base (pipeline, relances, impayés, occupation, calendrier fiscal, TJM effectif). Lot 46 :
+//! libellés en français, bloc « Aujourd'hui » en tête.
 
 use freeflow_core::app::AppError;
-use freeflow_core::billing::aged_balance;
+use freeflow_core::billing::{AgingBucket, aged_balance};
 use freeflow_core::clients::list_clients;
 use freeflow_core::domain::{Money, format_date};
 use freeflow_core::fiscal::{FiscalDeadlineKind, fiscal_calendar};
@@ -103,42 +101,79 @@ pub fn render(store: &Store) -> Result<Markup, AppError> {
     }
 
     Ok(html! {
-        (view_head(ViewId::Dashboard, &format!("dernière consultation {}", format_date(today))))
+        (view_head(ViewId::Dashboard, &format!("au {}", format_date(today))))
 
-        // Lot 39 : tant que la configuration n'est pas complète, le prochain geste passe avant
-        // les indicateurs — un débutant doit voir *quoi faire*, pas un pipeline vide.
         @if !setup.is_done() {
             div class="panel bordered" id="next-step" style="margin-bottom:14px" {
-                div class="panel-title" { "prochaine_etape" }
+                div class="panel-title" { "Prochaine étape" }
                 div class="detail-note" { (setup.next_step.text()) }
                 div class="form-actions" {
-                    a class="btn primary" href="/premiers-pas" hx-get="/premiers-pas" hx-target="#content" hx-push-url="true" { "premiers pas : configurer ma société" }
+                    a class="btn primary" href="/premiers-pas" hx-get="/premiers-pas" hx-target="#content" hx-push-url="true" { "Configurer ma société" }
+                }
+            }
+        }
+
+        @let overdue: Vec<_> = aged.iter().filter(|a| a.bucket != AgingBucket::Current).collect();
+        @let upcoming: Vec<_> = calendar.iter().take(3).collect();
+        div class="panel bordered" id="today" style="margin-bottom:14px" {
+            div class="panel-title" { "Aujourd'hui" }
+            @if late.is_empty() && overdue.is_empty() && upcoming.is_empty() {
+                div class="empty-state" { "Rien d'urgent — le calendrier et le pipeline sont plus bas." }
+            } @else {
+                div class="today-list" {
+                    @for o in late.iter().take(5) {
+                        div class="today-row" {
+                            span class="badge danger" { "Relance" }
+                            span class="today-text" {
+                                (o.name)
+                                @if let Some(at) = o.next_action_at {
+                                    " — prévue le " (format_date(at))
+                                }
+                            }
+                        }
+                    }
+                    @for a in overdue.iter().take(5) {
+                        div class="today-row" {
+                            span class="badge danger" { "Impayé" }
+                            span class="today-text" {
+                                (a.outstanding) " · J+" (a.days_overdue)
+                            }
+                        }
+                    }
+                    @for d in &upcoming {
+                        div class="today-row" {
+                            span class="badge warn" { "Échéance" }
+                            span class="today-text" {
+                                (deadline_label(d.kind)) " le " (format_date(d.due_on))
+                            }
+                        }
+                    }
                 }
             }
         }
 
         div class="kpi-grid" {
             div class="kpi" {
-                div class="kpi-label" { "pipeline_pondere" }
+                div class="kpi-label" { "Pipeline pondéré" }
                 div class="kpi-value" { (weighted) }
                 div class="kpi-note" { (by_stage.iter().map(|s| s.count).sum::<u32>()) " opportunités ouvertes" }
             }
             div class="kpi" {
-                div class="kpi-label" { "en_retard" }
+                div class="kpi-label" { "Relances en retard" }
                 div class="kpi-value" { (late.len()) }
                 @if late.is_empty() {
                     div class="kpi-note ok" { "aucune relance en attente" }
                 } @else {
-                    div class="kpi-note warn" { "action de relance en retard" }
+                    div class="kpi-note warn" { "à traiter dans Prospection" }
                 }
             }
             div class="kpi" {
-                div class="kpi-label" { "impayes" }
+                div class="kpi-label" { "Impayés" }
                 div class="kpi-value" { (outstanding) }
                 div class="kpi-note" { (aged.len()) " facture(s) en attente" }
             }
             div class="kpi" {
-                div class="kpi-label" { "capacite_" (current_month()) }
+                div class="kpi-label" { "Occupation du mois" }
                 div class="kpi-value" { (format!("{:.0}%", capacity.utilization_percent())) }
                 @if capacity.utilization_percent() < 50.0 {
                     div class="kpi-note warn" { "sous-remplissage" }
@@ -150,7 +185,7 @@ pub fn render(store: &Store) -> Result<Markup, AppError> {
 
         div class="grid-2" {
             div class="panel" {
-                div class="panel-title" { "pipeline_pondere_par_etape" }
+                div class="panel-title" { "Pipeline par étape" }
                 @if by_stage.iter().all(|s| s.count == 0) {
                     div class="empty-state" { "aucune opportunité ouverte" }
                 } @else {
@@ -158,22 +193,21 @@ pub fn render(store: &Store) -> Result<Markup, AppError> {
                 }
             }
             div class="panel" {
-                div class="panel-title" { "alertes" }
-                @let overdue: Vec<_> = aged.iter().filter(|a| a.bucket != freeflow_core::billing::AgingBucket::Current).collect();
+                div class="panel-title" { "Alertes" }
                 @if late.is_empty() && overdue.is_empty() {
-                    div class="empty-state" { "aucune alerte" }
+                    div class="empty-state" { "Aucune alerte" }
                 } @else {
                     table {
                         @for o in late.iter().take(3) {
                             tr {
-                                td { span class="badge danger" { "retard" } }
+                                td { span class="badge danger" { "Relance" } }
                                 td { (o.name) }
                             }
                         }
                         @for a in overdue.iter().take(3) {
                             tr {
-                                td { span class="badge danger" { "impaye" } }
-                                td { (a.invoice_id.to_string()) " · " (a.outstanding) " · J+" (a.days_overdue) }
+                                td { span class="badge danger" { "Impayé" } }
+                                td { (a.outstanding) " · J+" (a.days_overdue) }
                             }
                         }
                     }
@@ -182,7 +216,7 @@ pub fn render(store: &Store) -> Result<Markup, AppError> {
         }
 
         div class="panel bordered" {
-            div class="panel-title" { "calendrier_fiscal" }
+            div class="panel-title" { "Échéances fiscales" }
             @if calendar.is_empty() {
                 div class="empty-state" { "aucune échéance dans les 12 prochains mois" }
             } @else {
@@ -207,12 +241,12 @@ pub fn render(store: &Store) -> Result<Markup, AppError> {
         }
 
         div class="panel bordered" {
-            div class="panel-title" { "rentabilite_client" }
+            div class="panel-title" { "Rentabilité (régie)" }
             @if profitability.is_empty() {
-                div class="empty-state" { "aucune mission en régie avec du temps saisi" }
+                div class="empty-state" { "Aucune mission en régie avec du temps saisi" }
             } @else {
                 table {
-                    tr { th { "client" } th { "mission" } th { "tjm_contractuel" } th { "tjm_effectif" } th { "ecart" } }
+                    tr { th { "Client" } th { "Mission" } th { "TJM contractuel" } th { "TJM effectif" } th { "Écart" } }
                     @for (client_name, mission_name, contractual, effective) in &profitability {
                         @let delta_percent = (effective.cents() as f64 - contractual.cents() as f64) / contractual.cents() as f64 * 100.0;
                         tr {

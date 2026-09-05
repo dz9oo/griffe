@@ -828,7 +828,10 @@ existe.
       du hash d'intégrité SHA-256 déjà en place).
 - [ ] Synchronisation multi-appareils documentée et testée de bout en bout (Syncthing/iCloud Drive
       — actuellement une possibilité architecturale, pas un flux accompagné).
-- [ ] Thème clair/sombre et personnalisation de l'UI desktop.
+- [x] Thème clair (défaut) / sombre de la fenêtre, nav en français, journal d'audit
+      repliable et tableau de bord « aujourd'hui » (lot 46). Refonte visuelle complète
+      encore en feuille de route.
+- [ ] Refonte complète du design et de l'ergonomie de la fenêtre (au-delà du lot 46).
 - [ ] Internationalisation de l'interface (actuellement en français uniquement).
 
 ## Licence

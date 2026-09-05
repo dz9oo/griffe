@@ -22,13 +22,13 @@ fn is_htmx_request(headers: &HeaderMap) -> bool {
 
 fn error_markup(active: ViewId, err: impl std::fmt::Display) -> Markup {
     html! {
-        div class="empty-state" { "erreur de lecture : " (err.to_string()) " (" (active.slug()) ")" }
+        div class="empty-state" { "erreur de lecture : " (err.to_string()) " (" (active.label()) ")" }
     }
 }
 
 fn locked_markup(active: ViewId) -> Markup {
     html! {
-        div class="empty-state" { "coffre verrouillé (" (active.slug()) ") — rechargez la page" }
+        div class="empty-state" { "coffre verrouillé (" (active.label()) ") — rechargez la page" }
     }
 }
 

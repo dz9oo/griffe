@@ -9,7 +9,7 @@ use maud::{Markup, html};
 pub fn unlock_form(error: Option<&str>, pending: bool) -> Markup {
     html! {
         div class="auth-card" {
-            div class="auth-brand" { span class="dot" {} "freeflow" }
+            div class="auth-brand" { span class="dot" {} "FreeFlow" }
             div class="auth-title" { "Coffre verrouillé" }
             div class="auth-sub" { "Saisissez la passphrase pour le déverrouiller." }
             @if pending {
@@ -41,7 +41,7 @@ pub fn unlock_form(error: Option<&str>, pending: bool) -> Markup {
 pub fn setup_form(error: Option<&str>) -> Markup {
     html! {
         div class="auth-card" {
-            div class="auth-brand" { span class="dot" {} "freeflow" }
+            div class="auth-brand" { span class="dot" {} "FreeFlow" }
             div class="auth-title" { "Créer le coffre" }
             div class="auth-sub" { "Premier lancement : choisissez une passphrase." }
             div class="auth-warning" {
