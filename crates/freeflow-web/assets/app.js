@@ -232,3 +232,13 @@ auditToggle?.addEventListener("click", () => {
   localStorage.setItem("freeflow.audit", open ? "closed" : "open");
   applyAudit();
 });
+
+// WebKitGTK (coque Tauri) laisse le calendrier natif de `<input type="date">` ouvert tant que
+// le champ a le focus : la sélection d'un jour ne le ferme pas, il faut Tab. Un blur synchrone
+// dans `change` est parfois ignoré ; on le reporte d'une frame. Délégué sur `body` pour les
+// champs injectés par htmx dans le panneau.
+document.body.addEventListener("change", (event) => {
+  const input = event.target;
+  if (!(input instanceof HTMLInputElement) || input.type !== "date") return;
+  requestAnimationFrame(() => input.blur());
+});

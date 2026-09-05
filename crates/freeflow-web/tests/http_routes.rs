@@ -589,6 +589,12 @@ async fn static_assets_are_served_with_the_right_content_type() {
         assert!(content_type.starts_with(content_type_prefix));
         let body = body_text(response).await;
         assert!(!body.is_empty(), "{path} ne doit pas être vide");
+        if path == "/assets/app.js" {
+            assert!(
+                body.contains("input.type !== \"date\"") && body.contains("blur()"),
+                "le calendrier natif des champs date doit se fermer après sélection : {body}"
+            );
+        }
     }
 }
 
