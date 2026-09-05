@@ -66,6 +66,7 @@ define_id!(ExpenseId);
 define_id!(BankTransactionId);
 define_id!(FiscalYearId);
 define_id!(FixedAssetId);
+define_id!(FollowUpEventId);
 
 #[cfg(test)]
 mod tests {

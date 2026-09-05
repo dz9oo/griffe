@@ -34,6 +34,7 @@ const BALANCE_SHEET_PREFIX: &str = "freeflow://balance-sheet/";
 const CLOSING_CHECKLIST_PREFIX: &str = "freeflow://closing-checklist/";
 const CLOSING_GLOSSARY_URI: &str = "freeflow://closing-glossary";
 const ASSETS_URI: &str = "freeflow://assets";
+const FOLLOW_UPS_URI: &str = "freeflow://follow-ups";
 
 pub(crate) fn list() -> ListResourcesResult {
     ListResourcesResult::with_all_items(vec![
@@ -91,6 +92,11 @@ pub(crate) fn list() -> ListResourcesResult {
             .with_description(
                 "Immobilisations déclarées, avec la dotation de l'exercice en cours — même vue \
                  que fiscal.assets.",
+            )
+            .with_mime_type("application/json"),
+        Resource::new(FOLLOW_UPS_URI, "follow-ups")
+            .with_description(
+                "File de relances du jour (prospects et impayés) — même vue que follow_up.queue.",
             )
             .with_mime_type("application/json"),
     ])
@@ -296,6 +302,13 @@ pub(crate) fn read(store: &Store, uri: &str) -> Result<ReadResourceResult, McpEr
 
     if uri == CLOSING_GLOSSARY_URI {
         return json_contents(uri, freeflow_core::closing::glossary_json());
+    }
+
+    if uri == FOLLOW_UPS_URI {
+        let today = freeflow_core::clock::today_local();
+        let cards = freeflow_core::follow_up::follow_up_queue(store.connection(), today)
+            .map_err(|e| McpError::resource_not_found(e.to_string(), None))?;
+        return json_contents(uri, cards);
     }
 
     if uri == ASSETS_URI {

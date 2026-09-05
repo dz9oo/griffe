@@ -4,6 +4,7 @@ pub(crate) mod company;
 pub(crate) mod expenses;
 pub(crate) mod fec;
 pub(crate) mod fiscal;
+pub(crate) mod follow_up;
 pub(crate) mod forecast;
 pub(crate) mod missions;
 pub(crate) mod pending;

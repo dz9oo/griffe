@@ -151,6 +151,22 @@ const NEW_ACTION_BY_VIEW = {
   cloture: "/cloture/new",
 };
 document.addEventListener("keydown", (event) => {
+  const view = document.querySelector(".view-head")?.dataset.view;
+  const typing = event.target.tagName === "INPUT" || event.target.tagName === "TEXTAREA" || event.target.tagName === "SELECT";
+  if (view === "relances" && !typing && !event.metaKey && !event.ctrlKey && !event.altKey) {
+    const action = ({ Enter: "draft", e: "sent", s: "snooze-tomorrow", k: "skip" })[event.key];
+    if (action) {
+      const btn = document.querySelector(`[data-follow-action="${action}"]`);
+      if (btn) {
+        event.preventDefault();
+        btn.click();
+        return;
+      }
+    }
+  }
+});
+
+document.addEventListener("keydown", (event) => {
   if (event.key !== "n" || event.metaKey || event.ctrlKey || event.altKey) return;
   const target = event.target;
   if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT") return;

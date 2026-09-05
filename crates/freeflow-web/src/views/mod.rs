@@ -13,5 +13,6 @@ pub mod missions;
 pub mod panel;
 pub mod premiers_pas;
 pub mod prospection;
+pub mod relances;
 pub mod societe;
 pub mod unlock;

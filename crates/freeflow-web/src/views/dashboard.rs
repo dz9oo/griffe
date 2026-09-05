@@ -7,6 +7,7 @@ use freeflow_core::billing::{AgingBucket, aged_balance};
 use freeflow_core::clients::list_clients;
 use freeflow_core::domain::{Money, format_date};
 use freeflow_core::fiscal::{FiscalDeadlineKind, fiscal_calendar};
+use freeflow_core::follow_up::follow_up_queue;
 use freeflow_core::missions::{effective_daily_rate, list_active_missions, monthly_capacity};
 use freeflow_core::prospection::{late_actions, pipeline_by_stage, weighted_pipeline};
 use freeflow_core::store::Store;
@@ -75,6 +76,7 @@ pub fn render(store: &Store) -> Result<Markup, AppError> {
     let weighted = weighted_pipeline(conn)?;
     let by_stage = pipeline_by_stage(conn)?;
     let late = late_actions(conn, today)?;
+    let follow_queue = follow_up_queue(conn, today)?;
     let aged = aged_balance(conn, today)?;
     let outstanding: Money = aged.iter().map(|a| a.outstanding).sum();
     let capacity = monthly_capacity(conn, current_month())?;
@@ -117,16 +119,16 @@ pub fn render(store: &Store) -> Result<Markup, AppError> {
         @let upcoming: Vec<_> = calendar.iter().take(3).collect();
         div class="panel bordered" id="today" style="margin-bottom:14px" {
             div class="panel-title" { "Aujourd'hui" }
-            @if late.is_empty() && overdue.is_empty() && upcoming.is_empty() {
+            @if follow_queue.is_empty() && overdue.is_empty() && upcoming.is_empty() {
                 div class="empty-state" { "Rien d'urgent — le calendrier et le pipeline sont plus bas." }
             } @else {
                 div class="today-list" {
-                    @for o in late.iter().take(5) {
-                        div class="today-row" {
+                    @for card in follow_queue.iter().take(5) {
+                        a class="today-row" href="/view/relances" hx-get="/view/relances" hx-target="#content" hx-push-url="true" {
                             span class="badge danger" { "Relance" }
                             span class="today-text" {
-                                (o.name)
-                                @if let Some(at) = o.next_action_at {
+                                (card.title)
+                                @if let Some(at) = card.due_on {
                                     " — prévue le " (format_date(at))
                                 }
                             }
@@ -160,11 +162,11 @@ pub fn render(store: &Store) -> Result<Markup, AppError> {
             }
             div class="kpi" {
                 div class="kpi-label" { "Relances en retard" }
-                div class="kpi-value" { (late.len()) }
-                @if late.is_empty() {
+                div class="kpi-value" { (follow_queue.len()) }
+                @if follow_queue.is_empty() {
                     div class="kpi-note ok" { "aucune relance en attente" }
                 } @else {
-                    div class="kpi-note warn" { "à traiter dans Prospection" }
+                    div class="kpi-note warn" { "à traiter dans Relances" }
                 }
             }
             div class="kpi" {

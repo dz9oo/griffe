@@ -80,6 +80,21 @@ pub(super) fn update_stage(
     Ok(())
 }
 
+/// Projection de la file de relances (lot 47) : chaque fait qui change l'échéance réécrit
+/// `next_action_at` et bumpe la révision, pour que `late_actions` et un panneau d'édition
+/// ouvert restent cohérents.
+pub(crate) fn set_next_action_at(
+    conn: &Connection,
+    id: OpportunityId,
+    next_action_at: Option<time::Date>,
+) -> Result<(), AppError> {
+    conn.execute(
+        "UPDATE opportunities SET next_action_at = ?1, revision = revision + 1 WHERE id = ?2",
+        params![next_action_at.map(domain::format_date), id.to_string()],
+    )?;
+    Ok(())
+}
+
 pub(super) fn row_to_opportunity(row: &Row) -> rusqlite::Result<Opportunity> {
     let stage_str: String = row.get("stage")?;
     let stage = stage_str.parse::<OpportunityStage>().map_err(conv_err)?;

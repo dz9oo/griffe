@@ -11,8 +11,11 @@
 use rusqlite::Connection;
 
 use crate::app::AppError;
-use crate::domain::{ClientId, ExpenseId, FixedAssetId, MissionId, OpportunityId, QuoteId};
-use crate::{clients, expenses, fixed_assets, missions, prospection, quotes};
+use crate::domain::{
+    ClientId, ExpenseId, FixedAssetId, FollowUpSubject, InvoiceId, MissionId, OpportunityId,
+    QuoteId,
+};
+use crate::{billing, clients, expenses, fixed_assets, missions, prospection, quotes};
 
 /// Résultat de la résolution d'une référence texte vers un identifiant typé. `label` (dans
 /// `Ambiguous`) est le libellé lisible du candidat — le nom d'un client, par exemple — pour que
@@ -344,6 +347,100 @@ pub fn resolve_quote(conn: &Connection, needle: &str) -> Result<RefMatch<QuoteId
                 )
             })
     }))
+}
+
+/// Résout `needle` en identifiant de facture, par numéro (`FA-2026-0001`) ou nom du client.
+///
+/// # Errors
+pub fn resolve_invoice(conn: &Connection, needle: &str) -> Result<RefMatch<InvoiceId>, AppError> {
+    let all_clients = clients::list_clients(conn)?;
+    let all_invoices = billing::list_invoices(conn)?;
+    let client_name = |id: ClientId| {
+        all_clients
+            .iter()
+            .find(|c| c.id == id)
+            .map_or_else(|| "?".to_string(), |c| c.name.clone())
+    };
+    let candidates: Vec<(InvoiceId, String)> = all_invoices
+        .iter()
+        .map(|i| (i.id, i.number.clone()))
+        .collect();
+    let by_number = resolve_among(needle, &candidates);
+    if !matches!(by_number, RefMatch::NotFound) {
+        return Ok(qualify_ambiguous(by_number, |id| {
+            all_invoices
+                .iter()
+                .find(|i| i.id == id)
+                .map_or_else(String::new, |i| {
+                    format!("{} — {}", i.number, client_name(i.client_id))
+                })
+        }));
+    }
+    let by_client: Vec<(InvoiceId, String)> = all_invoices
+        .iter()
+        .map(|i| (i.id, client_name(i.client_id)))
+        .collect();
+    Ok(qualify_ambiguous(resolve_among(needle, &by_client), |id| {
+        all_invoices
+            .iter()
+            .find(|i| i.id == id)
+            .map_or_else(String::new, |i| {
+                format!("{} — {}", i.number, client_name(i.client_id))
+            })
+    }))
+}
+
+/// Résout une référence de relance : opportunité ou facture. Une ambiguïté entre les deux
+/// familles liste les deux candidats plutôt que d'en choisir une.
+///
+/// # Errors
+pub fn resolve_follow_up_subject(
+    conn: &Connection,
+    needle: &str,
+) -> Result<RefMatch<FollowUpSubject>, AppError> {
+    let opp = resolve_opportunity(conn, needle)?;
+    let inv = resolve_invoice(conn, needle)?;
+    Ok(merge_subjects(opp, inv))
+}
+
+fn merge_subjects(
+    opp: RefMatch<OpportunityId>,
+    inv: RefMatch<InvoiceId>,
+) -> RefMatch<FollowUpSubject> {
+    fn as_opp(id: OpportunityId, label: &str) -> (FollowUpSubject, String) {
+        (
+            FollowUpSubject::Opportunity(id),
+            format!("{label} (prospect)"),
+        )
+    }
+    fn as_inv(id: InvoiceId, label: &str) -> (FollowUpSubject, String) {
+        (FollowUpSubject::Invoice(id), format!("{label} (facture)"))
+    }
+    match (opp, inv) {
+        (RefMatch::Unique(o), RefMatch::NotFound) => {
+            RefMatch::Unique(FollowUpSubject::Opportunity(o))
+        }
+        (RefMatch::NotFound, RefMatch::Unique(i)) => RefMatch::Unique(FollowUpSubject::Invoice(i)),
+        (RefMatch::NotFound, RefMatch::NotFound) => RefMatch::NotFound,
+        (o, i) => {
+            let mut c = Vec::new();
+            match o {
+                RefMatch::Unique(id) => c.push(as_opp(id, &id.to_string())),
+                RefMatch::Ambiguous(list) => {
+                    c.extend(list.into_iter().map(|(id, l)| as_opp(id, &l)));
+                }
+                RefMatch::NotFound => {}
+            }
+            match i {
+                RefMatch::Unique(id) => c.push(as_inv(id, &id.to_string())),
+                RefMatch::Ambiguous(list) => {
+                    c.extend(list.into_iter().map(|(id, l)| as_inv(id, &l)));
+                }
+                RefMatch::NotFound => {}
+            }
+            as_ref_match(c)
+        }
+    }
 }
 
 #[cfg(test)]

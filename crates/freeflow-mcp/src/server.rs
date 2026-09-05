@@ -60,6 +60,7 @@ impl FreeflowServer {
             + Self::fec_router()
             + Self::forecast_router()
             + Self::setup_router()
+            + Self::follow_up_router()
     }
 }
 

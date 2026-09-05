@@ -10,6 +10,7 @@ mod error;
 mod expense;
 mod fec;
 mod fiscal;
+mod follow_up;
 mod forecast;
 mod invoice;
 mod mission;
@@ -26,6 +27,7 @@ mod year;
 
 use std::path::{Path, PathBuf};
 
+pub use follow_up::write_and_open_draft;
 pub use freeflow_core::clock::today_local as today;
 
 use clap::{Parser, Subcommand};
@@ -85,6 +87,9 @@ enum TopCommand {
     /// Identité légale de l'émetteur (mentions obligatoires des factures).
     #[command(subcommand)]
     Company(company::CompanyCommand),
+    /// Relances : file du jour, brouillon `.eml`, jamais d'envoi.
+    #[command(subcommand)]
+    FollowUp(follow_up::FollowUpCommand),
     /// Prospection : opportunités, pipeline, interactions.
     #[command(subcommand)]
     Prospect(prospect::ProspectCommand),
@@ -366,6 +371,7 @@ fn run_command(
         TopCommand::Backup(cmd) => backup::run(cmd, store),
         TopCommand::Client(cmd) => client::run(cmd, store, ctx, json),
         TopCommand::Company(cmd) => company::run(cmd, store, ctx, json),
+        TopCommand::FollowUp(cmd) => follow_up::run(cmd, store, ctx, json),
         TopCommand::Prospect(cmd) => prospect::run(cmd, store, ctx, json),
         TopCommand::Mission(cmd) => mission::run(cmd, store, ctx, json),
         TopCommand::Quote(cmd) => quote::run(cmd, store, ctx, json),

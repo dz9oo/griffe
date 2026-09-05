@@ -161,6 +161,16 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "fiscal.checklist",
         "fec.export",
         "fec.check",
+        "follow_up.queue",
+        "follow_up.board",
+        "follow_up.show",
+        "follow_up.set_sender",
+        "follow_up.prepare",
+        "follow_up.mark_sent",
+        "follow_up.skip",
+        "follow_up.snooze",
+        "follow_up.schedule",
+        "follow_up.retract",
     ] {
         assert!(names.contains(expected), "outil manquant : {expected}");
     }
@@ -193,6 +203,9 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "fiscal.checklist",
         "fiscal.assets",
         "fec.check",
+        "follow_up.queue",
+        "follow_up.board",
+        "follow_up.show",
     ] {
         assert_eq!(
             by_name(read_only)

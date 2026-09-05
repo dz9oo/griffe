@@ -10,6 +10,10 @@ use crate::layout::{ViewId, view_head};
 pub fn help(typed: &str) -> Markup {
     let lines = [
         (
+            "follow-up queue",
+            "la file de relances du jour (brouillon .eml, jamais d'envoi)",
+        ),
+        (
             "setup status",
             "où en est la configuration (profil, point de départ, relevé)",
         ),

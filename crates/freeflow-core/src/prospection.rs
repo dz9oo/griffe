@@ -20,6 +20,15 @@ pub use queries::{
     without_next_action,
 };
 
+/// Voir [`row::set_next_action_at`].
+pub(crate) fn set_next_action_at(
+    conn: &rusqlite::Connection,
+    id: crate::domain::OpportunityId,
+    next_action_at: Option<time::Date>,
+) -> Result<(), crate::app::AppError> {
+    row::set_next_action_at(conn, id, next_action_at)
+}
+
 #[cfg(test)]
 mod tests {
     use rusqlite::params;

@@ -15,6 +15,7 @@ mod layout;
 mod missions;
 mod premiers_pas;
 mod prospection;
+mod relances;
 mod societe;
 mod state;
 mod unlock;
@@ -67,6 +68,55 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(handlers::index))
         .route("/view/dashboard", get(handlers::dashboard))
+        .route("/view/relances", get(relances::view))
+        .route("/relances/sender", post(relances::set_sender))
+        .route(
+            "/relances/opportunity/{id}",
+            get(relances::show_opportunity),
+        )
+        .route("/relances/invoice/{id}", get(relances::show_invoice))
+        .route(
+            "/relances/opportunity/{id}/draft",
+            post(relances::draft_opportunity),
+        )
+        .route(
+            "/relances/invoice/{id}/draft",
+            post(relances::draft_invoice),
+        )
+        .route(
+            "/relances/opportunity/{id}/sent",
+            post(relances::sent_opportunity),
+        )
+        .route("/relances/invoice/{id}/sent", post(relances::sent_invoice))
+        .route(
+            "/relances/opportunity/{id}/skip",
+            post(relances::skip_opportunity),
+        )
+        .route("/relances/invoice/{id}/skip", post(relances::skip_invoice))
+        .route(
+            "/relances/opportunity/{id}/retract",
+            post(relances::retract_opportunity),
+        )
+        .route(
+            "/relances/invoice/{id}/retract",
+            post(relances::retract_invoice),
+        )
+        .route(
+            "/relances/opportunity/{id}/snooze",
+            post(relances::snooze_opportunity),
+        )
+        .route(
+            "/relances/invoice/{id}/snooze",
+            post(relances::snooze_invoice),
+        )
+        .route(
+            "/relances/opportunity/{id}/schedule",
+            post(relances::schedule_opportunity),
+        )
+        .route(
+            "/relances/invoice/{id}/schedule",
+            post(relances::schedule_invoice),
+        )
         .route("/view/prospection", get(handlers::prospection))
         .route("/view/missions", get(handlers::missions))
         .route("/view/devis", get(handlers::devis))

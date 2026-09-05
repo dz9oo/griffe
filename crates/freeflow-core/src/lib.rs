@@ -16,6 +16,7 @@ pub mod fec;
 pub mod fiscal;
 pub mod fiscal_year;
 pub mod fixed_assets;
+pub mod follow_up;
 pub mod forecast;
 pub mod ledger;
 pub mod missions;

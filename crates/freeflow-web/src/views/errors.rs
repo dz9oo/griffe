@@ -26,6 +26,9 @@ pub fn action(e: &AppError) -> Option<(&'static str, &'static str)> {
     if text.contains("rapproch") {
         return Some(("voir les dépenses et le relevé", "/view/depenses"));
     }
+    if text.contains("email avec lequel vous écrivez") {
+        return Some(("indiquer l'expéditeur", "/view/relances"));
+    }
     None
 }
 

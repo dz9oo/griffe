@@ -7,6 +7,7 @@ use maud::{DOCTYPE, Markup, html};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewId {
     Dashboard,
+    Relances,
     Prospection,
     Devis,
     Missions,
@@ -23,6 +24,7 @@ impl ViewId {
     pub const fn path(self) -> &'static str {
         match self {
             Self::Dashboard => "/view/dashboard",
+            Self::Relances => "/view/relances",
             Self::Prospection => "/view/prospection",
             Self::Devis => "/view/devis",
             Self::Missions => "/view/missions",
@@ -39,6 +41,7 @@ impl ViewId {
     pub const fn slug(self) -> &'static str {
         match self {
             Self::Dashboard => "dashboard",
+            Self::Relances => "relances",
             Self::Prospection => "prospection",
             Self::Devis => "devis",
             Self::Missions => "missions",
@@ -62,6 +65,7 @@ impl ViewId {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Dashboard => "Tableau de bord",
+            Self::Relances => "Relances",
             Self::Prospection => "Prospection",
             Self::Devis => "Devis",
             Self::Missions => "Missions",
@@ -75,7 +79,8 @@ impl ViewId {
     }
 
     /// Flux quotidien : prospecter → deviser → réaliser → dépenser, plus les fiches clients.
-    const PRIMARY: [Self; 5] = [
+    const PRIMARY: [Self; 6] = [
+        Self::Relances,
         Self::Prospection,
         Self::Devis,
         Self::Missions,
@@ -91,8 +96,9 @@ impl ViewId {
         Self::Console,
     ];
 
-    const ALL: [Self; 10] = [
+    const ALL: [Self; 11] = [
         Self::Dashboard,
+        Self::Relances,
         Self::Prospection,
         Self::Devis,
         Self::Missions,

@@ -784,8 +784,8 @@ existe.
 - [x] Régime réel simplifié de TVA : acomptes semestriels 3514 et CA12/CA12 E, avec la fin du
       régime pour les exercices ouverts à compter de 2027 ; règle de télédéclaration dérivée
       affichée par `company show`.
-- [ ] Relances de paiement configurables (cadences, modèles de message) au-delà des brouillons
-      `.eml` actuels.
+- [x] Relances (lot 47) : file d'une carte, cadences et modèles, brouillons `.eml` ouverts dans
+      le client mail — jamais d'envoi. Prospects (écarts 0/3/7/14) et impayés (J+0/7/15/30).
 - [x] Export comptable : FEC d'un exercice (CLI, MCP, fenêtre), dérivé des faits du domaine, et
       contrôle de structure (`freeflow fec check`, `fec.check`, bouton « vérifier le FEC ») —
       18 colonnes A. 47 A-1, pas une attestation DGFiP. Voir « Dépenses & obligations fiscales »

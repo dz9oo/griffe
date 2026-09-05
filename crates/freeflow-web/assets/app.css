@@ -157,7 +157,7 @@ td.num{ text-align:right; }
 .forecast{ display:flex; align-items:flex-end; gap:4px; height:120px; }
 
 .today-list{ display:flex; flex-direction:column; gap:0; }
-.today-row{ display:flex; gap:10px; align-items:baseline; padding:10px 0; border-bottom:1px solid var(--border-soft); font-size:14px; }
+.today-row{ display:flex; gap:10px; align-items:baseline; padding:10px 0; border-bottom:1px solid var(--border-soft); font-size:14px; text-decoration:none; color:inherit; }
 .today-row:last-child{ border-bottom:none; }
 .today-row .today-text{ color:var(--text-1); }
 
@@ -199,6 +199,7 @@ html.dark .palette-overlay{ background:rgba(6,7,9,.6); }
 .btn.primary:hover{ background:var(--accent); border-color:var(--accent); }
 .btn.danger{ color:var(--red); border-color:var(--red-soft); }
 .btn.danger:hover{ background:var(--red-soft); border-color:var(--red); }
+.btn.ghost{ background:transparent; }
 
 /* champs de formulaire génériques (`views/form.rs`) — étendent `.auth-field` (mot pour mot le
    même patron label + champ) à `type=text`/`date`/`select`, avec un état d'erreur par champ */
@@ -258,3 +259,58 @@ html.dark .palette-overlay{ background:rgba(6,7,9,.6); }
 /* liste cliquable (`views/clients.rs::list_fragment`) */
 tr.row-clickable{ cursor:pointer; }
 tr.row-clickable:hover td{ background:var(--bg-2); }
+
+/* Relances — file d'une carte (lot 47) */
+.follow-shell{ display:grid; grid-template-columns:220px minmax(0,1fr); gap:28px; align-items:start; }
+.follow-rail{ position:sticky; top:8px; }
+.follow-rail-title{ font-size:11px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:var(--text-3); margin:18px 0 8px; }
+.follow-rail-title:first-child{ margin-top:0; }
+.follow-rail-empty{ font-size:13px; color:var(--text-3); }
+.follow-rail-item{ display:block; padding:8px 10px; border-radius:10px; text-decoration:none; color:inherit; margin-bottom:2px; }
+.follow-rail-item:hover{ background:var(--bg-2); }
+.follow-rail-item.active{ background:var(--accent-soft); }
+.follow-rail-name{ display:block; font-size:13px; font-weight:600; }
+.follow-rail-meta{ display:block; font-size:11px; color:var(--text-3); }
+.follow-dot{ display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:6px; background:var(--text-3); }
+.follow-dot.overdue,.follow-dot.due{ background:var(--red); }
+.follow-dot.drafted{ background:var(--amber); }
+.follow-dot.blocked{ background:var(--violet); }
+.follow-stage{ min-height:420px; }
+.follow-card{ background:var(--bg-1); border:1px solid var(--border); border-radius:18px; padding:28px 32px 24px; box-shadow:var(--shadow); max-width:640px; }
+.follow-card-head{ display:flex; align-items:center; gap:8px; margin-bottom:10px; }
+.follow-amount{ margin-left:auto; font-variant-numeric:tabular-nums; font-weight:650; }
+.follow-title{ font-size:26px; letter-spacing:-.03em; font-weight:700; line-height:1.2; }
+.follow-party{ color:var(--text-2); margin:6px 0 18px; }
+.follow-track{ display:flex; gap:10px; list-style:none; margin:0 0 22px; padding:0; align-items:center; }
+.follow-track li{ display:flex; align-items:center; gap:8px; }
+.follow-track-dot{ width:10px; height:10px; border-radius:50%; border:2px solid var(--border); display:block; }
+.follow-track .done .follow-track-dot{ background:var(--accent); border-color:var(--accent); }
+.follow-track .current .follow-track-dot{ background:var(--accent-soft); border-color:var(--accent); transform:scale(1.25); }
+.follow-track-label{ font-size:12px; color:var(--accent); font-weight:600; }
+.follow-preview{ background:var(--bg-2); border-radius:12px; padding:14px 16px; margin-bottom:18px; }
+.follow-preview-subject{ font-weight:650; margin-bottom:8px; }
+.follow-preview pre{ font-family:var(--font-ui); font-size:14px; white-space:pre-wrap; color:var(--text-1); }
+.follow-actions{ display:flex; flex-wrap:wrap; gap:8px; margin-bottom:14px; }
+.follow-snooze{ display:flex; flex-wrap:wrap; gap:6px; align-items:center; color:var(--text-3); font-size:12px; }
+.chip{ font-family:var(--font-ui); font-size:12px; padding:6px 10px; border-radius:999px; border:1px solid var(--border); background:var(--bg-1); color:var(--text-1); cursor:pointer; }
+.chip:hover{ border-color:var(--accent); color:var(--accent); }
+.follow-date{ display:flex; gap:6px; align-items:center; }
+.follow-date input{ font-family:var(--font-ui); font-size:12px; border:1px solid var(--border); border-radius:8px; padding:4px 8px; background:var(--bg-1); color:var(--text-0); }
+.follow-block{ background:var(--amber-soft); border:1px solid var(--amber); color:var(--amber); border-radius:10px; padding:10px 12px; margin-bottom:16px; }
+.follow-empty{ max-width:420px; padding:40px 8px; }
+.follow-empty h2{ font-size:22px; margin-bottom:8px; }
+.follow-empty p{ color:var(--text-2); }
+.follow-flash{ background:var(--accent-soft); color:var(--accent); border-radius:10px; padding:10px 12px; margin-bottom:16px; }
+.follow-sender{ background:var(--bg-1); border:1px solid var(--border); border-radius:14px; padding:16px 18px; margin-bottom:18px; max-width:640px; }
+.follow-hint{ font-size:12px; color:var(--text-3); margin-top:16px; }
+.follow-history{ margin-top:18px; color:var(--text-2); font-size:13px; }
+.follow-history ol{ margin:8px 0 0 18px; }
+.badge.overdue,.badge.due{ background:var(--red-soft); color:var(--red); }
+.badge.drafted{ background:var(--amber-soft); color:var(--amber); }
+.badge.blocked{ background:var(--violet-soft); color:var(--violet); }
+@media (max-width: 800px){
+  .follow-shell{ grid-template-columns:1fr; }
+  .follow-rail{ position:static; display:flex; gap:8px; overflow-x:auto; }
+  .follow-rail-title{ display:none; }
+  .follow-rail-item{ min-width:140px; }
+}

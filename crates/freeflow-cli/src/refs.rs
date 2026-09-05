@@ -5,7 +5,9 @@
 
 use std::fmt::Display;
 
-use freeflow_core::domain::{ClientId, ExpenseId, FixedAssetId, MissionId, OpportunityId, QuoteId};
+use freeflow_core::domain::{
+    ClientId, ExpenseId, FixedAssetId, FollowUpSubject, MissionId, OpportunityId, QuoteId,
+};
 use freeflow_core::reference::{self, RefMatch};
 use freeflow_core::store::Store;
 
@@ -86,6 +88,16 @@ pub fn resolve_expense(store: &Store, needle: &str) -> Result<ExpenseId, CliErro
         "aucune dépense",
         "dépenses",
         reference::resolve_expense(store.connection(), needle)?,
+    )
+}
+
+/// # Errors
+pub fn resolve_follow_up(store: &Store, needle: &str) -> Result<FollowUpSubject, CliError> {
+    translate(
+        needle,
+        "aucune relance",
+        "relances",
+        reference::resolve_follow_up_subject(store.connection(), needle)?,
     )
 }
 

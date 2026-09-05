@@ -368,6 +368,7 @@ async fn every_screen_renders_successfully_against_a_freshly_seeded_vault() {
 
     for path in [
         "/view/dashboard",
+        "/view/relances",
         "/view/prospection",
         "/view/devis",
         "/view/missions",
@@ -4256,4 +4257,34 @@ async fn a_cabinet_balance_prefills_the_opening_balance_form() {
     );
     assert!(form.contains("import de balance.csv"), "{form}");
     assert!(form.contains("amortissement"), "{form}");
+}
+
+#[tokio::test]
+async fn relances_screen_shows_a_due_opportunity() {
+    let db_path = test_db_path("relances-due");
+    let (state, _) = unlocked_state_with_opportunity(&db_path).await;
+    let state = state.with_today(time::macros::date!(2026 - 09 - 05));
+    let router = freeflow_web::router(state);
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/view/relances")
+                .header("HX-Request", "true")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_text(response).await;
+    assert!(
+        body.contains("data-view=\"relances\""),
+        "slug conservé : {body}"
+    );
+    assert!(body.contains("Relances"), "titre français : {body}");
+    assert!(
+        body.contains("Refonte plateforme"),
+        "l'opportunité due est dans la file : {body}"
+    );
 }

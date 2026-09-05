@@ -14,6 +14,7 @@ Commands:
   passphrase  Passphrase du coffre : changement en place, ré-chiffrement complet, sauvegarde préalable obligatoire
   client      Clients
   company     Identité légale de l'émetteur (mentions obligatoires des factures)
+  follow-up   Relances : file du jour, brouillon `.eml`, jamais d'envoi
   prospect    Prospection : opportunités, pipeline, interactions
   mission     Missions : création, saisie de temps, TJM effectif, capacité
   quote       Devis : création, révision, envoi, acceptation

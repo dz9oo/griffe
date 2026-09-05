@@ -615,6 +615,107 @@ fn a_new_passphrase_file_readable_by_others_is_refused() {
 }
 
 #[test]
+fn follow_up_queue_lists_a_due_opportunity_and_drafts_without_sending() {
+    let db = temp_db("follow-up-queue");
+    provision(&db);
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["client", "create", "--name", "Acme"])
+        .assert()
+        .success();
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "client",
+            "contact",
+            "add",
+            "--client",
+            "Acme",
+            "--name",
+            "Marie",
+            "--email",
+            "marie@acme.test",
+        ])
+        .assert()
+        .success();
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "prospect",
+            "create",
+            "--client",
+            "Acme",
+            "--name",
+            "Refonte",
+            "--amount",
+            "4500",
+            "--probability",
+            "40",
+            "--next-action",
+            "2026-09-02",
+        ])
+        .assert()
+        .success();
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "follow-up",
+            "from",
+            "--email",
+            "nicolas@lumen.test",
+            "--name",
+            "Nicolas",
+        ])
+        .assert()
+        .success();
+    let queue = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--json", "follow-up", "queue", "--today", "2026-09-05"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let cards = json_result(&queue);
+    assert_eq!(cards.as_array().unwrap().len(), 1);
+    assert_eq!(cards[0]["title"], "Refonte");
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "follow-up",
+            "draft",
+            "Refonte",
+            "--today",
+            "2026-09-05",
+            "--no-open",
+        ])
+        .assert()
+        .success();
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["follow-up", "sent", "Refonte", "--today", "2026-09-05"])
+        .assert()
+        .success();
+    let show = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "--json",
+            "follow-up",
+            "show",
+            "Refonte",
+            "--today",
+            "2026-09-05",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let card = json_result(&show);
+    assert_eq!(card["step_key"], "bump");
+}
+
+#[test]
 fn top_level_help_is_a_stable_interface_contract() {
     let output = freeflow().arg("--help").output().unwrap();
     insta::assert_snapshot!(String::from_utf8(output.stdout).unwrap());
