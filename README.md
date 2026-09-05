@@ -47,6 +47,11 @@ implémentation.
   notes) — en CLI, en MCP et depuis la fenêtre. L'archivage est un axe distinct de gagnée/perdue :
   une opportunité archivée est simplement devenue sans objet. Même désignation par nom/UUID/préfixe
   et même garde-fou d'écriture concurrente que les clients.
+- Un prospect se crée **sans fiche client préalable** (`freeflow prospect create --prospect NOM`,
+  outil `prospect.create` `prospect`, champ « nom du prospect » de la fenêtre) : une fiche est
+  posée, mais elle n'apparaît dans l'onglet Clients qu'au **premier devis ou à la première
+  facture**. Un nom déjà enregistré (exact, casse et accents ignorés) s'y rattache, sans
+  dupliquer. `--client` reste pour rattacher à une fiche déjà listée.
 
 ### Missions
 - Trois modes de facturation par mission : **régie** (TJM × jours saisis), **forfait** (jalons,
@@ -261,7 +266,11 @@ implémentation.
   non, pour l'expert-comptable : `freeflow fec export 2026 --out <répertoire|fichier>`, outil MCP
   `fec.export`, bouton « FEC » de l'écran `cloture`. Le format DGFiP (18 colonnes, `|`,
   `AAAAMMJJ`, virgule décimale, nom `<SIREN>FEC<AAAAMMJJ>.txt`) du grand livre dérivé ci-dessus,
-  journaux `AN`/`VE`/`AC`/`BQ`/`OD`, écritures équilibrées par construction.
+  journaux `AN`/`VE`/`AC`/`BQ`/`OD`, écritures équilibrées par construction. Contrôle de
+  structure (sans coffre sur un fichier, ou `--period` sur l'exercice) : `freeflow fec check
+  <FICHIER>`, `freeflow fec check --period 2026`, outil MCP `fec.check`, bouton « vérifier le
+  FEC » — ce n'est **pas** une attestation DGFiP ; la conformité structurelle ne présage pas de
+  la régularité de la comptabilité.
 - **Bilan d'ouverture** : la reprise, compte par compte, du dernier bilan tenu avant FreeFlow
   (typiquement par l'expert-comptable), à saisir **avant** toute clôture dans l'application.
   `freeflow year opening set --opens-on 2025-10-01 --line "101000:Capital social:C:1000.00"
@@ -625,6 +634,7 @@ Le reste du vocabulaire est expliqué au fil de l'app : `freeflow year glossary`
    freeflow year render 2026 balance-sheet --out bilan-2026.pdf
    freeflow year render 2026 liasse --out liasse-2026.json
    freeflow fec export 2026 --out .                              # 901265322FEC20260930.txt
+   freeflow fec check 901265322FEC20260930.txt                   # structure A. 47 A-1
    ```
 
 7. **Déclare et dépose** — trois démarches hors de l'app, que le parcours date pour toi :
@@ -776,8 +786,10 @@ existe.
       affichée par `company show`.
 - [ ] Relances de paiement configurables (cadences, modèles de message) au-delà des brouillons
       `.eml` actuels.
-- [x] Export comptable : FEC d'un exercice (CLI, MCP, fenêtre), dérivé des faits du domaine — voir
-      « Dépenses & obligations fiscales » et les limites ci-dessus.
+- [x] Export comptable : FEC d'un exercice (CLI, MCP, fenêtre), dérivé des faits du domaine, et
+      contrôle de structure (`freeflow fec check`, `fec.check`, bouton « vérifier le FEC ») —
+      18 colonnes A. 47 A-1, pas une attestation DGFiP. Voir « Dépenses & obligations fiscales »
+      et les limites ci-dessus.
 - [x] Bilan d'ouverture (reprise du bilan de l'expert-comptable) chaîné dans la clôture et le FEC —
       voir « Dépenses & obligations fiscales » ci-dessus.
 - [x] Grand livre dérivé complet et **bilan de clôture** (actif/passif, tableau 2033-A) :

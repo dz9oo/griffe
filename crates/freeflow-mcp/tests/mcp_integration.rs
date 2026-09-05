@@ -160,6 +160,7 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "fiscal.balance_sheet",
         "fiscal.checklist",
         "fec.export",
+        "fec.check",
     ] {
         assert!(names.contains(expected), "outil manquant : {expected}");
     }
@@ -191,6 +192,7 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "fiscal.balance_sheet",
         "fiscal.checklist",
         "fiscal.assets",
+        "fec.check",
     ] {
         assert_eq!(
             by_name(read_only)
@@ -818,6 +820,43 @@ async fn prospect_update_accepts_a_reference_instead_of_a_uuid() {
     )
     .await;
     assert_eq!(json_of(&shown)["name"], "Refonte v2");
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn prospect_create_without_an_existing_client_stays_off_clients_list() {
+    let db_path = test_db_path("prospect-without-client");
+    let store = Store::create(&db_path, &Passphrase::from("s3cret")).unwrap();
+    let client = spawn_client(store).await;
+
+    let created = call(
+        &client,
+        "prospect.create",
+        json!({
+            "prospect": "Lumen Conseil",
+            "representative": "Camille Martin",
+            "email": "camille@lumen.example",
+            "name": "Refonte",
+            "amount_cents": 7_800_000,
+            "probability_percent": 40,
+            "next_action": "2026-09-02",
+        }),
+    )
+    .await;
+    assert_eq!(created.is_error, Some(false), "{}", tool_text(&created));
+
+    let listed = call(&client, "clients.list", json!({})).await;
+    assert_eq!(listed.is_error, Some(false));
+    let clients = json_of(&listed);
+    let arr = clients.as_array().unwrap();
+    assert!(
+        arr.is_empty(),
+        "un prospect sans devis ni facture n'apparaît pas dans clients.list : {clients}"
+    );
+
+    let prospects = call(&client, "prospect.list", json!({})).await;
+    assert_eq!(json_of(&prospects)[0]["name"], "Refonte");
 
     client.cancel().await.unwrap();
 }
@@ -1766,6 +1805,13 @@ async fn exporting_the_fec_writes_the_regulatory_file_and_never_overwrites() {
     )
     .await;
     assert_eq!(again.is_error, Some(true));
+
+    let checked = call(&client, "fec.check", json!({"period": 2026})).await;
+    assert_eq!(checked.is_error, Some(false), "{checked:?}");
+    let report = json_of(&checked);
+    assert_eq!(report["conformant"], true, "{report}");
+    assert_eq!(report["error_count"], 0, "{report}");
+    assert_eq!(report["file_name"], "552100554FEC20261231.txt", "{report}");
 
     client.cancel().await.unwrap();
 }

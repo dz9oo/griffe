@@ -125,6 +125,46 @@ pub fn resolve_client(conn: &Connection, needle: &str) -> Result<RefMatch<Client
     Ok(resolve_among(needle, &candidates))
 }
 
+/// Comme [`resolve_client`], mais seulement UUID complet ou nom exact (casse et accents
+/// ignorés) — jamais un préfixe. Servir à `CreateProspect` : taper « Acme » ne doit pas
+/// rattacher silencieusement « Acme Industries ».
+///
+/// # Errors
+pub fn resolve_client_exact(
+    conn: &Connection,
+    needle: &str,
+) -> Result<RefMatch<ClientId>, AppError> {
+    let candidates: Vec<(ClientId, String)> = clients::list_clients(conn)?
+        .into_iter()
+        .map(|c| (c.id, c.name))
+        .collect();
+    Ok(resolve_exact(needle, &candidates))
+}
+
+fn resolve_exact<T>(needle: &str, candidates: &[(T, String)]) -> RefMatch<T>
+where
+    T: Copy + Eq + std::fmt::Display + std::str::FromStr,
+{
+    let trimmed = needle.trim();
+    if trimmed.is_empty() {
+        return RefMatch::NotFound;
+    }
+    if let Ok(id) = trimmed.parse::<T>() {
+        return if candidates.iter().any(|(cid, _)| *cid == id) {
+            RefMatch::Unique(id)
+        } else {
+            RefMatch::NotFound
+        };
+    }
+    let needle_norm = normalize(trimmed);
+    let by_exact_label: Vec<(T, String)> = candidates
+        .iter()
+        .filter(|(_, label)| normalize(label) == needle_norm)
+        .cloned()
+        .collect();
+    as_ref_match(by_exact_label)
+}
+
 /// Réécrit les libellés d'un résultat `Ambiguous` — laisse `Unique`/`NotFound` inchangés. Le
 /// matching se fait sur le libellé nu (le nom de l'entité) ; l'enrichissement (client, étape ou
 /// date) n'est calculé que pour les candidats effectivement retournés à l'utilisateur, jamais

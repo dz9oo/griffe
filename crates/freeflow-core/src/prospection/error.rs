@@ -21,6 +21,19 @@ pub enum ProspectionError {
 
     #[error("suppression impossible : {0}")]
     HasReferences(String),
+
+    #[error("le nom du prospect est obligatoire")]
+    ProspectNameRequired,
+
+    #[error(
+        "plusieurs fiches portent déjà le nom « {0} » — précisez laquelle, ou choisissez un autre nom"
+    )]
+    AmbiguousProspect(String),
+
+    #[error(
+        "ce prospect est déjà un client (un devis ou une facture le référence) — modifiez-le depuis l'écran Clients"
+    )]
+    AlreadyAClient,
 }
 
 impl From<ProspectionError> for AppError {

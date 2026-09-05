@@ -28,8 +28,8 @@ use time::{Date, OffsetDateTime};
 
 use crate::app::{AppError, Command};
 use crate::domain::{
-    ClientId, Interaction, InteractionId, InteractionKind, LossReason, Mission, MissionId,
-    MissionKind, Money, Opportunity, OpportunityId, OpportunityStage, Probability,
+    Address, Client, ClientId, Interaction, InteractionId, InteractionKind, LossReason, Mission,
+    MissionId, MissionKind, Money, Opportunity, OpportunityId, OpportunityStage, Probability,
 };
 
 use super::error::ProspectionError;
@@ -94,6 +94,189 @@ impl Command for CreateOpportunity {
         };
         row::insert_opportunity(conn, &opportunity)?;
         Ok(opportunity.id)
+    }
+}
+
+fn trimmed_opt(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn upsert_prospect_contact(
+    conn: &Connection,
+    client_id: ClientId,
+    prospect_name: &str,
+    representative: Option<&str>,
+    email: Option<&str>,
+    phone: Option<&str>,
+) -> Result<(), AppError> {
+    let representative = trimmed_opt(representative);
+    let email = trimmed_opt(email);
+    let phone = trimmed_opt(phone);
+    if representative.is_none() && email.is_none() && phone.is_none() {
+        return Ok(());
+    }
+    let existing = crate::clients::list_contacts(conn, client_id)?;
+    if let Some(current) = existing.into_iter().next() {
+        crate::clients::UpdateContact {
+            id: current.id,
+            revision: current.revision,
+            name: representative.unwrap_or(current.name),
+            email: email.or(current.email),
+            phone: phone.or(current.phone),
+            role: current.role,
+        }
+        .apply(conn)?;
+    } else {
+        crate::clients::CreateContact {
+            client_id,
+            name: representative.unwrap_or_else(|| prospect_name.to_string()),
+            email,
+            phone,
+            role: None,
+        }
+        .apply(conn)?;
+    }
+    Ok(())
+}
+
+/// Crée une opportunité en créant au besoin la fiche du prospect. La fiche est une ligne
+/// `clients` (`is_prospect = 1`) : devis et facture en ont besoin, mais elle n'apparaît dans
+/// l'onglet Clients qu'à la première pièce commerciale. Un nom qui correspond *exactement* à
+/// une fiche déjà présente (casse et accents ignorés) s'y rattache, sans la modifier.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateProspect {
+    pub prospect_name: String,
+    pub address: Option<Address>,
+    pub representative: Option<String>,
+    pub email: Option<String>,
+    pub phone: Option<String>,
+    pub name: String,
+    pub amount: Money,
+    pub probability: Probability,
+    #[serde(with = "crate::domain::serde_date::date")]
+    pub next_action_at: Date,
+    pub source: Option<String>,
+}
+
+impl Command for CreateProspect {
+    type Output = OpportunityId;
+    const NAME: &'static str = "prospection.create_prospect";
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        let prospect_name = self.prospect_name.trim();
+        if prospect_name.is_empty() {
+            return Err(ProspectionError::ProspectNameRequired.into());
+        }
+        let client_id = match crate::reference::resolve_client_exact(conn, prospect_name)? {
+            crate::reference::RefMatch::Unique(id) => id,
+            crate::reference::RefMatch::Ambiguous(_) => {
+                return Err(ProspectionError::AmbiguousProspect(prospect_name.to_string()).into());
+            }
+            crate::reference::RefMatch::NotFound => {
+                let client = Client {
+                    id: ClientId::new(),
+                    name: prospect_name.to_string(),
+                    siren: None,
+                    vat_number: None,
+                    address: self.address.clone(),
+                    created_at: OffsetDateTime::now_utc(),
+                    revision: 1,
+                    archived_at: None,
+                };
+                crate::clients::insert_client_as(conn, &client, true)?;
+                upsert_prospect_contact(
+                    conn,
+                    client.id,
+                    prospect_name,
+                    self.representative.as_deref(),
+                    self.email.as_deref(),
+                    self.phone.as_deref(),
+                )?;
+                client.id
+            }
+        };
+        CreateOpportunity {
+            client_id,
+            name: self.name.clone(),
+            amount: self.amount,
+            probability: self.probability,
+            next_action_at: self.next_action_at,
+            source: self.source.clone(),
+        }
+        .apply(conn)
+    }
+}
+
+/// Met à jour l'opportunité *et* la fiche prospect (nom, adresse, contact) tant que cette
+/// fiche n'est pas encore un client. Après un devis ou une facture, [`UpdateOpportunity`]
+/// reste disponible ; la fiche se modifie depuis Clients.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateProspect {
+    pub id: OpportunityId,
+    pub revision: i64,
+    pub client_revision: i64,
+    pub name: String,
+    pub amount: Money,
+    pub probability: Probability,
+    #[serde(with = "crate::domain::serde_date::date::option")]
+    pub next_action_at: Option<Date>,
+    pub source: Option<String>,
+    pub prospect_name: String,
+    pub address: Option<Address>,
+    pub representative: Option<String>,
+    pub email: Option<String>,
+    pub phone: Option<String>,
+}
+
+impl Command for UpdateProspect {
+    type Output = i64;
+    const NAME: &'static str = "prospection.update_prospect";
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        let opportunity =
+            row::opportunity_by_id(conn, self.id)?.ok_or(ProspectionError::NotFound(self.id))?;
+        if opportunity.stage.is_closed() {
+            return Err(ProspectionError::AlreadyClosed(self.id).into());
+        }
+        if !crate::clients::prospect_party_is_editable(conn, opportunity.client_id)? {
+            return Err(ProspectionError::AlreadyAClient.into());
+        }
+        let prospect_name = self.prospect_name.trim();
+        if prospect_name.is_empty() {
+            return Err(ProspectionError::ProspectNameRequired.into());
+        }
+        let current = crate::clients::client_by_id(conn, opportunity.client_id)?
+            .ok_or(crate::clients::ClientError::NotFound(opportunity.client_id))?;
+        crate::clients::UpdateClient {
+            id: current.id,
+            revision: self.client_revision,
+            name: prospect_name.to_string(),
+            siren: current.siren,
+            vat_number: current.vat_number,
+            address: self.address.clone(),
+        }
+        .apply(conn)?;
+        upsert_prospect_contact(
+            conn,
+            current.id,
+            prospect_name,
+            self.representative.as_deref(),
+            self.email.as_deref(),
+            self.phone.as_deref(),
+        )?;
+        UpdateOpportunity {
+            id: self.id,
+            revision: self.revision,
+            name: self.name.clone(),
+            amount: self.amount,
+            probability: self.probability,
+            next_action_at: self.next_action_at,
+            source: self.source.clone(),
+        }
+        .apply(conn)
     }
 }
 

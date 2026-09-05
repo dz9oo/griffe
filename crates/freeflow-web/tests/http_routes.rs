@@ -1377,7 +1377,7 @@ async fn creating_an_opportunity_through_the_panel_appears_in_the_table_and_trig
                 .uri("/prospection")
                 .header("content-type", "application/x-www-form-urlencoded")
                 .body(Body::from(
-                    "client=Kappa+Software&name=Nouvelle+piste&amount=1000&probability=50&next_action=2026-09-02",
+                    "prospect=Kappa+Software&name=Nouvelle+piste&amount=1000&probability=50&next_action=2026-09-02",
                 ))
                 .unwrap(),
         )
@@ -1399,6 +1399,64 @@ async fn creating_an_opportunity_through_the_panel_appears_in_the_table_and_trig
         .await
         .unwrap();
     assert!(body_text(table).await.contains("Nouvelle piste"));
+}
+
+#[tokio::test]
+async fn creating_a_prospect_without_an_existing_client_succeeds_and_stays_off_the_clients_tab() {
+    let db_path = test_db_path("prospection-new-prospect");
+    let state = unlocked_state(&db_path).await;
+    let router = freeflow_web::router(state);
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/prospection")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(
+                    "prospect=Lumen+Conseil&representative=Camille&email=camille%40lumen.example&phone=0612345678&street=1+rue+de+la+Paix&postal_code=75002&city=Paris&country=FR&name=Refonte&amount=7800&probability=40&next_action=2026-09-02",
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("HX-Trigger").unwrap(),
+        "freeflow:saved"
+    );
+    let body = body_text(response).await;
+    assert!(
+        !body.contains("introuvable"),
+        "un prospect neuf ne doit plus être refusé comme un client manquant : {body}"
+    );
+
+    let table = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/prospection/table")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(body_text(table).await.contains("Lumen Conseil"));
+
+    let clients = router
+        .oneshot(
+            Request::builder()
+                .uri("/clients/table")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        !body_text(clients).await.contains("Lumen Conseil"),
+        "un prospect sans devis ni facture n'apparaît pas dans Clients"
+    );
 }
 
 #[tokio::test]
@@ -2151,6 +2209,29 @@ async fn closing_a_year_from_the_window_then_downloading_its_documents() {
     assert!(
         fec_body.starts_with("JournalCode|JournalLib|EcritureNum|"),
         "{fec_body}"
+    );
+
+    let fec_check = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/cloture/fec/check?period=2026")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(fec_check.contains("conforme"), "{fec_check}");
+    assert!(
+        fec_check.contains("régularité de la comptabilité"),
+        "{fec_check}"
+    );
+    assert!(
+        fec_check.contains("/cloture/fec?period=2026"),
+        "{fec_check}"
     );
 
     let minutes = router

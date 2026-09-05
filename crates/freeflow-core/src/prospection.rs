@@ -8,9 +8,9 @@ mod queries;
 mod row;
 
 pub use commands::{
-    AdvanceOpportunity, ArchiveOpportunity, CreateOpportunity, DeleteInteraction,
+    AdvanceOpportunity, ArchiveOpportunity, CreateOpportunity, CreateProspect, DeleteInteraction,
     DeleteOpportunity, LogInteraction, LoseOpportunity, UnarchiveOpportunity, UpdateInteraction,
-    UpdateOpportunity, WinOpportunity,
+    UpdateOpportunity, UpdateProspect, WinOpportunity,
 };
 pub use error::ProspectionError;
 pub use queries::{
@@ -810,5 +810,258 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(interaction.occurred_at, occurred_at);
+    }
+
+    fn empty_store(label: &str) -> Store {
+        let dir = std::env::temp_dir().join(format!(
+            "freeflow-prospection-test-{label}-{}-{}",
+            std::process::id(),
+            uuid::Uuid::now_v7()
+        ));
+        Store::create(&dir.join("vault.db"), &Passphrase::from("s3cret")).unwrap()
+    }
+
+    fn new_prospect(name: &str) -> CreateProspect {
+        CreateProspect {
+            prospect_name: name.into(),
+            address: None,
+            representative: None,
+            email: None,
+            phone: None,
+            name: "Refonte plateforme".into(),
+            amount: Money::from_cents(7_800_000),
+            probability: Probability::new(40).unwrap(),
+            next_action_at: date(2026, Month::September, 2),
+            source: Some("recommandation".into()),
+        }
+    }
+
+    #[test]
+    fn creating_a_prospect_does_not_require_an_existing_client_and_stays_off_the_client_list() {
+        let mut store = empty_store("create-prospect");
+        let Outcome::Applied(opportunity_id) = Executor::new(&mut store)
+            .execute(&new_prospect("Lumen Conseil"), &human_ctx())
+            .unwrap()
+        else {
+            panic!("expected Applied")
+        };
+
+        let opportunity = row::opportunity_by_id(store.connection(), opportunity_id)
+            .unwrap()
+            .unwrap();
+        let party = crate::clients::client_by_id(store.connection(), opportunity.client_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(party.name, "Lumen Conseil");
+        assert_eq!(
+            crate::clients::list_clients_with(
+                store.connection(),
+                crate::clients::ClientFilter::ActiveOnly
+            )
+            .unwrap()
+            .len(),
+            0,
+            "un prospect sans devis ni facture n'apparaît pas dans Clients"
+        );
+        assert_eq!(
+            crate::clients::list_clients(store.connection())
+                .unwrap()
+                .len(),
+            1,
+            "list_clients reste inclusive pour la résolution de références"
+        );
+    }
+
+    #[test]
+    fn creating_a_prospect_records_optional_contact_and_address() {
+        let mut store = empty_store("create-prospect-contact");
+        let mut cmd = new_prospect("Nova Dev");
+        cmd.representative = Some("Camille Martin".into());
+        cmd.email = Some("camille@nova.example".into());
+        cmd.phone = Some("06 12 34 56 78".into());
+        cmd.address = Some(crate::domain::Address {
+            street: "1 rue de la Paix".into(),
+            postal_code: "75002".into(),
+            city: "Paris".into(),
+            country: "FR".into(),
+        });
+
+        let Outcome::Applied(opportunity_id) = Executor::new(&mut store)
+            .execute(&cmd, &human_ctx())
+            .unwrap()
+        else {
+            panic!("expected Applied")
+        };
+        let opportunity = row::opportunity_by_id(store.connection(), opportunity_id)
+            .unwrap()
+            .unwrap();
+        let party = crate::clients::client_by_id(store.connection(), opportunity.client_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(party.address.as_ref().unwrap().city, "Paris");
+        let contacts = crate::clients::list_contacts(store.connection(), party.id).unwrap();
+        assert_eq!(contacts.len(), 1);
+        assert_eq!(contacts[0].name, "Camille Martin");
+        assert_eq!(contacts[0].email.as_deref(), Some("camille@nova.example"));
+        assert_eq!(contacts[0].phone.as_deref(), Some("06 12 34 56 78"));
+    }
+
+    #[test]
+    fn creating_a_prospect_with_an_existing_exact_name_attaches_without_duplicating() {
+        let mut store = empty_store("attach-existing");
+        Executor::new(&mut store)
+            .execute(&new_prospect("Lumen Conseil"), &human_ctx())
+            .unwrap();
+        Executor::new(&mut store)
+            .execute(&new_prospect("lumen conseil"), &human_ctx())
+            .unwrap();
+
+        let parties = crate::clients::list_clients(store.connection()).unwrap();
+        assert_eq!(parties.len(), 1);
+        assert_eq!(
+            crate::prospection::list_opportunities(store.connection())
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn a_quote_makes_the_prospect_appear_in_the_client_list() {
+        let mut store = empty_store("quote-reveals");
+        let Outcome::Applied(opportunity_id) = Executor::new(&mut store)
+            .execute(&new_prospect("Lumen Conseil"), &human_ctx())
+            .unwrap()
+        else {
+            panic!("expected Applied")
+        };
+        let client_id = row::opportunity_by_id(store.connection(), opportunity_id)
+            .unwrap()
+            .unwrap()
+            .client_id;
+
+        Executor::new(&mut store)
+            .execute(
+                &crate::quotes::CreateQuote {
+                    client_id,
+                    opportunity_id: Some(opportunity_id),
+                    lines: vec![crate::domain::QuoteLine {
+                        description: "Prestation".into(),
+                        kind: crate::domain::LineKind::Forfait {
+                            amount: Money::from_cents(100_000),
+                        },
+                        vat_rate: crate::domain::VatRate::Standard,
+                    }],
+                    discount: None,
+                    terms: None,
+                    valid_until: date(2026, Month::December, 31),
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+
+        let listed = crate::clients::list_clients_with(
+            store.connection(),
+            crate::clients::ClientFilter::ActiveOnly,
+        )
+        .unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].name, "Lumen Conseil");
+    }
+
+    #[test]
+    fn an_empty_prospect_name_is_refused() {
+        let mut store = empty_store("empty-name");
+        let err = Executor::new(&mut store)
+            .execute(&new_prospect("   "), &human_ctx())
+            .unwrap_err();
+        assert!(matches!(err, AppError::Domain(msg) if msg.contains("nom du prospect")));
+    }
+
+    #[test]
+    fn updating_a_prospect_party_is_allowed_until_a_quote_exists() {
+        let mut store = empty_store("update-prospect");
+        let Outcome::Applied(opportunity_id) = Executor::new(&mut store)
+            .execute(&new_prospect("Lumen Conseil"), &human_ctx())
+            .unwrap()
+        else {
+            panic!("expected Applied")
+        };
+        let opportunity = row::opportunity_by_id(store.connection(), opportunity_id)
+            .unwrap()
+            .unwrap();
+
+        let Outcome::Applied(_) = Executor::new(&mut store)
+            .execute(
+                &UpdateProspect {
+                    id: opportunity_id,
+                    revision: opportunity.revision,
+                    client_revision: 1,
+                    name: "Refonte v2".into(),
+                    amount: opportunity.amount,
+                    probability: opportunity.probability,
+                    next_action_at: opportunity.next_action_at,
+                    source: opportunity.source.clone(),
+                    prospect_name: "Lumen Conseil SASU".into(),
+                    address: None,
+                    representative: Some("Camille".into()),
+                    email: Some("camille@lumen.example".into()),
+                    phone: None,
+                },
+                &human_ctx(),
+            )
+            .unwrap()
+        else {
+            panic!("expected Applied")
+        };
+
+        let party = crate::clients::client_by_id(store.connection(), opportunity.client_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(party.name, "Lumen Conseil SASU");
+        let contacts = crate::clients::list_contacts(store.connection(), party.id).unwrap();
+        assert_eq!(contacts[0].name, "Camille");
+
+        Executor::new(&mut store)
+            .execute(
+                &crate::quotes::CreateQuote {
+                    client_id: opportunity.client_id,
+                    opportunity_id: Some(opportunity_id),
+                    lines: vec![crate::domain::QuoteLine {
+                        description: "Prestation".into(),
+                        kind: crate::domain::LineKind::Forfait {
+                            amount: Money::from_cents(100_000),
+                        },
+                        vat_rate: crate::domain::VatRate::Standard,
+                    }],
+                    discount: None,
+                    terms: None,
+                    valid_until: date(2026, Month::December, 31),
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+
+        let err = Executor::new(&mut store)
+            .execute(
+                &UpdateProspect {
+                    id: opportunity_id,
+                    revision: 2,
+                    client_revision: 2,
+                    name: "Refonte v3".into(),
+                    amount: opportunity.amount,
+                    probability: opportunity.probability,
+                    next_action_at: opportunity.next_action_at,
+                    source: None,
+                    prospect_name: "Ne doit pas changer".into(),
+                    address: None,
+                    representative: None,
+                    email: None,
+                    phone: None,
+                },
+                &human_ctx(),
+            )
+            .unwrap_err();
+        assert!(matches!(err, AppError::Domain(msg) if msg.contains("déjà un client")));
     }
 }

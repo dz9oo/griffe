@@ -25,9 +25,64 @@ fn client_name(store: &Store, client_id: freeflow_core::domain::ClientId) -> Str
         .map_or_else(|| "?".to_string(), |c| c.name)
 }
 
+fn first_contact(
+    store: &Store,
+    client_id: freeflow_core::domain::ClientId,
+) -> Option<freeflow_core::domain::Contact> {
+    freeflow_core::clients::list_contacts(store.connection(), client_id)
+        .ok()
+        .and_then(|contacts| contacts.into_iter().next())
+}
+
+fn party_address(
+    store: &Store,
+    client_id: freeflow_core::domain::ClientId,
+) -> Option<freeflow_core::domain::Address> {
+    list_clients(store.connection())
+        .ok()
+        .and_then(|clients| clients.into_iter().find(|c| c.id == client_id))
+        .and_then(|c| c.address)
+}
+
+/// Pré-remplit les champs prospect d'un formulaire d'édition.
+pub fn party_form_values(
+    store: &Store,
+    client_id: freeflow_core::domain::ClientId,
+) -> OpportunityFormValues {
+    let party = list_clients(store.connection())
+        .ok()
+        .and_then(|clients| clients.into_iter().find(|c| c.id == client_id));
+    let contact = first_contact(store, client_id);
+    let mut values = OpportunityFormValues::default();
+    if let Some(party) = party {
+        values.prospect = party.name;
+        values.client_revision = party.revision.to_string();
+        if let Some(address) = party.address {
+            values.street = address.street;
+            values.postal_code = address.postal_code;
+            values.city = address.city;
+            values.country = address.country;
+        }
+    }
+    if let Some(contact) = contact {
+        values.representative = contact.name;
+        values.email = contact.email.unwrap_or_default();
+        values.phone = contact.phone.unwrap_or_default();
+    }
+    values
+}
+
 #[derive(Default, Clone)]
 pub struct OpportunityFormValues {
-    pub client: String,
+    pub prospect: String,
+    pub representative: String,
+    pub email: String,
+    pub phone: String,
+    pub street: String,
+    pub postal_code: String,
+    pub city: String,
+    pub country: String,
+    pub client_revision: String,
     pub name: String,
     pub amount: String,
     pub probability: String,
@@ -37,7 +92,8 @@ pub struct OpportunityFormValues {
 
 #[derive(Default)]
 pub struct OpportunityFormErrors {
-    pub client: Option<String>,
+    pub prospect: Option<String>,
+    pub address: Option<String>,
     pub name: Option<String>,
     pub amount: Option<String>,
     pub probability: Option<String>,
@@ -45,13 +101,13 @@ pub struct OpportunityFormErrors {
     pub conflict: Option<(String, String)>,
 }
 
-/// Le formulaire principal ne porte que l'état *descriptif* — jamais l'étape (`advance`/`win`/
-/// `lose` ont leurs propres panneaux) ni le client (fixé à la création, voir
-/// `crate::prospection::update`).
+/// Le formulaire principal porte l'état *descriptif* de l'opportunité, et — à la création ou
+/// tant que la fiche est encore un prospect — les coordonnées de la partie. L'étape
+/// (`advance`/`win`/`lose`) a ses propres panneaux.
 fn opportunity_form(
     action: &str,
     revision: Option<i64>,
-    show_client: bool,
+    show_prospect: bool,
     values: &OpportunityFormValues,
     errors: &OpportunityFormErrors,
 ) -> Markup {
@@ -66,10 +122,26 @@ fn opportunity_form(
                 @if let Some(revision) = revision {
                     (form::hidden("revision", &revision.to_string()))
                 }
-                @if show_client {
-                    (form::text("client", "Client (nom ou référence)", &values.client, errors.client.as_deref()))
+                @if show_prospect {
+                    @if !values.client_revision.is_empty() {
+                        (form::hidden("client_revision", &values.client_revision))
+                    }
+                    (form::text("prospect", "Nom du prospect", &values.prospect, errors.prospect.as_deref()))
+                    (form::text("representative", "Représentant (optionnel)", &values.representative, None))
+                    (form::text("email", "Email (optionnel)", &values.email, None))
+                    (form::text("phone", "Téléphone (optionnel)", &values.phone, None))
+                    div class="field-group" {
+                        @if let Some(msg) = &errors.address {
+                            div class="field-error" { (msg) }
+                        }
+                        (form::text("street", "Adresse — rue", &values.street, None))
+                        (form::text("postal_code", "Code postal", &values.postal_code, None))
+                        (form::text("city", "Ville", &values.city, None))
+                        (form::text("country", "Pays (ISO, ex. FR)", &values.country, None))
+                    }
+                    (form::field_help("Le prospect n'apparaît dans Clients qu'au premier devis ou à la première facture."))
                 }
-                (form::text("name", "Nom de l'opportunité", &values.name, errors.name.as_deref()))
+                (form::text("name", "Nom de l'opportunité (optionnel)", &values.name, errors.name.as_deref()))
                 (form::text("amount", "Montant estimé (€)", &values.amount, errors.amount.as_deref()))
                 (form::number("probability", "Probabilité de gain (%)", &values.probability, "1", errors.probability.as_deref()))
                 (form::date("next_action", "Prochaine action", &values.next_action, None))
@@ -82,7 +154,7 @@ fn opportunity_form(
 
 pub fn new_panel(values: &OpportunityFormValues, errors: &OpportunityFormErrors) -> Markup {
     panel::sheet(
-        "Nouvelle opportunité",
+        "Nouveau prospect",
         opportunity_form("/prospection", None, true, values, errors),
     )
 }
@@ -90,6 +162,7 @@ pub fn new_panel(values: &OpportunityFormValues, errors: &OpportunityFormErrors)
 pub fn edit_panel(
     id: OpportunityId,
     revision: i64,
+    show_prospect: bool,
     values: &OpportunityFormValues,
     errors: &OpportunityFormErrors,
 ) -> Markup {
@@ -98,7 +171,7 @@ pub fn edit_panel(
         opportunity_form(
             &format!("/prospection/{id}"),
             Some(revision),
-            false,
+            show_prospect,
             values,
             errors,
         ),
@@ -143,7 +216,23 @@ pub fn detail_panel(
             (status_badge(opportunity))
         }
         dl class="detail-fields" {
-            dt { "client" } dd { (client_name(store, opportunity.client_id)) }
+            dt { "prospect" } dd { (client_name(store, opportunity.client_id)) }
+            @if let Some(contact) = first_contact(store, opportunity.client_id) {
+                @if !contact.name.is_empty() {
+                    dt { "représentant" } dd { (contact.name) }
+                }
+                @if let Some(email) = &contact.email {
+                    dt { "email" } dd { (email) }
+                }
+                @if let Some(phone) = &contact.phone {
+                    dt { "téléphone" } dd { (phone) }
+                }
+            }
+            @if let Some(address) = party_address(store, opportunity.client_id) {
+                dt { "adresse" } dd {
+                    (address.street) ", " (address.postal_code) " " (address.city) ", " (address.country)
+                }
+            }
             dt { "montant" } dd class="mono" { (opportunity.amount) }
             dt { "probabilité" } dd { (opportunity.probability.percent()) "%" }
             dt { "pondéré" } dd class="mono" { (weighted) }
@@ -380,7 +469,7 @@ pub fn list_fragment(store: &Store, filter: OpportunityFilter) -> Result<Markup,
             hx-target="this"
             hx-swap="outerHTML" {
             div class="pipe-toolbar" {
-                button class="btn primary" hx-get="/prospection/new" hx-target="#panel" hx-swap="innerHTML" { "+ nouvelle opportunité" }
+                button class="btn primary" hx-get="/prospection/new" hx-target="#panel" hx-swap="innerHTML" { "+ nouveau prospect" }
                 a class="filter-chip" href="#" hx-get=(toggle_url(!filter.include_closed, filter.include_archived)) hx-target="#prospection-list" hx-swap="outerHTML" {
                     (if filter.include_closed { "masquer les closes" } else { "voir les closes" })
                 }
@@ -389,12 +478,12 @@ pub fn list_fragment(store: &Store, filter: OpportunityFilter) -> Result<Markup,
                 }
             }
             @if opportunities.is_empty() {
-                div class="empty-state" { "aucune opportunité — cliquez sur « nouvelle opportunité »" }
+                div class="empty-state" { "aucun prospect — cliquez sur « nouveau prospect »" }
             } @else {
                 div class="panel bordered" style="padding:0" {
                     table {
                         tr {
-                            th style="padding-left:18px" { "client" }
+                            th style="padding-left:18px" { "prospect" }
                             th { "étape" }
                             th { "montant" }
                             th { "proba" }

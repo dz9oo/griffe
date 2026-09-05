@@ -11,6 +11,14 @@
 //! Limites assumées, dites dans le fichier lui-même par les libellés — voir le commentaire de
 //! module de `crate::ledger`. Le FEC produit est un **export pour l'expert-comptable**, qui reste
 //! maître des écritures définitives.
+//!
+//! [`check_fec`] relit un fichier (le nôtre ou un export cabinet) et dit s'il respecte la
+//! structure de l'article : ce n'est **pas** une attestation de l'administration, et ça ne
+//! dit rien de la régularité de la comptabilité.
+
+mod check;
+
+pub use check::{FecCheck, FecFinding, FecSeverity, check_fec, check_fec_of};
 
 use rusqlite::Connection;
 use time::Date;
@@ -198,6 +206,13 @@ impl Fec {
             }
         }
         out
+    }
+
+    /// Relit ce FEC tel qu'il serait écrit sur disque — le round-trip que les tests et
+    /// `freeflow fec check --period` empruntent.
+    #[must_use]
+    pub fn check(&self) -> FecCheck {
+        check_fec(self.render().as_bytes(), Some(&self.file_name()))
     }
 }
 
@@ -509,6 +524,9 @@ mod tests {
             body.iter().all(|l| l.split('|').count() == 18),
             "{rendered}"
         );
+        let check = fec.check();
+        assert!(check.is_conformant(), "{:?}", check.findings);
+        assert_eq!(check.warning_count, 0, "{:?}", check.findings);
         assert_eq!(
             body[0],
             "VE|Ventes|1|20260310|411000|Clients|C01900000|Acme   Cie|FA-2026-0001|20260310|Facture FA-2026-0001 — Acme   Cie|2400,00|0,00|||20260310||",
@@ -737,6 +755,12 @@ mod tests {
             for record in rendered.lines() {
                 prop_assert_eq!(record.split('|').count(), 18);
             }
+            let check = fec.check();
+            prop_assert!(
+                check.is_conformant(),
+                "{:?}",
+                check.findings
+            );
             // Numérotation continue par journal, dans l'ordre du fichier.
             for journal in [Journal::Sales, Journal::Purchases, Journal::Bank] {
                 let numbers: Vec<u32> = fec

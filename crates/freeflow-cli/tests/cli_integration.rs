@@ -833,6 +833,66 @@ fn editing_twice_in_a_row_reads_the_fresh_revision_each_time() {
 }
 
 #[test]
+fn prospect_create_without_an_existing_client_stays_off_the_client_list() {
+    let db = temp_db("prospect-without-client");
+    provision(&db);
+
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "prospect",
+            "create",
+            "--prospect",
+            "Lumen Conseil",
+            "--representative",
+            "Camille Martin",
+            "--email",
+            "camille@lumen.example",
+            "--name",
+            "Refonte",
+            "--amount",
+            "78000",
+            "--probability",
+            "40",
+            "--next-action",
+            "2026-09-02",
+        ])
+        .assert()
+        .success();
+
+    let listed = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--json", "client", "list"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let clients = json_result(&listed);
+    assert!(
+        clients.as_array().is_some_and(|arr| arr.is_empty()),
+        "un prospect sans devis ni facture n'apparaît pas dans client list : {clients}"
+    );
+
+    let prospects = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--json", "prospect", "list"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let listed_prospects = json_result(&prospects);
+    let names: Vec<&str> = listed_prospects
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec!["Refonte"]);
+}
+
+#[test]
 fn rm_refuses_a_client_still_referenced_by_an_open_opportunity() {
     let db = temp_db("client-rm-referenced");
     provision(&db);
@@ -1221,6 +1281,54 @@ fn fec_export_writes_the_regulatory_file_for_the_exercise() {
     assert_eq!(shown["summary"]["total_debit_cents"], 280_500);
     assert_eq!(shown["summary"]["total_credit_cents"], 280_500);
     assert!(file.exists());
+
+    // Le FEC qu'on vient d'écrire passe le contrôle de structure, coffre ouvert (--period)
+    // comme fichier sur disque (sans coffre).
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["fec", "check", "--period", "2026"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("structure conforme"))
+        .stdout(predicate::str::contains("régularité"));
+    let regulatory = dir.join("552100554FEC20261231.txt");
+    let checked = freeflow()
+        .args(["--json", "fec", "check"])
+        .arg(&regulatory)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let report = serde_json::from_slice::<serde_json::Value>(&checked).unwrap();
+    assert_eq!(report["conformant"], true, "{report}");
+    assert_eq!(report["error_count"], 0, "{report}");
+}
+
+#[test]
+fn fec_check_reads_a_file_without_a_vault() {
+    let db = temp_db("fec-check-novault");
+    std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+    let header = "JournalCode|JournalLib|EcritureNum|EcritureDate|CompteNum|CompteLib|CompAuxNum|CompAuxLib|PieceRef|PieceDate|EcritureLib|Debit|Credit|EcritureLet|DateLet|ValidDate|Montantdevise|Idevise";
+    let hostile = db.with_file_name("export.txt");
+    std::fs::write(
+        &hostile,
+        format!("{header}\nVE|Ventes|1|20260310|411000|Clients|||FA-1|20260310|Facture|100.00|0,00|||20260310||\n"),
+    )
+    .unwrap();
+    freeflow()
+        .args(["fec", "check"])
+        .arg(&hostile)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("non conforme"))
+        .stdout(predicate::str::contains("point"));
+}
+
+#[test]
+fn fec_help_is_a_stable_interface_contract() {
+    let output = freeflow().args(["fec", "--help"]).output().unwrap();
+    insta::assert_snapshot!(String::from_utf8(output.stdout).unwrap());
 }
 
 #[test]

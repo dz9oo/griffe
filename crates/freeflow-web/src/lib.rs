@@ -288,6 +288,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/cloture/{id}/doc/{kind}", get(cloture::document))
         .route("/cloture/fec", get(cloture::fec))
+        .route("/cloture/fec/check", get(cloture::fec_check_panel))
         .route("/cloture/checklist", get(cloture::checklist_panel))
         .route("/cloture/balance", get(cloture::balance_panel))
         .route("/cloture/balance.pdf", get(cloture::balance_pdf))

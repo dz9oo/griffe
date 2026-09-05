@@ -4,7 +4,9 @@
 
 use clap::Subcommand;
 use freeflow_core::app::{ExecutionContext, Executor};
-use freeflow_core::domain::{InteractionId, InteractionKind, OpportunityStage, Probability};
+use freeflow_core::domain::{
+    Address, InteractionId, InteractionKind, OpportunityStage, Probability,
+};
 use freeflow_core::prospection::{
     self, OpportunityFilter, late_actions, list_opportunities_with, opportunity_by_id,
     opportunity_references, pipeline_by_stage, weighted_pipeline, without_next_action,
@@ -71,9 +73,36 @@ use crate::refs;
 #[derive(Debug, Subcommand)]
 pub enum ProspectCommand {
     /// Crée une nouvelle opportunité, en étape Qualification.
+    ///
+    /// `--client` rattache à une fiche déjà enregistrée. `--prospect` crée la fiche (ou s'y
+    /// rattache par nom exact) : elle n'apparaît dans Clients qu'au premier devis ou à la
+    /// première facture.
     Create {
-        #[arg(long, value_name = "RÉFÉRENCE")]
-        client: String,
+        /// Fiche déjà enregistrée (UUID, préfixe ou nom).
+        #[arg(
+            long,
+            value_name = "RÉFÉRENCE",
+            required_unless_present = "prospect",
+            conflicts_with = "prospect"
+        )]
+        client: Option<String>,
+        /// Nom du prospect — crée la fiche s'il n'existe pas encore.
+        #[arg(long, value_name = "NOM", required_unless_present = "client")]
+        prospect: Option<String>,
+        #[arg(long, requires = "prospect")]
+        representative: Option<String>,
+        #[arg(long, requires = "prospect")]
+        email: Option<String>,
+        #[arg(long, requires = "prospect")]
+        phone: Option<String>,
+        #[arg(long, requires_all = ["prospect", "postal_code", "city", "country"])]
+        street: Option<String>,
+        #[arg(long, requires = "prospect")]
+        postal_code: Option<String>,
+        #[arg(long, requires = "prospect")]
+        city: Option<String>,
+        #[arg(long, requires = "prospect")]
+        country: Option<String>,
         #[arg(long)]
         name: String,
         #[arg(long, value_parser = parse_money)]
@@ -116,6 +145,23 @@ pub enum ProspectCommand {
         /// Efface la source, sans en fournir une nouvelle.
         #[arg(long)]
         clear_source: bool,
+        /// Renomme la fiche prospect (refusé dès qu'un devis ou une facture existe).
+        #[arg(long)]
+        prospect_name: Option<String>,
+        #[arg(long)]
+        representative: Option<String>,
+        #[arg(long)]
+        email: Option<String>,
+        #[arg(long)]
+        phone: Option<String>,
+        #[arg(long, requires_all = ["postal_code", "city", "country"])]
+        street: Option<String>,
+        #[arg(long)]
+        postal_code: Option<String>,
+        #[arg(long)]
+        city: Option<String>,
+        #[arg(long)]
+        country: Option<String>,
     },
     /// Fait avancer une opportunité vers une autre étape ouverte.
     Advance {
@@ -255,6 +301,23 @@ fn opportunity_table(opportunities: &[freeflow_core::domain::Opportunity]) -> St
     )
 }
 
+fn address_from_parts(
+    street: Option<String>,
+    postal_code: Option<String>,
+    city: Option<String>,
+    country: Option<String>,
+) -> Option<Address> {
+    match (street, postal_code, city, country) {
+        (Some(street), Some(postal_code), Some(city), Some(country)) => Some(Address {
+            street,
+            postal_code,
+            city,
+            country,
+        }),
+        _ => None,
+    }
+}
+
 fn interaction_table(interactions: &[freeflow_core::domain::Interaction]) -> String {
     let rows = interactions
         .iter()
@@ -279,22 +342,49 @@ pub fn run(
     let output = match cmd {
         ProspectCommand::Create {
             client,
+            prospect,
+            representative,
+            email,
+            phone,
+            street,
+            postal_code,
+            city,
+            country,
             name,
             amount,
             probability,
             next_action,
             source,
         } => {
-            let client_id = refs::resolve_client(store, &client)?;
-            let command = prospection::CreateOpportunity {
-                client_id,
-                name,
-                amount,
-                probability,
-                next_action_at: next_action,
-                source,
+            let outcome = if let Some(prospect_name) = prospect {
+                let command = prospection::CreateProspect {
+                    prospect_name,
+                    address: address_from_parts(street, postal_code, city, country),
+                    representative,
+                    email,
+                    phone,
+                    name,
+                    amount,
+                    probability,
+                    next_action_at: next_action,
+                    source,
+                };
+                Executor::new(store).execute(&command, ctx)?
+            } else {
+                let client = client.ok_or_else(|| {
+                    CliError::Domain("fournir --client ou --prospect".to_string())
+                })?;
+                let client_id = refs::resolve_client(store, &client)?;
+                let command = prospection::CreateOpportunity {
+                    client_id,
+                    name,
+                    amount,
+                    probability,
+                    next_action_at: next_action,
+                    source,
+                };
+                Executor::new(store).execute(&command, ctx)?
             };
-            let outcome = Executor::new(store).execute(&command, ctx)?;
             format_outcome(&outcome, json)
         }
         ProspectCommand::Show { reference } => {
@@ -323,6 +413,14 @@ pub fn run(
             next_action,
             source,
             clear_source,
+            prospect_name,
+            representative,
+            email,
+            phone,
+            street,
+            postal_code,
+            city,
+            country,
         } => {
             let id = refs::resolve_opportunity(store, &reference)?;
             let current = opportunity_by_id(store.connection(), id)?
@@ -332,16 +430,46 @@ pub fn run(
             } else {
                 source.or(current.source)
             };
-            let command = prospection::UpdateOpportunity {
-                id,
-                revision: current.revision,
-                name: name.unwrap_or(current.name),
-                amount: amount.unwrap_or(current.amount),
-                probability: probability.unwrap_or(current.probability),
-                next_action_at: next_action.or(current.next_action_at),
-                source,
+            let party_touched = prospect_name.is_some()
+                || representative.is_some()
+                || email.is_some()
+                || phone.is_some()
+                || street.is_some();
+            let outcome = if party_touched {
+                let party =
+                    freeflow_core::clients::client_by_id(store.connection(), current.client_id)?
+                        .ok_or_else(|| {
+                            CliError::Domain(format!("fiche introuvable : {}", current.client_id))
+                        })?;
+                let command = prospection::UpdateProspect {
+                    id,
+                    revision: current.revision,
+                    client_revision: party.revision,
+                    name: name.unwrap_or(current.name),
+                    amount: amount.unwrap_or(current.amount),
+                    probability: probability.unwrap_or(current.probability),
+                    next_action_at: next_action.or(current.next_action_at),
+                    source,
+                    prospect_name: prospect_name.unwrap_or(party.name),
+                    address: address_from_parts(street, postal_code, city, country)
+                        .or(party.address),
+                    representative,
+                    email,
+                    phone,
+                };
+                Executor::new(store).execute(&command, ctx)?
+            } else {
+                let command = prospection::UpdateOpportunity {
+                    id,
+                    revision: current.revision,
+                    name: name.unwrap_or(current.name),
+                    amount: amount.unwrap_or(current.amount),
+                    probability: probability.unwrap_or(current.probability),
+                    next_action_at: next_action.or(current.next_action_at),
+                    source,
+                };
+                Executor::new(store).execute(&command, ctx)?
             };
-            let outcome = Executor::new(store).execute(&command, ctx)?;
             format_outcome(&outcome, json)
         }
         ProspectCommand::Advance {

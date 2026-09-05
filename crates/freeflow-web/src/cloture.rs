@@ -545,6 +545,23 @@ pub async fn fec(State(state): State<AppState>, Query(query): Query<FecQuery>) -
     }
 }
 
+/// `GET /cloture/fec/check?period=AAAA` : contrôle de structure du FEC généré, dans le panneau.
+pub async fn fec_check_panel(
+    State(state): State<AppState>,
+    Query(query): Query<FecQuery>,
+) -> Html<String> {
+    let built = state
+        .with_store(|store| freeflow_core::fec::check_fec_of(store.connection(), query.period))
+        .await;
+    match built {
+        None => locked_fragment(),
+        Some(Err(e)) => message_fragment(&e.to_string()),
+        Some(Ok(check)) => {
+            Html(views::cloture::fec_check_panel(query.period, &check).into_string())
+        }
+    }
+}
+
 /// `GET /cloture/checklist?period=AAAA` : le parcours de clôture guidé de l'exercice
 /// (`freeflow_core::closing`), dans le panneau — les étapes viennent du cœur, les boutons qui y
 /// répondent sont propres à cette façade (`views::cloture::checklist_panel`).

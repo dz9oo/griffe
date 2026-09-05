@@ -27,8 +27,22 @@ use crate::support::{
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct CreateOpportunityArgs {
-    /// Référence du client : UUID, préfixe d'UUID, ou nom.
-    client: String,
+    /// Référence d'une fiche déjà enregistrée : UUID, préfixe d'UUID, ou nom. Incompatible
+    /// avec `prospect`.
+    #[serde(default)]
+    client: Option<String>,
+    /// Nom du prospect : crée la fiche s'il n'existe pas (elle n'apparaît dans Clients qu'au
+    /// premier devis ou à la première facture). Incompatible avec `client`.
+    #[serde(default)]
+    prospect: Option<String>,
+    representative: Option<String>,
+    email: Option<String>,
+    phone: Option<String>,
+    street: Option<String>,
+    postal_code: Option<String>,
+    city: Option<String>,
+    /// Code pays ISO 3166-1 alpha-2, ex. `FR`.
+    country: Option<String>,
     name: String,
     /// Montant estimé, en centimes d'euro.
     amount_cents: i64,
@@ -73,6 +87,14 @@ pub(crate) struct UpdateOpportunityArgs {
     probability_percent: Option<u8>,
     next_action: Option<String>,
     source: Option<String>,
+    prospect_name: Option<String>,
+    representative: Option<String>,
+    email: Option<String>,
+    phone: Option<String>,
+    street: Option<String>,
+    postal_code: Option<String>,
+    city: Option<String>,
+    country: Option<String>,
     #[serde(default)]
     dry_run: bool,
 }
@@ -153,7 +175,9 @@ fn opportunity_or_not_found(
 
 #[tool_router(router = prospection_router, vis = "pub(crate)")]
 impl FreeflowServer {
-    /// Crée une nouvelle opportunité, en étape Qualification.
+    /// Crée une nouvelle opportunité, en étape Qualification. Passez `client` pour rattacher
+    /// une fiche existante, ou `prospect` pour créer un prospect (invisible dans Clients tant
+    /// qu'il n'a ni devis ni facture).
     #[tool(
         name = "prospect.create",
         annotations(
@@ -167,10 +191,6 @@ impl FreeflowServer {
         Parameters(args): Parameters<CreateOpportunityArgs>,
     ) -> CallToolResult {
         let mut store = self.store.lock().await;
-        let client_id: ClientId = ok_or_return!(
-            "client",
-            crate::support::resolve_client(&store, &args.client)
-        );
         let probability = ok_or_return!(
             "probability_percent",
             Probability::new(args.probability_percent)
@@ -179,16 +199,56 @@ impl FreeflowServer {
             "next_action",
             freeflow_core::domain::parse_date(&args.next_action)
         );
-        let cmd = prospection::CreateOpportunity {
-            client_id,
-            name: args.name,
-            amount: freeflow_core::domain::Money::from_cents(args.amount_cents),
-            probability,
-            next_action_at,
-            source: args.source,
+        if args.client.is_some() && args.prospect.is_some() {
+            return err_text("fournir `client` ou `prospect`, pas les deux");
+        }
+        let address = match (args.street, args.postal_code, args.city, args.country) {
+            (None, None, None, None) => None,
+            (Some(street), Some(postal_code), Some(city), Some(country)) => {
+                Some(freeflow_core::domain::Address {
+                    street,
+                    postal_code,
+                    city,
+                    country,
+                })
+            }
+            _ => {
+                return err_text(
+                    "les 4 champs d'adresse (street, postal_code, city, country) vont ensemble",
+                );
+            }
         };
-        match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
-            Ok(outcome) => ok_json(outcome_json(&outcome)),
+        let outcome = if let Some(prospect_name) = args.prospect {
+            let cmd = prospection::CreateProspect {
+                prospect_name,
+                address,
+                representative: args.representative,
+                email: args.email,
+                phone: args.phone,
+                name: args.name,
+                amount: freeflow_core::domain::Money::from_cents(args.amount_cents),
+                probability,
+                next_action_at,
+                source: args.source,
+            };
+            Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run))
+        } else if let Some(client) = args.client {
+            let client_id: ClientId =
+                ok_or_return!("client", crate::support::resolve_client(&store, &client));
+            let cmd = prospection::CreateOpportunity {
+                client_id,
+                name: args.name,
+                amount: freeflow_core::domain::Money::from_cents(args.amount_cents),
+                probability,
+                next_action_at,
+                source: args.source,
+            };
+            Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run))
+        } else {
+            return err_text("fournir `client` ou `prospect`");
+        };
+        match outcome {
+            Ok(o) => ok_json(outcome_json(&o)),
             Err(e) => err_text(e.to_string()),
         }
     }
@@ -287,19 +347,71 @@ impl FreeflowServer {
             Some(p) => ok_or_return!("probability_percent", Probability::new(p)),
             None => current.probability,
         };
-        let cmd = prospection::UpdateOpportunity {
-            id,
-            revision: current.revision,
-            name: args.name.unwrap_or(current.name),
-            amount: args
-                .amount_cents
-                .map_or(current.amount, freeflow_core::domain::Money::from_cents),
-            probability,
-            next_action_at,
-            source: args.source.or(current.source),
+        let name = args.name.unwrap_or(current.name);
+        let amount = args
+            .amount_cents
+            .map_or(current.amount, freeflow_core::domain::Money::from_cents);
+        let source = args.source.or(current.source);
+        let party_touched = args.prospect_name.is_some()
+            || args.representative.is_some()
+            || args.email.is_some()
+            || args.phone.is_some()
+            || args.street.is_some();
+        let outcome = if party_touched {
+            let party =
+                match freeflow_core::clients::client_by_id(store.connection(), current.client_id) {
+                    Ok(Some(p)) => p,
+                    Ok(None) => {
+                        return err_text(format!("fiche introuvable : {}", current.client_id));
+                    }
+                    Err(e) => return err_text(e.to_string()),
+                };
+            let address = match (args.street, args.postal_code, args.city, args.country) {
+                (None, None, None, None) => party.address,
+                (Some(street), Some(postal_code), Some(city), Some(country)) => {
+                    Some(freeflow_core::domain::Address {
+                        street,
+                        postal_code,
+                        city,
+                        country,
+                    })
+                }
+                _ => {
+                    return err_text(
+                        "les 4 champs d'adresse (street, postal_code, city, country) vont ensemble",
+                    );
+                }
+            };
+            let cmd = prospection::UpdateProspect {
+                id,
+                revision: current.revision,
+                client_revision: party.revision,
+                name,
+                amount,
+                probability,
+                next_action_at,
+                source,
+                prospect_name: args.prospect_name.unwrap_or(party.name),
+                address,
+                representative: args.representative,
+                email: args.email,
+                phone: args.phone,
+            };
+            Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run))
+        } else {
+            let cmd = prospection::UpdateOpportunity {
+                id,
+                revision: current.revision,
+                name,
+                amount,
+                probability,
+                next_action_at,
+                source,
+            };
+            Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run))
         };
-        match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
-            Ok(outcome) => ok_json(outcome_json(&outcome)),
+        match outcome {
+            Ok(o) => ok_json(outcome_json(&o)),
             Err(e) => err_text(e.to_string()),
         }
     }

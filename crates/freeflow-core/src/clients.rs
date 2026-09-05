@@ -285,9 +285,17 @@ fn require_contact_revision(
 }
 
 fn insert_client(conn: &Connection, client: &Client) -> Result<(), AppError> {
+    insert_client_as(conn, client, false)
+}
+
+pub(crate) fn insert_client_as(
+    conn: &Connection,
+    client: &Client,
+    is_prospect: bool,
+) -> Result<(), AppError> {
     conn.execute(
-        "INSERT INTO clients (id, name, siren, vat_number, address_street, address_postal_code, address_city, address_country, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO clients (id, name, siren, vat_number, address_street, address_postal_code, address_city, address_country, created_at, is_prospect)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             client.id.to_string(),
             client.name,
@@ -298,6 +306,7 @@ fn insert_client(conn: &Connection, client: &Client) -> Result<(), AppError> {
             client.address.as_ref().map(|a| a.city.clone()),
             client.address.as_ref().map(|a| a.country.clone()),
             client.created_at.format(&Rfc3339)?,
+            i64::from(is_prospect),
         ],
     )?;
     Ok(())
@@ -369,11 +378,17 @@ pub fn list_clients(conn: &Connection) -> Result<Vec<Client>, AppError> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClientFilter {
-    /// Exclut les clients archivés — le défaut pour un écran de navigation.
+    /// Exclut les clients archivés — le défaut pour un écran de navigation. Un prospect
+    /// (`is_prospect`) sans devis ni facture en est aussi exclu : il n'est pas encore un client.
     ActiveOnly,
-    /// Inclut aussi les clients archivés.
+    /// Inclut aussi les clients archivés. Les prospects sans pièce commerciale restent exclus.
     All,
 }
+
+/// Condition SQL : fiche créée comme client, ou déjà porteuse d'un devis / d'une facture.
+const LISTED_CLIENT_PREDICATE: &str = "(is_prospect = 0
+            OR EXISTS (SELECT 1 FROM quotes WHERE quotes.client_id = clients.id)
+            OR EXISTS (SELECT 1 FROM invoices WHERE invoices.client_id = clients.id))";
 
 /// Liste filtrée pour un écran de navigation (CLI `client list`, écran `clients` de la GUI) —
 /// à la différence de [`list_clients`], qui reste inclusive pour la résolution de références.
@@ -381,14 +396,38 @@ pub enum ClientFilter {
 /// # Errors
 pub fn list_clients_with(conn: &Connection, filter: ClientFilter) -> Result<Vec<Client>, AppError> {
     let sql = match filter {
-        ClientFilter::ActiveOnly => {
-            "SELECT * FROM clients WHERE archived_at IS NULL ORDER BY name ASC"
+        ClientFilter::ActiveOnly => format!(
+            "SELECT * FROM clients WHERE archived_at IS NULL AND {LISTED_CLIENT_PREDICATE} ORDER BY name ASC"
+        ),
+        ClientFilter::All => {
+            format!("SELECT * FROM clients WHERE {LISTED_CLIENT_PREDICATE} ORDER BY name ASC")
         }
-        ClientFilter::All => "SELECT * FROM clients ORDER BY name ASC",
     };
-    let mut stmt = conn.prepare(sql)?;
+    let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map([], row_to_client)?;
     rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+}
+
+/// Vrai tant que la fiche est un prospect sans devis ni facture — on peut encore modifier
+/// nom, adresse et contact depuis la prospection. Dès qu'un devis ou une facture existe,
+/// ou si la fiche a été créée via [`CreateClient`], l'édition se fait depuis Clients.
+///
+/// # Errors
+pub fn prospect_party_is_editable(conn: &Connection, id: ClientId) -> Result<bool, AppError> {
+    let id_str = id.to_string();
+    let is_prospect: i64 = conn
+        .query_row(
+            "SELECT is_prospect FROM clients WHERE id = ?1",
+            [id_str.as_str()],
+            |row| row.get(0),
+        )
+        .optional()?
+        .ok_or(ClientError::NotFound(id))?;
+    if is_prospect == 0 {
+        return Ok(false);
+    }
+    let refs = client_references(conn, id)?;
+    Ok(refs.quotes == 0 && refs.invoices == 0)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -485,7 +524,7 @@ impl Command for DeleteContact {
     }
 }
 
-fn insert_contact(conn: &Connection, contact: &Contact) -> Result<(), AppError> {
+pub(crate) fn insert_contact(conn: &Connection, contact: &Contact) -> Result<(), AppError> {
     conn.execute(
         "INSERT INTO contacts (id, client_id, name, email, phone, role) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![

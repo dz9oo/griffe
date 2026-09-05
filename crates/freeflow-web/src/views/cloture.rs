@@ -4,7 +4,8 @@
 //! lot 31, un panneau « bilan » montre la balance des comptes et le bilan 2033-A dérivés du
 //! grand livre, pour un exercice clos ou non. Depuis le lot 34, le panneau « parcours de
 //! clôture » (`checklist_panel`) déroule les étapes calculées par `freeflow_core::closing`, avec
-//! pour chacune le bouton de cette façade qui y répond.
+//! pour chacune le bouton de cette façade qui y répond. Le panneau « vérifier le FEC » relit
+//! le fichier généré : structure A. 47 A-1, pas une attestation.
 
 use freeflow_core::app::AppError;
 use freeflow_core::closing::{
@@ -13,6 +14,7 @@ use freeflow_core::closing::{
 use freeflow_core::domain::Money;
 use freeflow_core::domain::Side;
 use freeflow_core::domain::{FiscalYearEnd, format_date};
+use freeflow_core::fec::{FecCheck, FecSeverity};
 use freeflow_core::fiscal_year::{FiscalYearRecord, list_fiscal_years};
 use freeflow_core::ledger::{BalanceSheet, TrialBalance};
 use freeflow_core::opening_balance::OpeningBalanceRecord;
@@ -324,6 +326,7 @@ pub fn detail_panel(record: &FiscalYearRecord, editable: bool, error: Option<&st
                 a class="btn small" href=(format!("/cloture/{id}/doc/inventory")) target="_blank" { "inventaire (PDF)" }
                 a class="btn small" href=(format!("/cloture/balance.pdf?period={}", record.ends_on.year())) target="_blank" { "bilan et balance (PDF)" }
                 a class="btn small" href=(format!("/cloture/fec?period={}", record.ends_on.year())) target="_blank" { "FEC (txt)" }
+                button class="btn small" hx-get=(format!("/cloture/fec/check?period={}", record.ends_on.year())) hx-target="#panel" hx-swap="innerHTML" { "vérifier le FEC" }
             }
             div class="detail-actions" {
                 button class="btn small" hx-get=(format!("/cloture/balance?period={}", record.ends_on.year())) hx-target="#panel" hx-swap="innerHTML" { "voir le bilan et la balance" }
@@ -373,6 +376,11 @@ pub fn list_fragment(store: &Store, today: time::Date) -> Result<Markup, AppErro
                     label { "FEC de l'exercice clos en " }
                     input type="number" name="period" value=(period) min="2000" max="2100" style="width:6em" {}
                     button class="btn small" type="submit" { "exporter" }
+                }
+                form hx-get="/cloture/fec/check" hx-target="#panel" hx-swap="innerHTML" style="display:inline-flex;gap:6px;align-items:center" title="Contrôle de structure art. A. 47 A-1 : 18 colonnes, dates, montants — pas une attestation DGFiP" {
+                    label { "vérifier le FEC " }
+                    input type="number" name="period" value=(period) min="2000" max="2100" style="width:6em" {}
+                    button class="btn small" type="submit" { "contrôler" }
                 }
             }
             @if years.is_empty() {
@@ -638,9 +646,67 @@ pub fn balance_panel(period: i32, balance: &TrialBalance, sheet: &BalanceSheet) 
         div class="detail-actions" {
             a class="btn small" href=(format!("/cloture/balance.pdf?period={period}")) target="_blank" { "bilan et balance (PDF)" }
             a class="btn small" href=(format!("/cloture/fec?period={period}")) target="_blank" { "FEC (txt)" }
+            button class="btn small" hx-get=(format!("/cloture/fec/check?period={period}")) hx-target="#panel" hx-swap="innerHTML" { "vérifier le FEC" }
         }
     };
     panel::sheet(&format!("Bilan {}", sheet.exercise.end().year()), body)
+}
+
+/// Rapport du contrôle de structure A. 47 A-1 sur le FEC généré de l'exercice.
+pub fn fec_check_panel(period: i32, check: &FecCheck) -> Markup {
+    let name = check.file_name.as_deref().unwrap_or("FEC");
+    let debit = freeflow_core::domain::Money::from_cents(check.total_debit_cents);
+    let credit = freeflow_core::domain::Money::from_cents(check.total_credit_cents);
+    let body = html! {
+        div class="detail-head" {
+            div class="detail-title" { (name) }
+            @if check.conformant {
+                span class="badge ok" { "conforme" }
+            } @else {
+                span class="badge danger" { "non conforme" }
+            }
+        }
+        div class="detail-note" {
+            (check.disclaimer)
+            " Ce n'est pas une attestation de l'administration."
+        }
+        dl class="detail-fields" {
+            dt { "lignes" } dd { (check.lines) }
+            dt { "débit" } dd { (debit) }
+            dt { "crédit" } dd { (credit) }
+            dt { "erreurs" } dd { (check.error_count) }
+            dt { "alertes" } dd { (check.warning_count) }
+        }
+        @if check.findings.is_empty() {
+            div class="detail-note" { "Aucune anomalie de structure." }
+        } @else {
+            div class="detail-section" {
+                div class="detail-section-head" { span { "Anomalies" } }
+                div class="panel bordered" style="padding:0" {
+                    table {
+                        tr { th { "" } th { "ligne" } th { "colonne" } th { "détail" } }
+                        @for f in &check.findings {
+                            tr {
+                                td {
+                                    @match f.severity {
+                                        FecSeverity::Error => { span class="badge danger" { "erreur" } }
+                                        FecSeverity::Warning => { span class="badge warn" { "alerte" } }
+                                    }
+                                }
+                                td class="mono" { (f.line.map(|n| n.to_string()).unwrap_or_else(|| "—".into())) }
+                                td class="mono" { (f.column.as_deref().unwrap_or("—")) }
+                                td { (f.message) }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        div class="detail-actions" {
+            a class="btn small" href=(format!("/cloture/fec?period={period}")) target="_blank" { "télécharger le FEC" }
+        }
+    };
+    panel::sheet(&format!("FEC {period}"), body)
 }
 
 // -- Bilan d'ouverture (lot 30) -------------------------------------------------------------

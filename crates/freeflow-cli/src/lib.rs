@@ -252,6 +252,15 @@ fn dispatch(cli: Cli, access: VaultAccess<'_>) -> Result<String, CliError> {
         passphrase,
         command,
     } = cli;
+    // Un FEC sur disque se relit sans coffre — sinon un paquet (Nix, AUR) ne pourrait pas
+    // contrôler un fichier reçu du cabinet.
+    if let TopCommand::Fec(fec::FecCommand::Check {
+        file: Some(path),
+        period: None,
+    }) = &command
+    {
+        return fec::check_file(path, json);
+    }
     let requested_db_path = vault::resolve_db_path(db)?;
 
     match access {

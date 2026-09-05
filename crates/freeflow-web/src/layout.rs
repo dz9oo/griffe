@@ -113,9 +113,9 @@ fn palette() -> Markup {
                       hx-get="/clients/new" hx-target="#panel" hx-swap="innerHTML" {
                         "+ nouveau client"
                     }
-                    button class="palette-item" type="button" data-label="nouvelle opportunité"
+                    button class="palette-item" type="button" data-label="nouveau prospect"
                       hx-get="/prospection/new" hx-target="#panel" hx-swap="innerHTML" {
-                        "+ nouvelle opportunité"
+                        "+ nouveau prospect"
                     }
                     button class="palette-item" type="button" data-label="nouvelle mission"
                       hx-get="/missions/new" hx-target="#panel" hx-swap="innerHTML" {

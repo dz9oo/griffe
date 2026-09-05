@@ -8,7 +8,9 @@ use axum::extract::{Path, Query, State};
 use axum::http::HeaderValue;
 use axum::response::{Html, IntoResponse, Response};
 use freeflow_core::app::{AppError, Executor, Outcome};
-use freeflow_core::domain::{InteractionId, Money, OpportunityId, OpportunityStage, Probability};
+use freeflow_core::domain::{
+    Address, InteractionId, Money, OpportunityId, OpportunityStage, Probability,
+};
 use freeflow_core::prospection::{self, OpportunityFilter};
 use maud::html;
 use serde::Deserialize;
@@ -128,7 +130,24 @@ pub struct OpportunityForm {
     #[serde(default)]
     revision: Option<String>,
     #[serde(default)]
-    client: String,
+    client_revision: Option<String>,
+    #[serde(default)]
+    prospect: String,
+    #[serde(default)]
+    representative: String,
+    #[serde(default)]
+    email: String,
+    #[serde(default)]
+    phone: String,
+    #[serde(default)]
+    street: String,
+    #[serde(default)]
+    postal_code: String,
+    #[serde(default)]
+    city: String,
+    #[serde(default)]
+    country: String,
+    #[serde(default)]
     name: String,
     amount: String,
     probability: String,
@@ -144,6 +163,11 @@ fn opt(s: &str) -> Option<String> {
 }
 
 struct ParsedOpportunityForm {
+    prospect_name: String,
+    address: Option<Address>,
+    representative: Option<String>,
+    email: Option<String>,
+    phone: Option<String>,
     name: String,
     amount: Money,
     probability: Probability,
@@ -151,14 +175,40 @@ struct ParsedOpportunityForm {
     source: Option<String>,
 }
 
+fn parse_address(form: &OpportunityForm) -> Result<Option<Address>, String> {
+    let fields = [&form.street, &form.postal_code, &form.city, &form.country];
+    let filled = fields.iter().filter(|f| !f.trim().is_empty()).count();
+    match filled {
+        0 => Ok(None),
+        4 => Ok(Some(Address {
+            street: form.street.trim().to_string(),
+            postal_code: form.postal_code.trim().to_string(),
+            city: form.city.trim().to_string(),
+            country: form.country.trim().to_string(),
+        })),
+        _ => Err(
+            "les 4 champs d'adresse doivent être fournis ensemble, ou tous laissés vides"
+                .to_string(),
+        ),
+    }
+}
+
 fn parse_opportunity_form(
     form: &OpportunityForm,
+    prospect_required: bool,
 ) -> Result<ParsedOpportunityForm, Box<OpportunityFormErrors>> {
     let mut errors = OpportunityFormErrors::default();
 
-    if form.name.trim().is_empty() {
-        errors.name = Some("le nom est obligatoire".to_string());
+    if prospect_required && form.prospect.trim().is_empty() {
+        errors.prospect = Some("le nom du prospect est obligatoire".to_string());
     }
+    let address = match parse_address(form) {
+        Ok(a) => a,
+        Err(msg) => {
+            errors.address = Some(msg);
+            None
+        }
+    };
     let amount = match Money::parse_decimal(&form.amount) {
         Ok(a) => Some(a),
         Err(e) => {
@@ -183,11 +233,26 @@ fn parse_opportunity_form(
         .ok()
         .flatten();
 
-    if errors.name.is_some() || errors.amount.is_some() || errors.probability.is_some() {
+    if errors.prospect.is_some()
+        || errors.address.is_some()
+        || errors.amount.is_some()
+        || errors.probability.is_some()
+    {
         return Err(Box::new(errors));
     }
+    let prospect_name = form.prospect.trim().to_string();
+    let opportunity_name = if form.name.trim().is_empty() {
+        prospect_name.clone()
+    } else {
+        form.name.trim().to_string()
+    };
     Ok(ParsedOpportunityForm {
-        name: form.name.trim().to_string(),
+        prospect_name,
+        address,
+        representative: opt(&form.representative),
+        email: opt(&form.email),
+        phone: opt(&form.phone),
+        name: opportunity_name,
         amount: amount.expect("validé ci-dessus"),
         probability: probability.expect("validé ci-dessus"),
         next_action_at,
@@ -196,24 +261,7 @@ fn parse_opportunity_form(
 }
 
 pub async fn create(State(state): State<AppState>, Form(form): Form<OpportunityForm>) -> Response {
-    let client_id = match state
-        .with_store(|store| {
-            freeflow_core::reference::resolve_client(store.connection(), &form.client)
-        })
-        .await
-    {
-        None => return locked_fragment().into_response(),
-        Some(Ok(freeflow_core::reference::RefMatch::Unique(id))) => id,
-        Some(Ok(_)) | Some(Err(_)) => {
-            let errors = OpportunityFormErrors {
-                client: Some("client introuvable ou ambigu".to_string()),
-                ..Default::default()
-            };
-            return Html(views::prospection::new_panel(&(&form).into(), &errors).into_string())
-                .into_response();
-        }
-    };
-    let parsed = match parse_opportunity_form(&form) {
+    let parsed = match parse_opportunity_form(&form, true) {
         Ok(p) => p,
         Err(errors) => {
             return Html(views::prospection::new_panel(&(&form).into(), &errors).into_string())
@@ -228,8 +276,12 @@ pub async fn create(State(state): State<AppState>, Form(form): Form<OpportunityF
         return Html(views::prospection::new_panel(&(&form).into(), &errors).into_string())
             .into_response();
     };
-    let cmd = prospection::CreateOpportunity {
-        client_id,
+    let cmd = prospection::CreateProspect {
+        prospect_name: parsed.prospect_name,
+        address: parsed.address,
+        representative: parsed.representative,
+        email: parsed.email,
+        phone: parsed.phone,
         name: parsed.name,
         amount: parsed.amount,
         probability: parsed.probability,
@@ -250,7 +302,15 @@ pub async fn create(State(state): State<AppState>, Form(form): Form<OpportunityF
 impl From<&OpportunityForm> for OpportunityFormValues {
     fn from(f: &OpportunityForm) -> Self {
         Self {
-            client: f.client.clone(),
+            prospect: f.prospect.clone(),
+            representative: f.representative.clone(),
+            email: f.email.clone(),
+            phone: f.phone.clone(),
+            street: f.street.clone(),
+            postal_code: f.postal_code.clone(),
+            city: f.city.clone(),
+            country: f.country.clone(),
+            client_revision: f.client_revision.clone().unwrap_or_default(),
             name: f.name.clone(),
             amount: f.amount.clone(),
             probability: f.probability.clone(),
@@ -300,21 +360,31 @@ pub async fn edit_panel(State(state): State<AppState>, Path(id): Path<String>) -
         Some(Err(e)) => message_fragment(&e.to_string()),
         Some(Ok(None)) => message_fragment("opportunité introuvable"),
         Some(Ok(Some(o))) => {
-            let values = OpportunityFormValues {
-                client: String::new(),
-                name: o.name.clone(),
-                amount: o.amount.to_string(),
-                probability: o.probability.percent().to_string(),
-                next_action: o
-                    .next_action_at
-                    .map(freeflow_core::domain::format_date)
-                    .unwrap_or_default(),
-                source: o.source.clone().unwrap_or_default(),
-            };
+            let (mut values, show_prospect) = state
+                .with_store(|store| {
+                    let values = views::prospection::party_form_values(store, o.client_id);
+                    let show_prospect = freeflow_core::clients::prospect_party_is_editable(
+                        store.connection(),
+                        o.client_id,
+                    )
+                    .unwrap_or(false);
+                    (values, show_prospect)
+                })
+                .await
+                .unwrap_or_else(|| (OpportunityFormValues::default(), false));
+            values.name = o.name.clone();
+            values.amount = o.amount.to_string();
+            values.probability = o.probability.percent().to_string();
+            values.next_action = o
+                .next_action_at
+                .map(freeflow_core::domain::format_date)
+                .unwrap_or_default();
+            values.source = o.source.clone().unwrap_or_default();
             Html(
                 views::prospection::edit_panel(
                     id,
                     o.revision,
+                    show_prospect,
                     &values,
                     &OpportunityFormErrors::default(),
                 )
@@ -338,33 +408,77 @@ pub async fn update(
         .and_then(|s| s.parse().ok())
         .unwrap_or_default();
 
-    let parsed = match parse_opportunity_form(&form) {
+    let show_prospect = !form.prospect.trim().is_empty() || form.client_revision.is_some();
+    let parsed = match parse_opportunity_form(&form, show_prospect) {
         Ok(p) => p,
         Err(errors) => {
             return Html(
-                views::prospection::edit_panel(id, revision, &(&form).into(), &errors)
-                    .into_string(),
+                views::prospection::edit_panel(
+                    id,
+                    revision,
+                    show_prospect,
+                    &(&form).into(),
+                    &errors,
+                )
+                .into_string(),
             )
             .into_response();
         }
     };
-    let cmd = prospection::UpdateOpportunity {
-        id,
-        revision,
-        name: parsed.name,
-        amount: parsed.amount,
-        probability: parsed.probability,
-        next_action_at: parsed.next_action_at,
-        source: parsed.source,
+    let result = if show_prospect {
+        let client_revision = form
+            .client_revision
+            .as_deref()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_default();
+        execute(
+            &state,
+            prospection::UpdateProspect {
+                id,
+                revision,
+                client_revision,
+                name: parsed.name,
+                amount: parsed.amount,
+                probability: parsed.probability,
+                next_action_at: parsed.next_action_at,
+                source: parsed.source,
+                prospect_name: parsed.prospect_name,
+                address: parsed.address,
+                representative: parsed.representative,
+                email: parsed.email,
+                phone: parsed.phone,
+            },
+        )
+        .await
+    } else {
+        execute(
+            &state,
+            prospection::UpdateOpportunity {
+                id,
+                revision,
+                name: parsed.name,
+                amount: parsed.amount,
+                probability: parsed.probability,
+                next_action_at: parsed.next_action_at,
+                source: parsed.source,
+            },
+        )
+        .await
     };
-    match execute(&state, cmd).await {
+    match result {
         None => locked_fragment().into_response(),
         Some(Ok(_)) => saved(),
         Some(Err(e)) => {
             let errors = opportunity_error_banner(e, &format!("/prospection/{id}/edit"));
             Html(
-                views::prospection::edit_panel(id, revision, &(&form).into(), &errors)
-                    .into_string(),
+                views::prospection::edit_panel(
+                    id,
+                    revision,
+                    show_prospect,
+                    &(&form).into(),
+                    &errors,
+                )
+                .into_string(),
             )
             .into_response()
         }
