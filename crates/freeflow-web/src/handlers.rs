@@ -40,30 +40,58 @@ async fn respond(headers: HeaderMap, active: ViewId, content: Markup) -> Html<St
     }
 }
 
-/// Le tableau de bord complet (coque comprise), en dehors de tout contexte de requête HTTP —
-/// utilisé par [`crate::unlock`] pour atterrir directement dessus après un déverrouillage ou une
-/// création réussis, sans passer par une redirection `Location` : le protocole URI custom de la
-/// coque Tauri ne la suit pas de façon fiable pour une navigation de premier niveau (WebKitGTK),
-/// contrairement à `HX-Redirect`, qui est piloté par le JavaScript d'htmx plutôt que par le
-/// moteur de rendu lui-même.
-pub async fn dashboard_page(state: &AppState) -> String {
+/// Le jour complet (coque comprise), en dehors de tout contexte de requête HTTP — utilisé par
+/// [`crate::unlock`] pour atterrir directement dessus après un déverrouillage, sans passer par
+/// une redirection `Location` : le protocole URI custom de la coque Tauri ne la suit pas de
+/// façon fiable pour une navigation de premier niveau (WebKitGTK), contrairement à
+/// `HX-Redirect`, qui est piloté par le JavaScript d'htmx plutôt que par le moteur de rendu.
+pub async fn jour_page(state: &AppState) -> String {
+    let today = state.today();
     let content = state
         .with_store(|store| {
-            views::dashboard::render(store).unwrap_or_else(|e| error_markup(ViewId::Dashboard, e))
+            views::jour::render(store, today).unwrap_or_else(|e| error_markup(ViewId::Jour, e))
         })
         .await
-        .unwrap_or_else(|| locked_markup(ViewId::Dashboard));
-    layout::page(ViewId::Dashboard, "déverrouillé", content).into_string()
+        .unwrap_or_else(|| locked_markup(ViewId::Jour));
+    layout::page(ViewId::Jour, "déverrouillé", content).into_string()
+}
+
+/// Alias conservé : le déverrouillage historique atterrissait sur le tableau de bord.
+pub async fn dashboard_page(state: &AppState) -> String {
+    jour_page(state).await
+}
+
+async fn letter(
+    state: &AppState,
+    headers: HeaderMap,
+    active: ViewId,
+    render: impl FnOnce(
+        &freeflow_core::store::Store,
+        time::Date,
+    ) -> Result<Markup, freeflow_core::app::AppError>,
+) -> Html<String> {
+    let today = state.today();
+    let content = state
+        .with_store(|store| render(store, today).unwrap_or_else(|e| error_markup(active, e)))
+        .await
+        .unwrap_or_else(|| locked_markup(active));
+    respond(headers, active, content).await
+}
+
+pub async fn jour(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
+    letter(&state, headers, ViewId::Jour, views::jour::render).await
 }
 
 pub async fn dashboard(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
-    let content = state
-        .with_store(|store| {
-            views::dashboard::render(store).unwrap_or_else(|e| error_markup(ViewId::Dashboard, e))
-        })
-        .await
-        .unwrap_or_else(|| locked_markup(ViewId::Dashboard));
-    respond(headers, ViewId::Dashboard, content).await
+    letter(&state, headers, ViewId::Dashboard, views::jour::render).await
+}
+
+pub async fn gens(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
+    letter(&state, headers, ViewId::Gens, views::gens::render).await
+}
+
+pub async fn societe_piece(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
+    letter(&state, headers, ViewId::Societe, views::societe::piece).await
 }
 
 pub async fn prospection(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
@@ -161,5 +189,5 @@ pub async fn console(headers: HeaderMap) -> Html<String> {
 }
 
 pub async fn index(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
-    dashboard(State(state), headers).await
+    jour(State(state), headers).await
 }

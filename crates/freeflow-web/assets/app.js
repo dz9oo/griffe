@@ -1,35 +1,58 @@
 // FreeFlow — script maison, volontairement minimal (pas de framework, pas de lib de charts :
-// les graphes sont du SVG rendu côté serveur). Trois responsabilités : mettre à jour l'onglet
-// actif après une navigation htmx boostée, piloter la palette de commandes ⌘K, et signaler une
-// activité humaine réelle au serveur pour l'auto-verrouillage (voir state.rs) — sans quoi le
-// polling du rail d'audit, qui n'est pas de l'activité humaine, ne prolongerait jamais rien de
-// lui-même. Cette page n'est chargée que par la coque applicative (jamais par l'écran de
-// déverrouillage, volontairement dépourvu de palette et de rail) : tout ici suppose que ces
-// éléments existent, mais reste défensif au cas où un futur écran partiel ne les inclurait pas.
+// les graphes sont du SVG rendu côté serveur). Trois responsabilités : souligner la pièce
+// active après une navigation htmx, piloter la palette ⌘K, et signaler une activité humaine
+// réelle au serveur pour l'auto-verrouillage (voir state.rs). Cette page n'est chargée que par
+// la coque applicative (jamais par l'écran de déverrouillage).
 
-function markNav(activeSlug) {
-  document.querySelectorAll(".tab[data-view]").forEach((t) => {
-    t.classList.toggle("active", t.dataset.view === activeSlug);
+const PIECE_OF = {
+  jour: "jour",
+  dashboard: "jour",
+  relances: "jour",
+  gens: "gens",
+  prospection: "gens",
+  devis: "gens",
+  missions: "gens",
+  facturation: "gens",
+  clients: "gens",
+  societe: "societe",
+  depenses: "societe",
+  cloture: "societe",
+};
+
+const WIDE = new Set(["societe", "depenses", "cloture", "console"]);
+
+function viewSlugFrom(root) {
+  return root?.querySelector?.("[data-view]")?.dataset.view
+    || root?.dataset?.view
+    || "";
+}
+
+function markNav(slug) {
+  const piece = PIECE_OF[slug] || "";
+  document.querySelectorAll(".chrome nav a[data-piece]").forEach((link) => {
+    if (link.dataset.piece === piece) {
+      link.setAttribute("aria-current", "page");
+    } else {
+      link.removeAttribute("aria-current");
+    }
   });
-  const brand = document.querySelector(".brand");
-  brand?.classList.toggle("active", activeSlug === "dashboard");
-  const more = document.getElementById("nav-more");
-  if (more) {
-    const inMore = Boolean(more.querySelector(".tab.active"));
-    more.classList.toggle("has-active", inMore);
-    if (inMore === false || activeSlug === "dashboard") more.open = false;
-  }
+  const content = document.getElementById("content");
+  if (content) content.classList.toggle("wide", WIDE.has(slug));
 }
 
 document.body.addEventListener("click", (event) => {
-  const tab = event.target.closest(".tab[data-view]");
-  const brand = event.target.closest(".brand");
-  if (tab) {
-    markNav(tab.dataset.view);
-    document.getElementById("nav-more")?.removeAttribute("open");
+  const pieceLink = event.target.closest(".chrome nav a[data-piece]");
+  if (pieceLink) {
+    markNav(pieceLink.dataset.piece);
     return;
   }
-  if (brand) markNav("dashboard");
+  if (event.target.closest(".mark")) markNav("jour");
+});
+
+document.body.addEventListener("htmx:afterSwap", (event) => {
+  if (event.detail?.target?.id !== "content") return;
+  const slug = viewSlugFrom(event.detail.target);
+  if (slug) markNav(slug);
 });
 
 const paletteOverlay = document.getElementById("palette-overlay");
@@ -64,8 +87,6 @@ function filterPalette() {
 }
 
 if (paletteHint) {
-  // Remplace l'ancien `onclick=` inline, de toute façon inerte : la CSP (`script-src 'self'`,
-  // pas de `'unsafe-inline'`) bloque les gestionnaires d'événements en attribut HTML.
   paletteHint.addEventListener("click", openPalette);
 }
 
@@ -104,9 +125,6 @@ if (consoleLog) {
   });
 }
 
-// Reset + refocus le champ de la console après chaque soumission — remplace l'attribut htmx
-// `hx-on--after-request`, qui s'appuie sur `new Function` et est donc bloqué par la CSP de la
-// fenêtre packagée (`script-src 'self'`, sans `'unsafe-eval'` — voir `views/console.rs`).
 document.body.addEventListener("htmx:afterRequest", (event) => {
   if (event.target.id === "console-form") {
     event.target.reset();
@@ -114,9 +132,6 @@ document.body.addEventListener("htmx:afterRequest", (event) => {
   }
 });
 
-// Panneau latéral (`#panel`) : ouvert par un `hx-get`/`hx-post` ciblé dessus depuis un écran de
-// données (voir `views/clients.rs`), fermé côté client uniquement — aucune de ces trois actions
-// ne fait de round-trip serveur.
 const panel = document.getElementById("panel");
 function closePanel() {
   panel?.replaceChildren();
@@ -133,25 +148,20 @@ if (panel) {
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && panel.childElementCount > 0) closePanel();
   });
-  // Après une mutation réussie (`HX-Trigger: freeflow:saved`, voir `crate::clients`), le corps
-  // de la réponse est vide : htmx vide déjà #panel par le swap lui-même. Cet écouteur reste un
-  // filet pour toute réponse qui déclencherait l'événement sans passer par ce swap.
   document.body.addEventListener("freeflow:saved", closePanel);
 }
 
-// `n` ouvre l'action de création de l'écran actif, quand un panneau de données existe pour cet
-// écran — étendu au fil des lots suivants (`NEW_ACTION_BY_VIEW` reste la seule chose à
-// compléter). Inactif pendant la saisie d'un champ, ou pendant que la palette est ouverte.
 const NEW_ACTION_BY_VIEW = {
   clients: "/clients/new",
   prospection: "/prospection/new",
+  gens: "/prospection/new",
   missions: "/missions/new",
   devis: "/devis/new",
   depenses: "/depenses/new",
   cloture: "/cloture/new",
 };
 document.addEventListener("keydown", (event) => {
-  const view = document.querySelector(".view-head")?.dataset.view;
+  const view = document.querySelector("[data-view]")?.dataset.view;
   const typing = event.target.tagName === "INPUT" || event.target.tagName === "TEXTAREA" || event.target.tagName === "SELECT";
   if (view === "relances" && !typing && !event.metaKey && !event.ctrlKey && !event.altKey) {
     const action = ({ Enter: "draft", e: "sent", s: "snooze-tomorrow", k: "skip" })[event.key];
@@ -171,18 +181,13 @@ document.addEventListener("keydown", (event) => {
   const target = event.target;
   if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT") return;
   if (paletteOverlay?.classList.contains("open")) return;
-  const activeView = document.querySelector(".tab.active")?.dataset.view
-    || document.querySelector(".view-head")?.dataset.view;
+  const activeView = document.querySelector("[data-view]")?.dataset.view;
   const action = activeView && NEW_ACTION_BY_VIEW[activeView];
   if (!action || !panel) return;
   event.preventDefault();
   htmx.ajax("GET", action, { target: "#panel", swap: "innerHTML" });
 });
 
-// Auto-verrouillage sans démon : le rail d'audit poll `/audit/recent` toutes les 2s mais est
-// explicitement exclu du calcul d'activité côté serveur (voir state.rs) — sans quoi la session
-// n'expirerait jamais. Une vraie frappe ou un vrai clic prolonge la session, au plus une fois
-// par minute pour ne pas transformer chaque geste en requête réseau.
 (() => {
   let lastTouch = 0;
   const TOUCH_MIN_INTERVAL_MS = 60_000;
@@ -201,23 +206,8 @@ document.addEventListener("keydown", (event) => {
   document.addEventListener("pointerdown", touchSession);
 })();
 
-// Thème : clair par défaut, sombre sur demande (lot 46). Pas de cookie : la préférence
-// ne survit qu'à cette machine, dans ce navigateur — cohérent avec le local-only.
-const themeToggle = document.getElementById("theme-toggle");
-function applyTheme() {
-  const dark = localStorage.getItem("freeflow.theme") === "dark";
-  document.documentElement.classList.toggle("dark", dark);
-  if (themeToggle) themeToggle.textContent = dark ? "Clair" : "Sombre";
-}
-applyTheme();
-themeToggle?.addEventListener("click", () => {
-  const next = document.documentElement.classList.contains("dark") ? "light" : "dark";
-  localStorage.setItem("freeflow.theme", next);
-  applyTheme();
-});
+// Thème sombre du lot 46 : hors v1 Atelier. Une préférence locale éventuelle n'est plus lue.
 
-// Journal d'audit replié par défaut : la place revient au contenu. Ouvert, il reprend
-// la colonne de droite. La préférence est locale, comme le thème.
 const bodyGrid = document.getElementById("body-grid");
 const auditToggle = document.getElementById("audit-toggle");
 function applyAudit() {
@@ -233,10 +223,6 @@ auditToggle?.addEventListener("click", () => {
   applyAudit();
 });
 
-// WebKitGTK (coque Tauri) laisse le calendrier natif de `<input type="date">` ouvert tant que
-// le champ a le focus : la sélection d'un jour ne le ferme pas, il faut Tab. Un blur synchrone
-// dans `change` est parfois ignoré ; on le reporte d'une frame. Délégué sur `body` pour les
-// champs injectés par htmx dans le panneau.
 document.body.addEventListener("change", (event) => {
   const input = event.target;
   if (!(input instanceof HTMLInputElement) || input.type !== "date") return;

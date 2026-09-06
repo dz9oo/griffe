@@ -1,0 +1,629 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FreeFlow — Horizon</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=Syne:wght@600;700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #0a0b0d;
+      --bg-2: #101217;
+      --bg-3: #16181e;
+      --line: rgba(237, 233, 225, 0.08);
+      --line-2: rgba(237, 233, 225, 0.16);
+      --ink: #ede9e1;
+      --ink-2: #9a948a;
+      --ink-3: #5e5a54;
+      --signal: #e3a24c;
+      --signal-2: rgba(227, 162, 76, 0.14);
+      --sage: #a9bbae;
+      --warn: #d25b4c;
+      --font: "IBM Plex Sans", "Adwaita Sans", "Noto Sans", sans-serif;
+      --mono: "IBM Plex Mono", "Adwaita Mono", ui-monospace, monospace;
+      --display: "Syne", "Adwaita Sans", sans-serif;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body {
+      font-family: var(--font);
+      background: var(--bg);
+      color: var(--ink);
+      font-size: 14px;
+      line-height: 1.45;
+      -webkit-font-smoothing: antialiased;
+    }
+    button, input { font-family: inherit; color: inherit; }
+    button { cursor: pointer; }
+    .app { min-height: 100%; display: flex; flex-direction: column; }
+    .top {
+      display: flex; align-items: center; gap: 28px;
+      padding: 0 28px; height: 52px;
+      border-bottom: 1px solid var(--line);
+    }
+    .brand {
+      display: flex; align-items: center; gap: 10px;
+      text-decoration: none; color: var(--ink);
+      font-family: var(--display); font-weight: 700;
+      font-size: 15px; letter-spacing: 0.12em;
+    }
+    .brand .tick {
+      width: 2px; height: 14px; background: var(--signal);
+      display: block;
+    }
+    .rooms { display: flex; gap: 4px; }
+    .rooms button {
+      background: none; border: 0; color: var(--ink-3);
+      padding: 6px 12px; font-size: 13px; letter-spacing: 0.04em;
+    }
+    .rooms button[aria-current="page"] {
+      color: var(--ink);
+      box-shadow: inset 0 -1px 0 var(--signal);
+    }
+    .top-right {
+      margin-left: auto; display: flex; align-items: center; gap: 18px;
+      color: var(--ink-2); font-size: 12px;
+    }
+    .top-right time { font-variant-numeric: tabular-nums; letter-spacing: 0.04em; }
+    .vault {
+      display: flex; align-items: center; gap: 6px;
+      color: var(--sage); letter-spacing: 0.08em; text-transform: uppercase;
+      font-size: 10px;
+    }
+    .vault i {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--sage); display: inline-block;
+    }
+    .kbtn {
+      background: transparent; border: 1px solid var(--line-2);
+      padding: 4px 8px; font-size: 11px; color: var(--ink-2);
+      letter-spacing: 0.06em;
+    }
+    .room { display: none; flex: 1; min-height: 0; }
+    .room.on { display: flex; flex-direction: column; min-height: calc(100vh - 90px); }
+
+    /* Horizon chart */
+    .landscape {
+      position: relative;
+      border-bottom: 1px solid var(--line);
+      padding: 18px 28px 8px;
+      background:
+        radial-gradient(1200px 180px at 70% 120%, rgba(227,162,76,0.07), transparent 60%),
+        var(--bg);
+    }
+    .landscape-meta {
+      display: flex; justify-content: space-between; align-items: baseline;
+      margin-bottom: 4px;
+    }
+    .landscape-meta h2 {
+      font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase;
+      color: var(--ink-3); font-weight: 500;
+    }
+    .landscape-meta .cash {
+      font-family: var(--mono); font-size: 22px; font-weight: 500;
+      font-variant-numeric: tabular-nums;
+    }
+    .landscape-meta .cash small {
+      font-size: 11px; color: var(--ink-3); margin-left: 10px;
+      letter-spacing: 0.08em; text-transform: uppercase;
+    }
+    svg.chart { width: 100%; height: 168px; display: block; }
+    .chart-caption {
+      display: flex; justify-content: space-between;
+      font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+      color: var(--ink-3); padding: 4px 2px 10px;
+    }
+    .ev {
+      display: flex; gap: 16px; flex-wrap: wrap;
+      font-size: 11px; color: var(--ink-2);
+    }
+    .ev b { color: var(--signal); font-weight: 500; margin-right: 6px; }
+
+    /* Briefing */
+    .brief {
+      display: grid;
+      grid-template-columns: 1.4fr 0.8fr;
+      flex: 1; min-height: 0;
+    }
+    .queue { padding: 28px 32px 40px; overflow: auto; }
+    .kicker {
+      font-size: 11px; letter-spacing: 0.2em; text-transform: uppercase;
+      color: var(--ink-3); margin-bottom: 18px;
+    }
+    .item {
+      width: 100%; text-align: left;
+      border-top: 1px solid var(--line); padding: 16px 0;
+      display: grid; grid-template-columns: 48px 1fr;
+      gap: 12px; align-items: start; color: var(--ink-2);
+      cursor: pointer;
+    }
+    .item:last-of-type { border-bottom: 1px solid var(--line); }
+    .item .n {
+      font-family: var(--mono); font-size: 12px; color: var(--ink-3);
+      padding-top: 4px;
+    }
+    .item h3 { font-size: 16px; font-weight: 500; color: var(--ink-2); }
+    .item p { display: none; font-size: 13px; color: var(--ink-3); margin-top: 4px; }
+    .item.on p { display: block; }
+    .item .kind {
+      font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase;
+      color: var(--ink-3); margin-bottom: 4px;
+    }
+    .item.on { color: var(--ink); }
+    .item.on h3 { color: var(--ink); font-size: 28px; letter-spacing: -0.03em; font-weight: 500; }
+    .item.on p { color: var(--ink-2); font-size: 14px; max-width: 46ch; }
+    .item.on .n { color: var(--signal); }
+    .item.on .kind { color: var(--signal); }
+    .actions { display: none; gap: 8px; margin-top: 16px; }
+    .item.on .actions { display: flex; flex-wrap: wrap; }
+    .btn {
+      border: 1px solid var(--line-2); background: transparent;
+      padding: 8px 14px; font-size: 13px;
+    }
+    .btn.primary { background: var(--signal); color: #1a140c; border-color: var(--signal); font-weight: 500; }
+    .btn.ghost:hover { border-color: var(--ink-2); }
+    .side {
+      border-left: 1px solid var(--line);
+      padding: 28px 28px 40px;
+      background: var(--bg-2);
+    }
+    .runway {
+      margin-bottom: 32px;
+    }
+    .runway .big {
+      font-family: var(--mono); font-size: 64px; letter-spacing: -0.04em;
+      line-height: 0.9; font-weight: 400;
+    }
+    .runway .big span { font-size: 22px; color: var(--ink-3); margin-left: 6px; }
+    .runway p { color: var(--ink-2); margin-top: 10px; font-size: 13px; }
+    .meter {
+      height: 2px; background: var(--line-2); margin: 18px 0 8px;
+    }
+    .meter i { display: block; height: 100%; width: 42%; background: var(--sage); }
+    .facts { display: grid; gap: 14px; }
+    .facts div { border-top: 1px solid var(--line); padding-top: 12px; }
+    .facts dt {
+      font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase;
+      color: var(--ink-3);
+    }
+    .facts dd { font-size: 16px; margin-top: 4px; }
+    .facts dd em { font-style: normal; color: var(--warn); }
+
+    /* Gens */
+    .gens {
+      display: grid; grid-template-columns: 320px 1fr;
+      flex: 1; min-height: 0; height: 100%;
+    }
+    .cast {
+      border-right: 1px solid var(--line); overflow: auto;
+      padding: 20px 0;
+    }
+    .cast button {
+      width: 100%; text-align: left; background: none; border: 0;
+      padding: 14px 28px; color: var(--ink-2);
+      border-left: 2px solid transparent;
+    }
+    .cast button[aria-current="true"] {
+      color: var(--ink); background: var(--bg-2);
+      border-left-color: var(--signal);
+    }
+    .cast .who { font-size: 16px; font-weight: 500; }
+    .cast .st { font-size: 12px; color: var(--ink-3); margin-top: 3px; }
+    .dossier { padding: 36px 48px; overflow: auto; }
+    .dossier .who { font-size: 40px; letter-spacing: -0.03em; font-weight: 500; }
+    .dossier .co { color: var(--ink-2); margin: 6px 0 28px; }
+    .story { max-width: 52ch; }
+    .story h4 {
+      font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase;
+      color: var(--ink-3); margin: 28px 0 12px; font-weight: 500;
+    }
+    .story li {
+      list-style: none; padding: 10px 0;
+      border-top: 1px solid var(--line); color: var(--ink-2);
+      display: grid; grid-template-columns: 88px 1fr; gap: 16px;
+    }
+    .story time { font-family: var(--mono); font-size: 12px; color: var(--ink-3); }
+
+    /* Maison */
+    .maison {
+      display: grid; grid-template-columns: 1.1fr 0.9fr;
+      flex: 1; min-height: 0; height: 100%;
+    }
+    .year {
+      padding: 40px 48px;
+      border-right: 1px solid var(--line);
+    }
+    .year h2 { font-size: 40px; letter-spacing: -0.03em; font-weight: 500; }
+    .year .sub { color: var(--ink-2); margin: 8px 0 32px; }
+    .days {
+      font-family: var(--mono); font-size: 96px; line-height: 0.85;
+      letter-spacing: -0.05em;
+    }
+    .days small { font-size: 16px; color: var(--ink-3); display: block; margin-top: 8px; letter-spacing: 0.12em; text-transform: uppercase; }
+    .close-list { margin-top: 40px; }
+    .close-list li {
+      list-style: none; display: flex; gap: 14px; align-items: baseline;
+      padding: 10px 0; border-top: 1px solid var(--line); font-size: 14px;
+    }
+    .dot { width: 8px; height: 8px; flex: none; }
+    .dot.ok { background: var(--sage); }
+    .dot.wait { background: var(--signal); }
+    .dot.later { background: var(--ink-3); }
+    .house-side { padding: 40px 40px; background: var(--bg-2); }
+    .house-side h3 {
+      font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase;
+      color: var(--ink-3); margin: 0 0 16px;
+    }
+    .house-side section + section { margin-top: 36px; }
+
+    /* Overlay */
+    .overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(6, 7, 9, 0.72);
+      align-items: center; justify-content: center; z-index: 20;
+    }
+    .overlay.on { display: flex; }
+    .sheet {
+      width: min(560px, calc(100% - 40px));
+      background: var(--bg-3); border: 1px solid var(--line-2);
+      padding: 28px;
+    }
+    .sheet h2 { font-size: 18px; margin-bottom: 6px; }
+    .sheet .hint { color: var(--ink-3); font-size: 12px; margin-bottom: 20px; }
+    .mail { font-family: var(--mono); font-size: 12px; color: var(--ink-2); line-height: 1.6; }
+    .mail .body { margin-top: 16px; color: var(--ink); white-space: pre-wrap; }
+    .palette {
+      width: min(480px, calc(100% - 40px));
+      background: var(--bg-3); border: 1px solid var(--line-2);
+    }
+    .palette input {
+      width: 100%; background: transparent; border: 0;
+      padding: 16px 18px; font-size: 16px; outline: none;
+      border-bottom: 1px solid var(--line);
+    }
+    .palette button {
+      width: 100%; text-align: left; background: none; border: 0;
+      padding: 12px 18px; color: var(--ink-2); display: flex; justify-content: space-between;
+    }
+    .palette button:hover, .palette button:focus { background: var(--signal-2); color: var(--ink); outline: none; }
+    .hintbar {
+      position: sticky; bottom: 0;
+      display: flex; gap: 18px; padding: 8px 28px;
+      border-top: 1px solid var(--line); color: var(--ink-3);
+      font-size: 11px; letter-spacing: 0.06em; background: var(--bg);
+    }
+    kbd {
+      font-family: var(--mono); font-size: 10px;
+      border: 1px solid var(--line-2); padding: 1px 5px; margin-right: 4px;
+    }
+    @media (max-width: 960px) {
+      .brief, .gens, .maison { grid-template-columns: 1fr; }
+      .side, .house-side, .cast { border: 0; border-top: 1px solid var(--line); }
+      .days { font-size: 72px; }
+      .landscape-meta { flex-direction: column; gap: 8px; }
+      .item.on h3 { font-size: 22px; }
+      .runway .big { font-size: 48px; }
+      .hintbar { display: none; }
+      .chart text { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="top">
+      <a class="brand" href="index.html"><i class="tick"></i>FREEFLOW</a>
+      <nav class="rooms" aria-label="Pièces">
+        <button type="button" data-room="jour" aria-current="page">Jour</button>
+        <button type="button" data-room="gens">Gens</button>
+        <button type="button" data-room="maison">Maison</button>
+      </nav>
+      <div class="top-right">
+        <time datetime="2026-09-05">mercredi 5 septembre</time>
+        <span class="vault"><i></i> coffre local</span>
+        <button type="button" class="kbtn" id="open-palette">⌘K</button>
+      </div>
+    </header>
+
+    <section class="room on" id="room-jour">
+      <div class="landscape">
+        <div class="landscape-meta">
+          <h2>Piste · exercice au 30 septembre</h2>
+          <div class="cash">12 843,12 € <small>en banque aujourd’hui</small></div>
+        </div>
+        <svg class="chart" viewBox="0 0 1200 170" preserveAspectRatio="none" role="img" aria-label="Trésorerie d’octobre 2025 à octobre 2026">
+          <defs>
+            <linearGradient id="fill" x1="0" x2="0" y1="0" y2="1">
+              <stop offset="0" stop-color="#e3a24c" stop-opacity="0.22" />
+              <stop offset="1" stop-color="#e3a24c" stop-opacity="0" />
+            </linearGradient>
+          </defs>
+          <path d="M0,48 C80,52 140,70 184,78 C250,90 300,118 368,128 C420,118 470,92 552,70 C620,78 680,88 736,96 C800,90 860,98 920,108 C980,114 1020,118 1055,120 L1055,170 L0,170 Z" fill="url(#fill)" />
+          <path d="M0,48 C80,52 140,70 184,78 C250,90 300,118 368,128 C420,118 470,92 552,70 C620,78 680,88 736,96 C800,90 860,98 920,108 C980,114 1020,118 1055,120 C1100,126 1140,80 1200,52" fill="none" stroke="#ede9e1" stroke-width="1.4" />
+          <path d="M1055,120 C1100,126 1140,80 1200,52" fill="none" stroke="#e3a24c" stroke-width="1.4" stroke-dasharray="4 4" />
+          <line x1="1055" y1="10" x2="1055" y2="160" stroke="#e3a24c" stroke-width="1" />
+          <circle cx="1055" cy="120" r="3.5" fill="#e3a24c" />
+          <line x1="1128" y1="20" x2="1128" y2="160" stroke="rgba(237,233,225,0.2)" stroke-dasharray="2 3" />
+          <circle cx="368" cy="128" r="2.5" fill="#d25b4c" />
+          <circle cx="1105" cy="124" r="2.5" fill="#e3a24c" />
+        </svg>
+        <div class="chart-caption">
+          <span>oct 25</span><span>jan</span><span>avr</span><span>juil</span><span>oct 26</span>
+        </div>
+        <div class="ev">
+          <span><b>16 sept</b> CA3 · 1 840 €</span>
+          <span><b>30 sept</b> clôture · 25 jours</span>
+          <span><b>si Atlas paie</b> la ligne remonte à ~17 k€</span>
+        </div>
+      </div>
+
+      <div class="brief">
+        <div class="queue">
+          <div class="kicker">À faire · 3 gestes, un à la fois</div>
+          <article class="item on" data-i="0">
+            <span class="n">01</span>
+            <div>
+              <div class="kind">relance</div>
+              <h3>Camille Rivière</h3>
+              <p>Le devis Atelier Nord, 8 400 €, attend depuis trois jours. Un brouillon est prêt — FreeFlow ne l’enverra pas.</p>
+              <div class="actions">
+                <button class="btn primary" type="button" data-open="compose">Ouvrir le brouillon</button>
+                <button class="btn ghost" type="button">Demain</button>
+                <button class="btn ghost" type="button">Classer</button>
+              </div>
+            </div>
+          </article>
+          <article class="item" data-i="1">
+            <span class="n">02</span>
+            <div>
+              <div class="kind">impayé</div>
+              <h3>Atlas Digital</h3>
+              <p>Facture FA-2026-0012, 6 200 €, échue depuis 7 jours. Première relance d’impayé.</p>
+              <div class="actions">
+                <button class="btn primary" type="button" data-open="compose">Ouvrir le brouillon</button>
+                <button class="btn ghost" type="button">J+3</button>
+                <button class="btn ghost" type="button">Classer</button>
+              </div>
+            </div>
+          </article>
+          <article class="item" data-i="2">
+            <span class="n">03</span>
+            <div>
+              <div class="kind">banque</div>
+              <h3>Relevé Qonto</h3>
+              <p>Trois mouvements n’ont pas de lecture : honoraires du cabinet (dette reprise), commission, Figma. Les régler ne crée pas de charge.</p>
+              <div class="actions">
+                <button class="btn primary" type="button" data-go="maison">Ranger le relevé</button>
+                <button class="btn ghost" type="button">Plus tard</button>
+              </div>
+            </div>
+          </article>
+        </div>
+        <aside class="side">
+          <div class="runway">
+            <div class="kicker">La piste</div>
+            <div class="big">4,2<span>mois</span></div>
+            <div class="meter"><i></i></div>
+            <p>À charges constantes, sans l’encaissement Atlas. C’est le seul chiffre du matin.</p>
+          </div>
+          <dl class="facts">
+            <div><dt>Prochaine échéance</dt><dd>CA3 · 16 septembre <em>· 1 840 €</em></dd></div>
+            <div><dt>À encaisser</dt><dd>6 200 € · Atlas</dd></div>
+            <div><dt>Jours vendus ce mois</dt><dd>7 / 18</dd></div>
+          </dl>
+        </aside>
+      </div>
+    </section>
+
+    <section class="room" id="room-gens">
+      <div class="gens">
+        <nav class="cast" aria-label="Personnes">
+          <button type="button" data-p="camille" aria-current="true">
+            <div class="who">Camille Rivière</div>
+            <div class="st">devis · à relancer aujourd’hui</div>
+          </button>
+          <button type="button" data-p="atlas">
+            <div class="who">Atlas Digital</div>
+            <div class="st">facture échue · 6 200 €</div>
+          </button>
+          <button type="button" data-p="martin">
+            <div class="who">Martin Pecheur</div>
+            <div class="st">premier échange · hier</div>
+          </button>
+          <button type="button" data-p="hume">
+            <div class="who">Studio Hume</div>
+            <div class="st">mission · 18 jours restants</div>
+          </button>
+          <button type="button" data-p="leroy">
+            <div class="who">Cabinet Leroy</div>
+            <div class="st">dette reprise · 1 200 €</div>
+          </button>
+        </nav>
+        <article class="dossier" id="dossier">
+          <div class="who">Camille Rivière</div>
+          <div class="co">Atelier Nord · prospect depuis mars 2026</div>
+          <div class="actions" style="display:flex">
+            <button class="btn primary" type="button" data-open="compose">Écrire</button>
+            <button class="btn ghost" type="button">Reporter de 3 jours</button>
+            <button class="btn ghost" type="button">Classer</button>
+          </div>
+          <div class="story">
+            <h4>En cours</h4>
+            <p>Devis n°3 — accompagnement identité, 8 400 € HT, envoyé le 2 septembre. Pas de réponse. 3<sup>e</sup> pas de la cadence (J+0, J+3, J+7, J+14).</p>
+            <h4>Histoire</h4>
+            <ul>
+              <li><time>2 sept</time><span>Devis envoyé. Camille a dit « je reviens en début de semaine ».</span></li>
+              <li><time>28 août</time><span>Appel. Intéressée par le forfait, budget confirmé.</span></li>
+              <li><time>12 août</time><span>Premier échange, via Martin.</span></li>
+            </ul>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="room" id="room-maison">
+      <div class="maison">
+        <div class="year">
+          <h2>Lumen Conseil</h2>
+          <p class="sub">SASU au capital de 1 000 € · clôture le 30 septembre 2026</p>
+          <div class="days">25<small>jours avant la clôture</small></div>
+          <ul class="close-list">
+            <li><i class="dot ok"></i> Bilan d’ouverture repris</li>
+            <li><i class="dot wait"></i> 3 mouvements du relevé à ranger</li>
+            <li><i class="dot ok"></i> Justificatifs de l’exercice</li>
+            <li><i class="dot later"></i> Clore — à partir du 1er octobre</li>
+            <li><i class="dot later"></i> PV, liasse, FEC, dépôt</li>
+          </ul>
+        </div>
+        <div class="house-side">
+          <section>
+            <h3>Relevé à ranger</h3>
+            <ul class="close-list">
+              <li><i class="dot wait"></i> 04/09 · Cabinet Leroy · −1 200,00 · dette 401</li>
+              <li><i class="dot wait"></i> 03/09 · Qonto · −9,90 · frais bancaires</li>
+              <li><i class="dot wait"></i> 02/09 · Figma · −144,00 · logiciel</li>
+            </ul>
+            <div class="actions" style="display:flex;margin-top:16px">
+              <button class="btn primary" type="button">C’est le règlement d’une dette</button>
+              <button class="btn ghost" type="button">C’est une dépense</button>
+            </div>
+          </section>
+          <section>
+            <h3>Coffre</h3>
+            <p style="color:var(--ink-2);font-size:14px;line-height:1.55">
+              Fichier local, chiffré, aucune connexion sortante.
+              Dernière sauvegarde il y a 2 heures.
+              Les mails partent de ton client — jamais d’ici.
+            </p>
+          </section>
+        </div>
+      </div>
+    </section>
+
+    <footer class="hintbar">
+      <span><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> pièces</span>
+      <span><kbd>j</kbd><kbd>k</kbd> geste suivant</span>
+      <span><kbd>enter</kbd> brouillon</span>
+      <span><kbd>esc</kbd> fermer</span>
+    </footer>
+  </div>
+
+  <div class="overlay" id="compose" role="dialog" aria-labelledby="compose-title">
+    <div class="sheet">
+      <h2 id="compose-title">Brouillon pour Camille</h2>
+      <p class="hint">Fichier .eml · X-Unsent: 1 · s’ouvre dans aerc. FreeFlow n’envoie rien.</p>
+      <div class="mail">
+        De: nicolas@lumen-conseil.fr<br />
+        À: camille@atelier-nord.fr<br />
+        Objet: Atelier Nord — devis du 2 septembre
+        <div class="body">Camille,
+
+Je me permets de revenir vers toi concernant le devis d’accompagnement identité (8 400 € HT), envoyé mardi.
+
+Si tu as une question sur le périmètre ou le calendrier, je suis joignable cette semaine.
+
+Nicolas</div>
+      </div>
+      <div class="actions" style="display:flex;margin-top:22px">
+        <button class="btn primary" type="button" data-close="compose">Ouvrir dans le client mail</button>
+        <button class="btn ghost" type="button" data-close="compose">Marquer envoyé</button>
+        <button class="btn ghost" type="button" data-close="compose">Annuler</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="overlay" id="palette" role="dialog">
+    <div class="palette">
+      <input type="search" placeholder="Aller à, relancer, ranger…" aria-label="Commande" />
+      <button type="button" data-room="jour">Le jour<span>1</span></button>
+      <button type="button" data-room="gens">Les gens<span>2</span></button>
+      <button type="button" data-room="maison">La maison<span>3</span></button>
+      <button type="button" data-open="compose">Brouillon Camille<span>enter</span></button>
+    </div>
+  </div>
+
+  <script>
+    const rooms = [...document.querySelectorAll(".room")];
+    const roomBtns = [...document.querySelectorAll(".rooms button")];
+    const items = [...document.querySelectorAll(".item")];
+    const dossiers = {
+      camille: { who: "Camille Rivière", co: "Atelier Nord · prospect depuis mars 2026",
+        body: `<div class="actions" style="display:flex"><button class="btn primary" type="button" data-open="compose">Écrire</button><button class="btn ghost" type="button">Reporter de 3 jours</button><button class="btn ghost" type="button">Classer</button></div><div class="story"><h4>En cours</h4><p>Devis n°3 — accompagnement identité, 8 400 € HT, envoyé le 2 septembre. Pas de réponse. 3<sup>e</sup> pas de la cadence (J+0, J+3, J+7, J+14).</p><h4>Histoire</h4><ul><li><time>2 sept</time><span>Devis envoyé. Camille a dit « je reviens en début de semaine ».</span></li><li><time>28 août</time><span>Appel. Intéressée par le forfait, budget confirmé.</span></li><li><time>12 août</time><span>Premier échange, via Martin.</span></li></ul></div>` },
+      atlas: { who: "Atlas Digital", co: "client · mission régie depuis janvier",
+        body: `<div class="actions" style="display:flex"><button class="btn primary" type="button" data-open="compose">Relancer l’impayé</button><button class="btn ghost" type="button">J+3</button></div><div class="story"><h4>En cours</h4><p>FA-2026-0012 · 6 200 € · échue le 29 août. J+7 de la cadence impayé (0 / 7 / 15 / 30).</p><h4>Histoire</h4><ul><li><time>15 août</time><span>Facture émise, 10 jours de régie.</span></li><li><time>4 août</time><span>Encaissement FA-2026-0009, 4 800 €.</span></li></ul></div>` },
+      martin: { who: "Martin Pecheur", co: "prospect · premier échange hier",
+        body: `<div class="story"><h4>En cours</h4><p>Besoin d’un accompagnement produit, ~12 000 €. Relance J+3 lundi.</p></div>` },
+      hume: { who: "Studio Hume", co: "client · forfait en cours",
+        body: `<div class="story"><h4>En cours</h4><p>Mission identité, 18 jours restants, prochain jalon le 22 septembre.</p></div>` },
+      leroy: { who: "Cabinet Leroy", co: "fournisseur · dette reprise au bilan",
+        body: `<div class="story"><h4>En cours</h4><p>401000 · 1 200 € repris à l’ouverture. Un débit Qonto du 4 septembre correspond au centime. Le régler, ce n’est pas une charge.</p></div>` }
+    };
+
+    function showRoom(id) {
+      rooms.forEach((r) => r.classList.toggle("on", r.id === "room-" + id));
+      roomBtns.forEach((b) => b.setAttribute("aria-current", b.dataset.room === id ? "page" : "false"));
+      if (location.hash !== "#" + id) history.replaceState(null, "", "#" + id);
+    }
+    function selectItem(i) {
+      items.forEach((el, n) => el.classList.toggle("on", n === i));
+    }
+    function openOverlay(id) {
+      document.getElementById(id).classList.add("on");
+      const focusable = document.querySelector("#" + id + " input, #" + id + " .btn.primary");
+      if (focusable) focusable.focus();
+    }
+    function closeOverlays() {
+      document.querySelectorAll(".overlay").forEach((o) => o.classList.remove("on"));
+    }
+
+    roomBtns.forEach((b) => b.addEventListener("click", () => showRoom(b.dataset.room)));
+    items.forEach((el, i) => el.addEventListener("click", (e) => {
+      if (e.target.closest("[data-open],[data-go]")) return;
+      selectItem(i);
+    }));
+    document.addEventListener("click", (e) => {
+      const open = e.target.closest("[data-open]");
+      const go = e.target.closest("[data-go]");
+      const close = e.target.closest("[data-close]");
+      const room = e.target.closest("[data-room]");
+      if (open) { e.preventDefault(); openOverlay(open.dataset.open); }
+      if (go) { e.preventDefault(); closeOverlays(); showRoom(go.dataset.go); }
+      if (close) { e.preventDefault(); closeOverlays(); }
+      if (room && e.target.closest("#palette")) { closeOverlays(); showRoom(room.dataset.room); }
+    });
+    document.querySelectorAll(".cast button").forEach((b) => {
+      b.addEventListener("click", () => {
+        document.querySelectorAll(".cast button").forEach((x) => x.setAttribute("aria-current", "false"));
+        b.setAttribute("aria-current", "true");
+        const d = dossiers[b.dataset.p];
+        document.getElementById("dossier").innerHTML =
+          `<div class="who">${d.who}</div><div class="co">${d.co}</div>${d.body}`;
+      });
+    });
+    document.getElementById("open-palette").addEventListener("click", () => openOverlay("palette"));
+    document.querySelectorAll(".overlay").forEach((o) => {
+      o.addEventListener("click", (e) => { if (e.target === o) closeOverlays(); });
+    });
+    const start = (location.hash || "#jour").slice(1);
+    if (["jour", "gens", "maison"].includes(start)) showRoom(start);
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") closeOverlays();
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault(); openOverlay("palette");
+      }
+      if (e.target.matches("input")) return;
+      if (e.key === "1") showRoom("jour");
+      if (e.key === "2") showRoom("gens");
+      if (e.key === "3") showRoom("maison");
+      if (e.key === "j" || e.key === "k") {
+        const i = items.findIndex((x) => x.classList.contains("on"));
+        selectItem(e.key === "j" ? Math.min(items.length - 1, i + 1) : Math.max(0, i - 1));
+      }
+      if (e.key === "Enter" && document.getElementById("room-jour").classList.contains("on")) {
+        openOverlay("compose");
+      }
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FreeFlow — Atelier</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,16..72,400;0,16..72,500;0,16..72,600;1,16..72,400;1,16..72,500&family=Source+Sans+3:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --paper: #f1ebe0;
+      --paper-2: #e8e0d2;
+      --ink: #1c1814;
+      --ink-2: #6a635a;
+      --rule: #d0c6b4;
+      --seal: #9f3218;
+      --seal-soft: #f0d8cf;
+      --serif: "Newsreader", "Liberation Serif", "Noto Serif", serif;
+      --sans: "Source Sans 3", "Adwaita Sans", "Noto Sans", sans-serif;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { min-height: 100%; }
+    body {
+      font-family: var(--sans);
+      background:
+        radial-gradient(ellipse at top, #f7f1e6, var(--paper) 55%);
+      color: var(--ink);
+      min-height: 100vh;
+    }
+    button { font-family: inherit; color: inherit; cursor: pointer; background: none; border: 0; }
+    .desk {
+      min-height: 100vh;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+    }
+    header {
+      display: flex; justify-content: space-between; align-items: baseline;
+      padding: 28px 40px 0;
+      max-width: 920px; width: 100%; margin: 0 auto;
+    }
+    .mark {
+      font-family: var(--serif);
+      font-style: italic;
+      font-size: 22px;
+      letter-spacing: -0.02em;
+      text-decoration: none; color: var(--ink);
+    }
+    header nav { display: flex; gap: 22px; }
+    header nav button, header nav a {
+      font-size: 13px; color: var(--ink-2); text-decoration: none;
+      letter-spacing: 0.04em;
+    }
+    header nav button[aria-current="page"],
+    header nav a[aria-current="page"] { color: var(--ink); box-shadow: inset 0 -1px 0 var(--ink); }
+    main {
+      max-width: 720px; width: 100%;
+      margin: 0 auto;
+      padding: 48px 40px 80px;
+    }
+    .page { display: none; }
+    .page.on { display: block; animation: in 280ms ease; }
+    @keyframes in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+    .date {
+      font-size: 12px; letter-spacing: 0.22em; text-transform: uppercase;
+      color: var(--ink-2); margin-bottom: 28px;
+    }
+    h1 {
+      font-family: var(--serif);
+      font-weight: 400;
+      font-size: clamp(40px, 7vw, 64px);
+      letter-spacing: -0.03em;
+      line-height: 1.05;
+      margin-bottom: 12px;
+    }
+    .lede {
+      font-family: var(--serif);
+      font-size: 20px; line-height: 1.4;
+      color: var(--ink-2); max-width: 36ch;
+      margin-bottom: 40px;
+    }
+    ol.gestes { list-style: none; }
+    ol.gestes > li { border-top: 1px solid var(--rule); }
+    ol.gestes > li:last-child { border-bottom: 1px solid var(--rule); }
+    .geste {
+      width: 100%; text-align: left;
+      display: grid; grid-template-columns: 56px 1fr;
+      gap: 8px; padding: 22px 0;
+    }
+    .geste .num {
+      font-family: var(--serif); font-style: italic;
+      font-size: 32px; color: var(--seal); line-height: 1;
+    }
+    .geste h2 { font-size: 22px; font-weight: 500; letter-spacing: -0.02em; }
+    .geste p { color: var(--ink-2); margin-top: 6px; font-size: 15px; max-width: 46ch; line-height: 1.45; }
+    .geste:hover h2 { color: var(--seal); }
+    .unfold {
+      display: none;
+      grid-column: 2;
+      padding: 0 0 22px;
+    }
+    li.open .unfold { display: block; }
+    .row-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+    .seal {
+      background: var(--seal); color: #f8f1ea;
+      padding: 9px 16px; font-size: 14px;
+    }
+    .quiet {
+      border: 1px solid var(--ink); padding: 8px 14px; font-size: 14px;
+    }
+    .quiet:hover { background: var(--ink); color: var(--paper); }
+
+    .colophon {
+      margin-top: 56px; padding-top: 20px;
+      border-top: 1px solid var(--rule);
+      display: flex; justify-content: space-between; gap: 24px;
+      color: var(--ink-2); font-size: 13px; flex-wrap: wrap;
+    }
+    .colophon strong { color: var(--ink); font-weight: 500; }
+    .clear {
+      margin-top: 48px;
+      font-family: var(--serif); font-style: italic;
+      font-size: 22px; color: var(--ink-2);
+    }
+
+    /* Dossier */
+    .back {
+      font-size: 13px; color: var(--ink-2); margin-bottom: 28px;
+    }
+    .back:hover { color: var(--ink); }
+    .who {
+      font-family: var(--serif);
+      font-size: clamp(42px, 8vw, 68px);
+      font-weight: 400; letter-spacing: -0.03em; line-height: 0.95;
+    }
+    .co { margin: 10px 0 32px; color: var(--ink-2); font-size: 16px; }
+    .block { margin: 36px 0; }
+    .block h3 {
+      font-size: 11px; letter-spacing: 0.2em; text-transform: uppercase;
+      color: var(--ink-2); margin-bottom: 12px; font-weight: 600;
+    }
+    .block p { font-size: 17px; line-height: 1.5; max-width: 48ch; }
+    .hist li {
+      list-style: none; display: grid; grid-template-columns: 7rem 1fr;
+      gap: 16px; padding: 12px 0; border-top: 1px solid var(--rule);
+      font-size: 15px;
+    }
+    .hist time { color: var(--ink-2); font-variant-numeric: tabular-nums; }
+
+    /* Maison */
+    .statement h1 { font-size: 42px; }
+    .grid {
+      display: grid; grid-template-columns: 1fr 1fr;
+      gap: 0; margin: 36px 0; border-top: 1px solid var(--ink);
+    }
+    .grid div { padding: 18px 20px 18px 0; border-bottom: 1px solid var(--rule); }
+    .grid dt {
+      font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase;
+      color: var(--ink-2);
+    }
+    .grid dd {
+      font-family: var(--serif); font-size: 28px; margin-top: 4px;
+      font-variant-numeric: tabular-nums;
+    }
+    .steps { margin-top: 12px; }
+    .steps li {
+      list-style: none; padding: 12px 0;
+      border-top: 1px solid var(--rule);
+      display: flex; gap: 12px; font-size: 16px;
+    }
+    .mark-ok { color: var(--ink-2); }
+    .mark-now { color: var(--seal); font-weight: 600; }
+
+    .letter {
+      margin-top: 28px; padding: 24px;
+      background: #f7f2e8; border: 1px solid var(--rule);
+      font-family: var(--serif); font-size: 16px; line-height: 1.55;
+    }
+    .letter .meta { font-family: var(--sans); font-size: 12px; color: var(--ink-2); margin-bottom: 16px; }
+
+    footer.foot {
+      padding: 16px 40px 28px;
+      max-width: 920px; width: 100%; margin: 0 auto;
+      font-size: 12px; color: var(--ink-2);
+      display: flex; justify-content: space-between;
+    }
+    @media (max-width: 700px) {
+      header, main, footer.foot { padding-left: 20px; padding-right: 20px; }
+      .grid { grid-template-columns: 1fr; }
+      .geste { grid-template-columns: 40px 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="desk">
+    <header>
+      <a class="mark" href="index.html">FreeFlow</a>
+      <nav>
+        <button type="button" data-page="jour" aria-current="page">Le jour</button>
+        <button type="button" data-page="maison">La maison</button>
+      </nav>
+    </header>
+
+    <main>
+      <section class="page on" id="page-jour">
+        <div class="date">Mercredi 5 septembre 2026</div>
+        <h1>Trois gestes.</h1>
+        <p class="lede">Rien d’autre n’est urgent. La piste tient quatre mois. La clôture est dans vingt-cinq jours.</p>
+        <ol class="gestes">
+          <li>
+            <button class="geste" type="button" data-open="camille">
+              <span class="num">1</span>
+              <div>
+                <h2>Écrire à Camille</h2>
+                <p>Le devis Atelier Nord attend depuis trois jours. Un brouillon est prêt — il s’ouvrira dans ton client mail.</p>
+              </div>
+            </button>
+            <div class="unfold">
+              <div class="row-actions">
+                <button class="seal" type="button" data-page="camille">Ouvrir son dossier</button>
+                <button class="quiet" type="button" data-page="lettre">Lire le brouillon</button>
+                <button class="quiet" type="button">Demain</button>
+              </div>
+            </div>
+          </li>
+          <li>
+            <button class="geste" type="button" data-open="banque">
+              <span class="num">2</span>
+              <div>
+                <h2>Ranger le relevé</h2>
+                <p>Trois mouvements Qonto n’ont pas encore de lecture. L’un d’eux est le règlement d’une dette reprise — pas une charge.</p>
+              </div>
+            </button>
+            <div class="unfold">
+              <p style="color:var(--ink-2);max-width:46ch">4 sept, Cabinet Leroy, −1 200 € — correspond au 401 repris. 3 sept, Qonto −9,90 €. 2 sept, Figma −144 €.</p>
+              <div class="row-actions">
+                <button class="seal" type="button" data-page="maison">Aller à la maison</button>
+                <button class="quiet" type="button">Plus tard</button>
+              </div>
+            </div>
+          </li>
+          <li>
+            <button class="geste" type="button" data-open="tva">
+              <span class="num">3</span>
+              <div>
+                <h2>Savoir pour la CA3</h2>
+                <p>1 840 € à déposer avant le 16. Les chiffres sont déjà dans le coffre. Rien à saisir — seulement à déposer, ailleurs.</p>
+              </div>
+            </button>
+            <div class="unfold">
+              <p style="color:var(--ink-2);max-width:46ch">FreeFlow ne se connecte pas à impots.gouv.fr. Il te dit le montant, la date, et que tu es prêt. Le geste se fait sur le site des impôts.</p>
+            </div>
+          </li>
+        </ol>
+        <div class="colophon">
+          <span>Banque <strong>12 843,12 €</strong></span>
+          <span>Piste <strong>4,2 mois</strong></span>
+          <span>À encaisser <strong>6 200 €</strong> · Atlas</span>
+          <span>Coffre local · chiffré</span>
+        </div>
+      </section>
+
+      <section class="page" id="page-camille">
+        <button class="back" type="button" data-page="jour">← Le jour</button>
+        <div class="who">Camille Rivière</div>
+        <p class="co">Atelier Nord · on se parle depuis mars</p>
+        <div class="row-actions">
+          <button class="seal" type="button" data-page="lettre">Écrire</button>
+          <button class="quiet" type="button">Reporter de trois jours</button>
+          <button class="quiet" type="button">Ce n’est plus d’actualité</button>
+        </div>
+        <div class="block">
+          <h3>En cours</h3>
+          <p>Devis d’accompagnement identité, 8 400 € HT, envoyé le 2 septembre. Elle a dit qu’elle reviendrait en début de semaine. C’est le troisième pas de la cadence — le suivant, si tu n’écris pas, est dans quatre jours.</p>
+        </div>
+        <div class="block">
+          <h3>Histoire</h3>
+          <ul class="hist">
+            <li><time>2 septembre</time><span>Devis envoyé.</span></li>
+            <li><time>28 août</time><span>Appel. Budget confirmé, intéressée par le forfait.</span></li>
+            <li><time>12 août</time><span>Premier échange, via Martin Pecheur.</span></li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="page" id="page-lettre">
+        <button class="back" type="button" data-page="camille">← Camille Rivière</button>
+        <h1>Une lettre, pas un envoi.</h1>
+        <p class="lede">FreeFlow écrit le brouillon. C’est toi qui l’envoies, depuis aerc ou un autre client. Ensuite tu reviens dire que c’est parti.</p>
+        <div class="letter">
+          <div class="meta">De nicolas@lumen-conseil.fr · À camille@atelier-nord.fr · X-Unsent: 1</div>
+          Camille,<br /><br />
+          Je me permets de revenir vers toi concernant le devis d’accompagnement identité (8 400 € HT), envoyé mardi.<br /><br />
+          Si tu as une question sur le périmètre ou le calendrier, je suis joignable cette semaine.<br /><br />
+          Nicolas
+        </div>
+        <div class="row-actions" style="margin-top:22px">
+          <button class="seal" type="button" data-page="jour">Ouvrir dans le client mail</button>
+          <button class="quiet" type="button" data-page="jour">Marquer envoyé</button>
+        </div>
+      </section>
+
+      <section class="page statement" id="page-maison">
+        <button class="back" type="button" data-page="jour">← Le jour</button>
+        <div class="date">État au 5 septembre 2026</div>
+        <h1>Lumen Conseil</h1>
+        <p class="lede">SASU au capital de 1 000 €. L’exercice se clôt le 30 septembre. Vingt-cinq jours.</p>
+        <dl class="grid">
+          <div><dt>En banque</dt><dd>12 843,12</dd></div>
+          <div><dt>Piste</dt><dd>4,2 mois</dd></div>
+          <div><dt>À encaisser</dt><dd>6 200,00</dd></div>
+          <div><dt>CA3 · 16 sept</dt><dd>1 840,00</dd></div>
+        </dl>
+        <div class="block">
+          <h3>Avant de clore</h3>
+          <ul class="steps">
+            <li><span class="mark-ok">✓</span> Bilan d’ouverture repris du cabinet</li>
+            <li><span class="mark-now">→</span> Ranger trois mouvements du relevé</li>
+            <li><span class="mark-ok">✓</span> Justificatifs de l’exercice</li>
+            <li><span class="mark-ok">·</span> Clore — à partir du 1er octobre, pas avant</li>
+            <li><span class="mark-ok">·</span> PV, liasse, FEC, dépôt au greffe</li>
+          </ul>
+        </div>
+        <div class="block">
+          <h3>Le coffre</h3>
+          <p>Un fichier sur cette machine, chiffré. Aucune connexion sortante. Les mails, la CA3, le greffe se font ailleurs — FreeFlow prépare, il ne transmet pas.</p>
+        </div>
+      </section>
+    </main>
+
+    <footer class="foot">
+      <span>Coffre local · rien ne sort</span>
+      <a href="index.html" style="color:inherit">Les deux directions</a>
+    </footer>
+  </div>
+  <script>
+    const pages = [...document.querySelectorAll(".page")];
+    const nav = [...document.querySelectorAll("header nav button")];
+    function show(id) {
+      pages.forEach((p) => p.classList.toggle("on", p.id === "page-" + id));
+      nav.forEach((b) => b.setAttribute("aria-current", b.dataset.page === id ? "page" : "false"));
+      if (location.hash !== "#" + id) history.replaceState(null, "", "#" + id);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+    const start = (location.hash || "#jour").slice(1);
+    if (["jour", "camille", "lettre", "maison"].includes(start)) show(start);
+    document.addEventListener("click", (e) => {
+      const open = e.target.closest("[data-open]");
+      const page = e.target.closest("[data-page]");
+      if (open) {
+        const li = open.closest("li");
+        document.querySelectorAll(".gestes > li").forEach((x) => {
+          if (x !== li) x.classList.remove("open");
+        });
+        li.classList.toggle("open");
+      }
+      if (page) show(page.dataset.page);
+    });
+  </script>
+</body>
+</html>

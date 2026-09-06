@@ -5,12 +5,16 @@
 //! TVA sont expliqués en une phrase.
 
 use freeflow_core::app::AppError;
+use freeflow_core::billing::list_bank_transactions;
 use freeflow_core::company::{CompanyProfile, company_profile};
-use freeflow_core::domain::format_date;
+use freeflow_core::domain::{Money, format_date, format_date_fr};
+use freeflow_core::fiscal::fiscal_calendar;
 use freeflow_core::store::Store;
 use maud::{Markup, html};
+use time::Date;
 
 use crate::layout::{ViewId, view_head};
+use crate::views::copy::{deadline_fr, letter_date, year_end_fr};
 use crate::views::form;
 
 pub const VAT_REGIME_OPTIONS: [(&str, &str); 5] = [
@@ -172,6 +176,155 @@ pub fn profile_form(
             (form::actions(submit_label))
         }
     }
+}
+
+/// La pièce « La société » (lot 48) : identité courte + chapitres. Le paysage de trésorerie
+/// et « te payer » chiffré arrivent au lot 51 ; ici on pointe les écrans déjà là.
+pub fn piece(store: &Store, today: Date) -> Result<Markup, AppError> {
+    let conn = store.connection();
+    let profile = company_profile(conn)?;
+    let unmatched = list_bank_transactions(conn)?
+        .into_iter()
+        .filter(|t| !t.is_matched())
+        .count();
+    let calendar = fiscal_calendar(conn, today)?;
+    let next = calendar.first();
+
+    let title = profile.as_ref().map_or("La société.", |p| p.name.as_str());
+    let lede = match &profile {
+        Some(p) => {
+            let form = p.legal_form.as_str();
+            let capital = p
+                .share_capital
+                .filter(|c| *c != Money::ZERO)
+                .map(|c| format!(" au capital de {c}"))
+                .unwrap_or_default();
+            match p.fiscal_year_end {
+                Some(end) => format!(
+                    "{form}{capital}. L'exercice se clôt le {}.",
+                    year_end_fr(end)
+                ),
+                None => format!("{form}{capital}. La date de clôture n'est pas encore posée."),
+            }
+        }
+        None => "Dites d'abord qui vous êtes : nom, forme, clôture. Tout le reste en dépend."
+            .to_string(),
+    };
+
+    let taxes_sub = match next {
+        Some(d) => {
+            let amount = d
+                .amount
+                .filter(|m| *m != Money::ZERO)
+                .map(|m| format!(" · {m}"))
+                .unwrap_or_default();
+            format!(
+                "{} le {}{amount}",
+                deadline_fr(d.kind),
+                format_date_fr(d.due_on)
+            )
+        }
+        None => "Aucune échéance dans l'horizon.".to_string(),
+    };
+    let releve_sub = match unmatched {
+        0 => "Tout est lu.".to_string(),
+        1 => "1 mouvement sans lecture".to_string(),
+        n => format!("{n} mouvements sans lecture"),
+    };
+    let identite_sub = profile.as_ref().map_or_else(
+        || "à renseigner".to_string(),
+        |p| {
+            format!(
+                "{} · {}",
+                p.legal_form,
+                p.fiscal_year_end
+                    .map(year_end_fr)
+                    .unwrap_or_else(|| "clôture à poser".to_string())
+            )
+        },
+    );
+
+    Ok(html! {
+        div class="letter" data-view=(ViewId::Societe.slug()) {
+            div class="date" { "La société · " (letter_date(today)) }
+            h1 { (title) }
+            p class="lede" { (lede) }
+
+            ul class="chapters" {
+                li {
+                    a href="/view/societe"
+                      hx-get="/view/societe" hx-target="#content" hx-push-url="true" {
+                        div {
+                            strong { "Te payer" }
+                            span { "Le montant possible sans casser la piste n'est pas encore calculé — la rémunération du dirigeant se pose dans l'identité." }
+                        }
+                        span class="go" { "→" }
+                    }
+                }
+                li {
+                    a href="#impots" {
+                        div {
+                            strong { "Ce que tu dois à l'État" }
+                            span { (taxes_sub) }
+                        }
+                        span class="go" { "→" }
+                    }
+                }
+                li {
+                    a href=(ViewId::Cloture.path())
+                      hx-get=(ViewId::Cloture.path()) hx-target="#content" hx-push-url="true" {
+                        div {
+                            strong { "Clore l'exercice" }
+                            span { "Le parcours, en phrases." }
+                        }
+                        span class="go" { "→" }
+                    }
+                }
+                li {
+                    a href=(ViewId::Depenses.path())
+                      hx-get=(ViewId::Depenses.path()) hx-target="#content" hx-push-url="true" {
+                        div {
+                            strong { "Le relevé" }
+                            span { (releve_sub) }
+                        }
+                        span class="go" { "→" }
+                    }
+                }
+                li {
+                    a href="/view/societe"
+                      hx-get="/view/societe" hx-target="#content" hx-push-url="true" {
+                        div {
+                            strong { "L'identité" }
+                            span { (identite_sub) }
+                        }
+                        span class="go" { "→" }
+                    }
+                }
+            }
+
+            @if !calendar.is_empty() {
+                div class="block" id="impots" {
+                    h3 { "Les prochaines échéances" }
+                    ul class="chapters" {
+                        @for d in calendar.iter().take(5) {
+                            li {
+                                div class="id-line" {
+                                    span class="k" { (format_date_fr(d.due_on)) }
+                                    span class="val" {
+                                        (deadline_fr(d.kind))
+                                        @if let Some(amount) = d.amount {
+                                            @if amount != Money::ZERO { " · " (amount) }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    p class="prose" { "Les chiffres sont dans le coffre. Le dépôt se fait sur le site des impôts — pas ici." }
+                }
+            }
+        }
+    })
 }
 
 /// L'écran `societe` : le formulaire pré-rempli, ou vide avec ses défauts.

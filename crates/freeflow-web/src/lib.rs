@@ -67,6 +67,8 @@ async fn french_rejections(response: axum::response::Response) -> axum::response
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(handlers::index))
+        .route("/jour", get(handlers::jour))
+        .route("/gens", get(handlers::gens))
         .route("/view/dashboard", get(handlers::dashboard))
         .route("/view/relances", get(relances::view))
         .route("/relances/sender", post(relances::set_sender))
@@ -126,7 +128,7 @@ pub fn router(state: AppState) -> Router {
         .route("/view/cloture", get(handlers::cloture))
         .route("/view/console", get(handlers::console))
         .route("/view/societe", get(handlers::societe))
-        .route("/societe", post(societe::save))
+        .route("/societe", get(handlers::societe_piece).post(societe::save))
         .route("/premiers-pas", get(premiers_pas::show))
         .route(
             "/premiers-pas/nouvelle",
@@ -349,6 +351,7 @@ pub fn router(state: AppState) -> Router {
         .route("/assets/app.css", get(assets::app_css))
         .route("/assets/app.js", get(assets::app_js))
         .route("/assets/htmx.min.js", get(assets::htmx_js))
+        .route("/assets/fonts/{name}", get(assets::font))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             unlock::require_unlocked,

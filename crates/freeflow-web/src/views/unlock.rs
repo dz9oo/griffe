@@ -9,7 +9,7 @@ use maud::{Markup, html};
 pub fn unlock_form(error: Option<&str>, pending: bool) -> Markup {
     html! {
         div class="auth-card" {
-            div class="auth-brand" { span class="dot" {} "FreeFlow" }
+            div class="auth-brand" { "FreeFlow" }
             div class="auth-title" { "Coffre verrouillé" }
             div class="auth-sub" { "Saisissez la passphrase pour le déverrouiller." }
             @if pending {
@@ -33,7 +33,7 @@ pub fn unlock_form(error: Option<&str>, pending: bool) -> Markup {
                 }
                 button class="auth-submit" type="submit" { "Déverrouiller" }
             }
-            div class="auth-hint" { "En script ou par un agent, la même passphrase s'obtient par la ligne de commande (« unlock --remember »)." }
+            div class="auth-hint" { "En script, la même passphrase s'obtient hors de la fenêtre." }
         }
     }
 }
@@ -41,7 +41,7 @@ pub fn unlock_form(error: Option<&str>, pending: bool) -> Markup {
 pub fn setup_form(error: Option<&str>) -> Markup {
     html! {
         div class="auth-card" {
-            div class="auth-brand" { span class="dot" {} "FreeFlow" }
+            div class="auth-brand" { "FreeFlow" }
             div class="auth-title" { "Créer le coffre" }
             div class="auth-sub" { "Premier lancement : choisissez une passphrase." }
             div class="auth-warning" {

@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FreeFlow — Atelier</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Newsreader:ital,opsz,wght@0,16..72,400;0,16..72,600;1,16..72,400&family=Syne:wght@600;700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --ink: #161410;
+      --paper: #f4efe6;
+      --rule: #d8d0c2;
+      --mute: #6e675e;
+      --seal: #9f3218;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: "IBM Plex Sans", "Adwaita Sans", sans-serif;
+      background: var(--paper);
+      color: var(--ink);
+      padding: 56px 48px 80px;
+    }
+    header { max-width: 720px; margin-bottom: 40px; }
+    .kicker {
+      font-size: 11px; letter-spacing: 0.22em; text-transform: uppercase;
+      color: var(--mute); margin-bottom: 16px;
+    }
+    h1 {
+      font-family: "Newsreader", serif;
+      font-size: clamp(40px, 6vw, 58px);
+      font-weight: 400; letter-spacing: -0.03em; line-height: 0.95;
+    }
+    header p {
+      margin-top: 20px; max-width: 58ch; font-size: 16px;
+      line-height: 1.55; color: var(--mute);
+    }
+    a.hero {
+      display: block; max-width: 720px; padding: 32px;
+      background: #f8f4ec; border: 1px solid var(--ink);
+      text-decoration: none; color: inherit; margin-bottom: 36px;
+    }
+    a.hero:hover { border-color: var(--seal); }
+    a.hero h2 {
+      font-family: "Newsreader", serif; font-style: italic;
+      font-size: 36px; font-weight: 400; margin-bottom: 12px;
+    }
+    a.hero p { font-size: 15px; line-height: 1.5; color: var(--mute); }
+    a.hero .go { margin-top: 20px; color: var(--seal); font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; }
+    .archive { max-width: 720px; color: var(--mute); font-size: 14px; }
+    .archive a { color: var(--ink); }
+    @media (max-width: 700px) { body { padding: 32px 20px; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="kicker">Maquette · synthèse</div>
+    <h1>Atelier, avec le paysage dans la société.</h1>
+    <p>
+      Figé le 5 septembre 2026 —
+      <a href="../atelier-design.md">docs/atelier-design.md</a>.
+      Le jour est une lettre. Les gens sont des dossiers.
+      La société porte l’argent, se payer, clore, l’identité.
+    </p>
+  </header>
+  <a class="hero" href="atelier-app.html">
+    <h2>Ouvrir FreeFlow</h2>
+    <p>
+      Lumen Conseil, mercredi 5 septembre. Clique Le jour, Les gens, La société.
+      Relance Camille, pose un devis, range le relevé, vois si tu peux te payer.
+    </p>
+    <div class="go">Entrer dans l’atelier →</div>
+  </a>
+  <p class="archive">
+    Les deux pistes d’origine restent là :
+    <a href="horizon.html">Horizon</a> (le cockpit) ·
+    <a href="atelier.html">Atelier, première lettre</a>.
+  </p>
+</body>
+</html>

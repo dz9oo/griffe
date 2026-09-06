@@ -1,0 +1,1002 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FreeFlow — Lumen Conseil</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,16..72,400;0,16..72,500;0,16..72,600;1,16..72,400;1,16..72,500&family=Source+Sans+3:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --paper: #f1ebe0;
+      --paper-2: #e8e0d2;
+      --ink: #1c1814;
+      --ink-2: #6a635a;
+      --rule: #d0c6b4;
+      --seal: #9f3218;
+      --seal-soft: #f0d8cf;
+      --ok: #3d5c45;
+      --serif: "Newsreader", "Liberation Serif", "Noto Serif", serif;
+      --sans: "Source Sans 3", "Adwaita Sans", "Noto Sans", sans-serif;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { min-height: 100%; }
+    body {
+      font-family: var(--sans);
+      background: radial-gradient(ellipse at top, #f7f1e6, var(--paper) 55%);
+      color: var(--ink);
+    }
+    button { font-family: inherit; color: inherit; cursor: pointer; background: none; border: 0; }
+    input, textarea, select {
+      font-family: inherit; color: inherit; font-size: 16px;
+      background: transparent; border: 0; border-bottom: 1px solid var(--rule);
+      width: 100%; padding: 8px 0; outline: none;
+    }
+    textarea { border: 1px solid var(--rule); padding: 12px; min-height: 120px; resize: vertical; }
+    input:focus, textarea:focus { border-color: var(--ink); }
+    .desk { min-height: 100vh; display: grid; grid-template-rows: auto 1fr auto; }
+    .chrome {
+      display: flex; justify-content: space-between; align-items: baseline;
+      padding: 24px 40px 0; max-width: 960px; width: 100%; margin: 0 auto;
+    }
+    .mark {
+      font-family: var(--serif); font-style: italic; font-size: 22px;
+      text-decoration: none; color: var(--ink);
+    }
+    .chrome nav { display: flex; gap: 22px; }
+    .chrome nav button {
+      font-size: 13px; color: var(--ink-2); letter-spacing: 0.04em;
+    }
+    .chrome nav button[aria-current="page"] {
+      color: var(--ink); box-shadow: inset 0 -1px 0 var(--ink);
+    }
+    main { max-width: 760px; width: 100%; margin: 0 auto; padding: 40px 40px 88px; }
+    main.wide { max-width: 960px; }
+    .page { display: none; }
+    .page.on { display: block; animation: in 260ms ease; }
+    @keyframes in { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+
+    .date {
+      font-size: 12px; letter-spacing: 0.2em; text-transform: uppercase;
+      color: var(--ink-2); margin-bottom: 14px;
+    }
+    h1 {
+      font-family: var(--serif); font-weight: 400;
+      font-size: clamp(36px, 6vw, 58px);
+      letter-spacing: -0.03em; line-height: 1.05; margin-bottom: 10px;
+    }
+    .lede {
+      font-family: var(--serif); font-size: 20px; line-height: 1.4;
+      color: var(--ink-2); max-width: 38ch; margin-bottom: 28px;
+    }
+
+    /* État — toujours au-dessus de la lettre, jamais des tuiles */
+    .mast {
+      margin: 0 0 36px; padding-bottom: 22px;
+      border-bottom: 1px solid var(--ink);
+    }
+    .mast-facts {
+      display: flex; flex-wrap: wrap; gap: 8px 28px;
+      font-size: 15px; margin-bottom: 10px;
+    }
+    .mast-facts b { font-weight: 600; }
+    .mast-facts .dim { color: var(--ink-2); font-weight: 400; }
+    .mast-note {
+      font-family: var(--serif); font-style: italic;
+      font-size: 18px; color: var(--seal); max-width: 46ch;
+    }
+    .mast.alarm { border-bottom-color: var(--seal); }
+    .mast.alarm .mast-facts b.bad { color: var(--seal); }
+
+    ol.gestes { list-style: none; }
+    ol.gestes > li { border-top: 1px solid var(--rule); }
+    ol.gestes > li:last-child { border-bottom: 1px solid var(--rule); }
+    .geste {
+      width: 100%; text-align: left;
+      display: grid; grid-template-columns: 56px 1fr;
+      gap: 8px; padding: 20px 0;
+    }
+    .geste .num {
+      font-family: var(--serif); font-style: italic;
+      font-size: 32px; color: var(--seal); line-height: 1;
+    }
+    .geste h2 { font-size: 22px; font-weight: 500; letter-spacing: -0.02em; }
+    .geste p { color: var(--ink-2); margin-top: 6px; font-size: 15px; max-width: 46ch; line-height: 1.45; }
+    .geste:hover h2 { color: var(--seal); }
+    .unfold { display: none; grid-column: 2; padding: 0 0 20px; }
+    li.open .unfold { display: block; }
+
+    .row-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+    .seal { background: var(--seal); color: #f8f1ea; padding: 9px 16px; font-size: 14px; }
+    .quiet { border: 1px solid var(--ink); padding: 8px 14px; font-size: 14px; }
+    .quiet:hover { background: var(--ink); color: var(--paper); }
+
+    .back { font-size: 13px; color: var(--ink-2); margin-bottom: 24px; }
+    .back:hover { color: var(--ink); }
+    .who {
+      font-family: var(--serif);
+      font-size: clamp(36px, 7vw, 60px);
+      font-weight: 400; letter-spacing: -0.03em; line-height: 0.95;
+    }
+    .co { margin: 8px 0 24px; color: var(--ink-2); font-size: 16px; }
+    .block { margin: 32px 0; }
+    .block h3 {
+      font-size: 11px; letter-spacing: 0.2em; text-transform: uppercase;
+      color: var(--ink-2); margin-bottom: 12px; font-weight: 600;
+    }
+    .block p, .prose { font-size: 17px; line-height: 1.5; max-width: 48ch; }
+    .hist li, .rows li, .chapters a, .move {
+      list-style: none; display: grid; grid-template-columns: 8.5rem 1fr;
+      gap: 16px; padding: 12px 0; border-top: 1px solid var(--rule);
+      font-size: 15px;
+    }
+    .hist time, .when { color: var(--ink-2); font-variant-numeric: tabular-nums; }
+    .chapters { list-style: none; margin-top: 12px; }
+    .chapters a {
+      display: grid; grid-template-columns: 1fr auto;
+      text-decoration: none; color: inherit; text-align: left; width: 100%;
+      cursor: pointer; font-size: 16px;
+    }
+    .chapters a strong { font-weight: 500; display: block; }
+    .chapters a span { color: var(--ink-2); font-size: 14px; }
+    .chapters a:hover strong { color: var(--seal); }
+    .chapters a .go { color: var(--ink-2); align-self: center; }
+
+    .people { list-style: none; }
+    .people button, .people a {
+      display: grid; grid-template-columns: 1fr auto;
+      width: 100%; text-align: left; padding: 16px 0;
+      border-top: 1px solid var(--rule); text-decoration: none; color: inherit;
+    }
+    .people li:last-child button, .people li:last-child a { border-bottom: 1px solid var(--rule); }
+    .people .nm { font-size: 20px; font-weight: 500; letter-spacing: -0.02em; }
+    .people .st { color: var(--ink-2); font-size: 14px; margin-top: 3px; }
+    .people .amt { font-family: var(--serif); font-size: 18px; align-self: center; }
+    .people button:hover .nm { color: var(--seal); }
+    .section-label {
+      font-size: 11px; letter-spacing: 0.2em; text-transform: uppercase;
+      color: var(--ink-2); margin: 36px 0 4px; font-weight: 600;
+    }
+
+    .landscape {
+      margin: 8px 0 36px; padding: 8px 0 4px;
+    }
+    .landscape svg { width: 100%; height: 160px; display: block; }
+    .landscape figcaption {
+      display: flex; justify-content: space-between;
+      font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase;
+      color: var(--ink-2); margin-top: 4px;
+    }
+    .bars {
+      display: flex; align-items: flex-end; gap: 6px; height: 56px; margin: 8px 0 6px;
+    }
+    .bars i {
+      flex: 1; background: var(--ink); opacity: 0.18; display: block;
+    }
+    .bars i.now { background: var(--seal); opacity: 1; }
+    .bars-cap {
+      display: flex; justify-content: space-between;
+      font-size: 11px; color: var(--ink-2); letter-spacing: 0.08em;
+    }
+
+    .pay-choice {
+      display: grid; gap: 0; margin: 20px 0;
+      border-top: 1px solid var(--ink);
+    }
+    .pay-choice label {
+      display: grid; grid-template-columns: 1.4rem 1fr;
+      gap: 12px; padding: 18px 0; border-bottom: 1px solid var(--rule);
+      cursor: pointer; align-items: start;
+    }
+    .pay-choice label.on { background: linear-gradient(90deg, var(--seal-soft), transparent 70%); }
+    .pay-choice strong { display: block; font-size: 18px; font-weight: 500; }
+    .pay-choice p { color: var(--ink-2); font-size: 14px; margin-top: 4px; max-width: 48ch; }
+    .meter {
+      height: 8px; background: var(--paper-2); margin: 10px 0 6px;
+    }
+    .meter i { display: block; height: 100%; background: var(--ink); }
+    .meter i.mid { width: 51%; }
+    .field { margin: 18px 0; }
+    .field label {
+      display: block; font-size: 11px; letter-spacing: 0.16em;
+      text-transform: uppercase; color: var(--ink-2); margin-bottom: 4px;
+    }
+    .letter {
+      margin-top: 20px; padding: 24px; background: #f7f2e8;
+      border: 1px solid var(--rule);
+      font-family: var(--serif); font-size: 16px; line-height: 1.55;
+    }
+    .letter .meta { font-family: var(--sans); font-size: 12px; color: var(--ink-2); margin-bottom: 16px; }
+    .id-line {
+      display: grid; grid-template-columns: 10rem 1fr;
+      gap: 12px; padding: 12px 0; border-top: 1px solid var(--rule);
+      font-size: 16px; width: 100%; text-align: left;
+    }
+    .id-line:hover .val { color: var(--seal); }
+    .id-line .k { color: var(--ink-2); font-size: 13px; }
+    .id-line .val { font-family: var(--serif); font-size: 20px; }
+    .edit-row { display: none; grid-template-columns: 10rem 1fr; gap: 12px; padding: 8px 0 16px; }
+    li.editing .edit-row { display: grid; }
+    li.editing .id-line { display: none; }
+
+    footer.foot {
+      padding: 12px 40px 24px; max-width: 960px; width: 100%; margin: 0 auto;
+      font-size: 12px; color: var(--ink-2);
+      display: flex; justify-content: space-between;
+    }
+    /* Mois — une page, pas un widget */
+    .month {
+      margin-top: 56px; padding-top: 32px;
+      border-top: 1px solid var(--ink);
+    }
+    .month h2 {
+      font-family: var(--serif); font-weight: 400;
+      font-size: clamp(32px, 5vw, 42px);
+      letter-spacing: -0.03em; margin-bottom: 8px;
+    }
+    .cal {
+      display: grid; grid-template-columns: repeat(7, 1fr);
+      margin: 22px 0 4px;
+    }
+    .cal .dow {
+      font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+      color: var(--ink-2); padding: 0 4px 8px;
+    }
+    .cal .d {
+      min-height: 52px; padding: 7px 6px 8px;
+      border-top: 1px solid var(--rule);
+      font-family: var(--serif); font-size: 16px;
+      text-align: left; color: var(--ink-2);
+      line-height: 1;
+    }
+    .cal .d.empty { border-top-color: transparent; }
+    .cal .d.pad { min-height: 52px; border-top: 1px solid var(--rule); }
+    .cal .d.has { color: var(--ink); }
+    .cal .d.today { color: var(--seal); box-shadow: inset 0 -1px 0 var(--seal); }
+    .cal .d.on { background: var(--seal-soft); }
+    .cal .d .mark {
+      display: block; width: 5px; height: 5px; margin-top: 8px;
+      background: var(--seal); font-style: normal;
+    }
+    .cal .d.legal .mark { background: var(--ink); width: 5px; height: 5px; }
+    .cal .d.meet .mark { width: 9px; height: 2px; margin-top: 10px; background: var(--ink); }
+    .tracks { margin: 20px 0 8px; }
+    .track {
+      display: grid; grid-template-columns: 6.2rem 1fr auto;
+      gap: 10px; align-items: center; margin: 9px 0; font-size: 13px;
+    }
+    .track .lab { font-size: 13px; }
+    .rail { height: 7px; background: var(--paper-2); position: relative; }
+    .rail .bar, .rail .now, .rail .tick { display: block; position: absolute; font-style: normal; }
+    .rail .bar { top: 0; height: 100%; background: var(--ink); opacity: 0.28; }
+    .rail .now { top: -4px; width: 1px; height: 15px; background: var(--seal); }
+    .rail .tick { top: -3px; width: 5px; height: 13px; background: var(--seal); }
+    .track .end { color: var(--ink-2); font-size: 12px; }
+    .agenda { list-style: none; margin-top: 28px; }
+    .agenda button {
+      display: grid; grid-template-columns: 3.2rem 7.5rem 1fr;
+      gap: 12px; width: 100%; text-align: left;
+      padding: 11px 0; border-top: 1px solid var(--rule);
+      font-size: 15px;
+    }
+    .agenda li:last-child button { border-bottom: 1px solid var(--rule); }
+    .agenda .dt { font-family: var(--serif); font-size: 18px; }
+    .agenda .kind { color: var(--ink-2); font-size: 13px; padding-top: 3px; }
+    .agenda button.on { background: linear-gradient(90deg, var(--seal-soft), transparent 80%); }
+    .agenda button:hover .ttl { color: var(--seal); }
+    .month-note {
+      font-family: var(--serif); font-style: italic;
+      font-size: 18px; color: var(--seal); margin-top: 22px; max-width: 46ch;
+    }
+    @media (max-width: 700px) {
+      .chrome, main, footer.foot { padding-left: 20px; padding-right: 20px; }
+      .geste, .hist li, .id-line, .edit-row, .move { grid-template-columns: 1fr; }
+      .geste .num { font-size: 24px; }
+      .mast-facts { gap: 6px 16px; font-size: 14px; }
+      .agenda button, .track { grid-template-columns: 1fr; gap: 4px; }
+      .cal .d { min-height: 44px; font-size: 14px; padding: 5px 3px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="desk">
+    <header class="chrome">
+      <a class="mark" href="#" data-page="jour">FreeFlow</a>
+      <nav>
+        <button type="button" data-page="jour" data-nav="jour" aria-current="page">Le jour</button>
+        <button type="button" data-page="gens" data-nav="gens">Les gens</button>
+        <button type="button" data-page="societe" data-nav="societe">La société</button>
+      </nav>
+    </header>
+
+    <main id="stage">
+      <!-- LE JOUR -->
+      <section class="page on" id="page-jour" data-nav="jour">
+        <div class="date">Samedi 5 septembre 2026</div>
+        <div class="mast">
+          <div class="mast-facts">
+            <span><b>12 843 €</b> <span class="dim">en banque</span></span>
+            <span><b>4 mois</b> <span class="dim">de piste</span></span>
+            <span><b>6 200 €</b> <span class="dim">chez Atlas</span></span>
+          </div>
+          <p class="mast-note">Une seule conversation ouverte derrière Camille. Si elle dit non, la piste s’arrête en janvier.</p>
+        </div>
+        <h1>Trois gestes.</h1>
+        <p class="lede">Rien d’autre n’est urgent. La clôture est dans vingt-cinq jours — pas aujourd’hui.</p>
+        <ol class="gestes">
+          <li>
+            <button class="geste" type="button" data-open="g1">
+              <span class="num">1</span>
+              <div>
+                <h2>Écrire à Camille</h2>
+                <p>Le devis Atelier Nord attend depuis trois jours. Un brouillon est prêt — il s’ouvre dans ton client mail.</p>
+              </div>
+            </button>
+            <div class="unfold">
+              <div class="row-actions">
+                <button class="seal" type="button" data-page="camille">Ouvrir son dossier</button>
+                <button class="quiet" type="button" data-page="lettre">Lire le brouillon</button>
+                <button class="quiet" type="button">Demain</button>
+              </div>
+            </div>
+          </li>
+          <li>
+            <button class="geste" type="button" data-open="g2">
+              <span class="num">2</span>
+              <div>
+                <h2>Ranger le relevé</h2>
+                <p>Trois mouvements Qonto n’ont pas de lecture. L’un d’eux est le cabinet — une dette reprise, pas une charge.</p>
+              </div>
+            </button>
+            <div class="unfold">
+              <div class="row-actions">
+                <button class="seal" type="button" data-page="releve">Lire les trois mouvements</button>
+                <button class="quiet" type="button">Plus tard</button>
+              </div>
+            </div>
+          </li>
+          <li>
+            <button class="geste" type="button" data-open="g3">
+              <span class="num">3</span>
+              <div>
+                <h2>Savoir pour la TVA</h2>
+                <p>1 840 € à déposer avant le 16. Les chiffres sont dans le coffre. Le dépôt se fait sur le site des impôts — pas ici.</p>
+              </div>
+            </button>
+            <div class="unfold">
+              <div class="row-actions">
+                <button class="quiet" type="button" data-page="impots">Voir ce que tu dois, en français</button>
+              </div>
+            </div>
+          </li>
+        </ol>
+
+        <section class="month" aria-label="Septembre 2026">
+          <h2>Septembre.</h2>
+          <p class="lede">Deux missions en cours. La TVA le 16. Hume s’arrête le 23.</p>
+          <div class="cal">
+            <div class="dow">Lu</div><div class="dow">Ma</div><div class="dow">Me</div><div class="dow">Je</div><div class="dow">Ve</div><div class="dow">Sa</div><div class="dow">Di</div>
+            <div class="d empty"></div>
+            <button class="d" type="button" data-day="1">1</button>
+            <button class="d has" type="button" data-day="2">2<i class="mark"></i></button>
+            <button class="d" type="button" data-day="3">3</button>
+            <button class="d has" type="button" data-day="4">4<i class="mark"></i></button>
+            <button class="d has today on" type="button" data-day="5">5<i class="mark"></i></button>
+            <button class="d" type="button" data-day="6">6</button>
+            <button class="d" type="button" data-day="7">7</button>
+            <button class="d" type="button" data-day="8">8</button>
+            <button class="d" type="button" data-day="9">9</button>
+            <button class="d has meet" type="button" data-day="10">10<i class="mark"></i></button>
+            <button class="d" type="button" data-day="11">11</button>
+            <button class="d" type="button" data-day="12">12</button>
+            <button class="d" type="button" data-day="13">13</button>
+            <button class="d" type="button" data-day="14">14</button>
+            <button class="d" type="button" data-day="15">15</button>
+            <button class="d has legal" type="button" data-day="16">16<i class="mark"></i></button>
+            <button class="d" type="button" data-day="17">17</button>
+            <button class="d" type="button" data-day="18">18</button>
+            <button class="d" type="button" data-day="19">19</button>
+            <button class="d" type="button" data-day="20">20</button>
+            <button class="d" type="button" data-day="21">21</button>
+            <button class="d has" type="button" data-day="22">22<i class="mark"></i></button>
+            <button class="d has" type="button" data-day="23">23<i class="mark"></i></button>
+            <button class="d" type="button" data-day="24">24</button>
+            <button class="d" type="button" data-day="25">25</button>
+            <button class="d" type="button" data-day="26">26</button>
+            <button class="d" type="button" data-day="27">27</button>
+            <button class="d" type="button" data-day="28">28</button>
+            <button class="d" type="button" data-day="29">29</button>
+            <button class="d has legal" type="button" data-day="30">30<i class="mark"></i></button>
+            <div class="d pad"></div><div class="d pad"></div><div class="d pad"></div><div class="d pad"></div>
+          </div>
+          <div class="tracks">
+            <div class="track">
+              <span class="lab">Atlas</span>
+              <div class="rail" aria-hidden="true">
+                <i class="bar" style="left:0;width:100%"></i>
+                <i class="now" style="left:13.3%"></i>
+              </div>
+              <span class="end">régie, tout le mois</span>
+            </div>
+            <div class="track">
+              <span class="lab">Hume</span>
+              <div class="rail" aria-hidden="true">
+                <i class="bar" style="left:0;width:76.6%"></i>
+                <i class="now" style="left:13.3%"></i>
+                <i class="tick" style="left:70%"></i>
+              </div>
+              <span class="end">jalon le 22 · fin le 23</span>
+            </div>
+          </div>
+          <ul class="agenda">
+            <li>
+              <button type="button" data-day="5" class="on">
+                <span class="dt">5</span>
+                <span class="kind">aujourd’hui</span>
+                <span class="ttl">Camille · le relevé à ranger</span>
+              </button>
+            </li>
+            <li>
+              <button type="button" data-day="10">
+                <span class="dt">10</span>
+                <span class="kind">rencontre</span>
+                <span class="ttl">Martin · un café, poser le besoin</span>
+              </button>
+            </li>
+            <li>
+              <button type="button" data-day="16" data-page="impots">
+                <span class="dt">16</span>
+                <span class="kind">TVA</span>
+                <span class="ttl">Déposer le trimestre · 1 840 €</span>
+              </button>
+            </li>
+            <li>
+              <button type="button" data-day="22" data-page="hume">
+                <span class="dt">22</span>
+                <span class="kind">jalon</span>
+                <span class="ttl">Hume · maquettes, 40 % à facturer</span>
+              </button>
+            </li>
+            <li>
+              <button type="button" data-day="23" data-page="hume">
+                <span class="dt">23</span>
+                <span class="kind">fin de mission</span>
+                <span class="ttl">Hume · le forfait s’arrête</span>
+              </button>
+            </li>
+            <li>
+              <button type="button" data-day="30" data-page="cloture">
+                <span class="dt">30</span>
+                <span class="kind">exercice</span>
+                <span class="ttl">Dernier jour — on clôt le 1er octobre</span>
+              </button>
+            </li>
+          </ul>
+          <p class="month-note">Après le 23, plus aucune mission sur le papier. Octobre est vide.</p>
+        </section>
+      </section>
+
+      <!-- LES GENS -->
+      <section class="page" id="page-gens" data-nav="gens">
+        <div class="date">Les gens</div>
+        <h1>Cinq noms.</h1>
+        <p class="lede">Derrière Camille, personne. C’est le trou — pas un graphique.</p>
+        <div class="row-actions" style="margin:0 0 28px">
+          <button class="seal" type="button" data-page="nouvelle">Nouvelle conversation</button>
+        </div>
+        <div class="section-label">En conversation</div>
+        <ul class="people">
+          <li>
+            <button type="button" data-page="camille">
+              <div><div class="nm">Camille Rivière</div><div class="st">devis envoyé · à relancer aujourd’hui</div></div>
+              <div class="amt">8 400 €</div>
+            </button>
+          </li>
+          <li>
+            <button type="button" data-page="martin">
+              <div><div class="nm">Martin Pecheur</div><div class="st">premier échange hier · rien de posé</div></div>
+              <div class="amt">~12 k€</div>
+            </button>
+          </li>
+        </ul>
+        <div class="section-label">En mission</div>
+        <ul class="people">
+          <li>
+            <button type="button" data-page="atlas">
+              <div><div class="nm">Atlas Digital</div><div class="st">facture en retard · 7 jours</div></div>
+              <div class="amt">6 200 €</div>
+            </button>
+          </li>
+          <li>
+            <button type="button" data-page="hume">
+              <div><div class="nm">Studio Hume</div><div class="st">forfait · prochain jalon le 22 septembre</div></div>
+              <div class="amt">18 j</div>
+            </button>
+          </li>
+        </ul>
+        <div class="section-label">Fournisseurs</div>
+        <ul class="people">
+          <li>
+            <button type="button" data-page="leroy">
+              <div><div class="nm">Cabinet Leroy</div><div class="st">dette reprise au bilan · un débit Qonto correspond</div></div>
+              <div class="amt">1 200 €</div>
+            </button>
+          </li>
+        </ul>
+      </section>
+
+      <section class="page" id="page-camille" data-nav="gens">
+        <button class="back" type="button" data-page="gens">← Les gens</button>
+        <div class="who">Camille Rivière</div>
+        <p class="co">Atelier Nord · on se parle depuis mars · pas encore cliente</p>
+        <div class="row-actions">
+          <button class="seal" type="button" data-page="lettre">Écrire</button>
+          <button class="quiet" type="button" data-page="devis">Le devis</button>
+          <button class="quiet" type="button" data-page="reunion">Noter une rencontre</button>
+          <button class="quiet" type="button">Reporter de trois jours</button>
+        </div>
+        <div class="block">
+          <h3>En cours</h3>
+          <p>Devis d’accompagnement identité, 8 400 € HT, envoyé le 2 septembre. Elle a dit qu’elle reviendrait en début de semaine. C’est le troisième pas — le suivant est dans quatre jours, si tu n’écris pas.</p>
+        </div>
+        <div class="block">
+          <h3>Les papiers</h3>
+          <ul class="hist">
+            <li><span class="when">2 sept</span><span>Devis n°3 · 8 400 € · en attente</span></li>
+          </ul>
+        </div>
+        <div class="block">
+          <h3>Histoire</h3>
+          <ul class="hist">
+            <li><time>2 septembre</time><span>Devis envoyé.</span></li>
+            <li><time>28 août</time><span>Appel. Budget confirmé, intéressée par le forfait.</span></li>
+            <li><time>12 août</time><span>Premier échange, via Martin Pecheur.</span></li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="page" id="page-atlas" data-nav="gens">
+        <button class="back" type="button" data-page="gens">← Les gens</button>
+        <div class="who">Atlas Digital</div>
+        <p class="co">Client depuis janvier · régie · 10 jours ce mois-ci</p>
+        <div class="row-actions">
+          <button class="seal" type="button" data-page="lettre">Relancer l’impayé</button>
+          <button class="quiet" type="button">Noter une rencontre</button>
+        </div>
+        <div class="block">
+          <h3>En cours</h3>
+          <p>Une facture de 6 200 €, échue le 29 août. Sept jours. C’est elle qui tient une partie de la piste — pas un « impayé » dans un tableau.</p>
+        </div>
+        <div class="block">
+          <h3>Le projet</h3>
+          <p>Mission de régie, ouverte le 12 janvier. 7 jours vendus en septembre sur 18 possibles. Prochaine semaine bloquée chez eux.</p>
+        </div>
+        <div class="block">
+          <h3>Les papiers</h3>
+          <ul class="hist">
+            <li><span class="when">15 août</span><span>Facture · 6 200 € · échue · à relancer</span></li>
+            <li><span class="when">4 août</span><span>Facture · 4 800 € · encaissée</span></li>
+            <li><span class="when">janv.</span><span>Devis initial, accepté</span></li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="page" id="page-martin" data-nav="gens">
+        <button class="back" type="button" data-page="gens">← Les gens</button>
+        <div class="who">Martin Pecheur</div>
+        <p class="co">Premier échange hier · rien n’est encore écrit</p>
+        <div class="row-actions">
+          <button class="seal" type="button" data-page="devis">Poser un devis</button>
+          <button class="quiet" type="button" data-page="reunion">Noter ce qu’il a dit</button>
+        </div>
+        <div class="block">
+          <h3>En cours</h3>
+          <p>Besoin d’un accompagnement produit, autour de 12 000 €. Pas de prochain geste posé — c’est pour ça qu’il est dans le trou derrière Camille.</p>
+        </div>
+      </section>
+
+      <section class="page" id="page-hume" data-nav="gens">
+        <button class="back" type="button" data-page="gens">← Les gens</button>
+        <div class="who">Studio Hume</div>
+        <p class="co">Client · forfait identité · 18 jours restants</p>
+        <div class="block">
+          <h3>Le projet</h3>
+          <p>Forfait à 9 600 €, accepté en juin. Trois temps : recherche (faite), maquettes (en cours), livraison. Prochain jalon le 22 septembre, 40 %.</p>
+        </div>
+        <div class="block">
+          <h3>Les papiers</h3>
+          <ul class="hist">
+            <li><span class="when">juin</span><span>Devis accepté · 9 600 €</span></li>
+            <li><span class="when">juin</span><span>Acompte 40 % · encaissé</span></li>
+            <li><span class="when">22 sept</span><span>Jalon maquettes · 40 % à facturer</span></li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="page" id="page-leroy" data-nav="gens">
+        <button class="back" type="button" data-page="gens">← Les gens</button>
+        <div class="who">Cabinet Leroy</div>
+        <p class="co">Fournisseur · honoraires 2025 repris au bilan</p>
+        <div class="block">
+          <h3>En cours</h3>
+          <p>1 200 € repris en dette. Un débit Qonto du 4 septembre correspond au centime. Le ranger comme règlement — pas comme une nouvelle charge, sinon tu la comptes deux fois.</p>
+        </div>
+        <div class="row-actions">
+          <button class="seal" type="button" data-page="releve">Ranger le mouvement</button>
+        </div>
+      </section>
+
+      <section class="page" id="page-nouvelle" data-nav="gens">
+        <button class="back" type="button" data-page="gens">← Les gens</button>
+        <h1>Une conversation.</h1>
+        <p class="lede">Un nom, une phrase. Le reste viendra — devis, projet, facture — quand ce sera vrai.</p>
+        <div class="field">
+          <label>Qui</label>
+          <input type="text" placeholder="Le nom de la personne ou de la société" />
+        </div>
+        <div class="field">
+          <label>Ce dont il s’agit</label>
+          <input type="text" placeholder="Une ligne, comme tu le dirais à voix haute" />
+        </div>
+        <div class="row-actions">
+          <button class="seal" type="button" data-page="gens">Ouvrir la conversation</button>
+          <button class="quiet" type="button" data-page="gens">Annuler</button>
+        </div>
+      </section>
+
+      <section class="page" id="page-devis" data-nav="gens">
+        <button class="back" type="button" data-page="camille">← Camille Rivière</button>
+        <h1>Un devis.</h1>
+        <p class="lede">Pour Camille Rivière · Atelier Nord. Ce n’est pas un tableau de lignes : c’est ce que tu proposes.</p>
+        <div class="field">
+          <label>En une phrase</label>
+          <input type="text" value="Accompagnement identité, de la recherche à la charte" />
+        </div>
+        <div class="field">
+          <label>Comment tu factures</label>
+          <input type="text" value="Forfait 8 400 € HT" />
+        </div>
+        <div class="field">
+          <label>Valable</label>
+          <input type="text" value="30 jours" />
+        </div>
+        <div class="row-actions">
+          <button class="seal" type="button" data-page="camille">Laisser le devis sur la table</button>
+          <button class="quiet" type="button" data-page="camille">Annuler</button>
+        </div>
+      </section>
+
+      <section class="page" id="page-reunion" data-nav="gens">
+        <button class="back" type="button" data-page="camille">← Camille Rivière</button>
+        <h1>Une rencontre.</h1>
+        <p class="lede">Pas un CRM. Ce que tu veux encore savoir dans six mois.</p>
+        <div class="field">
+          <label>Quand</label>
+          <input type="text" value="5 septembre 2026" />
+        </div>
+        <div class="field">
+          <label>Ce qu’on s’est dit</label>
+          <textarea>Budget confirmé. Elle veut commencer en octobre si le devis passe. Revenir vers elle en début de semaine.</textarea>
+        </div>
+        <div class="row-actions">
+          <button class="seal" type="button" data-page="camille">Poser la note</button>
+        </div>
+      </section>
+
+      <section class="page" id="page-lettre" data-nav="jour">
+        <button class="back" type="button" data-page="camille">← Camille Rivière</button>
+        <h1>Une lettre, pas un envoi.</h1>
+        <p class="lede">FreeFlow écrit le brouillon. C’est toi qui l’envoies, depuis ton client mail. Ensuite tu reviens dire que c’est parti.</p>
+        <div class="letter">
+          <div class="meta">De nicolas@lumen-conseil.fr · À camille@atelier-nord.fr · ne sera pas envoyé par FreeFlow</div>
+          Camille,<br /><br />
+          Je me permets de revenir vers toi concernant le devis d’accompagnement identité (8 400 € HT), envoyé mardi.<br /><br />
+          Si tu as une question sur le périmètre ou le calendrier, je suis joignable cette semaine.<br /><br />
+          Nicolas
+        </div>
+        <div class="row-actions">
+          <button class="seal" type="button" data-page="jour">Ouvrir dans le client mail</button>
+          <button class="quiet" type="button" data-page="jour">Marquer envoyé</button>
+        </div>
+      </section>
+
+      <!-- LA SOCIÉTÉ -->
+      <section class="page" id="page-societe" data-nav="societe">
+        <div class="date">La société · 5 septembre 2026</div>
+        <h1>Lumen Conseil</h1>
+        <p class="lede">SASU au capital de 1 000 €. L’exercice se clôt le 30 septembre. Vingt-cinq jours.</p>
+        <figure class="landscape">
+          <svg viewBox="0 0 1200 170" preserveAspectRatio="none" role="img" aria-label="Évolution de la trésorerie">
+            <defs>
+              <linearGradient id="wash" x1="0" x2="0" y1="0" y2="1">
+                <stop offset="0" stop-color="#9f3218" stop-opacity="0.16" />
+                <stop offset="1" stop-color="#9f3218" stop-opacity="0" />
+              </linearGradient>
+            </defs>
+            <path d="M0,48 C80,52 140,70 184,78 C250,90 300,118 368,128 C420,118 470,92 552,70 C620,78 680,88 736,96 C800,90 860,98 920,108 C980,114 1020,118 1055,120 L1055,170 L0,170 Z" fill="url(#wash)" />
+            <path d="M0,48 C80,52 140,70 184,78 C250,90 300,118 368,128 C420,118 470,92 552,70 C620,78 680,88 736,96 C800,90 860,98 920,108 C980,114 1020,118 1055,120 C1100,126 1140,80 1200,52" fill="none" stroke="#1c1814" stroke-width="1.5" />
+            <path d="M1055,120 C1100,126 1140,80 1200,52" fill="none" stroke="#9f3218" stroke-width="1.5" stroke-dasharray="5 4" />
+            <line x1="1055" y1="12" x2="1055" y2="158" stroke="#9f3218" stroke-width="1" />
+            <circle cx="1055" cy="120" r="3.5" fill="#9f3218" />
+            <line x1="1128" y1="24" x2="1128" y2="158" stroke="#1c1814" stroke-opacity="0.2" stroke-dasharray="2 3" />
+          </svg>
+          <figcaption>
+            <span>octobre 2025</span>
+            <span>aujourd’hui · clôture dans 25 jours · si Atlas paie</span>
+          </figcaption>
+        </figure>
+        <p class="prose" style="margin-bottom:28px">12 843 € aujourd’hui. La ligne pointillée, c’est si Atlas verse les 6 200 €. Sans ça, et sans nouvelle conversation, la piste s’arrête en janvier.</p>
+
+        <div class="block">
+          <h3>Les conversations, cette année</h3>
+          <div class="bars" aria-hidden="true">
+            <i style="height:20%"></i><i style="height:35%"></i><i style="height:28%"></i>
+            <i style="height:55%"></i><i style="height:40%"></i><i style="height:70%"></i>
+            <i style="height:48%"></i><i style="height:62%"></i><i style="height:30%"></i>
+            <i style="height:22%"></i><i style="height:18%"></i><i class="now" style="height:25%"></i>
+          </div>
+          <div class="bars-cap"><span>oct</span><span>aujourd’hui — deux noms seulement</span></div>
+        </div>
+
+        <ul class="chapters">
+          <li>
+            <a data-page="payer">
+              <div><strong>Te payer</strong><span>2 800 € possibles ce mois-ci sans casser la piste</span></div>
+              <span class="go">→</span>
+            </a>
+          </li>
+          <li>
+            <a data-page="impots">
+              <div><strong>Ce que tu dois à l’État</strong><span>TVA le 16 septembre · 1 840 €</span></div>
+              <span class="go">→</span>
+            </a>
+          </li>
+          <li>
+            <a data-page="cloture">
+              <div><strong>Clore l’exercice</strong><span>Dans 25 jours · 3 mouvements à ranger d’abord</span></div>
+              <span class="go">→</span>
+            </a>
+          </li>
+          <li>
+            <a data-page="releve">
+              <div><strong>Le relevé</strong><span>3 mouvements sans lecture</span></div>
+              <span class="go">→</span>
+            </a>
+          </li>
+          <li>
+            <a data-page="profil">
+              <div><strong>L’identité</strong><span>SASU · associé unique · clôture au 30 septembre</span></div>
+              <span class="go">→</span>
+            </a>
+          </li>
+        </ul>
+      </section>
+
+      <section class="page" id="page-payer" data-nav="societe">
+        <button class="back" type="button" data-page="societe">← La société</button>
+        <h1>Te payer.</h1>
+        <p class="lede">La question n’est pas « salaire ou dividendes ». C’est : de l’argent sur ton compte, sans casser la société.</p>
+        <div class="block">
+          <h3>Ce mois-ci</h3>
+          <p>Tu peux te verser jusqu’à <strong>2 800 €</strong> et garder trois mois de piste. Au-delà, tu manges le délai qui te reste pour trouver la conversation suivante.</p>
+        </div>
+        <div class="pay-choice">
+          <label class="on">
+            <input type="radio" name="pay" checked />
+            <div>
+              <strong>Comme un salaire</strong>
+              <p>Chaque mois. Une fiche de paie chez ton expert (FreeFlow n’est pas un logiciel de paie). Toi tu reçois 2 800 €. La société débourse environ 4 400 €, charges comprises. Une déclaration sociale suit, en fin de mois.</p>
+            </div>
+          </label>
+          <label>
+            <input type="radio" name="pay" />
+            <div>
+              <strong>Plus tard, en dividendes</strong>
+              <p>Seulement après la clôture, si l’exercice est bénéficiaire. 1 000 € pour toi coûtent environ 1 314 € à la société. Pas ce mois-ci : on clôt le 30 septembre, et cette année tu as plus dépensé qu’encaissé.</p>
+            </div>
+          </label>
+        </div>
+        <div class="block">
+          <h3>Cette année, pour vivre</h3>
+          <p>Objectif 36 000 €. Versé 18 400 €, tout en salaire. Mi-chemin — et l’exercice n’est pas clos, donc pas de dividendes à viser avant l’an prochain.</p>
+          <div class="meter" aria-label="18 400 sur 36 000"><i class="mid"></i></div>
+          <div class="bars-cap"><span>18 400 €</span><span>36 000 €</span></div>
+        </div>
+        <div class="row-actions">
+          <button class="seal" type="button" data-page="releve">Le prochain virement, depuis le relevé</button>
+          <button class="quiet" type="button" data-page="societe">Revenir</button>
+        </div>
+      </section>
+
+      <section class="page" id="page-impots" data-nav="societe">
+        <button class="back" type="button" data-page="societe">← La société</button>
+        <h1>Ce que tu dois.</h1>
+        <p class="lede">Pas des sigles. Des dates, des montants, et où le déposer. FreeFlow prépare. Il ne transmet rien.</p>
+        <ul class="chapters">
+          <li>
+            <a>
+              <div>
+                <strong>16 septembre — TVA du trimestre</strong>
+                <span>1 840 € à déposer sur impots.gouv.fr. Les chiffres sont déjà dans le coffre. Même à zéro, on dépose.</span>
+              </div>
+            </a>
+          </li>
+          <li>
+            <a>
+              <div>
+                <strong>Décembre — acompte d’impôt sur les sociétés</strong>
+                <span>Le montant se calcule sur l’exercice clos. On le saura après le 30 septembre. En attendant, rien à verser.</span>
+              </div>
+            </a>
+          </li>
+          <li>
+            <a>
+              <div>
+                <strong>Fin d’année — cotisation foncière</strong>
+                <span>Si tu y es assujetti. Le avis arrive par la poste, pas ici.</span>
+              </div>
+            </a>
+          </li>
+          <li>
+            <a>
+              <div>
+                <strong>Après la clôture — liasse, solde d’IS, dépôt au greffe</strong>
+                <span>Dans l’ordre, guidé. Pas avant le 1er octobre.</span>
+              </div>
+            </a>
+          </li>
+        </ul>
+      </section>
+
+      <section class="page" id="page-cloture" data-nav="societe">
+        <button class="back" type="button" data-page="societe">← La société</button>
+        <h1>Clore.</h1>
+        <p class="lede">Vingt-cinq jours. On ne clôt pas aujourd’hui. On range, on attend le 1er octobre, on décide.</p>
+        <ul class="hist">
+          <li><span class="when">fait</span><span>Bilan d’ouverture repris du cabinet</span></li>
+          <li><span class="when" style="color:var(--seal)">aujourd’hui</span><span>Ranger trois mouvements du relevé</span></li>
+          <li><span class="when">fait</span><span>Justificatifs de l’exercice</span></li>
+          <li><span class="when">1er oct.</span><span>Arrêter les comptes — pas avant</span></li>
+          <li><span class="when">ensuite</span><span>Décider de l’affectation, faire le PV, déposer</span></li>
+        </ul>
+        <div class="row-actions" style="margin-top:24px">
+          <button class="seal" type="button" data-page="releve">Ranger le relevé</button>
+        </div>
+      </section>
+
+      <section class="page" id="page-releve" data-nav="societe">
+        <button class="back" type="button" data-page="societe">← La société</button>
+        <h1>Le relevé.</h1>
+        <p class="lede">Chaque mouvement est une phrase. Tu lui donnes une lecture. Rien n’est une « écriture ».</p>
+        <article class="block">
+          <h3>4 septembre · −1 200 €</h3>
+          <p>Cabinet Leroy. C’est exactement la dette reprise au bilan. Ce n’est pas une charge de cette année.</p>
+          <div class="row-actions">
+            <button class="seal" type="button">C’est le règlement d’une dette</button>
+            <button class="quiet" type="button">C’est une dépense</button>
+            <button class="quiet" type="button">C’est moi que je me paie</button>
+          </div>
+        </article>
+        <article class="block">
+          <h3>3 septembre · −9,90 €</h3>
+          <p>Qonto. Commission de tenue de compte.</p>
+          <div class="row-actions">
+            <button class="quiet" type="button">C’est une dépense</button>
+            <button class="quiet" type="button">C’est le règlement d’une dette</button>
+            <button class="quiet" type="button">C’est moi que je me paie</button>
+          </div>
+        </article>
+        <article class="block">
+          <h3>2 septembre · −144 €</h3>
+          <p>Figma. Abonnement.</p>
+          <div class="row-actions">
+            <button class="quiet" type="button">C’est une dépense</button>
+            <button class="quiet" type="button">C’est le règlement d’une dette</button>
+            <button class="quiet" type="button">C’est moi que je me paie</button>
+          </div>
+        </article>
+      </section>
+
+      <section class="page" id="page-profil" data-nav="societe">
+        <button class="back" type="button" data-page="societe">← La société</button>
+        <h1>L’identité.</h1>
+        <p class="lede">La carte de la société, pas un formulaire de paramètres.</p>
+        <ul class="people" id="identite">
+          <li>
+            <button class="id-line" type="button"><span class="k">Nom</span><span class="val">Lumen Conseil</span></button>
+          </li>
+          <li>
+            <button class="id-line" type="button"><span class="k">Forme</span><span class="val">SASU au capital de 1 000 €</span></button>
+          </li>
+          <li>
+            <button class="id-line" type="button"><span class="k">Siège</span><span class="val">18 rue des Ateliers, 69003 Lyon</span></button>
+          </li>
+          <li>
+            <button class="id-line" type="button"><span class="k">Président</span><span class="val">Nicolas Lumen, associé unique</span></button>
+          </li>
+          <li>
+            <button class="id-line" type="button"><span class="k">SIREN</span><span class="val">832 123 456</span></button>
+          </li>
+          <li>
+            <button class="id-line" type="button"><span class="k">Clôture</span><span class="val">30 septembre</span></button>
+          </li>
+          <li>
+            <button class="id-line" type="button"><span class="k">TVA</span><span class="val">Au réel, chaque trimestre</span></button>
+          </li>
+        </ul>
+        <div class="block">
+          <h3>Le coffre</h3>
+          <p>Un fichier sur cette machine, chiffré. Aucune connexion sortante. Les mails, la TVA, le greffe se font ailleurs — FreeFlow prépare, il ne transmet pas.</p>
+        </div>
+      </section>
+    </main>
+
+    <footer class="foot">
+      <span>Coffre local · rien ne sort</span>
+      <a href="index.html" style="color:inherit">Les directions</a>
+    </footer>
+  </div>
+  <script>
+    const pages = [...document.querySelectorAll(".page")];
+    const navBtns = [...document.querySelectorAll(".chrome nav button")];
+    const stage = document.getElementById("stage");
+
+    function show(id) {
+      const page = document.getElementById("page-" + id);
+      if (!page) return;
+      pages.forEach((p) => p.classList.toggle("on", p === page));
+      const nav = page.dataset.nav;
+      navBtns.forEach((b) => b.setAttribute("aria-current", b.dataset.nav === nav ? "page" : "false"));
+      stage.classList.toggle("wide", nav === "societe");
+      if (location.hash !== "#" + id) history.replaceState(null, "", "#" + id);
+      window.scrollTo(0, 0);
+    }
+
+    function selectDay(day) {
+      document.querySelectorAll(".cal .d[data-day]").forEach((el) => {
+        el.classList.toggle("on", el.dataset.day === day);
+      });
+      document.querySelectorAll(".agenda button").forEach((el) => {
+        el.classList.toggle("on", el.dataset.day === day);
+      });
+    }
+
+    document.addEventListener("click", (e) => {
+      const open = e.target.closest("[data-open]");
+      const page = e.target.closest("[data-page]");
+      const dayEl = e.target.closest("[data-day]");
+      if (open) {
+        const li = open.closest("li");
+        document.querySelectorAll(".gestes > li").forEach((x) => {
+          if (x !== li) x.classList.remove("open");
+        });
+        li.classList.toggle("open");
+        return;
+      }
+      if (dayEl && dayEl.closest(".cal")) {
+        e.preventDefault();
+        selectDay(dayEl.dataset.day);
+        const row = document.querySelector(`.agenda button[data-day="${dayEl.dataset.day}"]`);
+        if (row) row.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        return;
+      }
+      if (dayEl) selectDay(dayEl.dataset.day);
+      if (page) {
+        e.preventDefault();
+        show(page.dataset.page);
+      }
+    });
+
+    document.querySelectorAll(".pay-choice label").forEach((lab) => {
+      lab.addEventListener("click", () => {
+        document.querySelectorAll(".pay-choice label").forEach((x) => x.classList.remove("on"));
+        lab.classList.add("on");
+      });
+    });
+
+    const start = (location.hash || "#jour").slice(1);
+    show(start || "jour");
+  </script>
+</body>
+</html>

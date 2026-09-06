@@ -175,12 +175,7 @@ async fn a_direct_navigation_returns_the_full_shell_page() {
     let router = freeflow_web::router(state);
 
     let response = router
-        .oneshot(
-            Request::builder()
-                .uri("/view/dashboard")
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(Request::builder().uri("/jour").body(Body::empty()).unwrap())
         .await
         .unwrap();
 
@@ -195,11 +190,15 @@ async fn a_direct_navigation_returns_the_full_shell_page() {
         "la barre de commandes doit être présente"
     );
     assert!(
-        body.contains("Tableau de bord"),
-        "le titre de l'écran d'accueil est en français"
+        body.contains("Le jour"),
+        "la chrome nomme la pièce d'accueil : {body}"
     );
     assert!(
-        body.contains("data-view=\"dashboard\""),
+        body.contains("Les gens") && body.contains("La société"),
+        "la chrome n'a que trois pièces : {body}"
+    );
+    assert!(
+        body.contains("data-view=\"jour\""),
         "l'identifiant d'écran reste le slug"
     );
     assert!(
@@ -207,8 +206,12 @@ async fn a_direct_navigation_returns_the_full_shell_page() {
         "le journal d'audit est replié par défaut"
     );
     assert!(
-        body.contains("Aujourd'hui") || body.contains("Aujourd&#x27;hui"),
-        "le bloc aujourd'hui est rendu : {body}"
+        !body.contains("theme-toggle") && !body.contains(">Sombre<"),
+        "pas de thème sombre dans la chrome Atelier : {body}"
+    );
+    assert!(
+        !body.contains(">Plus<"),
+        "plus de menu « Plus » à dix onglets : {body}"
     );
 }
 
@@ -242,6 +245,100 @@ async fn an_htmx_boosted_navigation_returns_only_the_view_fragment() {
         body.contains("data-view=\"prospection\""),
         "le slug reste sur le fragment"
     );
+}
+
+#[tokio::test]
+async fn the_atelier_chrome_has_three_pieces_and_vendored_fonts() {
+    let state = unlocked_state(&test_db_path("atelier-chrome")).await;
+    let router = freeflow_web::router(state);
+
+    let jour = body_text(
+        router
+            .clone()
+            .oneshot(Request::builder().uri("/jour").body(Body::empty()).unwrap())
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(jour.contains("data-piece=\"jour\""), "{jour}");
+    assert!(jour.contains("data-piece=\"gens\""), "{jour}");
+    assert!(jour.contains("data-piece=\"societe\""), "{jour}");
+    assert!(jour.contains("id=\"next-step\""), "{jour}");
+    assert!(
+        !jour.contains("fonts.googleapis.com") && !jour.contains("fonts.gstatic.com"),
+        "aucune police distante : {jour}"
+    );
+    assert!(
+        !jour.contains("freeflow "),
+        "pas de commande CLI dans la lettre : {jour}"
+    );
+
+    let gens = body_text(
+        router
+            .clone()
+            .oneshot(Request::builder().uri("/gens").body(Body::empty()).unwrap())
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(gens.contains("data-view=\"gens\""), "{gens}");
+    assert!(gens.contains("Nouvelle conversation"), "{gens}");
+    assert!(gens.contains("En conversation"), "{gens}");
+
+    let societe = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/societe")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(societe.contains("Te payer"), "{societe}");
+    assert!(societe.contains("Le relevé"), "{societe}");
+    assert!(
+        societe.contains("L'identité") || societe.contains("L&#x27;identité"),
+        "{societe}"
+    );
+
+    let css = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/assets/app.css")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(css.contains("--paper:"), "{css}");
+    assert!(css.contains("Newsreader"), "{css}");
+    assert!(!css.contains("fonts.googleapis.com"), "{css}");
+    assert!(
+        !css.contains("html.dark{") && !css.contains("html.dark {"),
+        "aucune règle de thème sombre : {css}"
+    );
+
+    let font = router
+        .oneshot(
+            Request::builder()
+                .uri("/assets/fonts/newsreader-latin-400-normal.woff2")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(font.status(), StatusCode::OK);
+    assert_eq!(font.headers().get("content-type").unwrap(), "font/woff2");
+    let bytes = font.into_body().collect().await.unwrap().to_bytes();
+    assert!(bytes.len() > 1000, "woff2 vendorisé trop court");
 }
 
 #[tokio::test]
@@ -367,6 +464,9 @@ async fn every_screen_renders_successfully_against_a_freshly_seeded_vault() {
     let router = freeflow_web::router(state);
 
     for path in [
+        "/jour",
+        "/gens",
+        "/societe",
         "/view/dashboard",
         "/view/relances",
         "/view/prospection",
@@ -572,6 +672,10 @@ async fn static_assets_are_served_with_the_right_content_type() {
         ("/assets/app.css", "text/css"),
         ("/assets/app.js", "text/javascript"),
         ("/assets/htmx.min.js", "text/javascript"),
+        (
+            "/assets/fonts/source-sans-3-latin-400-normal.woff2",
+            "font/woff2",
+        ),
     ] {
         let response = router
             .clone()
@@ -587,6 +691,11 @@ async fn static_assets_are_served_with_the_right_content_type() {
             .unwrap()
             .to_string();
         assert!(content_type.starts_with(content_type_prefix));
+        if path.ends_with(".woff2") {
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            assert!(bytes.len() > 1000, "{path} trop court");
+            continue;
+        }
         let body = body_text(response).await;
         assert!(!body.is_empty(), "{path} ne doit pas être vide");
         if path == "/assets/app.js" {
@@ -726,7 +835,10 @@ async fn posting_the_right_passphrase_unlocks_and_leaks_nothing_in_the_response(
     assert_eq!(response.status(), StatusCode::OK);
     assert!(!response.headers().contains_key("location"));
     let body = body_text(response).await;
-    assert!(body.contains("dashboard"));
+    assert!(
+        body.contains("data-view=\"jour\"") || body.contains("Le jour"),
+        "le déverrouillage atterrit sur Le jour : {body}"
+    );
     assert!(!body.contains(PASSPHRASE));
 }
 

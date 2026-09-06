@@ -829,9 +829,11 @@ existe.
 - [ ] Synchronisation multi-appareils documentée et testée de bout en bout (Syncthing/iCloud Drive
       — actuellement une possibilité architecturale, pas un flux accompagné).
 - [x] Thème clair (défaut) / sombre de la fenêtre, nav en français, journal d'audit
-      repliable et tableau de bord « aujourd'hui » (lot 46). Refonte visuelle complète
-      encore en feuille de route.
-- [ ] Refonte complète du design et de l'ergonomie de la fenêtre (au-delà du lot 46).
+      repliable et tableau de bord « aujourd'hui » (lot 46).
+- [x] Coque Atelier (lot 48) : papier, polices vendorisées, chrome à trois pièces, accueil =
+      Le jour. Restent les lots 49 (mât / gestes / mois), 50 (les gens), 51 (la société) —
+      orientation [`docs/atelier-design.md`](docs/atelier-design.md), maquette
+      [`docs/mockups/atelier-app.html`](docs/mockups/atelier-app.html).
 - [ ] Internationalisation de l'interface (actuellement en français uniquement).
 
 ## Licence

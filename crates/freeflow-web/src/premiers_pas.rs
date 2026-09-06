@@ -29,7 +29,7 @@ async fn content(state: &AppState) -> Markup {
 /// La page complète de l'assistant (coque comprise) — ce sur quoi la fenêtre atterrit après la
 /// création d'un coffre.
 pub async fn page(state: &AppState) -> String {
-    layout::page(ViewId::Dashboard, "déverrouillé", content(state).await).into_string()
+    layout::page(ViewId::Jour, "déverrouillé", content(state).await).into_string()
 }
 
 pub async fn show(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
@@ -37,7 +37,7 @@ pub async fn show(State(state): State<AppState>, headers: HeaderMap) -> Html<Str
     if headers.contains_key("hx-request") {
         Html(markup.into_string())
     } else {
-        Html(layout::page(ViewId::Dashboard, "déverrouillé", markup).into_string())
+        Html(layout::page(ViewId::Jour, "déverrouillé", markup).into_string())
     }
 }
 
