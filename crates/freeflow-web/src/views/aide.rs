@@ -1,0 +1,298 @@
+//! Lettre d'aide Atelier (lot 53) : l'index rassure et traduit les modules SaaS ;
+//! chaque recette ouvre une pièce déjà là. Copy fixe, aucune query.
+
+use freeflow_core::closing::GLOSSARY;
+use freeflow_core::fiscal::FiscalDeadlineKind;
+use maud::{Markup, html};
+
+use crate::layout::ViewId;
+use crate::views::copy::{deadline_fr, duty_href};
+
+struct Recipe {
+    slug: &'static str,
+    kicker: &'static str,
+    title: &'static str,
+    lede: &'static str,
+    steps: &'static [&'static str],
+    does_not: Option<&'static str>,
+    href: Option<&'static str>,
+    action: Option<&'static str>,
+}
+
+const RELANCER: Recipe = Recipe {
+    slug: "relancer",
+    kicker: "Au quotidien",
+    title: "Écrire à quelqu'un.",
+    lede: "Une relance, ce n'est pas un module. C'est un geste du Jour, ou un bouton sur le dossier de la personne.",
+    steps: &[
+        "Ouvrez Le jour : s'il y a quelqu'un à relancer, le geste est là, avec un verbe.",
+        "Ou ouvrez la personne dans Les gens : Écrire.",
+        "Un brouillon s'ouvre dans votre client mail. FreeFlow ne l'envoie pas.",
+        "Quand c'est parti, vous le dites ici — « Envoyé » est un fait humain.",
+    ],
+    does_not: Some("FreeFlow n'envoie rien, et ne lit pas votre boîte."),
+    href: Some("/jour"),
+    action: Some("Aller au jour"),
+};
+
+const CONVERSATION: Recipe = Recipe {
+    slug: "conversation",
+    kicker: "Au quotidien",
+    title: "Commencer une conversation.",
+    lede: "Pas besoin d'une fiche client pour parler à quelqu'un.",
+    steps: &[
+        "Les gens → Nouvelle conversation.",
+        "Un nom, une phrase. C'est tout.",
+        "La fiche client n'apparaît qu'à la première pièce (devis ou facture).",
+    ],
+    does_not: None,
+    href: Some("/gens/nouvelle"),
+    action: Some("Nouvelle conversation"),
+};
+
+const DEVIS: Recipe = Recipe {
+    slug: "devis",
+    kicker: "Au quotidien",
+    title: "Le devis, puis la mission.",
+    lede: "On n'ouvre pas un écran Devis. On ouvre la personne.",
+    steps: &[
+        "Dans Les gens, ouvrez le dossier.",
+        "Le devis se rédige depuis le dossier.",
+        "S'il est accepté, il devient une mission — encore sur le même dossier.",
+        "Une facture se lit là aussi. L'émettre depuis cette lettre n'est pas encore possible : l'ancien écran Facturation ou la console s'en chargent.",
+    ],
+    does_not: Some("FreeFlow n'envoie pas le devis à votre place."),
+    href: Some("/gens"),
+    action: Some("Ouvrir Les gens"),
+};
+
+const RELEVE: Recipe = Recipe {
+    slug: "releve",
+    kicker: "Au quotidien",
+    title: "Ranger le relevé.",
+    lede: "Chaque ligne de la banque a une de trois lectures : une dépense, le règlement d'une dette, ou vous qui vous payez.",
+    steps: &[
+        "Importez l'export de votre banque tel quel (le relevé, dans La société).",
+        "Pour un débit : c'est une dépense, ou c'est le règlement d'une dette reprise au bilan — pas les deux.",
+        "Joignez le justificatif. Sans lui, la dépense ne tient pas en cas de contrôle.",
+        "Un crédit, c'est souvent quelqu'un qui vous paie : on le rattache à la facture, depuis le dossier.",
+    ],
+    does_not: Some("FreeFlow n'interroge pas votre banque. C'est vous qui importez le fichier."),
+    href: Some("/societe/releve"),
+    action: Some("Ouvrir le relevé"),
+};
+
+const IMPOTS: Recipe = Recipe {
+    slug: "impots",
+    kicker: "L'État",
+    title: "Ce que tu dois à l'État.",
+    lede: "Le jour vous prévient. La société porte les lettres de démarche — montant, chemin sur le site.",
+    steps: &[
+        "Quand une échéance approche, un geste apparaît sur Le jour.",
+        "La lettre dit le montant et le chemin sur le site. On prépare, on ne transmet pas.",
+    ],
+    does_not: Some("FreeFlow ne télétransmet rien."),
+    href: Some("/societe/impots"),
+    action: Some("Voir les échéances"),
+};
+
+const CFE: Recipe = Recipe {
+    slug: "cfe",
+    kicker: "L'État",
+    title: "La cotisation foncière.",
+    lede: "L'avis arrive par la poste et dans l'espace professionnel. Le montant n'est pas dans le coffre.",
+    steps: &[
+        "Le jour la fera apparaître le moment venu.",
+        "Ouvrez la lettre : elle dit où aller, pas combien — ça, c'est l'avis.",
+    ],
+    does_not: Some("FreeFlow ne connaît pas le montant de l'avis."),
+    href: Some("/societe/impots/cfe"),
+    action: Some("Ouvrir la lettre"),
+};
+
+const CLORE: Recipe = Recipe {
+    slug: "clore",
+    kicker: "L'État",
+    title: "Clore, approuver, déposer.",
+    lede: "Le parcours dans La société dit où on en est, exercice par exercice.",
+    steps: &[
+        "On clôt l'exercice (le résultat se fige, l'affectation est un projet).",
+        "On approuve — une sauvegarde se fait avant. Ensuite, plus rien ne se modifie.",
+        "On recopie la liasse sur le site des impôts, on dépose les comptes au guichet.",
+    ],
+    does_not: Some("FreeFlow ne dépose pas à votre place."),
+    href: Some("/societe/cloture"),
+    action: Some("Ouvrir la clôture"),
+};
+
+const RECIPES: &[Recipe] = &[RELANCER, CONVERSATION, DEVIS, RELEVE, IMPOTS, CFE, CLORE];
+
+fn chapter_link(href: &str, title: &str, sub: &str) -> Markup {
+    html! {
+        li {
+            a href=(href) hx-get=(href) hx-target="#content" hx-push-url="true" {
+                div {
+                    strong { (title) }
+                    span { (sub) }
+                }
+                span class="go" { "→" }
+            }
+        }
+    }
+}
+
+fn back() -> Markup {
+    html! {
+        a class="back" href="/aide"
+          hx-get="/aide" hx-target="#content" hx-push-url="true" hx-swap="innerHTML" {
+            "← L'aide"
+        }
+    }
+}
+
+fn letter_shell(inner: Markup) -> Markup {
+    html! {
+        div class="letter" data-view=(ViewId::Aide.slug()) {
+            (inner)
+        }
+    }
+}
+
+/// L'index : démarche Atelier, traduction des modules, sommaire des recettes.
+#[must_use]
+pub fn index() -> Markup {
+    letter_shell(html! {
+        div class="date" { "L'atelier" }
+        h1 { "Laissez-vous guider." }
+        p class="lede" {
+            "Ce qu'il y a à faire aujourd'hui est sur Le jour — pas un tableau de bord. \
+             Cette lettre dit pourquoi l'app ne ressemble pas à un logiciel de compta, \
+             et comment faire les gestes courants. Vous pouvez vous laisser guider."
+        }
+        div class="block" {
+            h3 { "Si vous venez d'ailleurs" }
+            p class="prose" {
+                "Ce n'est pas Tiime, Indy ou Pennylane. Pas de menu Factures, Devis, Banque, \
+                 ni de tuiles de chiffre d'affaires. Le tableau de bord, c'est Le jour. \
+                 Un client, un devis, une facture : on ouvre une personne, dans Les gens. \
+                 La banque et les dépenses : le relevé, dans La société. Les impôts, \
+                 la clôture, l'identité : La société aussi."
+            }
+        }
+        p class="section-label" { "Au quotidien" }
+        ul class="chapters" {
+            (chapter_link("/aide/relancer", "Écrire à quelqu'un.", "un geste du Jour, un brouillon, on n'envoie pas"))
+            (chapter_link("/aide/conversation", "Commencer une conversation.", "un nom, une phrase"))
+            (chapter_link("/aide/devis", "Le devis, puis la mission.", "sur le dossier de la personne"))
+            (chapter_link("/aide/releve", "Ranger le relevé.", "dépense, dette, ou vous"))
+        }
+        p class="section-label" { "L'État, une fois l'an" }
+        ul class="chapters" {
+            (chapter_link("/aide/impots", "Ce que tu dois à l'État.", "Le jour vous prévient"))
+            (chapter_link("/aide/cfe", "La cotisation foncière.", "l'avis, pas le coffre"))
+            (chapter_link("/aide/clore", "Clore, approuver, déposer.", "le parcours, puis le greffe"))
+        }
+        p class="section-label" { "Portes" }
+        ul class="chapters" {
+            (chapter_link("/premiers-pas", "Premiers pas", "coffre neuf, profil, banque"))
+            (chapter_link("/societe/payer", "Te payer", "sans casser la piste"))
+            (chapter_link("/aide/lexique", "Les mots", "le lexique de la clôture"))
+        }
+    })
+}
+
+/// Une recette, le lexique, ou la lettre d'absence — toujours 200.
+#[must_use]
+pub fn page(slug: &str) -> Markup {
+    if slug == "lexique" {
+        return lexique();
+    }
+    if let Some(recipe) = RECIPES.iter().find(|r| r.slug == slug) {
+        return recipe_letter(recipe);
+    }
+    absent()
+}
+
+fn recipe_letter(recipe: &Recipe) -> Markup {
+    let extra = match recipe.slug {
+        "impots" => duty_chapters(&[
+            FiscalDeadlineKind::Ca3,
+            FiscalDeadlineKind::VatInstalment,
+            FiscalDeadlineKind::Ca12,
+            FiscalDeadlineKind::IsAcompte,
+            FiscalDeadlineKind::IsSolde,
+            FiscalDeadlineKind::Das2,
+            FiscalDeadlineKind::Dividends2777,
+        ]),
+        "clore" => html! {
+            ul class="chapters" {
+                (chapter_link("/societe/impots/liasse", "Liasse fiscale", "recopier, ne pas transmettre d'ici"))
+                (chapter_link("/societe/impots/accounts-filing", "Dépôt des comptes", "guichet unique, confidentialité possible"))
+            }
+        },
+        _ => html! {},
+    };
+    letter_shell(html! {
+        (back())
+        div class="date" { (recipe.kicker) }
+        h1 { (recipe.title) }
+        p class="lede" { (recipe.lede) }
+        ol {
+            @for step in recipe.steps {
+                li { (step) }
+            }
+        }
+        (extra)
+        @if let Some(does_not) = recipe.does_not {
+            p class="prose" style="color:var(--ink-2);font-size:14px" { (does_not) }
+        }
+        @if let (Some(href), Some(action)) = (recipe.href, recipe.action) {
+            div class="row-actions" {
+                a class="seal" href=(href)
+                  hx-get=(href) hx-target="#content" hx-push-url="true" {
+                    (action)
+                }
+            }
+        }
+    })
+}
+
+fn duty_chapters(kinds: &[FiscalDeadlineKind]) -> Markup {
+    html! {
+        ul class="chapters" {
+            @for kind in kinds {
+                (chapter_link(&duty_href(*kind), deadline_fr(*kind), "la lettre de la démarche"))
+            }
+        }
+    }
+}
+
+fn lexique() -> Markup {
+    letter_shell(html! {
+        (back())
+        div class="date" { "Les mots" }
+        h1 { "Les mots." }
+        p class="lede" { "Les mots de la comptabilité, dans l'ordre où on les rencontre." }
+        dl class="detail-list" {
+            @for entry in GLOSSARY {
+                dt { (entry.term) }
+                dd { (entry.meaning) }
+            }
+        }
+    })
+}
+
+fn absent() -> Markup {
+    letter_shell(html! {
+        (back())
+        div class="date" { "L'atelier" }
+        h1 { "Cette recette n'est pas ici." }
+        p class="lede" { "Le sommaire de l'aide liste ce qui existe." }
+        div class="row-actions" {
+            a class="seal" href="/aide"
+              hx-get="/aide" hx-target="#content" hx-push-url="true" {
+                "L'aide"
+            }
+        }
+    })
+}

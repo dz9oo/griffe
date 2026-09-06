@@ -155,6 +155,8 @@ pub fn router(state: AppState) -> Router {
             "/premiers-pas/nouvelle",
             post(premiers_pas::declare_new_company),
         )
+        .route("/aide", get(handlers::aide))
+        .route("/aide/{slug}", get(handlers::aide_recipe))
         .route("/lexique", get(handlers::lexique))
         .route("/depenses/{id}/receipt", get(depenses::receipt))
         .route(

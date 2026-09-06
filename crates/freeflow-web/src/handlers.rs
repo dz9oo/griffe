@@ -210,8 +210,16 @@ pub async fn societe(State(state): State<AppState>, headers: HeaderMap) -> Html<
     respond(headers, ViewId::Societe, content).await
 }
 
-pub async fn lexique() -> Html<String> {
-    Html(views::lexique::panel().into_string())
+pub async fn aide(headers: HeaderMap) -> Html<String> {
+    respond(headers, ViewId::Aide, views::aide::index()).await
+}
+
+pub async fn aide_recipe(headers: HeaderMap, Path(slug): Path<String>) -> Html<String> {
+    respond(headers, ViewId::Aide, views::aide::page(&slug)).await
+}
+
+pub async fn lexique(headers: HeaderMap) -> Html<String> {
+    respond(headers, ViewId::Aide, views::aide::page("lexique")).await
 }
 
 pub async fn console(headers: HeaderMap) -> Html<String> {

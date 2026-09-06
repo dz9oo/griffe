@@ -1,11 +1,12 @@
 //! La coque commune à tous les écrans : chrome Atelier (lot 48), contenu, journal d'audit
 //! replié, palette ⌘K. Trois pièces — Le jour, Les gens, La société — plus rien dans la
-//! barre. La console et les anciens écrans restent joignables par ⌘K et leurs routes.
+//! barre. La console, l'aide (`?`) et les anciens écrans restent joignables par ⌘K
+//! et leurs routes.
 
 use maud::{DOCTYPE, Markup, html};
 
 /// Les trois pièces de la chrome. Un écran ancien (relances, clôture…) appartient à l'une
-/// d'elles pour le soulignement, ou à aucune (console).
+/// d'elles pour le soulignement, ou à aucune (console, aide).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Piece {
     Jour,
@@ -59,6 +60,7 @@ pub enum ViewId {
     Societe,
     Cloture,
     Console,
+    Aide,
 }
 
 impl ViewId {
@@ -78,6 +80,7 @@ impl ViewId {
             Self::Societe => "/societe",
             Self::Cloture => "/view/cloture",
             Self::Console => "/view/console",
+            Self::Aide => "/aide",
         }
     }
 
@@ -97,6 +100,7 @@ impl ViewId {
             Self::Societe => "societe",
             Self::Cloture => "cloture",
             Self::Console => "console",
+            Self::Aide => "aide",
         }
     }
 
@@ -123,6 +127,7 @@ impl ViewId {
             Self::Societe => "La société",
             Self::Cloture => "Clôture",
             Self::Console => "Console",
+            Self::Aide => "Aide",
         }
     }
 
@@ -138,7 +143,7 @@ impl ViewId {
             | Self::Facturation
             | Self::Clients => Some(Piece::Gens),
             Self::Societe | Self::Depenses | Self::Cloture => Some(Piece::Societe),
-            Self::Console => None,
+            Self::Console | Self::Aide => None,
         }
     }
 
@@ -241,9 +246,13 @@ fn palette() -> Markup {
                       href="/premiers-pas" hx-get="/premiers-pas" hx-target="#content" hx-push-url="true" hx-swap="innerHTML" {
                         "→ configurer ma société (premiers pas)"
                     }
-                    button class="palette-item" type="button" data-label="lexique aide mots"
-                      hx-get="/lexique" hx-target="#panel" hx-swap="innerHTML" {
-                        "? lexique — les mots de la comptabilité"
+                    a class="palette-item" data-label="aide lexique ? atelier"
+                      href="/aide" hx-get="/aide" hx-target="#content" hx-push-url="true" hx-swap="innerHTML" {
+                        "? aide — l'atelier, les recettes"
+                    }
+                    a class="palette-item" data-label="lexique mots comptabilité"
+                      href="/aide/lexique" hx-get="/aide/lexique" hx-target="#content" hx-push-url="true" hx-swap="innerHTML" {
+                        "les mots — lexique"
                     }
                 }
             }
@@ -303,7 +312,9 @@ pub fn page(active: ViewId, vault_label: &str, content: Markup) -> Markup {
                         span class="lock" { span class="dot" {} (vault_label) }
                         span class="foot-actions" {
                             button class="quiet" type="button" id="audit-toggle" title="Afficher ou masquer le journal d'audit" { "Journal" }
-                            button class="quiet" type="button" hx-get="/lexique" hx-target="#panel" hx-swap="innerHTML" title="Lexique : les mots de la comptabilité expliqués" { "Lexique" }
+                            a class="quiet" id="aide-link" href="/aide"
+                              hx-get="/aide" hx-target="#content" hx-push-url="true" hx-swap="innerHTML"
+                              title="L'atelier, les recettes, les mots" { "Aide" }
                             button class="quiet danger-hover" type="button" hx-post="/lock" hx-swap="none" title="Verrouiller le coffre" { "Verrouiller" }
                             button class="palette-hint quiet" type="button" title="Palette de commandes" { "⌘K" }
                         }

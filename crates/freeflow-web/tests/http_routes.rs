@@ -339,6 +339,247 @@ async fn the_atelier_chrome_has_three_pieces_and_vendored_fonts() {
     assert_eq!(font.headers().get("content-type").unwrap(), "font/woff2");
     let bytes = font.into_body().collect().await.unwrap().to_bytes();
     assert!(bytes.len() > 1000, "woff2 vendorisé trop court");
+
+    assert!(jour.contains("hx-get=\"/aide\""), "{jour}");
+    assert!(jour.contains("id=\"aide-link\""), "{jour}");
+    assert!(
+        jour.contains(">Aide<"),
+        "le pied ouvre l'aide, plus le panneau lexique : {jour}"
+    );
+    assert!(!jour.contains("hx-get=\"/lexique\""), "{jour}");
+}
+
+#[tokio::test]
+async fn the_help_letter_explains_atelier_and_opens_recipes() {
+    let state = unlocked_state(&test_db_path("aide")).await;
+    let router = freeflow_web::router(state);
+
+    let aide = body_text(
+        router
+            .clone()
+            .oneshot(Request::builder().uri("/aide").body(Body::empty()).unwrap())
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(aide.contains("data-view=\"aide\""), "{aide}");
+    assert!(
+        aide.contains("L'atelier") || aide.contains("L&#x27;atelier"),
+        "{aide}"
+    );
+    assert!(aide.contains("Laissez-vous guider."), "{aide}");
+    assert_eq!(aide.matches("Tiime").count(), 1, "{aide}");
+    assert_eq!(aide.matches("Indy").count(), 1, "{aide}");
+    assert_eq!(aide.matches("Pennylane").count(), 1, "{aide}");
+    assert!(!aide.contains("CA3"), "{aide}");
+    assert!(!aide.contains("3514"), "{aide}");
+    assert!(!aide.contains("2777"), "{aide}");
+    assert!(!aide.contains("freeflow "), "{aide}");
+    for slug in [
+        "relancer",
+        "conversation",
+        "devis",
+        "releve",
+        "impots",
+        "cfe",
+        "clore",
+        "lexique",
+    ] {
+        assert!(
+            aide.contains(&format!("href=\"/aide/{slug}\"")),
+            "sommaire {slug} : {aide}"
+        );
+    }
+    assert!(aide.contains("href=\"/premiers-pas\""), "{aide}");
+    assert!(aide.contains("href=\"/societe/payer\""), "{aide}");
+    assert!(
+        !aide.contains("aria-current=\"page\""),
+        "aucune pièce soulignée : {aide}"
+    );
+
+    let fragment = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/aide")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        !fragment.contains("<!DOCTYPE html>") && !fragment.contains("<body"),
+        "htmx ne reçoit que la lettre : {fragment}"
+    );
+    assert!(fragment.contains("Laissez-vous guider."), "{fragment}");
+
+    let releve = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/aide/releve")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(releve.contains("Ranger le relevé."), "{releve}");
+    assert!(releve.contains("href=\"/aide\""), "{releve}");
+    assert!(releve.contains("href=\"/societe/releve\""), "{releve}");
+    assert!(
+        releve.contains("n'interroge") || releve.contains("n&#x27;interroge"),
+        "{releve}"
+    );
+    assert!(!releve.contains("Tiime"), "{releve}");
+    assert!(!releve.contains("freeflow "), "{releve}");
+
+    let conversation = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/aide/conversation")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        conversation.contains("href=\"/gens/nouvelle\""),
+        "{conversation}"
+    );
+
+    let cfe = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/aide/cfe")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(cfe.contains("href=\"/societe/impots/cfe\""), "{cfe}");
+    assert!(!cfe.contains("Tiime"), "{cfe}");
+
+    let clore = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/aide/clore")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(clore.contains("href=\"/societe/cloture\""), "{clore}");
+    assert!(clore.contains("href=\"/societe/impots/liasse\""), "{clore}");
+    assert!(
+        clore.contains("href=\"/societe/impots/accounts-filing\""),
+        "{clore}"
+    );
+
+    let impots = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/aide/impots")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(impots.contains("TVA du trimestre"), "{impots}");
+    assert!(
+        impots.contains("cotisation foncière") || impots.contains("href=\"/societe/impots\""),
+        "{impots}"
+    );
+    assert!(!impots.contains("CA3"), "{impots}");
+    assert!(!impots.contains("Tiime"), "{impots}");
+
+    let lexique = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/aide/lexique")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(lexique.contains("Report à nouveau"), "{lexique}");
+    assert!(lexique.contains("href=\"/aide\""), "{lexique}");
+    assert!(!lexique.contains("class=\"panel\""), "{lexique}");
+
+    let alias = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/lexique")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(alias.contains("Report à nouveau"), "{alias}");
+    assert!(alias.contains("data-view=\"aide\""), "{alias}");
+
+    let unknown = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/aide/inconnu")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unknown.status(), StatusCode::OK);
+    let unknown = body_text(unknown).await;
+    assert!(
+        unknown.contains("n'est pas ici") || unknown.contains("n&#x27;est pas ici"),
+        "{unknown}"
+    );
+    assert!(unknown.contains("href=\"/aide\""), "{unknown}");
+
+    let js = body_text(
+        router
+            .oneshot(
+                Request::builder()
+                    .uri("/assets/app.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(js.contains("aide-link"), "{js}");
+    assert!(js.contains("event.key !== \"?\""), "{js}");
 }
 
 #[tokio::test]
@@ -937,6 +1178,9 @@ async fn every_screen_renders_successfully_against_a_freshly_seeded_vault() {
         "/jour",
         "/gens",
         "/societe",
+        "/aide",
+        "/aide/releve",
+        "/lexique",
         "/view/dashboard",
         "/view/relances",
         "/view/prospection",
@@ -4628,7 +4872,8 @@ async fn a_first_launch_is_guided_from_the_window_without_the_console() {
     )
     .await;
     assert!(lexique.contains("Report à nouveau"), "{lexique}");
-    assert!(dashboard.contains("hx-get=\"/lexique\""), "{dashboard}");
+    assert!(lexique.contains("data-view=\"aide\""), "{lexique}");
+    assert!(dashboard.contains("hx-get=\"/aide\""), "{dashboard}");
 
     // La console répond à « aide ».
     let help = body_text(

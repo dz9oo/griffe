@@ -1,3 +1,4 @@
+pub mod aide;
 pub mod banque;
 pub mod clients;
 pub mod cloture;
@@ -10,7 +11,6 @@ pub mod facturation;
 pub mod form;
 pub mod gens;
 pub mod jour;
-pub mod lexique;
 pub mod missions;
 pub mod panel;
 pub mod premiers_pas;

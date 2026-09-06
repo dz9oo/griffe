@@ -691,6 +691,17 @@ tr.row-clickable:hover td { background: var(--paper-2); }
   text-decoration: none;
 }
 .back:hover { color: var(--ink); }
+.letter ol {
+  margin: 12px 0 0;
+  padding-left: 1.4em;
+  max-width: 48ch;
+  font-size: 17px;
+  line-height: 1.5;
+}
+.letter ol li { margin-top: 8px; }
+.letter dl { margin-top: 16px; max-width: 48ch; }
+.letter dt { font-weight: 500; margin-top: 14px; }
+.letter dd { color: var(--ink-2); font-size: 15px; line-height: 1.45; margin-top: 4px; }
 .hist { list-style: none; }
 .hist li {
   display: grid;

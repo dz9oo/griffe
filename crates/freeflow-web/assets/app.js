@@ -202,6 +202,17 @@ document.addEventListener("keydown", (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
+  if (event.key !== "?" || event.metaKey || event.ctrlKey || event.altKey) return;
+  const target = event.target;
+  if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT") return;
+  if (paletteOverlay?.classList.contains("open")) return;
+  const link = document.getElementById("aide-link");
+  if (!link) return;
+  event.preventDefault();
+  link.click();
+});
+
+document.addEventListener("keydown", (event) => {
   if (event.key !== "n" || event.metaKey || event.ctrlKey || event.altKey) return;
   const target = event.target;
   if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT") return;

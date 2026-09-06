@@ -43,6 +43,7 @@ Chrome : `FreeFlow` (italique, serif) à gauche · les trois mots à droite.
 La pièce active = un soulignement encre, pas un onglet teinté.
 
 Pas d’autre item de nav. Console : `⌘K` / `Ctrl+K`, ou une route non liée.
+L’aide n’est pas une pièce : `?` (pied **Aide**, palette) ouvre la lettre `/aide`.
 Journal d’audit : replié, éventuellement depuis l’identité / le coffre.
 
 ### Correspondance avec l’app actuelle
