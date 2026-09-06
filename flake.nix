@@ -48,10 +48,11 @@
         # de configuration Tauri lus directement par `tauri-build` au moment de la compilation
         # (`tauri.conf.json`, `capabilities/*.json`, l'icône, le `dist/index.html` placeholder)
         # et, depuis le lot 38, les jeux d'essai de relevés bancaires (`billing/fixtures/*.csv`,
-        # `*.ofx`) inclus par `include_bytes!` dans les tests : on complète le filtre plutôt que
-        # de perdre le cache incrémental d'un `src = ./.` non filtré.
+        # `*.ofx`) inclus par `include_bytes!` dans les tests ; lot 43 : le relevé Tiime
+        # (`*.xlsx`) ; lot 48 : les woff2 vendorisés de la lettre. On complète le filtre plutôt
+        # que de perdre le cache incrémental d'un `src = ./.` non filtré.
         nonRustAssets =
-          path: _type: builtins.match ".*\\.(sql|typst|css|js|json|png|html|csv|ofx|txt)$" path != null;
+          path: _type: builtins.match ".*\\.(sql|typst|css|js|json|png|html|csv|ofx|txt|woff2|xlsx)$" path != null;
         src = lib.cleanSourceWith {
           src = craneLib.path ./.;
           filter = path: type: (craneLib.filterCargoSources path type) || (nonRustAssets path type);
