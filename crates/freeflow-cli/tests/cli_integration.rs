@@ -716,6 +716,35 @@ fn follow_up_queue_lists_a_due_opportunity_and_drafts_without_sending() {
 }
 
 #[test]
+fn day_mast_json_on_an_empty_vault_has_zero_bank_and_typed_signals() {
+    let db = temp_db("day-mast");
+    provision(&db);
+    let output = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--json", "day", "mast", "--today", "2026-09-05"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(value["bank"], 0);
+    assert!(value["runway_months"].is_null(), "{value}");
+    assert_eq!(value["open_conversations"], 0);
+    let signals = value["signals"].as_array().unwrap();
+    assert!(
+        signals.iter().any(|s| s["kind"] == "pipeline_empty"),
+        "{value}"
+    );
+}
+
+#[test]
+fn day_help_is_a_stable_interface_contract() {
+    let output = freeflow().args(["day", "--help"]).output().unwrap();
+    insta::assert_snapshot!(String::from_utf8(output.stdout).unwrap());
+}
+
+#[test]
 fn top_level_help_is_a_stable_interface_contract() {
     let output = freeflow().arg("--help").output().unwrap();
     insta::assert_snapshot!(String::from_utf8(output.stdout).unwrap());

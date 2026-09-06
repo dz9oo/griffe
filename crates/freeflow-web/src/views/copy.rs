@@ -49,7 +49,7 @@ pub fn year_end_fr(end: FiscalYearEnd) -> String {
 #[must_use]
 pub fn deadline_fr(kind: FiscalDeadlineKind) -> &'static str {
     match kind {
-        FiscalDeadlineKind::Ca3 => "TVA",
+        FiscalDeadlineKind::Ca3 => "TVA du trimestre",
         FiscalDeadlineKind::VatInstalment => "acompte de TVA",
         FiscalDeadlineKind::Ca12 => "TVA de l'année",
         FiscalDeadlineKind::IsAcompte => "acompte d'impôt sur les sociétés",
@@ -70,6 +70,30 @@ pub fn is_vat(kind: FiscalDeadlineKind) -> bool {
         kind,
         FiscalDeadlineKind::Ca3 | FiscalDeadlineKind::VatInstalment | FiscalDeadlineKind::Ca12
     )
+}
+
+#[must_use]
+pub fn month_title(month: u8) -> String {
+    let name = month_fr(month);
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(first) => format!("{}{}.", first.to_uppercase(), chars.as_str()),
+        None => String::new(),
+    }
+}
+
+#[must_use]
+pub fn event_kind_fr(kind: freeflow_core::day::MonthEventKind) -> &'static str {
+    use freeflow_core::day::MonthEventKind;
+    match kind {
+        MonthEventKind::FollowUp => "relance",
+        MonthEventKind::InvoiceDue => "échéance",
+        MonthEventKind::Meeting => "rencontre",
+        MonthEventKind::Milestone => "jalon",
+        MonthEventKind::MissionEnd => "fin de mission",
+        MonthEventKind::StateDuty => "TVA",
+        MonthEventKind::YearEnd => "exercice",
+    }
 }
 
 #[must_use]
@@ -96,11 +120,16 @@ mod tests {
 
     #[test]
     fn vat_deadlines_are_said_in_french() {
-        assert_eq!(deadline_fr(FiscalDeadlineKind::Ca3), "TVA");
+        assert_eq!(deadline_fr(FiscalDeadlineKind::Ca3), "TVA du trimestre");
         assert_eq!(
             deadline_fr(FiscalDeadlineKind::VatInstalment),
             "acompte de TVA"
         );
         assert!(!deadline_fr(FiscalDeadlineKind::Ca12).contains("CA12"));
+    }
+
+    #[test]
+    fn september_is_titled_like_the_mockup() {
+        assert_eq!(month_title(9), "Septembre.");
     }
 }

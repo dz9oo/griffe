@@ -47,6 +47,31 @@ document.body.addEventListener("click", (event) => {
     return;
   }
   if (event.target.closest(".mark")) markNav("jour");
+
+  const geste = event.target.closest("ol.gestes .geste");
+  if (geste && !event.target.closest(".unfold")) {
+    const item = geste.closest("li");
+    if (item) {
+      item.classList.toggle("open");
+      item.parentElement?.querySelectorAll(":scope > li").forEach((other) => {
+        if (other !== item) other.classList.remove("open");
+      });
+    }
+    return;
+  }
+
+  const dayBtn = event.target.closest(".cal .d[data-day]");
+  if (dayBtn) {
+    const day = dayBtn.dataset.day;
+    document.querySelectorAll(".cal .d.on").forEach((el) => el.classList.remove("on"));
+    document.querySelectorAll(".agenda button.on, .agenda a.on").forEach((el) => {
+      el.classList.remove("on");
+    });
+    dayBtn.classList.add("on");
+    document.querySelectorAll(`.agenda [data-day="${day}"]`).forEach((el) => {
+      el.classList.add("on");
+    });
+  }
 });
 
 document.body.addEventListener("htmx:afterSwap", (event) => {

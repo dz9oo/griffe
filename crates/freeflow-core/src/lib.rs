@@ -10,6 +10,7 @@ pub mod clients;
 pub mod clock;
 pub mod closing;
 pub mod company;
+pub mod day;
 pub mod domain;
 pub mod expenses;
 pub mod fec;

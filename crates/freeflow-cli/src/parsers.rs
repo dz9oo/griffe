@@ -25,6 +25,22 @@ pub fn parse_date(s: &str) -> Result<Date, String> {
     domain::parse_date(s).map_err(|e| e.to_string())
 }
 
+/// Mois civil `AAAA-MM`.
+///
+/// # Errors
+pub fn parse_month(s: &str) -> Result<domain::Month, String> {
+    let (year_str, month_str) = s
+        .split_once('-')
+        .ok_or_else(|| format!("mois invalide : {s} (attendu AAAA-MM)"))?;
+    let year: i32 = year_str
+        .parse()
+        .map_err(|_| format!("mois invalide : {s} (attendu AAAA-MM)"))?;
+    let month: u8 = month_str
+        .parse()
+        .map_err(|_| format!("mois invalide : {s} (attendu AAAA-MM)"))?;
+    domain::Month::new(year, month).map_err(|e| e.to_string())
+}
+
 /// # Errors
 pub fn parse_money(s: &str) -> Result<Money, String> {
     Money::parse_decimal(s).map_err(|e| e.to_string())

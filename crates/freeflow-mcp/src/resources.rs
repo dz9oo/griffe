@@ -35,6 +35,8 @@ const CLOSING_CHECKLIST_PREFIX: &str = "freeflow://closing-checklist/";
 const CLOSING_GLOSSARY_URI: &str = "freeflow://closing-glossary";
 const ASSETS_URI: &str = "freeflow://assets";
 const FOLLOW_UPS_URI: &str = "freeflow://follow-ups";
+const DAY_URI: &str = "freeflow://day";
+const DAY_MONTH_PREFIX: &str = "freeflow://day/month/";
 
 pub(crate) fn list() -> ListResourcesResult {
     ListResourcesResult::with_all_items(vec![
@@ -99,6 +101,12 @@ pub(crate) fn list() -> ListResourcesResult {
                 "File de relances du jour (prospects et impayés) — même vue que follow_up.queue.",
             )
             .with_mime_type("application/json"),
+        Resource::new(DAY_URI, "day")
+            .with_description(
+                "Le jour : mât et gestes (même vue que day.mast + day.gestures). today = horloge \
+                 locale de l'adaptateur.",
+            )
+            .with_mime_type("application/json"),
     ])
 }
 
@@ -151,7 +159,26 @@ pub(crate) fn list_templates() -> ListResourceTemplatesResult {
              fiscal.checklist.",
         )
         .with_mime_type("application/json"),
+        ResourceTemplate::new(format!("{DAY_MONTH_PREFIX}{{month}}"), "day-month")
+            .with_description(
+                "Événements et bandes de missions d'un mois civil (`AAAA-MM`) — même vue que \
+                 day.month.",
+            )
+            .with_mime_type("application/json"),
     ])
+}
+
+fn parse_month_uri(s: &str) -> Result<freeflow_core::domain::Month, String> {
+    let (year_str, month_str) = s
+        .split_once('-')
+        .ok_or_else(|| format!("mois invalide : {s} (attendu AAAA-MM)"))?;
+    let year: i32 = year_str
+        .parse()
+        .map_err(|_| format!("mois invalide : {s} (attendu AAAA-MM)"))?;
+    let month: u8 = month_str
+        .parse()
+        .map_err(|_| format!("mois invalide : {s} (attendu AAAA-MM)"))?;
+    freeflow_core::domain::Month::new(year, month).map_err(|e| e.to_string())
 }
 
 fn json_contents(uri: &str, value: impl serde::Serialize) -> Result<ReadResourceResult, McpError> {
@@ -309,6 +336,22 @@ pub(crate) fn read(store: &Store, uri: &str) -> Result<ReadResourceResult, McpEr
         let cards = freeflow_core::follow_up::follow_up_queue(store.connection(), today)
             .map_err(|e| McpError::resource_not_found(e.to_string(), None))?;
         return json_contents(uri, cards);
+    }
+
+    if uri == DAY_URI {
+        let today = freeflow_core::clock::today_local();
+        let mast = freeflow_core::day::day_mast(store.connection(), today)
+            .map_err(|e| McpError::resource_not_found(e.to_string(), None))?;
+        let gestures = freeflow_core::day::day_gestures(store.connection(), today)
+            .map_err(|e| McpError::resource_not_found(e.to_string(), None))?;
+        return json_contents(uri, json!({ "mast": mast, "gestures": gestures }));
+    }
+    if let Some(raw) = uri.strip_prefix(DAY_MONTH_PREFIX) {
+        let today = freeflow_core::clock::today_local();
+        let month = parse_month_uri(raw).map_err(|e| McpError::resource_not_found(e, None))?;
+        let view = freeflow_core::day::day_month(store.connection(), month, today)
+            .map_err(|e| McpError::resource_not_found(e.to_string(), None))?;
+        return json_contents(uri, view);
     }
 
     if uri == ASSETS_URI {

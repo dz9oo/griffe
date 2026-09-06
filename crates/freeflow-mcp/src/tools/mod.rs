@@ -1,6 +1,7 @@
 pub(crate) mod billing;
 pub(crate) mod clients;
 pub(crate) mod company;
+pub(crate) mod day;
 pub(crate) mod expenses;
 pub(crate) mod fec;
 pub(crate) mod fiscal;

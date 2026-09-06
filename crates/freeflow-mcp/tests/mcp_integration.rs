@@ -171,6 +171,9 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "follow_up.snooze",
         "follow_up.schedule",
         "follow_up.retract",
+        "day.mast",
+        "day.gestures",
+        "day.month",
     ] {
         assert!(names.contains(expected), "outil manquant : {expected}");
     }
@@ -206,6 +209,9 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "follow_up.queue",
         "follow_up.board",
         "follow_up.show",
+        "day.mast",
+        "day.gestures",
+        "day.month",
     ] {
         assert_eq!(
             by_name(read_only)
@@ -1493,6 +1499,31 @@ async fn the_forecast_tool_projects_twelve_months() {
             .contains_key("first_shortfall_month"),
         "le premier mois en découvert est toujours annoncé, même null"
     );
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn the_day_mast_tool_returns_typed_facts() {
+    let store = Store::create(&test_db_path("day-mast"), &Passphrase::from("s3cret")).unwrap();
+    let client = spawn_client(store).await;
+
+    let mast = call(&client, "day.mast", json!({"today": "2026-09-05"})).await;
+    assert_eq!(mast.is_error, Some(false));
+    let body = json_of(&mast);
+    assert_eq!(body["bank"], 0);
+    assert!(body["runway_months"].is_null());
+    assert_eq!(body["open_conversations"], 0);
+    let signals = body["signals"].as_array().unwrap();
+    assert!(
+        signals.iter().any(|s| s["kind"] == "pipeline_empty"),
+        "{body}"
+    );
+
+    let gestes = call(&client, "day.gestures", json!({"today": "2026-09-05"})).await;
+    assert_eq!(gestes.is_error, Some(false));
+    let rows = json_of(&gestes);
+    assert!(rows.as_array().unwrap()[0]["verb"] == "setup", "{rows}");
 
     client.cancel().await.unwrap();
 }

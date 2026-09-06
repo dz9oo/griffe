@@ -6,6 +6,7 @@ mod asset;
 mod backup;
 mod client;
 mod company;
+mod day;
 mod error;
 mod expense;
 mod fec;
@@ -87,6 +88,9 @@ enum TopCommand {
     /// Identité légale de l'émetteur (mentions obligatoires des factures).
     #[command(subcommand)]
     Company(company::CompanyCommand),
+    /// Le jour : mât, gestes, mois.
+    #[command(subcommand)]
+    Day(day::DayCommand),
     /// Relances : file du jour, brouillon `.eml`, jamais d'envoi.
     #[command(subcommand)]
     FollowUp(follow_up::FollowUpCommand),
@@ -371,6 +375,7 @@ fn run_command(
         TopCommand::Backup(cmd) => backup::run(cmd, store),
         TopCommand::Client(cmd) => client::run(cmd, store, ctx, json),
         TopCommand::Company(cmd) => company::run(cmd, store, ctx, json),
+        TopCommand::Day(cmd) => day::run(cmd, store, json),
         TopCommand::FollowUp(cmd) => follow_up::run(cmd, store, ctx, json),
         TopCommand::Prospect(cmd) => prospect::run(cmd, store, ctx, json),
         TopCommand::Mission(cmd) => mission::run(cmd, store, ctx, json),

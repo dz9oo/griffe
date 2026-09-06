@@ -342,6 +342,64 @@ async fn the_atelier_chrome_has_three_pieces_and_vendored_fonts() {
 }
 
 #[tokio::test]
+async fn the_day_letter_shows_the_mast_gestures_and_the_month_grid() {
+    let db_path = test_db_path("letter-jour");
+    let state = unlocked_state(&db_path)
+        .await
+        .with_today(time::macros::date!(2026 - 09 - 05));
+    let router = freeflow_web::router(state);
+
+    let jour = body_text(
+        router
+            .clone()
+            .oneshot(Request::builder().uri("/jour").body(Body::empty()).unwrap())
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(jour.contains("data-view=\"jour\""), "{jour}");
+    assert!(jour.contains("class=\"mast\""), "mât visible : {jour}");
+    assert!(jour.contains("en banque"), "{jour}");
+    assert!(jour.contains("de piste"), "{jour}");
+    assert!(jour.contains("Samedi 5 septembre 2026"), "{jour}");
+    assert!(jour.contains("class=\"gestes\""), "{jour}");
+    assert!(
+        jour.contains("Configurer ma société") || jour.contains("Savoir pour la TVA"),
+        "au moins un geste : {jour}"
+    );
+    assert!(jour.contains("class=\"month\""), "{jour}");
+    assert!(jour.contains(">Lu<"), "grille lundi→dimanche : {jour}");
+    assert!(
+        jour.contains("class=\"d today"),
+        "aujourd'hui en sceau : {jour}"
+    );
+    assert!(
+        !jour.contains("CA3") && !jour.contains("3514"),
+        "pas de sigle dans la lettre : {jour}"
+    );
+    assert!(
+        !jour.contains("impayé"),
+        "on dit chez X, pas impayé : {jour}"
+    );
+
+    let fragment = body_text(
+        router
+            .oneshot(
+                Request::builder()
+                    .uri("/jour")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(fragment.contains("data-view=\"jour\""), "{fragment}");
+    assert!(fragment.contains("class=\"mast\""), "{fragment}");
+}
+
+#[tokio::test]
 async fn every_screen_renders_successfully_against_a_freshly_seeded_vault() {
     let db_path = test_db_path("all-screens");
     let (state, client_id) = unlocked_state_with_opportunity(&db_path).await;

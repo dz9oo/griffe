@@ -368,10 +368,49 @@ li.open .unfold { display: block; }
   line-height: 1;
 }
 .cal .d.empty { border-top-color: transparent; }
+.cal .d.pad { min-height: 52px; border-top: 1px solid var(--rule); }
 .cal .d.has { color: var(--ink); }
 .cal .d.today { color: var(--seal); box-shadow: inset 0 -1px 0 var(--seal); }
 .cal .d.on { background: var(--seal-soft); }
 .cal .d .mark { display: block; width: 5px; height: 5px; margin-top: 8px; background: var(--seal); font-style: normal; }
+.cal .d.legal .mark { background: var(--ink); width: 5px; height: 5px; }
+.cal .d.meet .mark { width: 9px; height: 2px; margin-top: 10px; background: var(--ink); }
+
+.tracks { margin: 20px 0 8px; }
+.track {
+  display: grid;
+  grid-template-columns: 6.2rem 1fr auto;
+  gap: 10px;
+  align-items: center;
+  margin: 9px 0;
+  font-size: 13px;
+}
+.track .lab { font-size: 13px; }
+.rail { height: 7px; background: var(--paper-2); position: relative; }
+.rail .bar, .rail .now, .rail .tick { display: block; position: absolute; font-style: normal; }
+.rail .bar { top: 0; height: 100%; background: var(--ink); opacity: 0.28; }
+.rail .now { top: -4px; width: 1px; height: 15px; background: var(--seal); }
+.rail .tick { top: -3px; width: 5px; height: 13px; background: var(--seal); }
+.track .end { color: var(--ink-2); font-size: 12px; }
+
+.agenda { list-style: none; margin-top: 28px; }
+.agenda button, .agenda a {
+  display: grid;
+  grid-template-columns: 3.2rem 7.5rem 1fr;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+  padding: 11px 0;
+  border-top: 1px solid var(--rule);
+  font-size: 15px;
+  text-decoration: none;
+  color: inherit;
+}
+.agenda li:last-child button, .agenda li:last-child a { border-bottom: 1px solid var(--rule); }
+.agenda .dt { font-family: var(--serif); font-size: 18px; }
+.agenda .kind { color: var(--ink-2); font-size: 13px; padding-top: 3px; }
+.agenda button.on, .agenda a.on { background: linear-gradient(90deg, var(--seal-soft), transparent 80%); }
+.agenda button:hover .ttl, .agenda a:hover .ttl { color: var(--seal); }
 
 .view { animation: in 260ms ease; }
 @keyframes in { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
@@ -659,4 +698,6 @@ tr.row-clickable:hover td { background: var(--paper-2); }
   .geste .num { font-size: 24px; }
   .mast-facts { gap: 6px 16px; font-size: 14px; }
   .people a, .people button { grid-template-columns: 1fr; }
+  .agenda button, .agenda a, .track { grid-template-columns: 1fr; gap: 4px; }
+  .cal .d { min-height: 44px; font-size: 14px; padding: 5px 3px; }
 }
