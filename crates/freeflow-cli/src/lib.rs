@@ -23,6 +23,7 @@ mod prospect;
 mod quote;
 mod refs;
 mod setup;
+mod society;
 mod table;
 mod vault;
 mod year;
@@ -95,6 +96,9 @@ enum TopCommand {
     /// Les gens : liste unique et dossier.
     #[command(subcommand)]
     People(people::PeopleCommand),
+    /// La société : paysage, se payer, impôts, clôture, relevé, identité.
+    #[command(subcommand)]
+    Society(society::SocietyCommand),
     /// Relances : file du jour, brouillon `.eml`, jamais d'envoi.
     #[command(subcommand)]
     FollowUp(follow_up::FollowUpCommand),
@@ -381,6 +385,7 @@ fn run_command(
         TopCommand::Company(cmd) => company::run(cmd, store, ctx, json),
         TopCommand::Day(cmd) => day::run(cmd, store, json),
         TopCommand::People(cmd) => people::run(cmd, store, json),
+        TopCommand::Society(cmd) => society::run(cmd, store, json),
         TopCommand::FollowUp(cmd) => follow_up::run(cmd, store, ctx, json),
         TopCommand::Prospect(cmd) => prospect::run(cmd, store, ctx, json),
         TopCommand::Mission(cmd) => mission::run(cmd, store, ctx, json),

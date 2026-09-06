@@ -145,7 +145,10 @@ pub fn day_mast(conn: &Connection, today: Date) -> Result<Mast, AppError> {
     })
 }
 
-fn cash_in_bank(conn: &Connection, today: Date) -> Result<Money, AppError> {
+/// Banque du jour : 512 d'ouverture + mouvements du relevé jusqu'à `today`.
+///
+/// # Errors
+pub fn cash_in_bank(conn: &Connection, today: Date) -> Result<Money, AppError> {
     let opening = opening_balance(conn)?;
     let opens_on = opening.as_ref().map(|o| o.balance.opens_on);
     let mut cents: i128 = 0;

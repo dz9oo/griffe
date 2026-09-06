@@ -494,6 +494,173 @@ async fn les_gens_lists_three_chapters_and_opens_a_dossier() {
 }
 
 #[tokio::test]
+async fn la_societe_shows_the_landscape_chapters_and_a_closed_dividend() {
+    let db_path = test_db_path("letter-societe");
+    let state = unlocked_state(&db_path)
+        .await
+        .with_today(time::macros::date!(2026 - 09 - 05));
+    {
+        let mut store =
+            Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &freeflow_core::company::SetCompanyProfile {
+                        name: "Lumen Conseil".into(),
+                        legal_form: "SASU".into(),
+                        siren: freeflow_core::domain::Siren::parse("552100554").unwrap(),
+                        vat_number: None,
+                        address: freeflow_core::domain::Address {
+                            street: "18 rue des Ateliers".into(),
+                            postal_code: "69003".into(),
+                            city: "Lyon".into(),
+                            country: "FR".into(),
+                        },
+                        share_capital: Some(Money::from_cents(100_000)),
+                        rcs_city: Some("Lyon".into()),
+                        iban: None,
+                        fiscal_year_end: Some(
+                            freeflow_core::domain::FiscalYearEnd::new(9, 30).unwrap(),
+                        ),
+                        vat_regime: Some(freeflow_core::domain::VatRegime::RealNormalQuarterly),
+                        director_monthly_gross: Some(Money::from_cents(300_000)),
+                        director_charge_ratio_bps: None,
+                        president_name: Some("Nicolas Lumen".into()),
+                        sole_shareholder_name: Some("Nicolas Lumen".into()),
+                        sole_shareholder_address: Some("18 rue des Ateliers, 69003 Lyon".into()),
+                        share_count: Some(1000),
+                    },
+                    &human_ctx(),
+                )
+                .unwrap(),
+        );
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &freeflow_core::opening_balance::RecordOpeningBalance {
+                        opens_on: time::macros::date!(2025 - 10 - 01),
+                        source: Some("cabinet".into()),
+                        lines: vec![
+                            "101000:Capital:C:1000.00".parse().unwrap(),
+                            "401000:Cabinet Leroy:C:1200.00".parse().unwrap(),
+                            "512000:Banque:D:2200.00".parse().unwrap(),
+                        ],
+                        tax_losses: Money::ZERO,
+                        prior_corporate_tax: None,
+                        prior_vat_due: None,
+                    },
+                    &human_ctx(),
+                )
+                .unwrap(),
+        );
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &freeflow_core::billing::ImportBankTransactions {
+                        transactions: vec![freeflow_core::billing::ParsedTransaction {
+                            occurred_on: time::macros::date!(2026 - 09 - 04),
+                            amount_cents: -120_000,
+                            description: "Cabinet Leroy".into(),
+                            fitid: None,
+                        }],
+                    },
+                    &human_ctx(),
+                )
+                .unwrap(),
+        );
+    }
+    let router = freeflow_web::router(state);
+
+    let home = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/societe")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(home.contains("data-view=\"societe\""), "{home}");
+    assert!(home.contains("class=\"landscape\""), "paysage : {home}");
+    assert!(home.contains("Te payer"), "{home}");
+    assert!(home.contains("/societe/payer"), "{home}");
+    assert!(
+        !home.contains("freeflow "),
+        "pas de commande CLI dans la lettre : {home}"
+    );
+    assert!(
+        !home.contains("CA3") && !home.contains("3514") && !home.contains("2777"),
+        "pas de sigle : {home}"
+    );
+
+    let payer = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/societe/payer")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(payer.contains("Te payer"), "{payer}");
+    assert!(
+        payer.contains("n'est pas clos") || payer.contains("n&#x27;est pas clos"),
+        "dividende fermé : {payer}"
+    );
+    assert!(!payer.contains("CA3"), "{payer}");
+
+    let releve = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/societe/releve")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(releve.contains("Leroy"), "{releve}");
+    assert!(
+        releve.contains("dette") || releve.contains("pas une charge"),
+        "Leroy = dette : {releve}"
+    );
+    assert!(!releve.contains("freeflow "), "{releve}");
+
+    let old = body_text(
+        router
+            .oneshot(
+                Request::builder()
+                    .uri("/view/depenses")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(old.contains("Le relevé"), "{old}");
+}
+
+fn applied<T: std::fmt::Debug>(outcome: freeflow_core::app::Outcome<T>) -> T {
+    match outcome {
+        freeflow_core::app::Outcome::Applied(v) => v,
+        other => panic!("expected Applied, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn every_screen_renders_successfully_against_a_freshly_seeded_vault() {
     let db_path = test_db_path("all-screens");
     let (state, client_id) = unlocked_state_with_opportunity(&db_path).await;

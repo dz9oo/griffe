@@ -1411,6 +1411,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn the_list_has_camille_atlas_hume_and_leroy_in_the_right_chapters() {
         let mut store = test_store("list");
         seed_people(&mut store);

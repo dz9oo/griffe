@@ -39,6 +39,7 @@ const DAY_URI: &str = "freeflow://day";
 const DAY_MONTH_PREFIX: &str = "freeflow://day/month/";
 const PEOPLE_URI: &str = "freeflow://people";
 const PEOPLE_DETAIL_PREFIX: &str = "freeflow://people/";
+const SOCIETY_URI: &str = "freeflow://society";
 
 pub(crate) fn list() -> ListResourcesResult {
     ListResourcesResult::with_all_items(vec![
@@ -113,6 +114,12 @@ pub(crate) fn list() -> ListResourcesResult {
             .with_description(
                 "Les gens : trois chapitres (en conversation, en mission, fournisseurs) — même \
                  vue que people.list.",
+            )
+            .with_mime_type("application/json"),
+        Resource::new(SOCIETY_URI, "society")
+            .with_description(
+                "La société : identité courte, paysage, conversations, chapitres — même vue que \
+                 society.show.",
             )
             .with_mime_type("application/json"),
     ])
@@ -359,6 +366,12 @@ pub(crate) fn read(store: &Store, uri: &str) -> Result<ReadResourceResult, McpEr
         let gestures = freeflow_core::day::day_gestures(store.connection(), today)
             .map_err(|e| McpError::resource_not_found(e.to_string(), None))?;
         return json_contents(uri, json!({ "mast": mast, "gestures": gestures }));
+    }
+    if uri == SOCIETY_URI {
+        let today = freeflow_core::clock::today_local();
+        let home = freeflow_core::society::society_home(store.connection(), today)
+            .map_err(|e| McpError::resource_not_found(e.to_string(), None))?;
+        return json_contents(uri, home);
     }
     if uri == PEOPLE_URI {
         let today = freeflow_core::clock::today_local();

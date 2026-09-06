@@ -751,6 +751,30 @@ fn people_help_is_a_stable_interface_contract() {
 }
 
 #[test]
+fn society_help_is_a_stable_interface_contract() {
+    let output = freeflow().args(["society", "--help"]).output().unwrap();
+    insta::assert_snapshot!(String::from_utf8(output.stdout).unwrap());
+}
+
+#[test]
+fn society_pay_on_an_empty_vault_closes_the_dividend() {
+    let db = temp_db("society-pay");
+    provision(&db);
+    let output = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--json", "society", "pay", "--today", "2026-09-05"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(value["possible"], 0);
+    assert_eq!(value["dividend"]["kind"], "closed");
+    assert_eq!(value["dividend"]["reason"], "year_not_closed");
+}
+
+#[test]
 fn people_list_json_on_an_empty_vault_has_three_empty_chapters() {
     let db = temp_db("people-list");
     provision(&db);

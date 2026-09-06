@@ -633,6 +633,7 @@ pub fn list_fragment(store: &Store) -> Result<Markup, AppError> {
     })
 }
 
+#[allow(dead_code)]
 pub fn render(store: &Store) -> Result<Markup, AppError> {
     let expenses = list_expenses(store.connection())?;
     let total: Money = expenses.iter().map(|e| e.amount).sum();

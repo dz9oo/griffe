@@ -63,6 +63,7 @@ impl FreeflowServer {
             + Self::follow_up_router()
             + Self::day_router()
             + Self::people_router()
+            + Self::society_router()
     }
 }
 

@@ -411,6 +411,7 @@ pub fn list_fragment(store: &Store, today: time::Date) -> Result<Markup, AppErro
     })
 }
 
+#[allow(dead_code)]
 pub fn render(store: &Store, today: time::Date) -> Result<Markup, AppError> {
     let count = list_fiscal_years(store.connection())?.len();
     Ok(html! {
@@ -471,14 +472,14 @@ fn step_action(checklist: &ClosingChecklist, step: &ClosingStep) -> Markup {
         html! { a class="btn small" href=(href) { (label) } }
     };
     match step.key {
-        ClosingStepKey::Profile => nav_link("/view/societe", "renseigner le profil"),
+        ClosingStepKey::Profile => nav_link("/societe/identite", "renseigner le profil"),
         ClosingStepKey::OpeningBalance => {
             panel_button("/cloture/opening".to_string(), "bilan d'ouverture")
         }
         ClosingStepKey::PreviousYear => nav_link("/view/cloture", "voir les exercices"),
         ClosingStepKey::Invoices => nav_link("/view/facturation", "facturation"),
         ClosingStepKey::Expenses | ClosingStepKey::Bank => {
-            nav_link("/view/depenses", "dépenses et relevé")
+            nav_link("/societe/releve", "dépenses et relevé")
         }
         ClosingStepKey::Result | ClosingStepKey::BalanceSheet => panel_button(
             format!("/cloture/balance?period={period}"),
@@ -509,9 +510,9 @@ fn step_action(checklist: &ClosingChecklist, step: &ClosingStep) -> Markup {
             || html! {},
             |id| panel_button(format!("/cloture/{id}"), "documents de l'exercice"),
         ),
-        ClosingStepKey::Vat => nav_link("/view/societe", "régime de TVA du profil"),
+        ClosingStepKey::Vat => nav_link("/societe/impots", "régime de TVA du profil"),
         ClosingStepKey::Das2 if step.status == StepStatus::Warning => {
-            nav_link("/view/depenses", "nommer les bénéficiaires")
+            nav_link("/societe/releve", "nommer les bénéficiaires")
         }
         ClosingStepKey::Close
         | ClosingStepKey::PeriodEnded

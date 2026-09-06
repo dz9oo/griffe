@@ -176,6 +176,12 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "day.month",
         "people.list",
         "people.show",
+        "society.show",
+        "society.pay",
+        "society.duties",
+        "society.closing",
+        "society.statement",
+        "society.identity",
     ] {
         assert!(names.contains(expected), "outil manquant : {expected}");
     }
@@ -216,6 +222,12 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "day.month",
         "people.list",
         "people.show",
+        "society.show",
+        "society.pay",
+        "society.duties",
+        "society.closing",
+        "society.statement",
+        "society.identity",
     ] {
         assert_eq!(
             by_name(read_only)
@@ -1554,6 +1566,21 @@ async fn the_people_list_tool_returns_three_empty_chapters() {
     )
     .await;
     assert_eq!(missing.is_error, Some(true));
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn the_society_pay_tool_closes_the_dividend_when_the_year_is_open() {
+    let store = Store::create(&test_db_path("society-pay"), &Passphrase::from("s3cret")).unwrap();
+    let client = spawn_client(store).await;
+
+    let pay = call(&client, "society.pay", json!({"today": "2026-09-05"})).await;
+    assert_eq!(pay.is_error, Some(false));
+    let body = json_of(&pay);
+    assert_eq!(body["possible"], 0);
+    assert_eq!(body["dividend"]["kind"], "closed");
+    assert_eq!(body["dividend"]["reason"], "year_not_closed");
 
     client.cancel().await.unwrap();
 }

@@ -1,5 +1,6 @@
 ---
 source: crates/freeflow-cli/tests/cli_integration.rs
+assertion_line: 801
 expression: "String::from_utf8(output.stdout).unwrap()"
 ---
 Gestion pour indépendant — pilotable en CLI et par un agent LLM (MCP).
@@ -16,6 +17,7 @@ Commands:
   company     Identité légale de l'émetteur (mentions obligatoires des factures)
   day         Le jour : mât, gestes, mois
   people      Les gens : liste unique et dossier
+  society     La société : paysage, se payer, impôts, clôture, relevé, identité
   follow-up   Relances : file du jour, brouillon `.eml`, jamais d'envoi
   prospect    Prospection : opportunités, pipeline, interactions
   mission     Missions : création, saisie de temps, TJM effectif, capacité

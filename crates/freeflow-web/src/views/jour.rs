@@ -276,14 +276,14 @@ fn geste_actions(g: &DayGesture, today: Date) -> Markup {
             }
         }
         GestureSource::BankStatement { .. } => html! {
-            a class="seal" href=(ViewId::Depenses.path())
-              hx-get=(ViewId::Depenses.path()) hx-target="#content" hx-push-url="true" {
+            a class="seal" href="/societe/releve"
+              hx-get="/societe/releve" hx-target="#content" hx-push-url="true" {
                 "Lire les mouvements"
             }
         },
         GestureSource::StateDuty { .. } => html! {
-            a class="quiet" href=(ViewId::Societe.path())
-              hx-get=(ViewId::Societe.path()) hx-target="#content" hx-push-url="true" {
+            a class="quiet" href="/societe/impots"
+              hx-get="/societe/impots" hx-target="#content" hx-push-url="true" {
                 "Voir ce que tu dois, en français"
             }
         },
@@ -565,7 +565,7 @@ fn event_href(target: &MonthTarget, party: Option<&str>) -> Option<String> {
         MonthTarget::Invoice { id } => {
             Some(party.map_or_else(|| format!("/gens/{id}"), href_for_party))
         }
-        MonthTarget::Taxes => Some(ViewId::Societe.path().to_string()),
-        MonthTarget::Closing => Some(ViewId::Cloture.path().to_string()),
+        MonthTarget::Taxes => Some("/societe/impots".to_string()),
+        MonthTarget::Closing => Some("/societe/cloture".to_string()),
     }
 }

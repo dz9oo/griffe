@@ -94,6 +94,26 @@ pub async fn societe_piece(State(state): State<AppState>, headers: HeaderMap) ->
     letter(&state, headers, ViewId::Societe, views::societe::piece).await
 }
 
+pub async fn societe_pay(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
+    letter(&state, headers, ViewId::Societe, views::societe::pay).await
+}
+
+pub async fn societe_duties(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
+    letter(&state, headers, ViewId::Societe, views::societe::duties).await
+}
+
+pub async fn societe_closing(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
+    letter(&state, headers, ViewId::Societe, views::societe::closing).await
+}
+
+pub async fn societe_statement(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
+    letter(&state, headers, ViewId::Societe, views::societe::statement).await
+}
+
+pub async fn societe_identity(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
+    letter(&state, headers, ViewId::Societe, views::societe::identity).await
+}
+
 pub async fn prospection(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
     letter(&state, headers, ViewId::Gens, views::gens::render).await
 }
@@ -115,25 +135,11 @@ pub async fn devis(State(state): State<AppState>, headers: HeaderMap) -> Html<St
 }
 
 pub async fn depenses(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
-    let content = state
-        .with_store(|store| {
-            views::depenses::render(store).unwrap_or_else(|e| error_markup(ViewId::Depenses, e))
-        })
-        .await
-        .unwrap_or_else(|| locked_markup(ViewId::Depenses));
-    respond(headers, ViewId::Depenses, content).await
+    letter(&state, headers, ViewId::Depenses, views::societe::statement).await
 }
 
 pub async fn cloture(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
-    let today = state.today();
-    let content = state
-        .with_store(|store| {
-            views::cloture::render(store, today)
-                .unwrap_or_else(|e| error_markup(ViewId::Cloture, e))
-        })
-        .await
-        .unwrap_or_else(|| locked_markup(ViewId::Cloture));
-    respond(headers, ViewId::Cloture, content).await
+    letter(&state, headers, ViewId::Cloture, views::societe::closing).await
 }
 
 pub async fn societe(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {

@@ -13,3 +13,4 @@ pub(crate) mod people;
 pub(crate) mod prospection;
 pub(crate) mod quotes;
 pub(crate) mod setup;
+pub(crate) mod society;

@@ -23,9 +23,13 @@ static COUNTER: AtomicU32 = AtomicU32::new(0);
 /// tous les tests tournant en parallèle dans le même process.
 pub fn temp_db(label: &str) -> PathBuf {
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let uniq = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
     std::env::temp_dir()
         .join(format!(
-            "freeflow-cli-test-{label}-{}-{n}",
+            "freeflow-cli-test-{label}-{}-{n}-{uniq}",
             std::process::id()
         ))
         .join("vault.db")
