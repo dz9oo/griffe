@@ -1,8 +1,10 @@
 //! Outils `society.*` — paysage, se payer, relevé, chapitres. Lectures pures, `today` d'adaptateur.
 
 use freeflow_core::clock::today_local;
+use freeflow_core::fiscal::FiscalDeadlineKind;
 use freeflow_core::society::{
-    closing_story, pay_yourself, society_duties, society_home, society_identity, statement_moves,
+    closing_story, duty_briefing, pay_yourself, society_duties, society_home, society_identity,
+    statement_moves,
 };
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
@@ -22,6 +24,14 @@ fn today_or(today: Option<String>) -> Result<time::Date, String> {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct TodayArgs {
+    /// Date `AAAA-MM-JJ`. Défaut : aujourd'hui (heure locale).
+    today: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct DutyArgs {
+    /// Nature (`is_acompte`, `ca3`, `cfe`, `is_solde`, `liasse`, …).
+    kind: String,
     /// Date `AAAA-MM-JJ`. Défaut : aujourd'hui (heure locale).
     today: Option<String>,
 }
@@ -58,6 +68,26 @@ impl FreeflowServer {
         let store = self.store.lock().await;
         match pay_yourself(store.connection(), today) {
             Ok(pay) => ok_json(pay),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
+    /// Lettre d'une démarche hors de l'app : montant, chemin sur le site, ce que l'écran demandera.
+    #[tool(
+        name = "society.duty",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    async fn society_duty_tool(&self, Parameters(args): Parameters<DutyArgs>) -> CallToolResult {
+        let today = match today_or(args.today) {
+            Ok(d) => d,
+            Err(e) => return err_text(e),
+        };
+        let Some(kind) = FiscalDeadlineKind::parse(&args.kind) else {
+            return err_text(format!("démarche inconnue : {}", args.kind));
+        };
+        let store = self.store.lock().await;
+        match duty_briefing(store.connection(), kind, today) {
+            Ok(briefing) => ok_json(briefing),
             Err(e) => err_text(e.to_string()),
         }
     }

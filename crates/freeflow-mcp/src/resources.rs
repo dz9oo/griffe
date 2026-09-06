@@ -40,6 +40,7 @@ const DAY_MONTH_PREFIX: &str = "freeflow://day/month/";
 const PEOPLE_URI: &str = "freeflow://people";
 const PEOPLE_DETAIL_PREFIX: &str = "freeflow://people/";
 const SOCIETY_URI: &str = "freeflow://society";
+const SOCIETY_DUTY_PREFIX: &str = "freeflow://society/duties/";
 
 pub(crate) fn list() -> ListResourcesResult {
     ListResourcesResult::with_all_items(vec![
@@ -184,6 +185,12 @@ pub(crate) fn list_templates() -> ListResourceTemplatesResult {
             .with_description(
                 "Dossier d'une personne (nom, préfixe, UUID) : en cours, projet, papiers, \
                  histoire — même vue que people.show.",
+            )
+            .with_mime_type("application/json"),
+        ResourceTemplate::new(format!("{SOCIETY_DUTY_PREFIX}{{kind}}"), "society-duty")
+            .with_description(
+                "Lettre d'une démarche hors de l'app (`is_acompte`, `ca3`, …) — même vue que \
+                 society.duty.",
             )
             .with_mime_type("application/json"),
     ])
@@ -372,6 +379,15 @@ pub(crate) fn read(store: &Store, uri: &str) -> Result<ReadResourceResult, McpEr
         let home = freeflow_core::society::society_home(store.connection(), today)
             .map_err(|e| McpError::resource_not_found(e.to_string(), None))?;
         return json_contents(uri, home);
+    }
+    if let Some(kind_raw) = uri.strip_prefix(SOCIETY_DUTY_PREFIX) {
+        let kind = freeflow_core::fiscal::FiscalDeadlineKind::parse(kind_raw).ok_or_else(|| {
+            McpError::resource_not_found(format!("démarche inconnue : {kind_raw}"), None)
+        })?;
+        let today = freeflow_core::clock::today_local();
+        let briefing = freeflow_core::society::duty_briefing(store.connection(), kind, today)
+            .map_err(|e| McpError::resource_not_found(e.to_string(), None))?;
+        return json_contents(uri, briefing);
     }
     if uri == PEOPLE_URI {
         let today = freeflow_core::clock::today_local();

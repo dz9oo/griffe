@@ -2,11 +2,13 @@
 
 use freeflow_core::app::AppError;
 use freeflow_core::domain::{Money, VatRegime, format_date_fr};
+use freeflow_core::fiscal::FiscalDeadlineKind;
 use freeflow_core::society::{
-    BeatKind, BeatWhen, ClosingBeat, ClosingStory, ConversationBar, DepositPlace, DividendClosed,
-    DividendDoor, Duty, IdentityCard, IdentityShort, Landscape, PayYourself, SocietyHome,
-    StatementMove, StatementReading, closing_story, pay_yourself, society_duties, society_home,
-    society_identity, statement_moves,
+    AmountBasis, AmountStory, BeatKind, BeatWhen, ClosingBeat, ClosingStory, ConversationBar,
+    DividendClosed, DividendDoor, DutyBriefing, Expect, IdentityCard, IdentityShort, Landscape,
+    PayYourself, SocietyHome, StatementMove, StatementReading, UnknownReason, WaiverReason,
+    closing_story, duty_briefing, pay_yourself, society_duties, society_home, society_identity,
+    statement_moves,
 };
 use freeflow_core::store::Store;
 use maud::{Markup, PreEscaped, html};
@@ -366,24 +368,36 @@ fn pay_markup(pay: &PayYourself) -> Markup {
 
 pub fn duties(store: &Store, today: Date) -> Result<Markup, AppError> {
     let duties = society_duties(store.connection(), today)?;
-    Ok(duties_markup(&duties))
+    let mut rows = Vec::new();
+    for d in &duties {
+        if d.kind == FiscalDeadlineKind::ApprovalMeeting {
+            continue;
+        }
+        let briefing = duty_briefing(store.connection(), d.kind, today)?;
+        rows.push((d.kind, d.due_on, list_line(&briefing)));
+    }
+    Ok(duties_markup(&rows))
 }
 
-fn duties_markup(duties: &[Duty]) -> Markup {
+fn duties_markup(rows: &[(FiscalDeadlineKind, Date, String)]) -> Markup {
     html! {
         div class="letter" data-view=(ViewId::Societe.slug()) {
             (back())
             h1 { "Ce que tu dois." }
-            p class="lede" { "Pas des sigles. Des dates, des montants, et où le déposer. FreeFlow prépare. Il ne transmet rien." }
-            @if duties.is_empty() {
+            p class="lede" { "Pas des sigles. Des dates, des montants, et où le déposer. On prépare. On ne transmet rien." }
+            @if rows.is_empty() {
                 p class="prose" { "Aucune échéance dans l'horizon." }
             } @else {
                 ul class="chapters" {
-                    @for d in duties {
+                    @for (kind, due_on, line) in rows {
+                        @let href = crate::views::copy::duty_href(*kind);
                         li {
-                            div {
-                                strong { (format_date_fr(d.due_on)) " — " (deadline_fr(d.kind)) }
-                                span { (duty_body(d)) }
+                            a href=(href) hx-get=(href) hx-target="#content" hx-push-url="true" {
+                                div {
+                                    strong { (format_date_fr(*due_on)) " — " (deadline_fr(*kind)) }
+                                    span { (line) }
+                                }
+                                span class="go" { "→" }
                             }
                         }
                     }
@@ -393,27 +407,238 @@ fn duties_markup(duties: &[Duty]) -> Markup {
     }
 }
 
-fn duty_body(d: &Duty) -> String {
-    let amount = d
-        .amount
-        .filter(|m| *m != Money::ZERO)
-        .map(|m| format!("{m} "))
-        .unwrap_or_default();
-    match d.deposit {
-        DepositPlace::ImpotsGouv => format!(
-            "{amount}à déposer sur impots.gouv.fr. Les chiffres sont déjà dans le coffre. Même à zéro, on dépose."
+fn list_line(b: &DutyBriefing) -> String {
+    match &b.amount {
+        AmountStory::Due { amount, .. } if *amount != Money::ZERO => {
+            format!("{amount} — ouvrir la lettre avant de partir")
+        }
+        AmountStory::Due { .. } => "Même à zéro, on dépose — ouvrir la lettre".into(),
+        AmountStory::Waiver { .. } => "Rien à verser — la lettre dit pourquoi".into(),
+        AmountStory::Unknown { .. } => {
+            "Le montant n'est pas encore connu — la lettre dit quoi vérifier".into()
+        }
+        AmountStory::External => "Le montant est sur l'avis, pas ici".into(),
+        AmountStory::NotYourHands { .. } => "Chez l'expert-paie, pas toi sur le site".into(),
+        AmountStory::Declaration => "Une déclaration — la lettre dit le chemin".into(),
+    }
+}
+
+/// Lettre d'une démarche hors de l'app.
+///
+/// # Errors
+///
+/// Lecture du coffre, ou démarche interne (`ApprovalMeeting`).
+pub fn duty(store: &Store, today: Date, kind: FiscalDeadlineKind) -> Result<Markup, AppError> {
+    let briefing = duty_briefing(store.connection(), kind, today)?;
+    Ok(duty_markup(&briefing))
+}
+
+fn duty_markup(b: &DutyBriefing) -> Markup {
+    let title = duty_title(b.kind);
+    let lede = duty_lede(b.kind);
+    let amount = amount_story_fr(&b.amount);
+    let why = duty_why(b.kind);
+    let expects: Vec<&'static str> = b.expect.iter().map(expect_fr).collect();
+    let show_open = !matches!(b.amount, AmountStory::NotYourHands { .. }) && !b.path.is_empty();
+    let open = format!("{}/open", crate::views::copy::duty_href(b.kind));
+    html! {
+        div class="letter" data-view=(ViewId::Societe.slug()) {
+            (back())
+            div class="date" { (format_date_fr(b.due_on)) }
+            h1 { (title) }
+            p class="lede" { (lede) }
+            div class="block" {
+                h3 { "Le montant" }
+                p class="prose" { (amount) }
+            }
+            div class="block" {
+                h3 { "Pourquoi" }
+                p class="prose" { (why) }
+            }
+            @if !b.path.is_empty() {
+                div class="block" {
+                    h3 { "Sur le site" }
+                    p class="prose" {
+                        (b.path.join(" → "))
+                        @if let Some(form) = b.form {
+                            " — " (form)
+                        }
+                    }
+                    p class="prose" { (b.url) }
+                }
+            }
+            @if !expects.is_empty() {
+                div class="block" {
+                    h3 { "Ce que tu feras" }
+                    ul class="hist" {
+                        @for e in expects {
+                            li { span { (e) } }
+                        }
+                    }
+                }
+            }
+            @if b.kind == FiscalDeadlineKind::Liasse {
+                p class="prose" { "La notice à recopier case par case est dans Clore, sur la fiche de l'exercice." }
+            }
+            p class="prose" style="color:var(--ink-2);font-size:14px" {
+                "Indicatif. L'administration prime."
+            }
+            div class="row-actions" {
+                @if show_open {
+                    form hx-post=(open) hx-target="#content" {
+                        button class="seal" type="submit" { "Ouvrir dans le navigateur" }
+                    }
+                }
+                a class="quiet" href="/societe/impots"
+                  hx-get="/societe/impots" hx-target="#content" hx-push-url="true" {
+                    "Revenir"
+                }
+            }
+        }
+    }
+}
+
+fn duty_title(kind: FiscalDeadlineKind) -> String {
+    let s = deadline_fr(kind);
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(first) => format!("{}{}.", first.to_uppercase(), chars.as_str()),
+        None => s.to_string(),
+    }
+}
+
+fn duty_lede(kind: FiscalDeadlineKind) -> &'static str {
+    match kind {
+        FiscalDeadlineKind::IsAcompte => {
+            "Un quart de l'impôt de l'année d'avant. On le verse, on ne déclare pas un résultat."
+        }
+        FiscalDeadlineKind::IsSolde => {
+            "Le reste de l'impôt de l'exercice clos. On dépose même à zéro."
+        }
+        FiscalDeadlineKind::Ca3 => "La TVA de la période. Même à zéro, on dépose.",
+        FiscalDeadlineKind::VatInstalment => "Un acompte de TVA, calculé sur l'année d'avant.",
+        FiscalDeadlineKind::Ca12 => "La TVA de l'année, nette des acomptes déjà versés.",
+        FiscalDeadlineKind::Cfe => "La cotisation foncière. Le montant est sur l'avis, pas ici.",
+        FiscalDeadlineKind::Liasse => {
+            "La déclaration de résultats. On recopie, on ne transmet pas d'ici."
+        }
+        FiscalDeadlineKind::AccountsFiling => {
+            "Déposer les comptes au guichet unique. L'option de confidentialité est possible."
+        }
+        FiscalDeadlineKind::Das2 => "Les honoraires versés, par bénéficiaire, au-delà du seuil.",
+        FiscalDeadlineKind::Dividends2777 => "Les prélèvements retenus sur les dividendes versés.",
+        FiscalDeadlineKind::Dsn => "La déclaration sociale. Ce n'est pas toi sur le site.",
+        FiscalDeadlineKind::ApprovalMeeting => "Chez toi : le registre, le PV.",
+    }
+}
+
+fn duty_why(kind: FiscalDeadlineKind) -> &'static str {
+    match kind {
+        FiscalDeadlineKind::IsAcompte => {
+            "Quatre versements dans l'année, aux 15 mars, juin, septembre et décembre. Si l'impôt de référence est sous 3 000 €, ou si c'est le premier exercice, rien n'est dû."
+        }
+        FiscalDeadlineKind::IsSolde => {
+            "Après la clôture, on solde ce qui reste. Le relevé 2572 se dépose même à zéro."
+        }
+        FiscalDeadlineKind::Ca3 => {
+            "Chaque période, on déclare la TVA collectée moins la déductible. Une période sans chiffre d'affaires se dépose aussi, à néant."
+        }
+        FiscalDeadlineKind::VatInstalment => {
+            "Au réel simplifié, deux acomptes dans l'année, tant que ce régime existe encore."
+        }
+        FiscalDeadlineKind::Ca12 => {
+            "La régularisation annuelle de TVA du réel simplifié, avant le passage en CA3 trimestrielle."
+        }
+        FiscalDeadlineKind::Cfe => {
+            "L'avis arrive par la poste et dans l'espace professionnel. On paie ce qui est écrit dessus."
+        }
+        FiscalDeadlineKind::Liasse => {
+            "Les tableaux 2065 et 2033 se saisissent en ligne, régime simplifié, sans partenaire EDI."
+        }
+        FiscalDeadlineKind::AccountsFiling => {
+            "Dans le mois qui suit l'approbation. On peut demander la confidentialité des comptes."
+        }
+        FiscalDeadlineKind::Das2 => {
+            "Au-delà de 2 400 € d'honoraires par bénéficiaire et par année civile, une déclaration."
+        }
+        FiscalDeadlineKind::Dividends2777 => {
+            "La société retient le prélèvement et le verse le mois suivant la mise en paiement."
+        }
+        FiscalDeadlineKind::Dsn => {
+            "Si le président est rémunéré, l'expert-paie dépose chaque mois. On n'est pas un logiciel de paie."
+        }
+        FiscalDeadlineKind::ApprovalMeeting => "Le registre des décisions, chez toi.",
+    }
+}
+
+fn amount_story_fr(story: &AmountStory) -> String {
+    match story {
+        AmountStory::Due { amount, basis } => {
+            format!("{amount} — {}", amount_basis_fr(*basis))
+        }
+        AmountStory::Waiver { reason } => match reason {
+            WaiverReason::PriorIsBelowThreshold => {
+                "Rien à verser. L'impôt de référence est sous 3 000 €.".into()
+            }
+            WaiverReason::FirstExercise => "Rien à verser. Premier exercice.".into(),
+            WaiverReason::VatInstalmentDispensation => {
+                "Rien à verser. L'acompte de TVA est dispensé.".into()
+            }
+            WaiverReason::Das2BelowThreshold => {
+                "Rien à déclarer. Les honoraires restent sous le seuil.".into()
+            }
+        },
+        AmountStory::Unknown { reason } => match reason {
+            UnknownReason::NoProfile => {
+                "On ne le sait pas encore. Le profil de la société manque.".into()
+            }
+            UnknownReason::PriorIsMissing => {
+                "On ne le sait pas encore. L'impôt de l'exercice précédent n'est pas repris au bilan d'ouverture.".into()
+            }
+            UnknownReason::PriorVatMissing => {
+                "On ne le sait pas encore. La TVA de l'exercice précédent n'est pas reprise.".into()
+            }
+        },
+        AmountStory::External => "Le montant est sur l'avis, pas ici.".into(),
+        AmountStory::NotYourHands { amount } => amount.map_or_else(
+            || "Chez l'expert-paie. Pas toi sur le site.".into(),
+            |m| format!("{m} de cotisations — chez l'expert-paie, pas toi sur le site."),
         ),
-        DepositPlace::Post => {
-            "Si tu y es assujetti. L'avis arrive par la poste, pas ici.".into()
+        AmountStory::Declaration => "Pas un versement. Une déclaration à recopier.".into(),
+    }
+}
+
+fn amount_basis_fr(basis: AmountBasis) -> &'static str {
+    match basis {
+        AmountBasis::QuarterOfPriorIs => "un quart de l'impôt de l'exercice de référence",
+        AmountBasis::VatForPeriod => "TVA de la période",
+        AmountBasis::VatInstalment => "acompte de TVA",
+        AmountBasis::Ca12Net => "TVA de l'année, nette des acomptes",
+        AmountBasis::SnapshotIs => "impôt de l'exercice clos",
+        AmountBasis::FeesBySupplier => "honoraires par bénéficiaire",
+        AmountBasis::DividendWithholding => "prélèvements retenus sur les dividendes",
+    }
+}
+
+fn expect_fr(expect: &Expect) -> &'static str {
+    match expect {
+        Expect::NeedsProfessionalSpace => {
+            "Un espace professionnel sur le site des impôts, si ce n'est pas déjà fait."
         }
-        DepositPlace::Greffe => {
-            "Dépôt des comptes au greffe, via le guichet unique. FreeFlow prépare, il ne transmet pas.".into()
+        Expect::CheckPrefill => {
+            "Vérifier le montant affiché. L'administration le préremplit souvent."
         }
-        DepositPlace::NetEntreprises => {
-            "Déclaration sociale, chez ton expert-paie. FreeFlow n'est pas un logiciel de paie.".into()
+        Expect::FileEvenIfZero => "Déposer même à zéro.",
+        Expect::ModulateDown => {
+            "On peut baisser le versement si l'impôt de cette année sera inférieur."
         }
-        DepositPlace::Internal => {
-            "Chez toi : le registre des décisions, le PV. Pas un site d'État.".into()
+        Expect::PayElectronically => "Payer par télérèglement. Pas de chèque.",
+        Expect::SeeEfiNotice => "Recopier chaque case depuis la notice, dans Clore.",
+        Expect::NoticeInSpace => "L'avis est dans Consulter → Avis C.F.E.",
+        Expect::PayrollExpertDoesIt => "Ton expert-paie dépose. Rien à faire sur Net-entreprises.",
+        Expect::GuichetUnique => "Se connecter au guichet unique, formalité dépôt des comptes.",
+        Expect::ConfidentialityOption => {
+            "Cocher la déclaration de confidentialité si tu ne veux pas publier les comptes."
         }
     }
 }

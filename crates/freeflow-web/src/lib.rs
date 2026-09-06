@@ -142,6 +142,11 @@ pub fn router(state: AppState) -> Router {
         .route("/societe", get(handlers::societe_piece).post(societe::save))
         .route("/societe/payer", get(handlers::societe_pay))
         .route("/societe/impots", get(handlers::societe_duties))
+        .route("/societe/impots/{kind}", get(handlers::societe_duty))
+        .route(
+            "/societe/impots/{kind}/open",
+            post(handlers::societe_duty_open),
+        )
         .route("/societe/cloture", get(handlers::societe_closing))
         .route("/societe/releve", get(handlers::societe_statement))
         .route("/societe/identite", get(handlers::societe_identity))

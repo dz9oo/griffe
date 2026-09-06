@@ -387,6 +387,10 @@ async fn the_day_letter_shows_the_mast_gestures_and_the_month_grid() {
         "l'acompte d'IS du 15 septembre se dit comme dans La société : {jour}"
     );
     assert!(
+        jour.contains("/societe/impots/is-acompte"),
+        "le geste ouvre la lettre, pas la liste : {jour}"
+    );
+    assert!(
         !jour.contains("impayé"),
         "on dit chez X, pas impayé : {jour}"
     );
@@ -702,9 +706,69 @@ async fn society_duties_stack_the_title_above_the_body() {
     )
     .await;
     assert!(
-        css.contains(".chapters li > div strong") || css.contains(".chapters li>div strong"),
-        "le gras des échéances (sans lien) doit passer en bloc : {css}"
+        css.contains(".chapters a strong"),
+        "les échéances sont des liens vers la lettre : {css}"
     );
+}
+
+#[tokio::test]
+async fn society_duty_letter_shows_the_amount_and_the_2571_path() {
+    let state = unlocked_state(&test_db_path("letter-is-acompte"))
+        .await
+        .with_today(time::macros::date!(2026 - 09 - 05));
+    let router = freeflow_web::router(state);
+
+    let page = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/societe/impots/is-acompte")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        page.contains("2571"),
+        "le formulaire officiel est nommé : {page}"
+    );
+    assert!(
+        page.contains("Déclarer") && page.contains("Impôt sur les sociétés"),
+        "le chemin de menu : {page}"
+    );
+    assert!(
+        !page.contains("les chiffres sont dans le coffre")
+            && !page.contains("Les chiffres sont déjà dans le coffre"),
+        "{page}"
+    );
+    assert!(!page.contains("freeflow "), "{page}");
+    assert!(page.contains("impots.gouv.fr"), "{page}");
+
+    let unknown = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/societe/impots/nexiste-pas")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unknown.status(), axum::http::StatusCode::NOT_FOUND);
+
+    let internal = router
+        .oneshot(
+            Request::builder()
+                .uri("/societe/impots/approval-meeting")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(internal.status(), axum::http::StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

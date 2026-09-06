@@ -11,6 +11,7 @@ Commands:
   show       Identité courte, paysage, conversations, chapitres
   pay        Montant possible ce mois-ci sans casser la piste
   duties     Ce que tu dois à l'État : dates, montants, où déposer
+  duty       Lettre d'une démarche hors de l'app (chemin, montant, ce que l'écran demandera)
   closing    Clore l'exercice, en phrases
   statement  Le relevé : chaque mouvement, une lecture
   identity   La carte d'identité de la société

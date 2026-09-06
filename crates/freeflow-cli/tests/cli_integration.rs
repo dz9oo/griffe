@@ -757,6 +757,35 @@ fn society_help_is_a_stable_interface_contract() {
 }
 
 #[test]
+fn society_duty_is_acompte_json_on_an_empty_vault_has_the_path() {
+    let db = temp_db("society-duty");
+    provision(&db);
+    let output = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "--json",
+            "society",
+            "duty",
+            "is_acompte",
+            "--today",
+            "2026-09-05",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(value["kind"], "IsAcompte");
+    assert_eq!(value["form"], "2571");
+    assert_eq!(value["amount"]["kind"], "unknown");
+    assert_eq!(value["amount"]["reason"], "no_profile");
+    let path = value["path"].as_array().expect("path");
+    assert_eq!(path[0], "Déclarer");
+    assert_eq!(path[1], "Impôt sur les sociétés");
+}
+
+#[test]
 fn society_pay_on_an_empty_vault_closes_the_dividend() {
     let db = temp_db("society-pay");
     provision(&db);

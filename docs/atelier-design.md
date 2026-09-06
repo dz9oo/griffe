@@ -230,7 +230,7 @@ de l’année** (12 barres, le mois courant en sceau s’il est maigre) + chapit
 | Chapitre | Contenu |
 |---|---|
 | Te payer | Salaire (fiche chez l’expert-paie) vs dividendes (après clôture). Un montant possible ce mois-ci **sans casser la piste**. Objectif annuel = une barre, pas un simulateur. |
-| Ce que tu dois à l’État | Dates + montants + où déposer. FreeFlow prépare, il ne transmet pas. |
+| Ce que tu dois à l’État | Dates + montants. Chaque ligne ouvre une **lettre** (chemin sur le site, montant visible, ce que l’écran demandera) avant de partir. On prépare, on ne transmet pas. |
 | Clore l’exercice | Le parcours (lot 34) en phrases, pas seize étapes techniques d’un coup. |
 | Le relevé | Chaque mouvement = une phrase, trois lectures : dépense, règlement d’une dette, *c’est moi que je me paie*. |
 | L’identité | Carte (nom, forme, siège, président, SIREN, clôture, régime de TVA), pas un formulaire de 20 champs. Le coffre se dit ici. |

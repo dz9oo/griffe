@@ -36,7 +36,7 @@ use crate::opening_balance::opening_balance;
 
 /// Seuil de dispense des acomptes d'IS : aucun acompte n'est dû si l'IS de l'exercice précédent
 /// est inférieur à 3 000 €.
-const IS_ACOMPTE_DISPENSATION: Money = Money::from_cents(300_000);
+pub(crate) const IS_ACOMPTE_DISPENSATION: Money = Money::from_cents(300_000);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum FiscalDeadlineKind {
@@ -86,6 +86,34 @@ impl FiscalDeadlineKind {
             Self::Das2 => "das2",
             Self::Dividends2777 => "dividends_2777",
         }
+    }
+
+    /// Accepte `as_str()` et la forme à tirets (`is-acompte`).
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "ca3" => Some(Self::Ca3),
+            "vat_acompte" | "vat-acompte" => Some(Self::VatInstalment),
+            "ca12" => Some(Self::Ca12),
+            "is_acompte" | "is-acompte" => Some(Self::IsAcompte),
+            "is_solde" | "is-solde" => Some(Self::IsSolde),
+            "cfe" => Some(Self::Cfe),
+            "liasse" => Some(Self::Liasse),
+            "approval_meeting" | "approval-meeting" => Some(Self::ApprovalMeeting),
+            "accounts_filing" | "accounts-filing" => Some(Self::AccountsFiling),
+            "dsn" => Some(Self::Dsn),
+            "das2" => Some(Self::Das2),
+            "dividends_2777" | "dividends-2777" => Some(Self::Dividends2777),
+            _ => None,
+        }
+    }
+}
+
+impl std::str::FromStr for FiscalDeadlineKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or_else(|| format!("démarche inconnue : {s}"))
     }
 }
 
@@ -618,7 +646,7 @@ fn ca3_note(
 
 const IS_ACOMPTE_MONTHS: [u8; 4] = [3, 6, 9, 12];
 
-fn next_is_acompte(today: Date) -> Date {
+pub(crate) fn next_is_acompte(today: Date) -> Date {
     let year = today.year();
     for month in IS_ACOMPTE_MONTHS {
         let candidate = nth_of_month(Month::new(year, month).unwrap(), 15);
@@ -629,7 +657,7 @@ fn next_is_acompte(today: Date) -> Date {
     nth_of_month(Month::new(year + 1, 3).unwrap(), 15)
 }
 
-fn next_cfe(today: Date) -> Date {
+pub(crate) fn next_cfe(today: Date) -> Date {
     let candidate = nth_of_month(Month::new(today.year(), 12).unwrap(), 15);
     if today <= candidate {
         candidate

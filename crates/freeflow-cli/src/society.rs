@@ -5,8 +5,9 @@ use freeflow_core::clock::today_local;
 use freeflow_core::domain::{Money, format_date};
 use freeflow_core::fiscal::FiscalDeadlineKind;
 use freeflow_core::society::{
-    BeatKind, BeatWhen, ClosingStory, DepositPlace, DividendClosed, DividendDoor, Duty,
-    IdentityCard, PayYourself, SocietyHome, StatementMove, StatementReading, closing_story,
+    AmountBasis, AmountStory, BeatKind, BeatWhen, ClosingStory, DepositPlace, DividendClosed,
+    DividendDoor, Duty, DutyBriefing, Expect, IdentityCard, PayYourself, SocietyHome,
+    StatementMove, StatementReading, UnknownReason, WaiverReason, closing_story, duty_briefing,
     pay_yourself, society_duties, society_home, society_identity, statement_moves,
 };
 use freeflow_core::store::Store;
@@ -120,6 +121,93 @@ pub(crate) fn deadline_fr(kind: FiscalDeadlineKind) -> &'static str {
         FiscalDeadlineKind::Dsn => "déclaration sociale",
         FiscalDeadlineKind::Das2 => "honoraires à déclarer",
         FiscalDeadlineKind::Dividends2777 => "prélèvements sur dividendes",
+    }
+}
+
+impl HumanRender for DutyBriefing {
+    fn render_human(&self) -> String {
+        let mut lines = vec![
+            format!("{} {}", format_date(self.due_on), deadline_fr(self.kind)),
+            amount_story_fr(&self.amount),
+        ];
+        if !self.path.is_empty() {
+            lines.push(format!("chemin : {}", self.path.join(" → ")));
+        }
+        if let Some(form) = self.form {
+            lines.push(format!("formulaire : {form}"));
+        }
+        if !matches!(self.amount, AmountStory::NotYourHands { .. }) {
+            lines.push(format!("site : {}", self.url));
+        }
+        let expect = self
+            .expect
+            .iter()
+            .map(expect_fr)
+            .collect::<Vec<_>>()
+            .join(" ; ");
+        if !expect.is_empty() {
+            lines.push(format!("à faire : {expect}"));
+        }
+        lines.push("indicatif — l'administration prime".into());
+        lines.join("\n")
+    }
+}
+
+fn amount_story_fr(story: &AmountStory) -> String {
+    match story {
+        AmountStory::Due { amount, basis } => format!("{amount} ({})", amount_basis_fr(*basis)),
+        AmountStory::Waiver { reason } => match reason {
+            WaiverReason::PriorIsBelowThreshold => {
+                "Rien à verser — IS de référence sous 3 000 €".into()
+            }
+            WaiverReason::FirstExercise => "Rien à verser — premier exercice".into(),
+            WaiverReason::VatInstalmentDispensation => {
+                "Rien à verser — acompte de TVA dispensé".into()
+            }
+            WaiverReason::Das2BelowThreshold => "Rien à déclarer — honoraires sous le seuil".into(),
+        },
+        AmountStory::Unknown { reason } => match reason {
+            UnknownReason::NoProfile => "Montant inconnu — profil manquant".into(),
+            UnknownReason::PriorIsMissing => {
+                "Montant inconnu — IS de l'exercice précédent non repris".into()
+            }
+            UnknownReason::PriorVatMissing => {
+                "Montant inconnu — TVA de l'exercice précédent non reprise".into()
+            }
+        },
+        AmountStory::External => "Le montant est sur l'avis, pas ici".into(),
+        AmountStory::NotYourHands { amount } => amount.map_or_else(
+            || "Chez l'expert-paie, pas toi sur le site".into(),
+            |m| format!("{m} — chez l'expert-paie, pas toi sur le site"),
+        ),
+        AmountStory::Declaration => "Une déclaration, pas un versement".into(),
+    }
+}
+
+fn amount_basis_fr(basis: AmountBasis) -> &'static str {
+    match basis {
+        AmountBasis::QuarterOfPriorIs => "un quart de l'IS de référence",
+        AmountBasis::VatForPeriod => "TVA de la période",
+        AmountBasis::VatInstalment => "acompte de TVA",
+        AmountBasis::Ca12Net => "TVA de l'année, nette des acomptes",
+        AmountBasis::SnapshotIs => "IS de l'exercice clos",
+        AmountBasis::FeesBySupplier => "honoraires par bénéficiaire",
+        AmountBasis::DividendWithholding => "prélèvements sur dividendes",
+    }
+}
+
+fn expect_fr(expect: &Expect) -> &'static str {
+    match expect {
+        Expect::NeedsProfessionalSpace => "espace professionnel requis",
+        Expect::CheckPrefill => "vérifier le montant prérempli",
+        Expect::FileEvenIfZero => "déposer même à zéro",
+        Expect::ModulateDown => "on peut baisser si l'impôt attendu est inférieur",
+        Expect::PayElectronically => "télérèglement",
+        Expect::SeeEfiNotice => "recopier la notice EFI",
+        Expect::NoticeInSpace => "l'avis est dans l'espace professionnel",
+        Expect::PayrollExpertDoesIt => "l'expert-paie dépose",
+        Expect::GuichetUnique => "guichet unique INPI",
+        Expect::ConfidentialityOption => "option de confidentialité des comptes",
     }
 }
 
@@ -253,6 +341,13 @@ pub enum SocietyCommand {
         #[arg(long, value_parser = parse_date)]
         today: Option<Date>,
     },
+    /// Lettre d'une démarche hors de l'app (chemin, montant, ce que l'écran demandera).
+    Duty {
+        /// Nature (`is_acompte`, `ca3`, `cfe`, …).
+        kind: FiscalDeadlineKind,
+        #[arg(long, value_parser = parse_date)]
+        today: Option<Date>,
+    },
     /// Clore l'exercice, en phrases.
     Closing {
         #[arg(long, value_parser = parse_date)]
@@ -283,6 +378,11 @@ pub fn run(cmd: SocietyCommand, store: &Store, json: bool) -> Result<String, Cli
             let today = today.unwrap_or_else(today_local);
             let duties = society_duties(store.connection(), today)?;
             Ok(format_value(&duties, json))
+        }
+        SocietyCommand::Duty { kind, today } => {
+            let today = today.unwrap_or_else(today_local);
+            let briefing = duty_briefing(store.connection(), kind, today)?;
+            Ok(format_value(&briefing, json))
         }
         SocietyCommand::Closing { today } => {
             let today = today.unwrap_or_else(today_local);

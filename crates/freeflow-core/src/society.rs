@@ -7,6 +7,7 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use time::Date;
 
+use crate::accounting::compute_result;
 use crate::app::AppError;
 use crate::billing::{aged_balance, list_bank_transactions, list_invoices};
 use crate::clients::client_by_id;
@@ -17,7 +18,8 @@ use crate::domain::{
     BankTransaction, BankTransactionId, FiscalYearEnd, Money, Month, Side, VatRegime,
 };
 use crate::fiscal::{
-    DIVIDEND_INCOME_TAX_BPS, FiscalDeadlineKind, dividend_social_charges_bps, fiscal_calendar,
+    DAS2_THRESHOLD, DIVIDEND_INCOME_TAX_BPS, FiscalDeadlineKind, IS_ACOMPTE_DISPENSATION,
+    dividend_social_charges_bps, fiscal_calendar, next_cfe, next_is_acompte,
 };
 use crate::fiscal_year::fiscal_year_ending_in;
 use crate::forecast::{build_forecast_inputs, forecast_12_months};
@@ -533,6 +535,359 @@ pub fn society_duties(conn: &Connection, today: Date) -> Result<Vec<Duty>, AppEr
         .collect())
 }
 
+const IMPOTS_URL: &str = "https://www.impots.gouv.fr/";
+const INPI_URL: &str = "https://procedures.inpi.fr/";
+
+/// Histoire du montant : faits, pas de phrase.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AmountStory {
+    Due { amount: Money, basis: AmountBasis },
+    Waiver { reason: WaiverReason },
+    Unknown { reason: UnknownReason },
+    External,
+    NotYourHands { amount: Option<Money> },
+    Declaration,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AmountBasis {
+    QuarterOfPriorIs,
+    VatForPeriod,
+    VatInstalment,
+    Ca12Net,
+    SnapshotIs,
+    FeesBySupplier,
+    DividendWithholding,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaiverReason {
+    PriorIsBelowThreshold,
+    FirstExercise,
+    VatInstalmentDispensation,
+    Das2BelowThreshold,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnknownReason {
+    NoProfile,
+    PriorIsMissing,
+    PriorVatMissing,
+}
+
+/// Ce que l'écran demandera — la fenêtre en fait des phrases.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Expect {
+    NeedsProfessionalSpace,
+    CheckPrefill,
+    FileEvenIfZero,
+    ModulateDown,
+    PayElectronically,
+    SeeEfiNotice,
+    NoticeInSpace,
+    PayrollExpertDoesIt,
+    GuichetUnique,
+    ConfidentialityOption,
+}
+
+/// Briefing d'une démarche hors de l'app. Aucune phrase française.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct DutyBriefing {
+    pub kind: FiscalDeadlineKind,
+    #[serde(with = "crate::domain::serde_date::date")]
+    pub due_on: Date,
+    pub deposit: DepositPlace,
+    pub amount: AmountStory,
+    pub form: Option<&'static str>,
+    pub url: &'static str,
+    pub path: &'static [&'static str],
+    pub expect: Vec<Expect>,
+}
+
+struct BriefingMeta {
+    form: Option<&'static str>,
+    url: &'static str,
+    path: &'static [&'static str],
+    expect: &'static [Expect],
+}
+
+fn briefing_meta(kind: FiscalDeadlineKind) -> Option<BriefingMeta> {
+    const IMPOTS_PAY: &[Expect] = &[
+        Expect::NeedsProfessionalSpace,
+        Expect::CheckPrefill,
+        Expect::PayElectronically,
+    ];
+    const IMPOTS_ZERO: &[Expect] = &[
+        Expect::NeedsProfessionalSpace,
+        Expect::CheckPrefill,
+        Expect::FileEvenIfZero,
+        Expect::PayElectronically,
+    ];
+    const IMPOTS_IS: &[Expect] = &[
+        Expect::NeedsProfessionalSpace,
+        Expect::CheckPrefill,
+        Expect::ModulateDown,
+        Expect::PayElectronically,
+    ];
+    const IMPOTS_LIASSE: &[Expect] = &[Expect::NeedsProfessionalSpace, Expect::SeeEfiNotice];
+    const IMPOTS_CFE: &[Expect] = &[
+        Expect::NeedsProfessionalSpace,
+        Expect::NoticeInSpace,
+        Expect::PayElectronically,
+    ];
+    const IMPOTS_DAS2: &[Expect] = &[Expect::NeedsProfessionalSpace, Expect::FileEvenIfZero];
+    const GREFFE: &[Expect] = &[Expect::GuichetUnique, Expect::ConfidentialityOption];
+    const DSN: &[Expect] = &[Expect::PayrollExpertDoesIt];
+    match kind {
+        FiscalDeadlineKind::ApprovalMeeting => None,
+        FiscalDeadlineKind::Ca3 => Some(BriefingMeta {
+            form: Some("CA3"),
+            url: IMPOTS_URL,
+            path: &["Déclarer", "TVA et taxes assimilées"],
+            expect: IMPOTS_ZERO,
+        }),
+        FiscalDeadlineKind::VatInstalment => Some(BriefingMeta {
+            form: Some("3514"),
+            url: IMPOTS_URL,
+            path: &["Déclarer", "TVA et taxes assimilées"],
+            expect: IMPOTS_PAY,
+        }),
+        FiscalDeadlineKind::Ca12 => Some(BriefingMeta {
+            form: Some("3517"),
+            url: IMPOTS_URL,
+            path: &["Déclarer", "TVA et taxes assimilées"],
+            expect: IMPOTS_PAY,
+        }),
+        FiscalDeadlineKind::IsAcompte => Some(BriefingMeta {
+            form: Some("2571"),
+            url: IMPOTS_URL,
+            path: &["Déclarer", "Impôt sur les sociétés"],
+            expect: IMPOTS_IS,
+        }),
+        FiscalDeadlineKind::IsSolde => Some(BriefingMeta {
+            form: Some("2572"),
+            url: IMPOTS_URL,
+            path: &["Déclarer", "Impôt sur les sociétés"],
+            expect: IMPOTS_ZERO,
+        }),
+        FiscalDeadlineKind::Cfe => Some(BriefingMeta {
+            form: None,
+            url: IMPOTS_URL,
+            path: &["Consulter", "Avis C.F.E"],
+            expect: IMPOTS_CFE,
+        }),
+        FiscalDeadlineKind::Liasse => Some(BriefingMeta {
+            form: Some("2065"),
+            url: IMPOTS_URL,
+            path: &[
+                "Déclarer",
+                "Impôt sur les sociétés",
+                "régime simplifié (EFI)",
+            ],
+            expect: IMPOTS_LIASSE,
+        }),
+        FiscalDeadlineKind::AccountsFiling => Some(BriefingMeta {
+            form: None,
+            url: INPI_URL,
+            path: &["Dépôt des comptes annuels"],
+            expect: GREFFE,
+        }),
+        FiscalDeadlineKind::Das2 => Some(BriefingMeta {
+            form: Some("DAS2"),
+            url: IMPOTS_URL,
+            path: &["Déclarer", "Honoraires (DAS2)"],
+            expect: IMPOTS_DAS2,
+        }),
+        FiscalDeadlineKind::Dividends2777 => Some(BriefingMeta {
+            form: Some("2777"),
+            url: IMPOTS_URL,
+            path: &["Déclarer", "Revenus de capitaux mobiliers"],
+            expect: IMPOTS_PAY,
+        }),
+        FiscalDeadlineKind::Dsn => Some(BriefingMeta {
+            form: None,
+            url: IMPOTS_URL,
+            path: &[],
+            expect: DSN,
+        }),
+    }
+}
+
+fn fallback_due(kind: FiscalDeadlineKind, today: Date) -> Date {
+    match kind {
+        FiscalDeadlineKind::IsAcompte => next_is_acompte(today),
+        FiscalDeadlineKind::Cfe => next_cfe(today),
+        _ => today,
+    }
+}
+
+/// Briefing d'une démarche à faire hors de `FreeFlow`.
+///
+/// # Errors
+///
+/// [`AppError::Domain`] si la démarche se fait ici (`ApprovalMeeting`), ou une erreur de lecture
+/// du calendrier.
+pub fn duty_briefing(
+    conn: &Connection,
+    kind: FiscalDeadlineKind,
+    today: Date,
+) -> Result<DutyBriefing, AppError> {
+    let Some(meta) = briefing_meta(kind) else {
+        return Err(AppError::Domain(
+            "l'approbation des comptes se fait ici, pas sur un site d'État".into(),
+        ));
+    };
+    let calendar = fiscal_calendar(conn, today)?;
+    let found = calendar.iter().find(|d| d.kind == kind);
+    let due_on = found.map_or_else(|| fallback_due(kind, today), |d| d.due_on);
+    let cal_amount = found.and_then(|d| d.amount);
+    let amount = amount_story(conn, kind, today, cal_amount)?;
+    Ok(DutyBriefing {
+        kind,
+        due_on,
+        deposit: DepositPlace::of(kind),
+        amount,
+        form: meta.form,
+        url: meta.url,
+        path: meta.path,
+        expect: meta.expect.to_vec(),
+    })
+}
+
+fn amount_story(
+    conn: &Connection,
+    kind: FiscalDeadlineKind,
+    today: Date,
+    cal_amount: Option<Money>,
+) -> Result<AmountStory, AppError> {
+    Ok(match kind {
+        FiscalDeadlineKind::ApprovalMeeting => {
+            return Err(AppError::Domain(
+                "l'approbation des comptes se fait ici, pas sur un site d'État".into(),
+            ));
+        }
+        FiscalDeadlineKind::Cfe => AmountStory::External,
+        FiscalDeadlineKind::Dsn => AmountStory::NotYourHands { amount: cal_amount },
+        FiscalDeadlineKind::Liasse | FiscalDeadlineKind::AccountsFiling => AmountStory::Declaration,
+        FiscalDeadlineKind::IsAcompte => is_acompte_story(conn, today)?,
+        FiscalDeadlineKind::IsSolde => is_solde_story(conn, today, cal_amount)?,
+        FiscalDeadlineKind::Ca3 => AmountStory::Due {
+            amount: cal_amount.unwrap_or(Money::ZERO),
+            basis: AmountBasis::VatForPeriod,
+        },
+        FiscalDeadlineKind::VatInstalment => match cal_amount {
+            Some(amount) if !amount.is_zero() => AmountStory::Due {
+                amount,
+                basis: AmountBasis::VatInstalment,
+            },
+            Some(_) | None => AmountStory::Waiver {
+                reason: WaiverReason::VatInstalmentDispensation,
+            },
+        },
+        FiscalDeadlineKind::Ca12 => AmountStory::Due {
+            amount: cal_amount.unwrap_or(Money::ZERO),
+            basis: AmountBasis::Ca12Net,
+        },
+        FiscalDeadlineKind::Das2 => match cal_amount {
+            Some(amount) if amount >= DAS2_THRESHOLD => AmountStory::Due {
+                amount,
+                basis: AmountBasis::FeesBySupplier,
+            },
+            Some(_) | None => AmountStory::Waiver {
+                reason: WaiverReason::Das2BelowThreshold,
+            },
+        },
+        FiscalDeadlineKind::Dividends2777 => AmountStory::Due {
+            amount: cal_amount.unwrap_or(Money::ZERO),
+            basis: AmountBasis::DividendWithholding,
+        },
+    })
+}
+
+fn is_reference(conn: &Connection, today: Date) -> Result<(Option<Money>, bool, bool), AppError> {
+    let profile = company_profile(conn)?;
+    let has_profile = profile.is_some();
+    let fye = profile
+        .as_ref()
+        .and_then(|p| p.fiscal_year_end)
+        .unwrap_or(FiscalYearEnd::CALENDAR);
+    let current = fye.current(today);
+    let previous = fye.previous(current);
+    let reprise = opening_balance(conn)?.filter(|o| previous.start() < o.balance.opens_on);
+    let previous_result = match &reprise {
+        Some(_) => None,
+        None => profile
+            .as_ref()
+            .map(|p| compute_result(conn, previous, p))
+            .transpose()?,
+    };
+    let reference_unknown = reprise
+        .as_ref()
+        .is_some_and(|o| o.prior_corporate_tax.is_none());
+    let previous_is = match &reprise {
+        Some(o) => o.prior_corporate_tax,
+        None => previous_result.map(|r| r.corporate_tax),
+    };
+    Ok((previous_is, reference_unknown, has_profile))
+}
+
+fn is_acompte_story(conn: &Connection, today: Date) -> Result<AmountStory, AppError> {
+    let (previous_is, reference_unknown, has_profile) = is_reference(conn, today)?;
+    if !has_profile {
+        return Ok(AmountStory::Unknown {
+            reason: UnknownReason::NoProfile,
+        });
+    }
+    if reference_unknown {
+        return Ok(AmountStory::Unknown {
+            reason: UnknownReason::PriorIsMissing,
+        });
+    }
+    Ok(match previous_is {
+        Some(is) if is < IS_ACOMPTE_DISPENSATION => AmountStory::Waiver {
+            reason: WaiverReason::PriorIsBelowThreshold,
+        },
+        Some(is) => AmountStory::Due {
+            amount: is
+                .split_equally(4)
+                .into_iter()
+                .next()
+                .unwrap_or(Money::ZERO),
+            basis: AmountBasis::QuarterOfPriorIs,
+        },
+        None => AmountStory::Unknown {
+            reason: UnknownReason::NoProfile,
+        },
+    })
+}
+
+fn is_solde_story(
+    conn: &Connection,
+    today: Date,
+    cal_amount: Option<Money>,
+) -> Result<AmountStory, AppError> {
+    let (previous_is, reference_unknown, has_profile) = is_reference(conn, today)?;
+    if !has_profile {
+        return Ok(AmountStory::Unknown {
+            reason: UnknownReason::NoProfile,
+        });
+    }
+    if reference_unknown {
+        return Ok(AmountStory::Unknown {
+            reason: UnknownReason::PriorIsMissing,
+        });
+    }
+    Ok(AmountStory::Due {
+        amount: cal_amount.or(previous_is).unwrap_or(Money::ZERO),
+        basis: AmountBasis::SnapshotIs,
+    })
+}
+
 // ---------------------------------------------------------------------------------------------
 // Clore
 // ---------------------------------------------------------------------------------------------
@@ -797,6 +1152,7 @@ mod tests {
         VatRegime,
     };
     use crate::expenses::RecordExpense;
+    use crate::fiscal::FiscalDeadlineKind;
     use crate::opening_balance::RecordOpeningBalance;
     use crate::prospection::CreateOpportunity;
     use crate::store::{Passphrase, Store};
@@ -863,6 +1219,15 @@ mod tests {
     }
 
     fn set_opening(store: &mut Store, lines: &[&str]) {
+        set_opening_with_tax(store, lines, None, None);
+    }
+
+    fn set_opening_with_tax(
+        store: &mut Store,
+        lines: &[&str],
+        prior_corporate_tax: Option<Money>,
+        prior_vat_due: Option<Money>,
+    ) {
         applied(
             Executor::new(store)
                 .execute(
@@ -874,8 +1239,8 @@ mod tests {
                             .map(|l| l.parse::<OpeningBalanceLine>().unwrap())
                             .collect(),
                         tax_losses: Money::ZERO,
-                        prior_corporate_tax: None,
-                        prior_vat_due: None,
+                        prior_corporate_tax,
+                        prior_vat_due,
                     },
                     &human(),
                 )
@@ -1139,5 +1504,133 @@ mod tests {
             }
         );
         assert_eq!(home.landscape.days_to_year_end, Some(25));
+    }
+
+    #[test]
+    fn is_acompte_briefing_is_a_quarter_of_prior_is() {
+        let mut store = test_store("is-acompte-quarter");
+        set_profile(&mut store);
+        set_opening_with_tax(
+            &mut store,
+            &["101000:Capital:C:1000.00", "512000:Banque:D:1000.00"],
+            Some(Money::from_cents(400_000)),
+            None,
+        );
+        let briefing =
+            duty_briefing(store.connection(), FiscalDeadlineKind::IsAcompte, today()).unwrap();
+        assert_eq!(briefing.kind, FiscalDeadlineKind::IsAcompte);
+        assert_eq!(briefing.due_on, date(2026, TimeMonth::September, 15));
+        assert_eq!(
+            briefing.amount,
+            AmountStory::Due {
+                amount: Money::from_cents(100_000),
+                basis: AmountBasis::QuarterOfPriorIs,
+            }
+        );
+        assert_eq!(briefing.form, Some("2571"));
+        assert_eq!(briefing.path, &["Déclarer", "Impôt sur les sociétés"][..]);
+        assert!(briefing.expect.contains(&Expect::CheckPrefill));
+        assert!(briefing.expect.contains(&Expect::ModulateDown));
+        assert!(briefing.url.contains("impots.gouv.fr"));
+    }
+
+    #[test]
+    fn is_acompte_below_three_thousand_is_a_waiver() {
+        let mut store = test_store("is-acompte-waiver");
+        set_profile(&mut store);
+        set_opening_with_tax(
+            &mut store,
+            &["101000:Capital:C:1000.00", "512000:Banque:D:1000.00"],
+            Some(Money::from_cents(200_000)),
+            None,
+        );
+        let briefing =
+            duty_briefing(store.connection(), FiscalDeadlineKind::IsAcompte, today()).unwrap();
+        assert_eq!(
+            briefing.amount,
+            AmountStory::Waiver {
+                reason: WaiverReason::PriorIsBelowThreshold,
+            }
+        );
+    }
+
+    #[test]
+    fn is_acompte_without_prior_is_is_unknown_not_zero() {
+        let mut store = test_store("is-acompte-unknown");
+        set_profile(&mut store);
+        set_opening(
+            &mut store,
+            &["101000:Capital:C:1000.00", "512000:Banque:D:1000.00"],
+        );
+        let briefing =
+            duty_briefing(store.connection(), FiscalDeadlineKind::IsAcompte, today()).unwrap();
+        assert_eq!(
+            briefing.amount,
+            AmountStory::Unknown {
+                reason: UnknownReason::PriorIsMissing,
+            }
+        );
+    }
+
+    #[test]
+    fn ca3_at_zero_is_still_due_and_must_be_filed() {
+        let mut store = test_store("ca3-zero");
+        set_profile(&mut store);
+        let briefing = duty_briefing(store.connection(), FiscalDeadlineKind::Ca3, today()).unwrap();
+        assert_eq!(
+            briefing.amount,
+            AmountStory::Due {
+                amount: Money::ZERO,
+                basis: AmountBasis::VatForPeriod,
+            }
+        );
+        assert_eq!(briefing.form, Some("CA3"));
+        assert!(briefing.expect.contains(&Expect::FileEvenIfZero));
+    }
+
+    #[test]
+    fn cfe_amount_is_on_the_notice_not_here() {
+        let mut store = test_store("cfe");
+        set_profile(&mut store);
+        let briefing = duty_briefing(store.connection(), FiscalDeadlineKind::Cfe, today()).unwrap();
+        assert_eq!(briefing.amount, AmountStory::External);
+        assert!(briefing.expect.contains(&Expect::NoticeInSpace));
+    }
+
+    #[test]
+    fn dsn_is_not_your_hands() {
+        let mut store = test_store("dsn");
+        set_profile(&mut store);
+        let briefing = duty_briefing(store.connection(), FiscalDeadlineKind::Dsn, today()).unwrap();
+        assert!(matches!(briefing.amount, AmountStory::NotYourHands { .. }));
+        assert!(briefing.expect.contains(&Expect::PayrollExpertDoesIt));
+        assert_eq!(briefing.form, None);
+    }
+
+    #[test]
+    fn approval_meeting_has_no_external_briefing() {
+        let store = test_store("approval");
+        let err = duty_briefing(
+            store.connection(),
+            FiscalDeadlineKind::ApprovalMeeting,
+            today(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("pas sur un site"), "{err}");
+    }
+
+    #[test]
+    fn empty_vault_still_has_the_is_acompte_path() {
+        let store = test_store("empty-briefing");
+        let briefing =
+            duty_briefing(store.connection(), FiscalDeadlineKind::IsAcompte, today()).unwrap();
+        assert_eq!(
+            briefing.amount,
+            AmountStory::Unknown {
+                reason: UnknownReason::NoProfile,
+            }
+        );
+        assert_eq!(briefing.form, Some("2571"));
+        assert_eq!(briefing.path, &["Déclarer", "Impôt sur les sociétés"][..]);
     }
 }

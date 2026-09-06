@@ -16,7 +16,7 @@ use time::{Date, Weekday};
 
 use crate::layout::ViewId;
 use crate::views::copy::{
-    deadline_fr, event_kind_fr, gestes_title, is_vat, letter_date, month_fr, month_title,
+    deadline_fr, duty_href, event_kind_fr, gestes_title, is_vat, letter_date, month_fr, month_title,
 };
 use crate::views::gens::{href_for_party, person_href};
 
@@ -228,7 +228,7 @@ fn geste_copy(g: &DayGesture) -> (String, String) {
                 .map(|m| format!("{m} · "))
                 .unwrap_or_default();
             let body = format!(
-                "{amount}à déposer avant le {}. Les chiffres sont dans le coffre. Le dépôt se fait sur le site des impôts — pas ici.",
+                "{amount}à déposer avant le {}. La lettre dit le chemin — le dépôt se fait sur le site des impôts, pas ici.",
                 format_date_fr(*due_on)
             );
             (title, body)
@@ -281,12 +281,15 @@ fn geste_actions(g: &DayGesture, today: Date) -> Markup {
                 "Lire les mouvements"
             }
         },
-        GestureSource::StateDuty { .. } => html! {
-            a class="quiet" href="/societe/impots"
-              hx-get="/societe/impots" hx-target="#content" hx-push-url="true" {
-                "Voir ce que tu dois, en français"
+        GestureSource::StateDuty { deadline, .. } => {
+            let href = duty_href(*deadline);
+            html! {
+                a class="quiet" href=(href)
+                  hx-get=(href) hx-target="#content" hx-push-url="true" {
+                    "Lire la lettre avant de partir"
+                }
             }
-        },
+        }
     }
 }
 
@@ -479,7 +482,7 @@ fn agenda_row(event: &MonthEvent, today: Date) -> Markup {
         event_kind_fr(event.kind)
     };
     let ttl = agenda_title(event);
-    let href = event_href(&event.target, event.party.as_deref());
+    let href = event_href(&event.target, event.party.as_deref(), event.deadline);
     let on_today = event.on == today;
     html! {
         @if let Some(href) = href {
@@ -550,7 +553,11 @@ fn agenda_title(event: &MonthEvent) -> String {
     }
 }
 
-fn event_href(target: &MonthTarget, party: Option<&str>) -> Option<String> {
+fn event_href(
+    target: &MonthTarget,
+    party: Option<&str>,
+    deadline: Option<freeflow_core::fiscal::FiscalDeadlineKind>,
+) -> Option<String> {
     match target {
         MonthTarget::FollowUp { subject } => Some(party.map_or_else(
             || match subject {
@@ -565,7 +572,16 @@ fn event_href(target: &MonthTarget, party: Option<&str>) -> Option<String> {
         MonthTarget::Invoice { id } => {
             Some(party.map_or_else(|| format!("/gens/{id}"), href_for_party))
         }
-        MonthTarget::Taxes => Some("/societe/impots".to_string()),
+        MonthTarget::Taxes => Some(deadline.map_or_else(
+            || "/societe/impots".to_string(),
+            |k| {
+                if k == freeflow_core::fiscal::FiscalDeadlineKind::ApprovalMeeting {
+                    "/societe/cloture".to_string()
+                } else {
+                    duty_href(k)
+                }
+            },
+        )),
         MonthTarget::Closing => Some("/societe/cloture".to_string()),
     }
 }

@@ -7,14 +7,16 @@
 //! défensifs (`with_store` renvoie `None` plutôt que de paniquer) au cas où l'état basculerait
 //! entre le passage du middleware et l'exécution du handler.
 
-use axum::extract::State;
-use axum::http::HeaderMap;
-use axum::response::Html;
+use axum::extract::{Path, State};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{Html, IntoResponse, Response};
 use maud::{Markup, html};
 
 use crate::layout::{self, ViewId};
 use crate::state::AppState;
 use crate::views;
+use freeflow_core::fiscal::FiscalDeadlineKind;
+use freeflow_core::society::duty_briefing;
 
 fn is_htmx_request(headers: &HeaderMap) -> bool {
     headers.contains_key("hx-request")
@@ -100,6 +102,62 @@ pub async fn societe_pay(State(state): State<AppState>, headers: HeaderMap) -> H
 
 pub async fn societe_duties(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
     letter(&state, headers, ViewId::Societe, views::societe::duties).await
+}
+
+pub async fn societe_duty(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(kind): Path<String>,
+) -> Response {
+    let Some(kind) = parse_external_kind(&kind) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    letter(&state, headers, ViewId::Societe, move |store, today| {
+        views::societe::duty(store, today, kind)
+    })
+    .await
+    .into_response()
+}
+
+pub async fn societe_duty_open(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(kind): Path<String>,
+) -> Response {
+    let Some(kind) = parse_external_kind(&kind) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let today = state.today();
+    state
+        .with_store(|store| {
+            if let Ok(briefing) = duty_briefing(store.connection(), kind, today) {
+                open_allowed_url(briefing.url);
+            }
+        })
+        .await;
+    letter(&state, headers, ViewId::Societe, move |store, today| {
+        views::societe::duty(store, today, kind)
+    })
+    .await
+    .into_response()
+}
+
+fn parse_external_kind(raw: &str) -> Option<FiscalDeadlineKind> {
+    let kind = FiscalDeadlineKind::parse(raw)?;
+    (kind != FiscalDeadlineKind::ApprovalMeeting).then_some(kind)
+}
+
+fn open_allowed_url(url: &str) {
+    const ALLOWED: &[&str] = &["https://www.impots.gouv.fr/", "https://procedures.inpi.fr/"];
+    if !ALLOWED.iter().any(|prefix| url.starts_with(prefix)) {
+        return;
+    }
+    let opener = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    let _ = std::process::Command::new(opener).arg(url).spawn();
 }
 
 pub async fn societe_closing(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {

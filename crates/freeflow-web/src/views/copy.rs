@@ -65,6 +65,11 @@ pub fn deadline_fr(kind: FiscalDeadlineKind) -> &'static str {
 }
 
 #[must_use]
+pub fn duty_href(kind: FiscalDeadlineKind) -> String {
+    format!("/societe/impots/{}", kind.as_str().replace('_', "-"))
+}
+
+#[must_use]
 pub fn is_vat(kind: FiscalDeadlineKind) -> bool {
     matches!(
         kind,
