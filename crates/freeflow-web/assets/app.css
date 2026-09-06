@@ -675,6 +675,48 @@ tr.row-clickable:hover td { background: var(--paper-2); }
 
 .co { margin: 8px 0 24px; color: var(--ink-2); font-size: 16px; }
 .letter-actions { margin: 8px 0 28px; }
+.back {
+  display: inline-block;
+  font-size: 13px;
+  color: var(--ink-2);
+  margin-bottom: 24px;
+  text-decoration: none;
+}
+.back:hover { color: var(--ink); }
+.hist { list-style: none; }
+.hist li {
+  display: grid;
+  grid-template-columns: 8.5rem 1fr;
+  gap: 16px;
+  padding: 12px 0;
+  border-top: 1px solid var(--rule);
+  font-size: 15px;
+}
+.hist li:last-child { border-bottom: 1px solid var(--rule); }
+.hist time, .hist .when { color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.letter-draft {
+  background: var(--paper-2);
+  border: 1px solid var(--rule);
+  padding: 18px 20px;
+  margin: 8px 0 24px;
+  font-family: var(--serif);
+  font-size: 17px;
+  line-height: 1.5;
+  max-width: 52ch;
+}
+.letter-draft .meta {
+  font-family: var(--sans);
+  font-size: 12px;
+  color: var(--ink-2);
+  margin-bottom: 14px;
+  letter-spacing: 0.02em;
+}
+.letter-draft pre {
+  font-family: var(--serif);
+  font-size: 17px;
+  white-space: pre-wrap;
+  color: var(--ink);
+}
 .id-line {
   display: grid;
   grid-template-columns: 8.5rem 1fr;
@@ -697,6 +739,7 @@ tr.row-clickable:hover td { background: var(--paper-2); }
   .geste { grid-template-columns: 1fr; }
   .geste .num { font-size: 24px; }
   .mast-facts { gap: 6px 16px; font-size: 14px; }
+  .hist li { grid-template-columns: 1fr; }
   .people a, .people button { grid-template-columns: 1fr; }
   .agenda button, .agenda a, .track { grid-template-columns: 1fr; gap: 4px; }
   .cal .d { min-height: 44px; font-size: 14px; padding: 5px 3px; }

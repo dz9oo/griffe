@@ -443,6 +443,7 @@ pub fn list_fragment(store: &Store, filter: MissionFilter) -> Result<Markup, App
     })
 }
 
+#[allow(dead_code)] // écran historique hors nav ; les tableaux et panneaux restent.
 pub fn render(store: &Store, filter: MissionFilter) -> Result<Markup, AppError> {
     let count = list_missions_with(store.connection(), filter)?.len();
     Ok(html! {

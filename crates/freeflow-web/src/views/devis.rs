@@ -325,6 +325,7 @@ pub fn list_fragment(store: &Store) -> Result<Markup, AppError> {
     })
 }
 
+#[allow(dead_code)] // écran historique hors nav ; les tableaux et panneaux restent.
 pub fn render(store: &Store) -> Result<Markup, AppError> {
     let count = list_quotes(store.connection())?.len();
     Ok(html! {

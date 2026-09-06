@@ -831,9 +831,9 @@ existe.
 - [x] Thème clair (défaut) / sombre de la fenêtre, nav en français, journal d'audit
       repliable et tableau de bord « aujourd'hui » (lot 46).
 - [x] Coque Atelier (lot 48) : papier, polices vendorisées, chrome à trois pièces, accueil =
-      Le jour. Restent les lots 49 (mât / gestes / mois), 50 (les gens), 51 (la société) —
-      orientation [`docs/atelier-design.md`](docs/atelier-design.md), maquette
-      [`docs/mockups/atelier-app.html`](docs/mockups/atelier-app.html).
+      Le jour. Lot 49 : mât / gestes / mois. Lot 50 : Les gens (liste + dossier). Reste le
+      lot 51 (la société) — orientation [`docs/atelier-design.md`](docs/atelier-design.md),
+      maquette [`docs/mockups/atelier-app.html`](docs/mockups/atelier-app.html).
 - [ ] Internationalisation de l'interface (actuellement en français uniquement).
 
 ## Licence

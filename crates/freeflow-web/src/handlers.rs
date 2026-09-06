@@ -95,57 +95,23 @@ pub async fn societe_piece(State(state): State<AppState>, headers: HeaderMap) ->
 }
 
 pub async fn prospection(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
-    let content = state
-        .with_store(|store| {
-            views::prospection::render(store, freeflow_core::prospection::OpportunityFilter::OPEN)
-                .unwrap_or_else(|e| error_markup(ViewId::Prospection, e))
-        })
-        .await
-        .unwrap_or_else(|| locked_markup(ViewId::Prospection));
-    respond(headers, ViewId::Prospection, content).await
+    letter(&state, headers, ViewId::Gens, views::gens::render).await
 }
 
 pub async fn missions(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
-    let content = state
-        .with_store(|store| {
-            views::missions::render(store, freeflow_core::missions::MissionFilter::ACTIVE)
-                .unwrap_or_else(|e| error_markup(ViewId::Missions, e))
-        })
-        .await
-        .unwrap_or_else(|| locked_markup(ViewId::Missions));
-    respond(headers, ViewId::Missions, content).await
+    letter(&state, headers, ViewId::Gens, views::gens::render).await
 }
 
 pub async fn facturation(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
-    let content = state
-        .with_store(|store| {
-            views::facturation::render(store, state.today())
-                .unwrap_or_else(|e| error_markup(ViewId::Facturation, e))
-        })
-        .await
-        .unwrap_or_else(|| locked_markup(ViewId::Facturation));
-    respond(headers, ViewId::Facturation, content).await
+    letter(&state, headers, ViewId::Gens, views::gens::render).await
 }
 
 pub async fn clients(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
-    let content = state
-        .with_store(|store| {
-            views::clients::render(store, freeflow_core::clients::ClientFilter::ActiveOnly)
-                .unwrap_or_else(|e| error_markup(ViewId::Clients, e))
-        })
-        .await
-        .unwrap_or_else(|| locked_markup(ViewId::Clients));
-    respond(headers, ViewId::Clients, content).await
+    letter(&state, headers, ViewId::Gens, views::gens::render).await
 }
 
 pub async fn devis(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
-    let content = state
-        .with_store(|store| {
-            views::devis::render(store).unwrap_or_else(|e| error_markup(ViewId::Devis, e))
-        })
-        .await
-        .unwrap_or_else(|| locked_markup(ViewId::Devis));
-    respond(headers, ViewId::Devis, content).await
+    letter(&state, headers, ViewId::Gens, views::gens::render).await
 }
 
 pub async fn depenses(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {

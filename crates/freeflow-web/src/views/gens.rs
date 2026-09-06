@@ -1,117 +1,582 @@
-//! Les gens : une liste, trois chapitres. Lot 48 assemble les listes déjà là (opportunités,
-//! missions, bénéficiaires de dépenses). Le dossier unique arrive au lot 50.
-
-use std::collections::BTreeMap;
+//! Les gens : une liste, un dossier. Les faits viennent de `freeflow_core::people` ; cette vue
+//! rédige le français.
 
 use freeflow_core::app::AppError;
-use freeflow_core::clients::list_clients;
-use freeflow_core::domain::{ClientId, MissionKind};
-use freeflow_core::expenses::list_expenses;
-use freeflow_core::missions::list_active_missions;
-use freeflow_core::prospection::list_open_opportunities;
+use freeflow_core::domain::{
+    FollowUpSubject, InteractionKind, SnoozePreset, format_date, format_date_fr, snooze_date,
+};
+use freeflow_core::follow_up::{FollowUpCard, card_for, follow_up_sender};
+use freeflow_core::people::{
+    CurrentSituation, HistoryEvent, HistoryKind, MissionShape, Paper, PaperKind, PaperStatus,
+    PeopleList, PersonAction, PersonChapter, PersonCue, PersonDossier, PersonFigure, PersonRow,
+    people_list, person,
+};
 use freeflow_core::store::Store;
 use maud::{Markup, html};
 use time::Date;
 
 use crate::layout::ViewId;
 use crate::views::copy::letter_date;
+use crate::views::form;
 
-pub fn render(store: &Store, today: Date) -> Result<Markup, AppError> {
-    let conn = store.connection();
-    let clients = list_clients(conn)?;
-    let name_of = |id: ClientId| {
-        clients
-            .iter()
-            .find(|c| c.id == id)
-            .map_or_else(|| "?".to_string(), |c| c.name.clone())
-    };
-
-    let conversations = list_open_opportunities(conn)?;
-    let missions = list_active_missions(conn)?;
-    let mut suppliers: BTreeMap<String, u32> = BTreeMap::new();
-    for expense in list_expenses(conn)? {
-        if let Some(supplier) = expense.supplier.filter(|s| !s.is_empty()) {
-            *suppliers.entry(supplier).or_insert(0) += 1;
+pub fn path_encode(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' => out.push(char::from(b)),
+            b' ' => out.push_str("%20"),
+            _ => out.push_str(&format!("%{b:02X}")),
         }
     }
+    out
+}
 
-    let empty = conversations.is_empty() && missions.is_empty() && suppliers.is_empty();
+#[must_use]
+pub fn person_href(name: &str) -> String {
+    format!("/gens/{}", path_encode(name))
+}
 
-    Ok(html! {
+pub fn render(store: &Store, today: Date) -> Result<Markup, AppError> {
+    let list = people_list(store.connection(), today)?;
+    Ok(list_markup(&list, today, None))
+}
+
+pub fn list_markup(list: &PeopleList, today: Date, flash: Option<&str>) -> Markup {
+    let empty = list.is_empty();
+    html! {
         div class="letter" data-view=(ViewId::Gens.slug()) {
             div class="date" { "Les gens · " (letter_date(today)) }
-            h1 { "Les gens." }
             @if empty {
+                h1 { "Les gens." }
                 p class="lede" { "Personne pour l'instant. Une conversation commence par un nom et une phrase." }
             } @else {
-                p class="lede" { "Avec qui j'en suis. Un nom, pas un type de document." }
+                h1 { (list_title(list)) }
+                p class="lede" { (list_lede(list)) }
+            }
+            @if let Some(msg) = flash {
+                p class="mast-note" role="status" { (msg) }
             }
             div class="letter-actions" {
-                button class="seal" type="button"
-                  hx-get="/prospection/new" hx-target="#panel" hx-swap="innerHTML" {
+                a class="seal" href="/gens/nouvelle"
+                  hx-get="/gens/nouvelle" hx-target="#content" hx-push-url="true" {
                     "Nouvelle conversation"
                 }
             }
+            (chapter("En conversation", &list.conversations, "Aucune conversation ouverte."))
+            (chapter("En mission", &list.missions, "Aucune mission en cours."))
+            (chapter("Fournisseurs", &list.suppliers, "Les bénéficiaires d'une dépense apparaîtront ici."))
+        }
+    }
+}
 
-            p class="section-label" { "En conversation" }
-            @if conversations.is_empty() {
-                p class="empty-state" { "Aucune conversation ouverte." }
-            } @else {
-                ul class="people" {
-                    @for o in &conversations {
-                        li {
-                            a href=(format!("/prospection/{}", o.id))
-                              hx-get=(format!("/prospection/{}", o.id))
-                              hx-target="#panel" hx-swap="innerHTML" {
-                                div {
-                                    div class="nm" { (name_of(o.client_id)) }
-                                    div class="st" { (o.name) }
-                                }
-                                span class="amt" { (o.amount) }
+fn list_title(list: &PeopleList) -> String {
+    let n = list.conversations.len() + list.missions.len() + list.suppliers.len();
+    match n {
+        0 => "Les gens.".into(),
+        1 => "Un nom.".into(),
+        2 => "Deux noms.".into(),
+        k => format!("{k} noms."),
+    }
+}
+
+fn list_lede(list: &PeopleList) -> String {
+    match list.conversations.len() {
+        0 => "Avec qui j'en suis. Un nom, pas un type de document.".into(),
+        1 => {
+            let name = &list.conversations[0].name;
+            format!("Derrière {name}, personne. C'est le trou — pas un graphique.")
+        }
+        _ => "Avec qui j'en suis. Un nom, pas un type de document.".into(),
+    }
+}
+
+fn chapter(label: &str, rows: &[PersonRow], empty: &str) -> Markup {
+    html! {
+        p class="section-label" { (label) }
+        @if rows.is_empty() {
+            p class="empty-state" { (empty) }
+        } @else {
+            ul class="people" {
+                @for row in rows {
+                    li { (row_link(row)) }
+                }
+            }
+        }
+    }
+}
+
+fn row_link(row: &PersonRow) -> Markup {
+    let href = person_href(&row.name);
+    html! {
+        a href=(href) hx-get=(href) hx-target="#content" hx-push-url="true" {
+            div {
+                div class="nm" { (row.name) }
+                div class="st" { (cues_fr(&row.cues)) }
+            }
+            @if let Some(fig) = &row.figure {
+                span class="amt" { (figure_fr(fig)) }
+            }
+        }
+    }
+}
+
+fn figure_fr(figure: &PersonFigure) -> String {
+    match figure {
+        PersonFigure::Money { amount } => amount.to_string(),
+        PersonFigure::Days { days } => {
+            if (days.fract()).abs() < 0.05 {
+                format!("{} j", *days as i64)
+            } else {
+                format!("{days} j")
+            }
+        }
+    }
+}
+
+fn cues_fr(cues: &[PersonCue]) -> String {
+    if cues.is_empty() {
+        return String::new();
+    }
+    cues.iter().map(cue_fr).collect::<Vec<_>>().join(" · ")
+}
+
+fn cue_fr(cue: &PersonCue) -> String {
+    match cue {
+        PersonCue::QuoteSent { .. } => "devis envoyé".into(),
+        PersonCue::FollowUpDue { today: true, .. } => "à relancer aujourd'hui".into(),
+        PersonCue::FollowUpDue { on, .. } => format!("à relancer le {}", format_date_fr(*on)),
+        PersonCue::FirstExchange { on } => format!("premier échange le {}", format_date_fr(*on)),
+        PersonCue::NothingScheduled => "rien de posé".into(),
+        PersonCue::InvoiceOverdue { days } => format!("facture en retard · {days} jours"),
+        PersonCue::InvoiceOutstanding => "facture à encaisser".into(),
+        PersonCue::NextMilestone { on, label } => {
+            format!("{label} · prochain jalon le {}", format_date_fr(*on))
+        }
+        PersonCue::OpeningDebt => "dette reprise au bilan".into(),
+        PersonCue::MatchingDebit => "un débit correspond".into(),
+    }
+}
+
+pub fn dossier_page(store: &Store, needle: &str, today: Date) -> Result<Markup, AppError> {
+    let dossier = person(store.connection(), needle, today)?;
+    Ok(dossier_markup(&dossier, today, None))
+}
+
+pub fn dossier_markup(dossier: &PersonDossier, today: Date, flash: Option<&str>) -> Markup {
+    let href = person_href(&dossier.name);
+    html! {
+        div class="letter" data-view=(ViewId::Gens.slug()) data-person=(dossier.name) {
+            a class="back" href="/gens" hx-get="/gens" hx-target="#content" hx-push-url="true" {
+                "← Les gens"
+            }
+            div class="who" { (dossier.name) }
+            p class="co" { (subtitle(dossier)) }
+            @if let Some(msg) = flash {
+                p class="mast-note" role="status" { (msg) }
+            }
+            @if !dossier.actions.is_empty() {
+                div class="row-actions" {
+                    @for action in &dossier.actions {
+                        (action_button(action, &href, today))
+                    }
+                }
+            }
+            @if let Some(body) = current_paragraph(&dossier.current, dossier) {
+                div class="block" {
+                    h3 { "En cours" }
+                    p { (body) }
+                }
+            }
+            @if let Some(project) = &dossier.project {
+                div class="block" {
+                    h3 { "Le projet" }
+                    p { (project_paragraph(project, dossier)) }
+                }
+            }
+            @if !dossier.papers.is_empty() {
+                div class="block" {
+                    h3 { "Les papiers" }
+                    ul class="hist" {
+                        @for paper in &dossier.papers {
+                            li {
+                                span class="when" { (short_date(paper.on)) }
+                                span { (paper_line(paper)) }
                             }
                         }
                     }
                 }
             }
-
-            p class="section-label" { "En mission" }
-            @if missions.is_empty() {
-                p class="empty-state" { "Aucune mission en cours." }
-            } @else {
-                ul class="people" {
-                    @for m in &missions {
-                        li {
-                            a href=(format!("/missions/{}", m.id))
-                              hx-get=(format!("/missions/{}", m.id))
-                              hx-target="#panel" hx-swap="innerHTML" {
-                                div {
-                                    div class="nm" { (name_of(m.client_id)) }
-                                    div class="st" { (m.name) " · " (kind_fr(&m.kind)) }
-                                }
+            @if !dossier.history.is_empty() {
+                div class="block" {
+                    h3 { "Histoire" }
+                    ul class="hist" {
+                        @for event in &dossier.history {
+                            li {
+                                time { (format_date_fr(event.on)) }
+                                span { (history_fr(event)) }
                             }
                         }
                     }
                 }
             }
+        }
+    }
+}
 
-            p class="section-label" { "Fournisseurs" }
-            @if suppliers.is_empty() {
-                p class="empty-state" { "Les bénéficiaires d'une dépense (honoraires, notamment) apparaîtront ici." }
-            } @else {
-                ul class="people" {
-                    @for (name, n) in &suppliers {
-                        li {
-                            a href=(ViewId::Depenses.path())
-                              hx-get=(ViewId::Depenses.path())
-                              hx-target="#content" hx-push-url="true" {
-                                div {
-                                    div class="nm" { (name) }
-                                    div class="st" {
-                                        @if *n == 1 { "une dépense" } @else { (n) " dépenses" }
-                                    }
-                                }
-                            }
-                        }
+fn subtitle(d: &PersonDossier) -> String {
+    let mut parts = Vec::new();
+    if d.contact_name.as_ref().is_some_and(|c| c != &d.party) {
+        parts.push(d.party.clone());
+    }
+    if let Some(on) = d.since {
+        parts.push(format!("depuis {}", month_year(on)));
+    }
+    if d.not_yet_client {
+        parts.push("pas encore cliente".into());
+    } else if let Some(project) = &d.project {
+        parts.push(shape_fr(project.shape).into());
+        if project.days_this_month > 0.0 {
+            parts.push(format!(
+                "{} jours ce mois-ci",
+                as_days(project.days_this_month)
+            ));
+        }
+    } else if d.chapter == PersonChapter::Supplier {
+        parts.push("fournisseur".into());
+    }
+    parts.join(" · ")
+}
+
+fn month_year(on: Date) -> String {
+    const MONTHS: [&str; 12] = [
+        "janvier",
+        "février",
+        "mars",
+        "avril",
+        "mai",
+        "juin",
+        "juillet",
+        "août",
+        "septembre",
+        "octobre",
+        "novembre",
+        "décembre",
+    ];
+    let m = MONTHS
+        .get(usize::from(u8::from(on.month()).saturating_sub(1)))
+        .copied()
+        .unwrap_or("");
+    format!("{m} {}", on.year())
+}
+
+fn as_days(days: f64) -> String {
+    if (days.fract()).abs() < 0.05 {
+        format!("{}", days as i64)
+    } else {
+        format!("{days:.1}")
+    }
+}
+
+fn shape_fr(shape: MissionShape) -> &'static str {
+    match shape {
+        MissionShape::Regie => "régie",
+        MissionShape::Forfait => "forfait",
+        MissionShape::Recurrent => "récurrent",
+    }
+}
+
+fn current_paragraph(current: &CurrentSituation, dossier: &PersonDossier) -> Option<String> {
+    if dossier.chapter == PersonChapter::Supplier {
+        let mut parts = Vec::new();
+        if let Some(amount) = current.amount {
+            if current.opening_debt {
+                parts.push(format!("{amount} repris en dette."));
+            } else {
+                parts.push(format!("{amount}."));
+            }
+        }
+        if current.matching_debit {
+            parts.push("Un débit du relevé correspond au centime. Le ranger comme règlement — pas comme une nouvelle charge.".into());
+        }
+        if parts.is_empty() {
+            return None;
+        }
+        return Some(parts.join(" "));
+    }
+    let mut sentences = Vec::new();
+    if let Some(quote) = &current.quote {
+        let name = current
+            .opportunity_name
+            .as_deref()
+            .unwrap_or("accompagnement");
+        sentences.push(format!(
+            "Devis {name}, {} HT, envoyé le {}.",
+            quote.amount,
+            format_date_fr(quote.on)
+        ));
+    } else if let Some(invoice) = &current.invoice {
+        let days = match invoice.status {
+            PaperStatus::InvoiceOutstanding { days_overdue } if days_overdue > 0 => {
+                format!(" {days_overdue} jours.")
+            }
+            _ => String::new(),
+        };
+        sentences.push(format!(
+            "Une facture de {}, échue le {}.{}",
+            invoice.amount,
+            format_date_fr(invoice.on),
+            days
+        ));
+    } else if let Some(name) = &current.opportunity_name {
+        let amount = current
+            .amount
+            .filter(|a| a.cents() != 0)
+            .map(|a| format!(", autour de {a}"))
+            .unwrap_or_default();
+        sentences.push(format!("{name}{amount}."));
+    }
+    if let Some(PersonCue::FollowUpDue { today: true, .. }) = &current.follow_up {
+        sentences.push("À relancer aujourd'hui.".into());
+    }
+    if current.nothing_scheduled && sentences.is_empty() {
+        sentences.push("Rien n'est encore écrit.".into());
+    }
+    if sentences.is_empty() {
+        None
+    } else {
+        Some(sentences.join(" "))
+    }
+}
+
+fn project_paragraph(
+    project: &freeflow_core::people::ProjectChapter,
+    _dossier: &PersonDossier,
+) -> String {
+    let mut s = format!(
+        "Mission {}, ouverte le {}.",
+        shape_fr(project.shape),
+        format_date_fr(project.started_on)
+    );
+    if project.days_this_month > 0.0 {
+        s.push_str(&format!(
+            " {} jours ce mois-ci.",
+            as_days(project.days_this_month)
+        ));
+    }
+    if let Some(ms) = &project.next_milestone
+        && let Some(on) = ms.due_on
+    {
+        s.push_str(&format!(
+            " Prochain jalon le {}, {}.",
+            format_date_fr(on),
+            ms.label
+        ));
+    }
+    if let Some(end) = project.ended_on {
+        s.push_str(&format!(" Fin le {}.", format_date_fr(end)));
+    }
+    s
+}
+
+fn short_date(on: Date) -> String {
+    format!(
+        "{} {}",
+        on.day(),
+        crate::views::copy::month_fr(u8::from(on.month()))
+    )
+}
+
+fn paper_line(paper: &Paper) -> String {
+    let kind = match paper.kind {
+        PaperKind::Quote => "Devis",
+        PaperKind::Invoice => "Facture",
+    };
+    let number = paper.number.as_deref().unwrap_or("");
+    let status = match &paper.status {
+        PaperStatus::QuoteDraft => "brouillon",
+        PaperStatus::QuoteSent => "en attente",
+        PaperStatus::QuoteAccepted => "accepté",
+        PaperStatus::QuoteDeclined => "décliné",
+        PaperStatus::QuoteExpired => "expiré",
+        PaperStatus::InvoiceOutstanding { days_overdue } if *days_overdue > 0 => {
+            "échue · à relancer"
+        }
+        PaperStatus::InvoiceOutstanding { .. } => "à encaisser",
+        PaperStatus::InvoicePaid => "encaissée",
+        PaperStatus::InvoiceCredited => "annulée par avoir",
+    };
+    if number.is_empty() {
+        format!("{kind} · {} · {status}", paper.amount)
+    } else {
+        format!("{kind} {number} · {} · {status}", paper.amount)
+    }
+}
+
+fn history_fr(event: &HistoryEvent) -> String {
+    match &event.kind {
+        HistoryKind::Interaction { interaction } => {
+            let kind = match interaction {
+                InteractionKind::Call => "Appel",
+                InteractionKind::Email => "E-mail",
+                InteractionKind::Meeting => "Rencontre",
+                InteractionKind::Note => "Note",
+            };
+            match &event.note {
+                Some(n) => format!("{kind}. {n}"),
+                None => format!("{kind}."),
+            }
+        }
+        HistoryKind::QuoteSent { .. } => "Devis envoyé.".into(),
+        HistoryKind::QuoteAccepted => "Devis accepté.".into(),
+        HistoryKind::InvoiceIssued { number } => format!("Facture {number}."),
+    }
+}
+
+fn action_button(action: &PersonAction, dossier_href: &str, today: Date) -> Markup {
+    match action {
+        PersonAction::Write { subject } => {
+            let (label, class) = match subject {
+                FollowUpSubject::Invoice(_) => ("Relancer", "seal"),
+                FollowUpSubject::Opportunity(_) => ("Écrire", "seal"),
+            };
+            html! {
+                form hx-post=(format!("{dossier_href}/ecrire")) hx-target="#content" hx-push-url="true" {
+                    button class=(class) type="submit" { (label) }
+                }
+            }
+        }
+        PersonAction::Quote { .. } => html! {
+            a class="quiet" href=(format!("{dossier_href}/devis"))
+              hx-get=(format!("{dossier_href}/devis")) hx-target="#panel" hx-swap="innerHTML" {
+                "Le devis"
+            }
+        },
+        PersonAction::LogMeeting { .. } => html! {
+            a class="quiet" href=(format!("{dossier_href}/rencontre"))
+              hx-get=(format!("{dossier_href}/rencontre")) hx-target="#content" hx-push-url="true" {
+                "Noter une rencontre"
+            }
+        },
+        PersonAction::Snooze { .. } => {
+            let until =
+                format_date(snooze_date(today, SnoozePreset::Tomorrow) + time::Duration::days(2));
+            html! {
+                form hx-post=(format!("{dossier_href}/reporter")) hx-target="#content" {
+                    input type="hidden" name="until" value=(until);
+                    button class="quiet" type="submit" { "Reporter de trois jours" }
+                }
+            }
+        }
+        PersonAction::FileStatement => html! {
+            a class="seal" href=(ViewId::Depenses.path())
+              hx-get=(ViewId::Depenses.path()) hx-target="#content" hx-push-url="true" {
+                "Ranger le mouvement"
+            }
+        },
+    }
+}
+
+pub fn new_conversation(
+    today: Date,
+    who: &str,
+    phrase: &str,
+    who_error: Option<&str>,
+    phrase_error: Option<&str>,
+    banner: Option<&str>,
+) -> Markup {
+    html! {
+        div class="letter" data-view=(ViewId::Gens.slug()) {
+            a class="back" href="/gens" hx-get="/gens" hx-target="#content" hx-push-url="true" {
+                "← Les gens"
+            }
+            h1 { "Une conversation." }
+            p class="lede" { "Un nom, une phrase. Le reste viendra — devis, projet, facture — quand ce sera vrai." }
+            @if let Some(msg) = banner {
+                p class="mast-note" role="alert" { (msg) }
+            }
+            form hx-post="/gens/nouvelle" hx-target="#content" hx-push-url="true" {
+                (form::text("who", "Qui", who, who_error))
+                (form::text("phrase", "Ce dont il s'agit", phrase, phrase_error))
+                input type="hidden" name="today" value=(format_date(today));
+                div class="row-actions" {
+                    button class="seal" type="submit" { "Ouvrir la conversation" }
+                    a class="quiet" href="/gens" hx-get="/gens" hx-target="#content" hx-push-url="true" {
+                        "Annuler"
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub fn meeting_form(
+    dossier: &PersonDossier,
+    today: Date,
+    note: &str,
+    error: Option<&str>,
+) -> Markup {
+    let href = person_href(&dossier.name);
+    html! {
+        div class="letter" data-view=(ViewId::Gens.slug()) {
+            a class="back" href=(href) hx-get=(href) hx-target="#content" hx-push-url="true" {
+                "← " (dossier.name)
+            }
+            h1 { "Une rencontre." }
+            p class="lede" { "Pas un CRM. Ce que tu veux encore savoir dans six mois." }
+            @if let Some(msg) = error {
+                p class="mast-note" role="alert" { (msg) }
+            }
+            form hx-post=(format!("{href}/rencontre")) hx-target="#content" hx-push-url="true" {
+                (form::date("when", "Quand", &format_date(today), None))
+                (form::textarea("note", "Ce qu'on s'est dit", note, 6, None))
+                div class="row-actions" {
+                    button class="seal" type="submit" { "Poser la note" }
+                }
+            }
+        }
+    }
+}
+
+pub fn letter_page(
+    store: &Store,
+    dossier: &PersonDossier,
+    card: Option<&FollowUpCard>,
+    today: Date,
+    flash: Option<&str>,
+) -> Result<Markup, AppError> {
+    let href = person_href(&dossier.name);
+    let sender = follow_up_sender(store.connection())?;
+    let from = sender.sender_email.as_deref().unwrap_or("—");
+    let to = card.and_then(|c| c.contact_email.as_deref()).unwrap_or("—");
+    let body = card.and_then(|c| c.preview_body.as_deref()).unwrap_or("");
+    Ok(html! {
+        div class="letter" data-view=(ViewId::Gens.slug()) {
+            a class="back" href=(href) hx-get=(href) hx-target="#content" hx-push-url="true" {
+                "← " (dossier.name)
+            }
+            h1 { "Une lettre, pas un envoi." }
+            p class="lede" { "FreeFlow écrit le brouillon. C'est toi qui l'envoies, depuis ton client mail. Ensuite tu reviens dire que c'est parti." }
+            @if let Some(msg) = flash {
+                p class="mast-note" role="status" { (msg) }
+            }
+            div class="letter-draft" {
+                div class="meta" {
+                    "De " (from) " · À " (to) " · ne sera pas envoyé par FreeFlow"
+                }
+                @if body.is_empty() {
+                    p { "Le brouillon s'ouvre dans ton client mail." }
+                } @else {
+                    pre { (body) }
+                }
+            }
+            div class="row-actions" {
+                form hx-post=(format!("{href}/ecrire")) hx-target="#content" {
+                    button class="seal" type="submit" { "Ouvrir dans le client mail" }
+                }
+                @if card.is_some() {
+                    form hx-post=(format!("{href}/envoye")) hx-target="#content" hx-push-url="true" {
+                        input type="hidden" name="today" value=(format_date(today));
+                        button class="quiet" type="submit" { "Marquer envoyé" }
                     }
                 }
             }
@@ -119,10 +584,31 @@ pub fn render(store: &Store, today: Date) -> Result<Markup, AppError> {
     })
 }
 
-fn kind_fr(kind: &MissionKind) -> &'static str {
-    match kind {
-        MissionKind::Regie { .. } => "régie",
-        MissionKind::Forfait { .. } => "forfait",
-        MissionKind::Recurrent { .. } => "récurrent",
+pub fn not_found(needle: &str, today: Date) -> Markup {
+    html! {
+        div class="letter" data-view=(ViewId::Gens.slug()) {
+            a class="back" href="/gens" hx-get="/gens" hx-target="#content" hx-push-url="true" {
+                "← Les gens"
+            }
+            h1 { "Personne." }
+            p class="lede" { "Aucune fiche ne correspond à « " (needle) " »." }
+            p class="date" { (letter_date(today)) }
+        }
+    }
+}
+
+#[must_use]
+pub fn href_for_party(party: &str) -> String {
+    person_href(party)
+}
+
+pub fn load_card(
+    store: &Store,
+    subject: FollowUpSubject,
+    today: Date,
+) -> Result<Option<FollowUpCard>, AppError> {
+    match card_for(store.connection(), subject, today) {
+        Ok(card) => Ok(Some(card)),
+        Err(_) => Ok(None),
     }
 }

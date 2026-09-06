@@ -513,6 +513,7 @@ pub fn list_fragment(store: &Store, filter: OpportunityFilter) -> Result<Markup,
     })
 }
 
+#[allow(dead_code)] // écran historique hors nav ; les tableaux et panneaux restent.
 pub fn render(store: &Store, filter: OpportunityFilter) -> Result<Markup, AppError> {
     let count = list_opportunities_with(store.connection(), filter)?.len();
     Ok(html! {

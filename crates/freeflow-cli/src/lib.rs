@@ -18,6 +18,7 @@ mod mission;
 mod output;
 mod parsers;
 mod pending;
+mod people;
 mod prospect;
 mod quote;
 mod refs;
@@ -91,6 +92,9 @@ enum TopCommand {
     /// Le jour : mât, gestes, mois.
     #[command(subcommand)]
     Day(day::DayCommand),
+    /// Les gens : liste unique et dossier.
+    #[command(subcommand)]
+    People(people::PeopleCommand),
     /// Relances : file du jour, brouillon `.eml`, jamais d'envoi.
     #[command(subcommand)]
     FollowUp(follow_up::FollowUpCommand),
@@ -376,6 +380,7 @@ fn run_command(
         TopCommand::Client(cmd) => client::run(cmd, store, ctx, json),
         TopCommand::Company(cmd) => company::run(cmd, store, ctx, json),
         TopCommand::Day(cmd) => day::run(cmd, store, json),
+        TopCommand::People(cmd) => people::run(cmd, store, json),
         TopCommand::FollowUp(cmd) => follow_up::run(cmd, store, ctx, json),
         TopCommand::Prospect(cmd) => prospect::run(cmd, store, ctx, json),
         TopCommand::Mission(cmd) => mission::run(cmd, store, ctx, json),

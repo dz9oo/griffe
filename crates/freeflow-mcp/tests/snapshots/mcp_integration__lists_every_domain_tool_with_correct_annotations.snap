@@ -133,6 +133,8 @@ expression: "json!({\n    \"tool_names\": names, \"invoice_emit_input_schema\":\
     "payment.record",
     "payment.void",
     "pending.list",
+    "people.list",
+    "people.show",
     "prospect.advance",
     "prospect.archive",
     "prospect.create",

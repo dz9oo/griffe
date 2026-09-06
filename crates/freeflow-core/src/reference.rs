@@ -71,7 +71,7 @@ fn as_ref_match<T>(mut candidates: Vec<(T, String)>) -> RefMatch<T> {
 /// un fragment hexadécimal d'au moins [`MIN_UUID_PREFIX_LEN`] caractères, préfixe d'UUID (à la
 /// manière d'un hash git court) ; sinon libellé exact, insensible à la casse et aux accents ;
 /// sinon préfixe de libellé, avec la même tolérance.
-fn resolve_among<T>(needle: &str, candidates: &[(T, String)]) -> RefMatch<T>
+pub(crate) fn resolve_among<T>(needle: &str, candidates: &[(T, String)]) -> RefMatch<T>
 where
     T: Copy + Eq + std::fmt::Display + std::str::FromStr,
 {

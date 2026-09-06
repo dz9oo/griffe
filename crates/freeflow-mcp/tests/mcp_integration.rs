@@ -174,6 +174,8 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "day.mast",
         "day.gestures",
         "day.month",
+        "people.list",
+        "people.show",
     ] {
         assert!(names.contains(expected), "outil manquant : {expected}");
     }
@@ -212,6 +214,8 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "day.mast",
         "day.gestures",
         "day.month",
+        "people.list",
+        "people.show",
     ] {
         assert_eq!(
             by_name(read_only)
@@ -1524,6 +1528,32 @@ async fn the_day_mast_tool_returns_typed_facts() {
     assert_eq!(gestes.is_error, Some(false));
     let rows = json_of(&gestes);
     assert!(rows.as_array().unwrap()[0]["verb"] == "setup", "{rows}");
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn the_people_list_tool_returns_three_empty_chapters() {
+    let store = Store::create(&test_db_path("people-list"), &Passphrase::from("s3cret")).unwrap();
+    let client = spawn_client(store).await;
+
+    let list = call(&client, "people.list", json!({"today": "2026-09-05"})).await;
+    assert_eq!(list.is_error, Some(false));
+    let body = json_of(&list);
+    assert!(
+        body["conversations"].as_array().unwrap().is_empty(),
+        "{body}"
+    );
+    assert!(body["missions"].as_array().unwrap().is_empty(), "{body}");
+    assert!(body["suppliers"].as_array().unwrap().is_empty(), "{body}");
+
+    let missing = call(
+        &client,
+        "people.show",
+        json!({"reference": "Camille", "today": "2026-09-05"}),
+    )
+    .await;
+    assert_eq!(missing.is_error, Some(true));
 
     client.cancel().await.unwrap();
 }

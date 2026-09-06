@@ -363,6 +363,7 @@ pub fn list_fragment(store: &Store, filter: ClientFilter) -> Result<Markup, AppE
     })
 }
 
+#[allow(dead_code)] // écran historique hors nav ; les tableaux et panneaux restent.
 pub fn render(store: &Store, filter: ClientFilter) -> Result<Markup, AppError> {
     let count = list_clients_with(store.connection(), filter)?.len();
     Ok(html! {

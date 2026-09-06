@@ -9,6 +9,7 @@ pub(crate) mod follow_up;
 pub(crate) mod forecast;
 pub(crate) mod missions;
 pub(crate) mod pending;
+pub(crate) mod people;
 pub(crate) mod prospection;
 pub(crate) mod quotes;
 pub(crate) mod setup;

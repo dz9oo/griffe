@@ -10,6 +10,7 @@ mod console;
 mod depenses;
 mod devis;
 mod facturation;
+mod gens;
 mod handlers;
 mod layout;
 mod missions;
@@ -69,6 +70,16 @@ pub fn router(state: AppState) -> Router {
         .route("/", get(handlers::index))
         .route("/jour", get(handlers::jour))
         .route("/gens", get(handlers::gens))
+        .route("/gens/nouvelle", get(gens::new_get).post(gens::new_post))
+        .route("/gens/{reference}", get(gens::show))
+        .route("/gens/{reference}/ecrire", post(gens::write))
+        .route("/gens/{reference}/envoye", post(gens::sent))
+        .route(
+            "/gens/{reference}/rencontre",
+            get(gens::meeting_get).post(gens::meeting_post),
+        )
+        .route("/gens/{reference}/reporter", post(gens::snooze))
+        .route("/gens/{reference}/devis", get(gens::quote_panel))
         .route("/view/dashboard", get(handlers::dashboard))
         .route("/view/relances", get(relances::view))
         .route("/relances/sender", post(relances::set_sender))

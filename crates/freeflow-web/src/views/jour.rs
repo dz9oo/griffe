@@ -18,7 +18,7 @@ use crate::layout::ViewId;
 use crate::views::copy::{
     deadline_fr, event_kind_fr, gestes_title, is_vat, letter_date, month_fr, month_title,
 };
-use crate::views::relances::card_href;
+use crate::views::gens::{href_for_party, person_href};
 
 pub fn render(store: &Store, today: Date) -> Result<Markup, AppError> {
     let conn = store.connection();
@@ -245,21 +245,31 @@ fn geste_actions(g: &DayGesture, today: Date) -> Markup {
             }
         },
         GestureSource::FollowUp {
-            subject, drafted, ..
+            subject,
+            drafted,
+            contact_name,
+            party,
+            ..
         } => {
-            let href = card_href(*subject);
+            let who = contact_name
+                .as_deref()
+                .filter(|n| !n.is_empty())
+                .unwrap_or(party.as_str());
+            let href = person_href(who);
+            let write = format!("{href}/ecrire");
             let tomorrow = format_date(snooze_date(today, SnoozePreset::Tomorrow));
+            let _ = subject;
             html! {
                 a class="seal" href=(href)
                   hx-get=(href) hx-target="#content" hx-push-url="true" {
                     "Ouvrir son dossier"
                 }
-                form hx-post=(format!("{href}/draft")) hx-target="#content" {
+                form hx-post=(write) hx-target="#content" hx-push-url="true" {
                     button class="quiet" type="submit" {
                         @if *drafted { "Lire le brouillon" } @else { "Préparer le brouillon" }
                     }
                 }
-                form hx-post=(format!("{href}/snooze")) hx-target="#content" {
+                form hx-post=(format!("{href}/reporter")) hx-target="#content" {
                     input type="hidden" name="until" value=(tomorrow);
                     button class="quiet" type="submit" { "Demain" }
                 }
@@ -469,7 +479,7 @@ fn agenda_row(event: &MonthEvent, today: Date) -> Markup {
         event_kind_fr(event.kind)
     };
     let ttl = agenda_title(event);
-    let href = event_href(&event.target);
+    let href = event_href(&event.target, event.party.as_deref());
     let on_today = event.on == today;
     html! {
         @if let Some(href) = href {
@@ -540,11 +550,21 @@ fn agenda_title(event: &MonthEvent) -> String {
     }
 }
 
-fn event_href(target: &MonthTarget) -> Option<String> {
+fn event_href(target: &MonthTarget, party: Option<&str>) -> Option<String> {
     match target {
-        MonthTarget::FollowUp { subject } => Some(card_href(*subject)),
-        MonthTarget::Mission { .. } => Some(ViewId::Missions.path().to_string()),
-        MonthTarget::Invoice { id } => Some(card_href(FollowUpSubject::Invoice(*id))),
+        MonthTarget::FollowUp { subject } => Some(party.map_or_else(
+            || match subject {
+                FollowUpSubject::Opportunity(id) => format!("/gens/{id}"),
+                FollowUpSubject::Invoice(id) => format!("/gens/{id}"),
+            },
+            href_for_party,
+        )),
+        MonthTarget::Mission { id } => {
+            Some(party.map_or_else(|| format!("/gens/{id}"), href_for_party))
+        }
+        MonthTarget::Invoice { id } => {
+            Some(party.map_or_else(|| format!("/gens/{id}"), href_for_party))
+        }
         MonthTarget::Taxes => Some(ViewId::Societe.path().to_string()),
         MonthTarget::Closing => Some(ViewId::Cloture.path().to_string()),
     }

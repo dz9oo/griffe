@@ -37,6 +37,8 @@ const ASSETS_URI: &str = "freeflow://assets";
 const FOLLOW_UPS_URI: &str = "freeflow://follow-ups";
 const DAY_URI: &str = "freeflow://day";
 const DAY_MONTH_PREFIX: &str = "freeflow://day/month/";
+const PEOPLE_URI: &str = "freeflow://people";
+const PEOPLE_DETAIL_PREFIX: &str = "freeflow://people/";
 
 pub(crate) fn list() -> ListResourcesResult {
     ListResourcesResult::with_all_items(vec![
@@ -107,6 +109,12 @@ pub(crate) fn list() -> ListResourcesResult {
                  locale de l'adaptateur.",
             )
             .with_mime_type("application/json"),
+        Resource::new(PEOPLE_URI, "people")
+            .with_description(
+                "Les gens : trois chapitres (en conversation, en mission, fournisseurs) — même \
+                 vue que people.list.",
+            )
+            .with_mime_type("application/json"),
     ])
 }
 
@@ -163,6 +171,12 @@ pub(crate) fn list_templates() -> ListResourceTemplatesResult {
             .with_description(
                 "Événements et bandes de missions d'un mois civil (`AAAA-MM`) — même vue que \
                  day.month.",
+            )
+            .with_mime_type("application/json"),
+        ResourceTemplate::new(format!("{PEOPLE_DETAIL_PREFIX}{{reference}}"), "person")
+            .with_description(
+                "Dossier d'une personne (nom, préfixe, UUID) : en cours, projet, papiers, \
+                 histoire — même vue que people.show.",
             )
             .with_mime_type("application/json"),
     ])
@@ -345,6 +359,18 @@ pub(crate) fn read(store: &Store, uri: &str) -> Result<ReadResourceResult, McpEr
         let gestures = freeflow_core::day::day_gestures(store.connection(), today)
             .map_err(|e| McpError::resource_not_found(e.to_string(), None))?;
         return json_contents(uri, json!({ "mast": mast, "gestures": gestures }));
+    }
+    if uri == PEOPLE_URI {
+        let today = freeflow_core::clock::today_local();
+        let list = freeflow_core::people::people_list(store.connection(), today)
+            .map_err(|e| McpError::resource_not_found(e.to_string(), None))?;
+        return json_contents(uri, list);
+    }
+    if let Some(reference) = uri.strip_prefix(PEOPLE_DETAIL_PREFIX) {
+        let today = freeflow_core::clock::today_local();
+        let dossier = freeflow_core::people::person(store.connection(), reference, today)
+            .map_err(|e| McpError::resource_not_found(e.to_string(), None))?;
+        return json_contents(uri, dossier);
     }
     if let Some(raw) = uri.strip_prefix(DAY_MONTH_PREFIX) {
         let today = freeflow_core::clock::today_local();

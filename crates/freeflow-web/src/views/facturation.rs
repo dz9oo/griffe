@@ -97,6 +97,7 @@ pub fn list_fragment(store: &Store, today: Date) -> Result<Markup, AppError> {
     })
 }
 
+#[allow(dead_code)] // écran historique hors nav ; les tableaux et panneaux restent.
 pub fn render(store: &Store, today: Date) -> Result<Markup, AppError> {
     let conn = store.connection();
     let invoices = list_invoices(conn)?;

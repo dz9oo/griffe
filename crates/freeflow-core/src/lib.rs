@@ -22,6 +22,7 @@ pub mod forecast;
 pub mod ledger;
 pub mod missions;
 pub mod opening_balance;
+pub mod people;
 pub mod prospection;
 pub mod quotes;
 pub mod receipts;

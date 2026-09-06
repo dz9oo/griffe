@@ -238,12 +238,12 @@ async fn an_htmx_boosted_navigation_returns_only_the_view_fragment() {
         "une navigation boostée ne doit renvoyer que le contenu de #content, pas la coque"
     );
     assert!(
-        body.contains("Prospection"),
-        "le titre de l'écran est en français : {body}"
+        body.contains("Les gens") || body.contains("En conversation"),
+        "l'ancienne route rend Les gens : {body}"
     );
     assert!(
-        body.contains("data-view=\"prospection\""),
-        "le slug reste sur le fragment"
+        body.contains("data-view=\"gens\""),
+        "le slug de la pièce : {body}"
     );
 }
 
@@ -397,6 +397,100 @@ async fn the_day_letter_shows_the_mast_gestures_and_the_month_grid() {
     .await;
     assert!(fragment.contains("data-view=\"jour\""), "{fragment}");
     assert!(fragment.contains("class=\"mast\""), "{fragment}");
+}
+
+#[tokio::test]
+async fn les_gens_lists_three_chapters_and_opens_a_dossier() {
+    let db_path = test_db_path("letter-gens");
+    let state = unlocked_state(&db_path)
+        .await
+        .with_today(time::macros::date!(2026 - 09 - 05));
+    let router = freeflow_web::router(state);
+
+    let created = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/gens/nouvelle")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from(
+                    "who=Camille+Rivi%C3%A8re&phrase=accompagnement+identit%C3%A9",
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::OK, "nouvelle conversation");
+    let created_body = body_text(created).await;
+    assert!(
+        created_body.contains("Camille") && created_body.contains("Écrire"),
+        "le dossier s'ouvre après création : {created_body}"
+    );
+    assert!(
+        !created_body.contains("freeflow "),
+        "pas de commande CLI dans la lettre : {created_body}"
+    );
+
+    let list = body_text(
+        router
+            .clone()
+            .oneshot(Request::builder().uri("/gens").body(Body::empty()).unwrap())
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(list.contains("data-view=\"gens\""), "{list}");
+    assert!(list.contains("En conversation"), "{list}");
+    assert!(list.contains("En mission"), "{list}");
+    assert!(list.contains("Fournisseurs"), "{list}");
+    assert!(list.contains("Camille"), "{list}");
+    assert!(list.contains("Nouvelle conversation"), "{list}");
+    assert!(!list.contains("freeflow "), "{list}");
+    assert!(
+        !list.contains("impayé") && !list.contains("pipeline"),
+        "langage de la lettre : {list}"
+    );
+
+    let dossier = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/gens/Camille%20Rivi%C3%A8re")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(dossier.contains("Camille"), "{dossier}");
+    assert!(dossier.contains("En cours"), "{dossier}");
+    assert!(
+        dossier.contains("Écrire") || dossier.contains("Ecrire"),
+        "{dossier}"
+    );
+    assert!(
+        !dossier.contains("freeflow "),
+        "pas de commande CLI dans le dossier : {dossier}"
+    );
+
+    let old = body_text(
+        router
+            .oneshot(
+                Request::builder()
+                    .uri("/view/prospection")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(old.contains("data-view=\"gens\""), "{old}");
 }
 
 #[tokio::test]
