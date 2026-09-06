@@ -325,6 +325,14 @@ li.open .unfold { display: block; }
 .chapters a span { color: var(--ink-2); font-size: 14px; }
 .chapters a:hover strong { color: var(--seal); }
 .chapters a .go { color: var(--ink-2); align-self: center; }
+.chapters li > div {
+  padding: 12px 0;
+  border-top: 1px solid var(--rule);
+  font-size: 16px;
+}
+.chapters li:last-child > div { border-bottom: 1px solid var(--rule); }
+.chapters li > div strong { font-weight: 500; display: block; }
+.chapters li > div span { color: var(--ink-2); font-size: 14px; }
 
 .block { margin: 32px 0; }
 .block h3, .panel-title {

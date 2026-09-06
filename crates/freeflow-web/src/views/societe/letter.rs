@@ -31,7 +31,8 @@ fn chapter_link(href: &str, title: &str, sub: &str) -> Markup {
 
 fn back() -> Markup {
     html! {
-        a class="back" href="/societe" hx-get="/societe" hx-target="#content" hx-push-url="true" {
+        a class="back" href="/societe"
+          hx-get="/societe" hx-target="#content" hx-push-url="true" hx-swap="innerHTML" {
             "← La société"
         }
     }
@@ -505,7 +506,10 @@ pub fn statement(store: &Store, today: Date) -> Result<Markup, AppError> {
 fn statement_markup(moves: &[StatementMove]) -> Markup {
     html! {
         div class="letter" data-view=(ViewId::Societe.slug())
-            hx-get="/societe/releve" hx-trigger="freeflow:saved from:body" hx-swap="outerHTML" {
+            hx-get="/societe/releve"
+            hx-trigger="freeflow:saved from:body"
+            hx-swap="outerHTML"
+            hx-disinherit="hx-swap" {
             (back())
             h1 { "Le relevé." }
             p class="lede" { "Chaque mouvement est une phrase. Tu lui donnes une lecture. Rien n'est une « écriture »." }

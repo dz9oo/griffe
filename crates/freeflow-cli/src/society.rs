@@ -106,7 +106,7 @@ fn duty_line(d: &Duty) -> String {
     )
 }
 
-fn deadline_fr(kind: FiscalDeadlineKind) -> &'static str {
+pub(crate) fn deadline_fr(kind: FiscalDeadlineKind) -> &'static str {
     match kind {
         FiscalDeadlineKind::Ca3 => "TVA du trimestre",
         FiscalDeadlineKind::VatInstalment => "acompte de TVA",

@@ -378,6 +378,15 @@ async fn the_day_letter_shows_the_mast_gestures_and_the_month_grid() {
         "pas de sigle dans la lettre : {jour}"
     );
     assert!(
+        !jour.contains("is_acompte") && !jour.contains("is_solde"),
+        "pas de clé technique dans l'agenda : {jour}"
+    );
+    assert!(
+        jour.contains("acompte d'impôt sur les sociétés")
+            || jour.contains("acompte d&#x27;impôt sur les sociétés"),
+        "l'acompte d'IS du 15 septembre se dit comme dans La société : {jour}"
+    );
+    assert!(
         !jour.contains("impayé"),
         "on dit chez X, pas impayé : {jour}"
     );
@@ -651,6 +660,84 @@ async fn la_societe_shows_the_landscape_chapters_and_a_closed_dividend() {
     )
     .await;
     assert!(old.contains("Le relevé"), "{old}");
+}
+
+#[tokio::test]
+async fn society_duties_stack_the_title_above_the_body() {
+    let state = unlocked_state(&test_db_path("letter-impots"))
+        .await
+        .with_today(time::macros::date!(2026 - 09 - 05));
+    let router = freeflow_web::router(state);
+
+    let page = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/societe/impots")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(page.contains("Ce que tu dois"), "{page}");
+    assert!(
+        page.contains("acompte d'impôt sur les sociétés")
+            || page.contains("acompte d&#x27;impôt sur les sociétés"),
+        "{page}"
+    );
+
+    let css = body_text(
+        router
+            .oneshot(
+                Request::builder()
+                    .uri("/assets/app.css")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        css.contains(".chapters li > div strong") || css.contains(".chapters li>div strong"),
+        "le gras des échéances (sans lien) doit passer en bloc : {css}"
+    );
+}
+
+#[tokio::test]
+async fn going_back_from_the_statement_keeps_content_inner_html() {
+    let state = unlocked_state(&test_db_path("letter-releve-back")).await;
+    let router = freeflow_web::router(state);
+
+    let releve = body_text(
+        router
+            .oneshot(
+                Request::builder()
+                    .uri("/societe/releve")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        releve.contains("← La société") || releve.contains("&larr; La société"),
+        "{releve}"
+    );
+    assert!(
+        releve.contains("hx-swap=\"innerHTML\""),
+        "le retour vers La société doit forcer innerHTML, pas hériter outerHTML : {releve}"
+    );
+    assert!(
+        releve.contains("hx-disinherit"),
+        "le letter du relevé ne doit pas léguer outerHTML à ses enfants : {releve}"
+    );
+    assert!(!releve.contains("<!DOCTYPE html>"), "{releve}");
 }
 
 fn applied<T: std::fmt::Debug>(outcome: freeflow_core::app::Outcome<T>) -> T {

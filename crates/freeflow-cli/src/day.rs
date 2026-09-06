@@ -149,11 +149,19 @@ impl HumanRender for MonthView {
             let rows: Vec<Vec<String>> = from_today
                 .iter()
                 .map(|e| {
+                    let title = if e.kind == MonthEventKind::StateDuty {
+                        e.deadline
+                            .map(crate::society::deadline_fr)
+                            .unwrap_or(e.title.as_str())
+                            .to_string()
+                    } else {
+                        e.title.clone()
+                    };
                     vec![
                         format_date(e.on),
                         event_kind_fr(e.kind).into(),
                         e.party.clone().unwrap_or_default(),
-                        e.title.clone(),
+                        title,
                     ]
                 })
                 .collect();

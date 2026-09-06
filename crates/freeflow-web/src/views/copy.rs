@@ -91,7 +91,7 @@ pub fn event_kind_fr(kind: freeflow_core::day::MonthEventKind) -> &'static str {
         MonthEventKind::Meeting => "rencontre",
         MonthEventKind::Milestone => "jalon",
         MonthEventKind::MissionEnd => "fin de mission",
-        MonthEventKind::StateDuty => "TVA",
+        MonthEventKind::StateDuty => "État",
         MonthEventKind::YearEnd => "exercice",
     }
 }
@@ -131,5 +131,21 @@ mod tests {
     #[test]
     fn september_is_titled_like_the_mockup() {
         assert_eq!(month_title(9), "Septembre.");
+    }
+
+    #[test]
+    fn a_state_duty_is_not_always_vat() {
+        assert_eq!(
+            event_kind_fr(freeflow_core::day::MonthEventKind::StateDuty),
+            "État"
+        );
+    }
+
+    #[test]
+    fn an_is_instalment_is_said_like_la_societe() {
+        assert_eq!(
+            deadline_fr(FiscalDeadlineKind::IsAcompte),
+            "acompte d'impôt sur les sociétés"
+        );
     }
 }

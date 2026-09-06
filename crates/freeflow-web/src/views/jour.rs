@@ -473,7 +473,7 @@ fn agenda_row(event: &MonthEvent, today: Date) -> Markup {
         if event.deadline.is_some_and(is_vat) {
             "TVA"
         } else {
-            event_kind_fr(event.kind)
+            "État"
         }
     } else {
         event_kind_fr(event.kind)
@@ -510,11 +510,11 @@ fn agenda_title(event: &MonthEvent) -> String {
                 .filter(|m| *m != Money::ZERO)
                 .map(|m| format!(" · {m}"))
                 .unwrap_or_default();
-            if event.deadline.is_some_and(is_vat) {
-                format!("Déposer{amount}")
-            } else {
-                format!("{}{amount}", event.title)
-            }
+            let label = event
+                .deadline
+                .map(deadline_fr)
+                .unwrap_or(event.title.as_str());
+            format!("{label}{amount}")
         }
         MonthEventKind::YearEnd => "Dernier jour — on clôt le lendemain".into(),
         MonthEventKind::MissionEnd => {
