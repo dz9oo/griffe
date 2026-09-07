@@ -202,7 +202,7 @@ button { font-family: inherit; color: inherit; cursor: pointer; background: none
   font-size: 20px;
   line-height: 1.4;
   color: var(--ink-2);
-  max-width: 38ch;
+  max-width: 52ch;
   margin-bottom: 28px;
 }
 
@@ -251,7 +251,7 @@ ol.gestes > li:last-child { border-bottom: 1px solid var(--rule); }
   line-height: 1;
 }
 .geste h2 { font-size: 22px; font-weight: 500; letter-spacing: -0.02em; font-family: var(--sans); }
-.geste p { color: var(--ink-2); margin-top: 6px; font-size: 15px; max-width: 46ch; line-height: 1.45; }
+.geste p { color: var(--ink-2); margin-top: 6px; font-size: 15px; line-height: 1.45; }
 .geste:hover h2 { color: var(--seal); }
 .unfold { display: none; grid-column: 2; padding: 0 0 20px; }
 li.open .unfold { display: block; }
@@ -343,7 +343,7 @@ li.open .unfold { display: block; }
   margin-bottom: 12px;
   font-weight: 600;
 }
-.block p, .prose { font-size: 17px; line-height: 1.5; max-width: 48ch; }
+.block p, .prose { font-size: 17px; line-height: 1.5; }
 
 .month {
   margin-top: 56px;
@@ -694,18 +694,17 @@ tr.row-clickable:hover td { background: var(--paper-2); }
 .letter ol {
   margin: 12px 0 0;
   padding-left: 1.4em;
-  max-width: 48ch;
   font-size: 17px;
   line-height: 1.5;
 }
 .letter ol li { margin-top: 8px; }
-.letter dl { margin-top: 16px; max-width: 48ch; }
+.letter dl { margin-top: 16px; }
 .letter dt { font-weight: 500; margin-top: 14px; }
 .letter dd { color: var(--ink-2); font-size: 15px; line-height: 1.45; margin-top: 4px; }
 .hist { list-style: none; }
 .hist li {
   display: grid;
-  grid-template-columns: 8.5rem 1fr;
+  grid-template-columns: 8.5rem minmax(0, 1fr);
   gap: 16px;
   padding: 12px 0;
   border-top: 1px solid var(--rule);
@@ -713,6 +712,25 @@ tr.row-clickable:hover td { background: var(--paper-2); }
 }
 .hist li:last-child { border-bottom: 1px solid var(--rule); }
 .hist time, .hist .when { color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.steps { list-style: none; }
+.steps li {
+  display: grid;
+  grid-template-columns: 1.4rem minmax(0, 1fr);
+  gap: 12px;
+  padding: 12px 0;
+  border-top: 1px solid var(--rule);
+  font-size: 15px;
+  line-height: 1.45;
+}
+.steps li:last-child { border-bottom: 1px solid var(--rule); }
+.steps li::before {
+  content: "–";
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 18px;
+  color: var(--seal);
+  line-height: 1.2;
+}
 .letter-draft {
   background: var(--paper-2);
   border: 1px solid var(--rule);
@@ -738,7 +756,7 @@ tr.row-clickable:hover td { background: var(--paper-2); }
 }
 .id-line {
   display: grid;
-  grid-template-columns: 8.5rem 1fr;
+  grid-template-columns: 8.5rem minmax(0, 1fr);
   gap: 16px;
   padding: 12px 0;
   border-top: 1px solid var(--rule);
@@ -799,7 +817,7 @@ tr.row-clickable:hover td { background: var(--paper-2); }
 }
 .pay-choice .opt.on .mark { background: var(--seal); border-color: var(--seal); }
 .pay-choice strong { display: block; font-size: 18px; font-weight: 500; }
-.pay-choice p { color: var(--ink-2); font-size: 14px; margin-top: 4px; max-width: 48ch; }
+.pay-choice p { color: var(--ink-2); font-size: 14px; margin-top: 4px; }
 .meter { height: 8px; background: var(--paper-2); margin: 10px 0 6px; }
 .meter i { display: block; height: 100%; background: var(--ink); max-width: 100%; }
 

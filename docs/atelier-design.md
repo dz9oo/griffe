@@ -117,7 +117,7 @@ et les déclarer en `@font-face`. Replis : `Liberation Serif` / `Noto Serif` et
 `Adwaita Sans` / `Noto Sans`.
 
 - Titres : serif, weight 400, letter-spacing −0.03em, `clamp(36px, 6vw, 58px)`
-- Lede : serif 20px, ink-2, max 38ch
+- Lede : serif 20px, ink-2, max 52ch (voix éditoriale, plus courte que le corps)
 - UI : sans 15–16px
 - Dates kicker : sans 11–12px, uppercase, letter-spacing 0.2em
 - Marque : serif italic 22px, « FreeFlow »
@@ -138,6 +138,22 @@ Chiffres d’argent : sans, tabular si disponible. Pas de mono type console sur 
 Le vide est un effet. Une journée claire se *compose* (« Rien aujourd’hui. ») ;
 on ne remplit pas avec des graphiques. Inversement on ne cache pas un trou
 (prospection, piste courte) : une phrase sceau suffit.
+
+### Mesure
+
+Le vide vit **autour de la feuille et entre les blocs**, pas à l’intérieur d’une
+phrase. La colonne **est** la mesure.
+
+- Colonne Jour / Gens : **760 px**. Colonne Société (paysage et chapitres) : **960 px**.
+- Chrome et pied restent à 960 — c’est le bureau, pas une deuxième feuille plus
+  large que la lettre du Jour.
+- Corps, listes, montants, chemins, boutons : 100 % de la colonne. Pas de
+  `max-width` en `ch` sous un titre de bloc.
+- Lede ≤ 52ch. Alarme (`.mast-note`) ≤ 46ch.
+- `.hist` = quand + quoi (deux enfants). Inventaire sans date = `.steps`
+  (marque en `::before`, phrase en `1fr`). Interdit : un seul enfant dans une
+  grille à deux pistes — CSS Grid le calerait dans la piste date (~136 px,
+  deux ou trois mots par ligne).
 
 ## 6. Le jour
 

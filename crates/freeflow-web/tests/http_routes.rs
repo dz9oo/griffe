@@ -1013,6 +1013,71 @@ async fn society_duty_letter_shows_the_amount_and_the_2571_path() {
 }
 
 #[tokio::test]
+async fn a_duty_letter_does_not_squeeze_steps_into_a_date_column() {
+    let state = unlocked_state(&test_db_path("letter-is-measure"))
+        .await
+        .with_today(time::macros::date!(2026 - 09 - 05));
+    let router = freeflow_web::router(state);
+
+    let page = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/societe/impots/is-acompte")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(page.contains("Ce que tu feras"), "{page}");
+    assert!(
+        page.contains("class=\"steps\""),
+        "les démarches sans date occupent la feuille : {page}"
+    );
+    assert!(
+        !page.contains("ul class=\"hist\""),
+        "une .hist à un seul enfant coincerait la phrase à 8,5 rem : {page}"
+    );
+
+    let css = body_text(
+        router
+            .oneshot(
+                Request::builder()
+                    .uri("/assets/app.css")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    let lede = css
+        .split(".lede {")
+        .nth(1)
+        .and_then(|rest| rest.split('}').next())
+        .expect("règle .lede");
+    assert!(
+        lede.contains("max-width: 52ch"),
+        "lede un peu plus court que le corps : {lede}"
+    );
+    assert!(
+        !css.contains("max-width: 48ch"),
+        "le corps n'a pas de seconde mesure en ch : {css}"
+    );
+    assert!(
+        css.contains(".steps"),
+        "primitive des listes sans date : {css}"
+    );
+    assert!(
+        css.contains("minmax(0, 1fr)"),
+        "la piste texte d'une .hist ne déborde pas : {css}"
+    );
+}
+
+#[tokio::test]
 async fn going_back_from_the_statement_keeps_content_inner_html() {
     let state = unlocked_state(&test_db_path("letter-releve-back")).await;
     let router = freeflow_web::router(state);

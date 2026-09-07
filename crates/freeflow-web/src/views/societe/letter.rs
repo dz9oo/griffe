@@ -470,9 +470,9 @@ fn duty_markup(b: &DutyBriefing) -> Markup {
             @if !expects.is_empty() {
                 div class="block" {
                     h3 { "Ce que tu feras" }
-                    ul class="hist" {
+                    ul class="steps" {
                         @for e in expects {
-                            li { span { (e) } }
+                            li { (e) }
                         }
                     }
                 }
