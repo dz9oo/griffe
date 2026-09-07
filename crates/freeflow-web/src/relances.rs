@@ -193,8 +193,15 @@ pub async fn draft_invoice(
 async fn draft(state: &AppState, headers: HeaderMap, subject: FollowUpSubject) -> Html<String> {
     let db_path = state.db_path().to_path_buf();
     mutate(state, headers, subject, move |store, subject, today| {
-        let outcome = Executor::new(store)
-            .execute(&PrepareFollowUp { subject, today }, &AppState::human_ctx())?;
+        let outcome = Executor::new(store).execute(
+            &PrepareFollowUp {
+                subject,
+                today,
+                subject_line: None,
+                body: None,
+            },
+            &AppState::human_ctx(),
+        )?;
         if let freeflow_core::app::Outcome::Applied(prepared) = outcome {
             let _ = freeflow_cli::write_and_open_draft(
                 &db_path,
@@ -243,8 +250,15 @@ simple_post!(retract_opportunity, retract_invoice, retract);
 
 async fn sent(state: &AppState, headers: HeaderMap, subject: FollowUpSubject) -> Html<String> {
     mutate(state, headers, subject, |store, subject, today| {
-        Executor::new(store)
-            .execute(&MarkFollowUpSent { subject, today }, &AppState::human_ctx())?;
+        Executor::new(store).execute(
+            &MarkFollowUpSent {
+                subject,
+                today,
+                subject_line: None,
+                body: None,
+            },
+            &AppState::human_ctx(),
+        )?;
         let card = card_for(store.connection(), subject, today)?;
         Ok(format!(
             "noté comme envoyé — {}",

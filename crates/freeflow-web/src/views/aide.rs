@@ -26,7 +26,7 @@ const RELANCER: Recipe = Recipe {
     lede: "Une relance, ce n'est pas un module. C'est un geste du Jour, ou un bouton sur le dossier de la personne.",
     steps: &[
         "Ouvrez Le jour : s'il y a quelqu'un à relancer, le geste est là, avec un verbe.",
-        "Ou ouvrez la personne dans Les gens : Écrire.",
+        "Ou ouvrez la personne dans Les affaires : Écrire.",
         "Un brouillon s'ouvre dans votre client mail. FreeFlow ne l'envoie pas.",
         "Quand c'est parti, vous le dites ici — « Envoyé » est un fait humain.",
     ],
@@ -41,12 +41,12 @@ const CONVERSATION: Recipe = Recipe {
     title: "Commencer une conversation.",
     lede: "Pas besoin d'une fiche client pour parler à quelqu'un.",
     steps: &[
-        "Les gens → Nouvelle conversation.",
+        "Les affaires → Nouvelle conversation.",
         "Un nom, une phrase. C'est tout.",
         "La fiche client n'apparaît qu'à la première pièce (devis ou facture).",
     ],
     does_not: None,
-    href: Some("/gens/nouvelle"),
+    href: Some("/affaires/nouvelle"),
     action: Some("Nouvelle conversation"),
 };
 
@@ -56,14 +56,14 @@ const DEVIS: Recipe = Recipe {
     title: "Le devis, puis la mission.",
     lede: "On n'ouvre pas un écran Devis. On ouvre la personne.",
     steps: &[
-        "Dans Les gens, ouvrez le dossier.",
+        "Dans Les affaires, ouvrez le dossier.",
         "Le devis se rédige depuis le dossier.",
         "S'il est accepté, il devient une mission — encore sur le même dossier.",
         "Une facture se lit là aussi. L'émettre depuis cette lettre n'est pas encore possible : l'ancien écran Facturation ou la console s'en chargent.",
     ],
     does_not: Some("FreeFlow n'envoie pas le devis à votre place."),
-    href: Some("/gens"),
-    action: Some("Ouvrir Les gens"),
+    href: Some("/affaires"),
+    action: Some("Ouvrir Les affaires"),
 };
 
 const RELEVE: Recipe = Recipe {
@@ -174,7 +174,7 @@ pub fn index() -> Markup {
             p class="prose" {
                 "Ce n'est pas Tiime, Indy ou Pennylane. Pas de menu Factures, Devis, Banque, \
                  ni de tuiles de chiffre d'affaires. Le tableau de bord, c'est Le jour. \
-                 Un client, un devis, une facture : on ouvre une personne, dans Les gens. \
+                 Un client, un devis, une facture : on ouvre une personne, dans Les affaires. \
                  La banque et les dépenses : le relevé, dans La société. Les impôts, \
                  la clôture, l'identité : La société aussi."
             }

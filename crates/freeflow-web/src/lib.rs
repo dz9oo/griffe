@@ -65,21 +65,31 @@ async fn french_rejections(response: axum::response::Response) -> axum::response
     fixed
 }
 
+fn people_routes() -> Router<AppState> {
+    Router::new()
+        .route("/", get(handlers::gens))
+        .route("/nouvelle", get(gens::new_get).post(gens::new_post))
+        .route("/{reference}", get(gens::show))
+        .route(
+            "/{reference}/ecrire",
+            get(gens::write_get).post(gens::write),
+        )
+        .route("/{reference}/envoye", post(gens::sent))
+        .route(
+            "/{reference}/rencontre",
+            get(gens::meeting_get).post(gens::meeting_post),
+        )
+        .route("/{reference}/reporter", post(gens::snooze))
+        .route("/{reference}/devis", get(gens::quote_panel))
+}
+
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(handlers::index))
         .route("/jour", get(handlers::jour))
-        .route("/gens", get(handlers::gens))
-        .route("/gens/nouvelle", get(gens::new_get).post(gens::new_post))
-        .route("/gens/{reference}", get(gens::show))
-        .route("/gens/{reference}/ecrire", post(gens::write))
-        .route("/gens/{reference}/envoye", post(gens::sent))
-        .route(
-            "/gens/{reference}/rencontre",
-            get(gens::meeting_get).post(gens::meeting_post),
-        )
-        .route("/gens/{reference}/reporter", post(gens::snooze))
-        .route("/gens/{reference}/devis", get(gens::quote_panel))
+        .nest("/affaires", people_routes())
+        .nest("/dossiers", people_routes())
+        .nest("/gens", people_routes())
         .route("/view/dashboard", get(handlers::dashboard))
         .route("/view/relances", get(relances::view))
         .route("/relances/sender", post(relances::set_sender))

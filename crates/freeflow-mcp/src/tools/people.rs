@@ -34,7 +34,7 @@ pub(crate) struct ShowArgs {
 
 #[tool_router(router = people_router, vis = "pub(crate)")]
 impl FreeflowServer {
-    /// Les gens : trois chapitres (en conversation, en mission, fournisseurs). Faits typés,
+    /// Les affaires : trois chapitres (en conversation, en mission, fournisseurs). Faits typés,
     /// sans phrase française.
     #[tool(
         name = "people.list",

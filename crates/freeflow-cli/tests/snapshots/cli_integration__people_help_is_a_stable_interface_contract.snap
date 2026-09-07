@@ -2,7 +2,7 @@
 source: crates/freeflow-cli/tests/cli_integration.rs
 expression: "String::from_utf8(output.stdout).unwrap()"
 ---
-Les gens : liste unique et dossier
+Les affaires : conversations, missions, fournisseurs
 
 Usage: freeflow people [OPTIONS] <COMMAND>
 

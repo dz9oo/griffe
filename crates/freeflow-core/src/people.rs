@@ -1,4 +1,4 @@
-//! Les gens : une liste, un dossier — lectures pures, aucune commande.
+//! Les affaires : une liste, un nom — lectures pures, aucune commande.
 //!
 //! Lot 50. Le cœur compose des faits typés (chapitres, papiers, historique) ; c'est la fenêtre
 //! (et le rendu CLI) qui rédige le français. `today` est un argument d'adaptateur, jamais lu
@@ -17,14 +17,17 @@ use crate::app::AppError;
 use crate::billing::{aged_balance, invoice_by_id, list_invoices, unmatched_debits};
 use crate::clients::{client_by_id, list_clients, list_contacts};
 use crate::domain::{
-    Client, ClientId, FollowUpSubject, InteractionKind, Invoice, InvoiceId, Milestone, Mission,
-    MissionId, MissionKind, Money, Opportunity, OpportunityId, Quote, QuoteId, QuoteStatus,
+    Client, ClientId, FollowUpFact, FollowUpSubject, InteractionId, InteractionKind, Invoice,
+    InvoiceId, Milestone, Mission, MissionId, MissionKind, Money, Opportunity, OpportunityId,
+    Quote, QuoteId, QuoteStatus,
 };
 use crate::expenses::list_expenses;
-use crate::follow_up::{CardStatus, FollowUpCard, follow_up_board};
+use crate::follow_up::{CardStatus, FollowUpCard, events_for, follow_up_board};
 use crate::missions::{MissionFilter, list_missions_with, list_time_entries, mission_by_id};
 use crate::opening_balance::opening_balance;
-use crate::prospection::{list_interactions, list_open_opportunities, opportunity_by_id};
+use crate::prospection::{
+    list_interactions, list_open_opportunities, list_opportunities, opportunity_by_id,
+};
 use crate::quotes::{list_quotes, priced_lines, quote_by_id};
 use crate::reference::{RefMatch, resolve_among, resolve_client};
 
@@ -202,10 +205,21 @@ pub struct Paper {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum HistoryKind {
-    Interaction { interaction: InteractionKind },
-    QuoteSent { version: u32 },
+    Interaction {
+        interaction: InteractionKind,
+    },
+    /// Double d'une lettre classée (relance envoyée). Le corps est le texte composé ici.
+    Letter {
+        subject: String,
+        body: String,
+    },
+    QuoteSent {
+        version: u32,
+    },
     QuoteAccepted,
-    InvoiceIssued { number: String },
+    InvoiceIssued {
+        number: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1004,6 +1018,35 @@ pub fn people_dossier_with_history(
     Ok(dossier)
 }
 
+fn push_filed_letters(
+    conn: &Connection,
+    subject: FollowUpSubject,
+    history: &mut Vec<HistoryEvent>,
+    lettered: &mut HashSet<InteractionId>,
+) -> Result<(), AppError> {
+    let events = events_for(conn, subject)?;
+    for event in crate::domain::active_events(&events) {
+        if event.fact != FollowUpFact::MarkedSent {
+            continue;
+        }
+        let Some(body) = event.rendered_body.clone() else {
+            continue;
+        };
+        history.push(HistoryEvent {
+            on: event.at.date(),
+            kind: HistoryKind::Letter {
+                subject: event.rendered_subject.clone().unwrap_or_default(),
+                body,
+            },
+            note: None,
+        });
+        if let Some(id) = event.interaction_id {
+            lettered.insert(id);
+        }
+    }
+    Ok(())
+}
+
 fn fill_history(
     conn: &Connection,
     dossier: &mut PersonDossier,
@@ -1013,11 +1056,33 @@ fn fill_history(
         return Ok(());
     };
     let mut history = Vec::new();
-    let opps = list_open_opportunities(conn)?;
+    let opps = list_opportunities(conn)?;
     let mine: Vec<&Opportunity> = opps.iter().filter(|o| o.client_id == id).collect();
+    let mut lettered: HashSet<InteractionId> = HashSet::new();
+    for opp in &mine {
+        push_filed_letters(
+            conn,
+            FollowUpSubject::Opportunity(opp.id),
+            &mut history,
+            &mut lettered,
+        )?;
+    }
+    for invoice in list_invoices(conn)? {
+        if invoice.client_id == id {
+            push_filed_letters(
+                conn,
+                FollowUpSubject::Invoice(invoice.id),
+                &mut history,
+                &mut lettered,
+            )?;
+        }
+    }
     let mut last_interaction: Option<HistoryEvent> = None;
     for opp in &mine {
         for interaction in list_interactions(conn, opp.id)? {
+            if lettered.contains(&interaction.id) {
+                continue;
+            }
             let event = HistoryEvent {
                 on: interaction.occurred_at.date(),
                 kind: HistoryKind::Interaction {

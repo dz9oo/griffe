@@ -43,6 +43,12 @@ pub struct PrepareFollowUp {
     pub subject: FollowUpSubject,
     #[serde(with = "crate::domain::serde_date::date")]
     pub today: Date,
+    /// Sujet libre. Absent ou vide : le modèle de cadence.
+    #[serde(default)]
+    pub subject_line: Option<String>,
+    /// Corps libre. Absent ou vide : le modèle de cadence.
+    #[serde(default)]
+    pub body: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -66,8 +72,10 @@ impl Command for PrepareFollowUp {
         let (from_name, from_email) = sender(conn)?;
         let (to_name, to_email) = recipient(&loaded)?;
         let ctx = loaded.template_context(conn)?;
-        let subject_line = render_template(step.subject, &ctx);
-        let body = render_template(step.body, &ctx);
+        let subject_line = optional_letter_part(self.subject_line.clone())
+            .unwrap_or_else(|| render_template(step.subject, &ctx));
+        let body = optional_letter_part(self.body.clone())
+            .unwrap_or_else(|| render_template(step.body, &ctx));
         let event_id = FollowUpEventId::new();
         let at = OffsetDateTime::now_utc();
         let draft = render_eml(
@@ -104,6 +112,11 @@ pub struct MarkFollowUpSent {
     pub subject: FollowUpSubject,
     #[serde(with = "crate::domain::serde_date::date")]
     pub today: Date,
+    /// Rectification au classement. Absent : le dernier brouillon.
+    #[serde(default)]
+    pub subject_line: Option<String>,
+    #[serde(default)]
+    pub body: Option<String>,
 }
 
 impl Command for MarkFollowUpSent {
@@ -115,7 +128,14 @@ impl Command for MarkFollowUpSent {
     }
 
     fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
-        append_advancing(conn, self.subject, self.today, FollowUpFact::MarkedSent)
+        append_advancing(
+            conn,
+            self.subject,
+            self.today,
+            FollowUpFact::MarkedSent,
+            optional_letter_part(self.subject_line.clone()),
+            optional_letter_part(self.body.clone()),
+        )
     }
 }
 
@@ -131,7 +151,14 @@ impl Command for SkipFollowUpStep {
     const NAME: &'static str = "follow_up.skip";
 
     fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
-        append_advancing(conn, self.subject, self.today, FollowUpFact::StepSkipped)
+        append_advancing(
+            conn,
+            self.subject,
+            self.today,
+            FollowUpFact::StepSkipped,
+            None,
+            None,
+        )
     }
 }
 
@@ -230,11 +257,31 @@ impl Command for RetractLastFollowUp {
     }
 }
 
+fn optional_letter_part(value: Option<String>) -> Option<String> {
+    value.filter(|s| !s.trim().is_empty())
+}
+
+fn last_draft_letter(
+    events: &[FollowUpEvent],
+    cursor: domain::FollowUpCursor,
+) -> Option<(String, String)> {
+    if !cursor.drafted {
+        return None;
+    }
+    domain::active_events(events)
+        .into_iter()
+        .rev()
+        .find(|e| e.fact == FollowUpFact::DraftPrepared)
+        .and_then(|e| Some((e.rendered_subject.clone()?, e.rendered_body.clone()?)))
+}
+
 fn append_advancing(
     conn: &Connection,
     subject: FollowUpSubject,
     today: Date,
     fact: FollowUpFact,
+    subject_override: Option<String>,
+    body_override: Option<String>,
 ) -> Result<FollowUpCard, AppError> {
     let loaded = load_subject(conn, subject, today)?;
     if loaded.cursor.exhausted {
@@ -245,7 +292,7 @@ fn append_advancing(
     if fact == FollowUpFact::MarkedSent
         && let FollowUpSubject::Opportunity(oid) = subject
     {
-        let note = step.map_or_else(|| "relance".to_string(), |s| s.label.to_string());
+        let note = step.map_or_else(|| "lettre".to_string(), |s| s.label.to_string());
         let id = LogInteraction {
             opportunity_id: oid,
             kind: InteractionKind::Email,
@@ -255,6 +302,15 @@ fn append_advancing(
         .apply(conn)?;
         interaction_id = Some(id);
     }
+    let (rendered_subject, rendered_body) = if fact == FollowUpFact::MarkedSent {
+        let draft = last_draft_letter(&loaded.events, loaded.cursor);
+        (
+            subject_override.or_else(|| draft.as_ref().map(|(s, _)| s.clone())),
+            body_override.or_else(|| draft.as_ref().map(|(_, b)| b.clone())),
+        )
+    } else {
+        (None, None)
+    };
     let event = FollowUpEvent {
         id: FollowUpEventId::new(),
         subject,
@@ -264,8 +320,8 @@ fn append_advancing(
             time::PrimitiveDateTime::assume_utc,
         ),
         until: None,
-        rendered_subject: None,
-        rendered_body: None,
+        rendered_subject,
+        rendered_body,
         retracts: None,
         interaction_id,
     };

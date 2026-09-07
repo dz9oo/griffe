@@ -16,7 +16,7 @@ Commands:
   client      Clients
   company     Identité légale de l'émetteur (mentions obligatoires des factures)
   day         Le jour : mât, gestes, mois
-  people      Les gens : liste unique et dossier
+  people      Les affaires : conversations, missions, fournisseurs
   society     La société : paysage, se payer, impôts, clôture, relevé, identité
   follow-up   Relances : file du jour, brouillon `.eml`, jamais d'envoi
   prospect    Prospection : opportunités, pipeline, interactions

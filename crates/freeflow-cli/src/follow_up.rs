@@ -131,6 +131,15 @@ pub enum FollowUpCommand {
         reference: String,
         #[arg(long, value_parser = parse_date)]
         today: Option<Date>,
+        /// Sujet libre (sinon le modèle de cadence).
+        #[arg(long)]
+        subject: Option<String>,
+        /// Corps libre (sinon le modèle de cadence).
+        #[arg(long)]
+        body: Option<String>,
+        /// Corps lu depuis un fichier (UTF-8). Exclusif avec `--body`.
+        #[arg(long, conflicts_with = "body")]
+        body_file: Option<PathBuf>,
         /// Écrit le fichier sans l'ouvrir.
         #[arg(long)]
         no_open: bool,
@@ -141,6 +150,14 @@ pub enum FollowUpCommand {
         reference: String,
         #[arg(long, value_parser = parse_date)]
         today: Option<Date>,
+        /// Rectifie le sujet au classement (sinon le dernier brouillon).
+        #[arg(long)]
+        subject: Option<String>,
+        /// Rectifie le corps au classement (sinon le dernier brouillon).
+        #[arg(long)]
+        body: Option<String>,
+        #[arg(long, conflicts_with = "body")]
+        body_file: Option<PathBuf>,
     },
     /// Saute l'étape courante sans envoyer.
     Skip {
@@ -237,6 +254,21 @@ fn today_or(today: Option<Date>) -> Date {
     today.unwrap_or_else(freeflow_core::clock::today_local)
 }
 
+fn read_letter_body(
+    body: Option<String>,
+    body_file: Option<PathBuf>,
+) -> Result<Option<String>, CliError> {
+    match body_file {
+        Some(path) => {
+            let text = std::fs::read_to_string(&path).map_err(|e| {
+                CliError::Unexpected(format!("lecture de {} impossible : {e}", path.display()))
+            })?;
+            Ok(Some(text))
+        }
+        None => Ok(body),
+    }
+}
+
 fn resolve_subject(store: &Store, needle: &str) -> Result<FollowUpSubject, CliError> {
     refs::resolve_follow_up(store, needle)
 }
@@ -271,11 +303,23 @@ pub fn run(
         FollowUpCommand::Draft {
             reference,
             today,
+            subject,
+            body,
+            body_file,
             no_open,
         } => {
             let today = today_or(today);
-            let subject = resolve_subject(store, &reference)?;
-            let outcome = Executor::new(store).execute(&PrepareFollowUp { subject, today }, ctx)?;
+            let follow_up = resolve_subject(store, &reference)?;
+            let body = read_letter_body(body, body_file)?;
+            let outcome = Executor::new(store).execute(
+                &PrepareFollowUp {
+                    subject: follow_up,
+                    today,
+                    subject_line: subject,
+                    body,
+                },
+                ctx,
+            )?;
             match &outcome {
                 freeflow_core::app::Outcome::Applied(prepared)
                 | freeflow_core::app::Outcome::AlreadyApplied(prepared) => {
@@ -294,11 +338,25 @@ pub fn run(
                 })),
             }
         }
-        FollowUpCommand::Sent { reference, today } => {
+        FollowUpCommand::Sent {
+            reference,
+            today,
+            subject,
+            body,
+            body_file,
+        } => {
             let today = today_or(today);
-            let subject = resolve_subject(store, &reference)?;
-            let outcome =
-                Executor::new(store).execute(&MarkFollowUpSent { subject, today }, ctx)?;
+            let follow_up = resolve_subject(store, &reference)?;
+            let body = read_letter_body(body, body_file)?;
+            let outcome = Executor::new(store).execute(
+                &MarkFollowUpSent {
+                    subject: follow_up,
+                    today,
+                    subject_line: subject,
+                    body,
+                },
+                ctx,
+            )?;
             Ok(format_outcome_as(&outcome, json, |card| {
                 format!(
                     "marqué envoyé — prochaine : {}",

@@ -26,8 +26,10 @@ mod tests {
     use crate::app::{Actor, AppError, ExecutionContext, Executor, Outcome};
     use crate::clients::{CreateClient, CreateContact};
     use crate::domain::{
-        ClientId, FollowUpKind, FollowUpSubject, InteractionKind, Money, Probability, VatRate,
+        ClientId, FollowUpFact, FollowUpKind, FollowUpSubject, InteractionKind, Money, Probability,
+        VatRate,
     };
+    use crate::people::{HistoryKind, person};
     use crate::prospection::{CreateOpportunity, list_interactions, opportunity_by_id};
     use crate::store::{Passphrase, Store};
 
@@ -140,7 +142,15 @@ mod tests {
         let (_, subject) = seed_opportunity(&mut store, today);
         set_sender(&mut store);
         let Outcome::Applied(prepared) = Executor::new(&mut store)
-            .execute(&PrepareFollowUp { subject, today }, &human())
+            .execute(
+                &PrepareFollowUp {
+                    subject,
+                    today,
+                    subject_line: None,
+                    body: None,
+                },
+                &human(),
+            )
             .unwrap()
         else {
             panic!("expected Applied");
@@ -159,10 +169,26 @@ mod tests {
         let (_, subject) = seed_opportunity(&mut store, today);
         set_sender(&mut store);
         Executor::new(&mut store)
-            .execute(&PrepareFollowUp { subject, today }, &human())
+            .execute(
+                &PrepareFollowUp {
+                    subject,
+                    today,
+                    subject_line: None,
+                    body: None,
+                },
+                &human(),
+            )
             .unwrap();
         let Outcome::Applied(card) = Executor::new(&mut store)
-            .execute(&MarkFollowUpSent { subject, today }, &human())
+            .execute(
+                &MarkFollowUpSent {
+                    subject,
+                    today,
+                    subject_line: None,
+                    body: None,
+                },
+                &human(),
+            )
             .unwrap()
         else {
             panic!("expected Applied");
@@ -180,13 +206,194 @@ mod tests {
     }
 
     #[test]
+    fn preparing_a_draft_with_a_free_body_stores_that_text_not_the_template() {
+        let mut store = test_store("free-body");
+        let today = date(2026, Month::September, 5);
+        let (_, subject) = seed_opportunity(&mut store, today);
+        set_sender(&mut store);
+        let body = "Camille,\n\nTrois phrases qui ne sont pas le modèle.\n\nNicolas\n";
+        let Outcome::Applied(prepared) = Executor::new(&mut store)
+            .execute(
+                &PrepareFollowUp {
+                    subject,
+                    today,
+                    subject_line: Some("Au sujet de la refonte".into()),
+                    body: Some(body.into()),
+                },
+                &human(),
+            )
+            .unwrap()
+        else {
+            panic!("expected Applied");
+        };
+        assert!(
+            prepared
+                .draft
+                .rfc5322
+                .contains("Trois phrases qui ne sont pas le modèle")
+        );
+        assert!(!prepared.draft.rfc5322.contains("Je me permets de revenir"));
+        assert_eq!(prepared.subject_line, "Au sujet de la refonte");
+        let events = events_for(store.connection(), subject).unwrap();
+        let draft = events
+            .iter()
+            .find(|e| e.fact == FollowUpFact::DraftPrepared)
+            .unwrap();
+        assert_eq!(draft.rendered_body.as_deref(), Some(body));
+        assert_eq!(
+            draft.rendered_subject.as_deref(),
+            Some("Au sujet de la refonte")
+        );
+    }
+
+    #[test]
+    fn marking_sent_copies_the_last_draft_as_the_carbon_copy() {
+        let mut store = test_store("carbon");
+        let today = date(2026, Month::September, 5);
+        let (_, subject) = seed_opportunity(&mut store, today);
+        set_sender(&mut store);
+        let body = "Camille,\n\nC'est le double.\n";
+        Executor::new(&mut store)
+            .execute(
+                &PrepareFollowUp {
+                    subject,
+                    today,
+                    subject_line: Some("Refonte".into()),
+                    body: Some(body.into()),
+                },
+                &human(),
+            )
+            .unwrap();
+        Executor::new(&mut store)
+            .execute(
+                &MarkFollowUpSent {
+                    subject,
+                    today,
+                    subject_line: None,
+                    body: None,
+                },
+                &human(),
+            )
+            .unwrap();
+        let events = events_for(store.connection(), subject).unwrap();
+        let sent = events
+            .iter()
+            .find(|e| e.fact == FollowUpFact::MarkedSent)
+            .unwrap();
+        assert_eq!(sent.rendered_body.as_deref(), Some(body));
+        assert_eq!(sent.rendered_subject.as_deref(), Some("Refonte"));
+        let dossier = person(store.connection(), "Acme", today).unwrap();
+        assert!(
+            dossier.history.iter().any(|h| matches!(
+                &h.kind,
+                HistoryKind::Letter { subject, body: b }
+                    if subject == "Refonte" && b == body
+            )),
+            "{:?}",
+            dossier.history
+        );
+    }
+
+    #[test]
+    fn marking_sent_can_rectify_the_letter() {
+        let mut store = test_store("rectify");
+        let today = date(2026, Month::September, 5);
+        let (_, subject) = seed_opportunity(&mut store, today);
+        set_sender(&mut store);
+        Executor::new(&mut store)
+            .execute(
+                &PrepareFollowUp {
+                    subject,
+                    today,
+                    subject_line: Some("Brouillon".into()),
+                    body: Some("texte du brouillon".into()),
+                },
+                &human(),
+            )
+            .unwrap();
+        Executor::new(&mut store)
+            .execute(
+                &MarkFollowUpSent {
+                    subject,
+                    today,
+                    subject_line: Some("Parti".into()),
+                    body: Some("texte vraiment envoyé".into()),
+                },
+                &human(),
+            )
+            .unwrap();
+        let events = events_for(store.connection(), subject).unwrap();
+        let sent = events
+            .iter()
+            .find(|e| e.fact == FollowUpFact::MarkedSent)
+            .unwrap();
+        assert_eq!(sent.rendered_subject.as_deref(), Some("Parti"));
+        assert_eq!(sent.rendered_body.as_deref(), Some("texte vraiment envoyé"));
+    }
+
+    #[test]
+    fn retracting_a_send_hides_the_carbon_copy() {
+        let mut store = test_store("retract-letter");
+        let today = date(2026, Month::September, 5);
+        let (_, subject) = seed_opportunity(&mut store, today);
+        set_sender(&mut store);
+        Executor::new(&mut store)
+            .execute(
+                &PrepareFollowUp {
+                    subject,
+                    today,
+                    subject_line: Some("Refonte".into()),
+                    body: Some("un double".into()),
+                },
+                &human(),
+            )
+            .unwrap();
+        Executor::new(&mut store)
+            .execute(
+                &MarkFollowUpSent {
+                    subject,
+                    today,
+                    subject_line: None,
+                    body: None,
+                },
+                &human(),
+            )
+            .unwrap();
+        // Le brouillon est horodaté `now`, l'envoi à midi de `today` : le dernier
+        // fait est le brouillon. On rétracte les deux pour viser l'envoi.
+        Executor::new(&mut store)
+            .execute(&RetractLastFollowUp { subject, today }, &human())
+            .unwrap();
+        Executor::new(&mut store)
+            .execute(&RetractLastFollowUp { subject, today }, &human())
+            .unwrap();
+        let dossier = person(store.connection(), "Acme", today).unwrap();
+        assert!(
+            !dossier
+                .history
+                .iter()
+                .any(|h| matches!(h.kind, HistoryKind::Letter { .. })),
+            "{:?}",
+            dossier.history
+        );
+    }
+
+    #[test]
     fn an_agent_cannot_mark_sent_without_confirmation() {
         let mut store = test_store("agent-sent");
         let today = date(2026, Month::September, 5);
         let (_, subject) = seed_opportunity(&mut store, today);
         set_sender(&mut store);
         let outcome = Executor::new(&mut store)
-            .execute(&MarkFollowUpSent { subject, today }, &agent())
+            .execute(
+                &MarkFollowUpSent {
+                    subject,
+                    today,
+                    subject_line: None,
+                    body: None,
+                },
+                &agent(),
+            )
             .unwrap();
         assert!(matches!(outcome, Outcome::PendingConfirmation(_)));
     }
@@ -225,7 +432,15 @@ mod tests {
         let (_, subject) = seed_opportunity(&mut store, today);
         set_sender(&mut store);
         Executor::new(&mut store)
-            .execute(&MarkFollowUpSent { subject, today }, &human())
+            .execute(
+                &MarkFollowUpSent {
+                    subject,
+                    today,
+                    subject_line: None,
+                    body: None,
+                },
+                &human(),
+            )
             .unwrap();
         let Outcome::Applied(card) = Executor::new(&mut store)
             .execute(&RetractLastFollowUp { subject, today }, &human())
@@ -250,7 +465,15 @@ mod tests {
         let today = date(2026, Month::September, 5);
         let (_, subject) = seed_opportunity(&mut store, today);
         let err = Executor::new(&mut store)
-            .execute(&PrepareFollowUp { subject, today }, &human())
+            .execute(
+                &PrepareFollowUp {
+                    subject,
+                    today,
+                    subject_line: None,
+                    body: None,
+                },
+                &human(),
+            )
             .unwrap_err();
         assert!(matches!(err, AppError::Domain(msg) if msg.contains("email avec lequel")));
     }

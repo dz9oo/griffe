@@ -61,6 +61,19 @@ pub(crate) struct RefArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct LetterArgs {
+    /// Opportunité ou facture (UUID, préfixe, nom ou numéro).
+    reference: String,
+    today: Option<String>,
+    /// Sujet. Absent : modèle de cadence (prepare) ou dernier brouillon (sent).
+    subject_line: Option<String>,
+    /// Corps. Absent : modèle de cadence (prepare) ou dernier brouillon (sent).
+    body: Option<String>,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct SenderArgs {
     email: String,
     name: Option<String>,
@@ -180,7 +193,7 @@ impl FreeflowServer {
             idempotent_hint = false
         )
     )]
-    async fn follow_up_prepare(&self, Parameters(args): Parameters<RefArgs>) -> CallToolResult {
+    async fn follow_up_prepare(&self, Parameters(args): Parameters<LetterArgs>) -> CallToolResult {
         let today = match today_or(args.today) {
             Ok(d) => d,
             Err(e) => return err_text(e),
@@ -190,7 +203,12 @@ impl FreeflowServer {
             Ok(s) => s,
             Err(e) => return err_text(e),
         };
-        let cmd = PrepareFollowUp { subject, today };
+        let cmd = PrepareFollowUp {
+            subject,
+            today,
+            subject_line: args.subject_line,
+            body: args.body,
+        };
         match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
             Err(e) => err_text(e.to_string()),
@@ -206,7 +224,10 @@ impl FreeflowServer {
             idempotent_hint = false
         )
     )]
-    async fn follow_up_mark_sent(&self, Parameters(args): Parameters<RefArgs>) -> CallToolResult {
+    async fn follow_up_mark_sent(
+        &self,
+        Parameters(args): Parameters<LetterArgs>,
+    ) -> CallToolResult {
         let today = match today_or(args.today) {
             Ok(d) => d,
             Err(e) => return err_text(e),
@@ -216,7 +237,12 @@ impl FreeflowServer {
             Ok(s) => s,
             Err(e) => return err_text(e),
         };
-        let cmd = MarkFollowUpSent { subject, today };
+        let cmd = MarkFollowUpSent {
+            subject,
+            today,
+            subject_line: args.subject_line,
+            body: args.body,
+        };
         match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
             Err(e) => err_text(e.to_string()),

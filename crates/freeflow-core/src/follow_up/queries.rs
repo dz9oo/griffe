@@ -63,6 +63,10 @@ pub struct HistoryItem {
     pub label: String,
     #[serde(with = "crate::domain::serde_date::date")]
     pub on: Date,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
 }
 
 pub(super) struct LoadedSubject {
@@ -219,6 +223,8 @@ fn card_from_loaded(
             fact: e.fact.as_str().to_string(),
             label: history_label(e.fact),
             on: e.at.date(),
+            subject: e.rendered_subject.clone(),
+            body: e.rendered_body.clone(),
         })
         .collect();
 
