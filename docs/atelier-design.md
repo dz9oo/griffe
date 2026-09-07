@@ -36,7 +36,7 @@ La console, le journal d’audit, les slugs d’URL peuvent rester. Ils ne sont 
 | Pièce | Question | Ce qu’elle n’est pas |
 |---|---|---|
 | **Le jour** | Quoi faire, et où en est le mois ? | Un dashboard |
-| **Les gens** | Avec qui j’en suis ? | Un CRM + un module devis + un module missions |
+| **Les affaires** | Avec qui j’en suis ? | Un CRM + un module devis + un module missions |
 | **La société** | Est-ce que ça tient, et que dois-je à l’État ? | « La maison », ni un écran Paramètres |
 
 Chrome : `FreeFlow` (italique, serif) à gauche · les trois mots à droite.
@@ -51,7 +51,7 @@ Journal d’audit : replié, éventuellement depuis l’identité / le coffre.
 | Aujourd’hui (`ViewId`) | Atelier |
 |---|---|
 | Dashboard, Relances | **Le jour** (lettre + mois) |
-| Prospection, Clients, Devis, Missions, Facturation (fiche) | **Les gens** (un dossier) |
+| Prospection, Clients, Devis, Missions, Facturation (fiche) | **Les affaires** (un dossier) |
 | Dépenses, banque (rapprochement) | **Le relevé** (chapitre de La société, geste du Jour) |
 | Société, Clôture, calendrier fiscal | **La société** |
 | Console | hors nav |
@@ -61,7 +61,7 @@ Les slugs `/view/…` peuvent rester un temps (htmx, tests HTTP). La chrome n’
 Nouveaux chemins souhaités, à poser dès que ça ne casse pas les tests :
 
 - `/jour` (accueil après déverrouillage, à la place de `/view/dashboard`)
-- `/gens`, `/gens/{réf}`
+- `/affaires`, `/affaires/{réf}` (`/dossiers` et `/gens` restent des alias)
 - `/societe`, `/societe/payer`, `/societe/impots`, `/societe/cloture`, `/societe/releve`, `/societe/identite`
 
 ## 4. Langage
@@ -220,7 +220,7 @@ Sources du mois (à agréger **dans le cœur**, une query) :
 
 Pas de nouveau module « calendrier » dans la nav.
 
-## 7. Les gens
+## 7. Les affaires
 
 Une liste, trois chapitres : **en conversation** (prospects), **en mission** (clients
 avec projet), **fournisseurs**. Un bouton « Nouvelle conversation » = nom + une phrase.
@@ -284,13 +284,13 @@ pièces, accueil = Le jour (même si le contenu est encore un assemblage des
 écrans actuels). Tests HTTP : titres, slugs, pas de `freeflow ` dans les vues.
 Le thème sombre lot 46 se retire de la chrome (préférence locale ignorée, ou
 conservée sans CSS). Critère : on reconnaît le papier en ouvrant la fenêtre,
-sans avoir encore le mois ni Les gens.
+sans avoir encore le mois ni Les affaires.
 
 **Lot 49 — Le jour.** Mât + gestes (queries 1–2) + mois (query 3). Calendrier
 civil correct. Alarmes rédigées. Relances actuelles deviennent des gestes,
 pas un écran à part.
 
-**Lot 50 — Les gens.** Liste unique + dossier (opportunité, mission, devis,
+**Lot 50 — Les affaires** (alors « Les gens »). Liste unique + dossier (opportunité, mission, devis,
 factures, histoire). « Nouvelle conversation ». Les anciens onglets
 Prospection / Devis / Missions / Clients / Facturation sortent de la nav ;
 leurs routes redirigent ou rendent le dossier.
@@ -326,7 +326,7 @@ Ouvrir `docs/mockups/atelier-app.html`. Parcours minimum avant de coder un lot :
 
 1. Le jour : mât visible sans scroller, trois gestes, septembre sous la lettre.
 2. Clic 16 → agenda TVA ; clic la ligne → impôts en français.
-3. Les gens → Camille → lettre `.eml` (le texte dit qu’on n’envoie pas).
+3. Les affaires → Camille → lettre `.eml` (le texte dit qu’on n’envoie pas).
 4. La société → paysage, Te payer (dividende fermé), relevé Leroy = dette.
 
 Si un futur changement casse ce parcours, ce n’est plus Atelier.

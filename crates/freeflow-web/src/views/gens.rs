@@ -1,4 +1,4 @@
-//! Les gens : une liste, un dossier. Les faits viennent de `freeflow_core::people` ; cette vue
+//! Les affaires : une liste, un dossier. Les faits viennent de `freeflow_core::people` ; cette vue
 //! rédige le français.
 
 use freeflow_core::app::AppError;
@@ -33,7 +33,7 @@ pub fn path_encode(s: &str) -> String {
 
 #[must_use]
 pub fn person_href(name: &str) -> String {
-    format!("/gens/{}", path_encode(name))
+    format!("/affaires/{}", path_encode(name))
 }
 
 pub fn render(store: &Store, today: Date) -> Result<Markup, AppError> {
@@ -45,9 +45,9 @@ pub fn list_markup(list: &PeopleList, today: Date, flash: Option<&str>) -> Marku
     let empty = list.is_empty();
     html! {
         div class="letter" data-view=(ViewId::Gens.slug()) {
-            div class="date" { "Les gens · " (letter_date(today)) }
+            div class="date" { "Les affaires · " (letter_date(today)) }
             @if empty {
-                h1 { "Les gens." }
+                h1 { "Les affaires." }
                 p class="lede" { "Personne pour l'instant. Une conversation commence par un nom et une phrase." }
             } @else {
                 h1 { (list_title(list)) }
@@ -57,8 +57,8 @@ pub fn list_markup(list: &PeopleList, today: Date, flash: Option<&str>) -> Marku
                 p class="mast-note" role="status" { (msg) }
             }
             div class="letter-actions" {
-                a class="seal" href="/gens/nouvelle"
-                  hx-get="/gens/nouvelle" hx-target="#content" hx-push-url="true" {
+                a class="seal" href="/affaires/nouvelle"
+                  hx-get="/affaires/nouvelle" hx-target="#content" hx-push-url="true" {
                     "Nouvelle conversation"
                 }
             }
@@ -72,7 +72,7 @@ pub fn list_markup(list: &PeopleList, today: Date, flash: Option<&str>) -> Marku
 fn list_title(list: &PeopleList) -> String {
     let n = list.conversations.len() + list.missions.len() + list.suppliers.len();
     match n {
-        0 => "Les gens.".into(),
+        0 => "Les affaires.".into(),
         1 => "Un nom.".into(),
         2 => "Deux noms.".into(),
         k => format!("{k} noms."),
@@ -166,8 +166,8 @@ pub fn dossier_markup(dossier: &PersonDossier, today: Date, flash: Option<&str>)
     let href = person_href(&dossier.name);
     html! {
         div class="letter" data-view=(ViewId::Gens.slug()) data-person=(dossier.name) {
-            a class="back" href="/gens" hx-get="/gens" hx-target="#content" hx-push-url="true" {
-                "← Les gens"
+            a class="back" href="/affaires" hx-get="/affaires" hx-target="#content" hx-push-url="true" {
+                "← Les affaires"
             }
             div class="who" { (dossier.name) }
             p class="co" { (subtitle(dossier)) }
@@ -211,10 +211,7 @@ pub fn dossier_markup(dossier: &PersonDossier, today: Date, flash: Option<&str>)
                     h3 { "Histoire" }
                     ul class="hist" {
                         @for event in &dossier.history {
-                            li {
-                                time { (format_date_fr(event.on)) }
-                                span { (history_fr(event)) }
-                            }
+                            (history_item(event))
                         }
                     }
                 }
@@ -412,6 +409,22 @@ fn paper_line(paper: &Paper) -> String {
     }
 }
 
+fn history_item(event: &HistoryEvent) -> Markup {
+    html! {
+        li {
+            time { (format_date_fr(event.on)) }
+            @if let HistoryKind::Letter { subject, body } = &event.kind {
+                details class="letter-fold" {
+                    summary { (subject) }
+                    pre { (body) }
+                }
+            } @else {
+                span { (history_fr(event)) }
+            }
+        }
+    }
+}
+
 fn history_fr(event: &HistoryEvent) -> String {
     match &event.kind {
         HistoryKind::Interaction { interaction } => {
@@ -426,6 +439,7 @@ fn history_fr(event: &HistoryEvent) -> String {
                 None => format!("{kind}."),
             }
         }
+        HistoryKind::Letter { subject, .. } => format!("Lettre. {subject}"),
         HistoryKind::QuoteSent { .. } => "Devis envoyé.".into(),
         HistoryKind::QuoteAccepted => "Devis accepté.".into(),
         HistoryKind::InvoiceIssued { number } => format!("Facture {number}."),
@@ -439,9 +453,11 @@ fn action_button(action: &PersonAction, dossier_href: &str, today: Date) -> Mark
                 FollowUpSubject::Invoice(_) => ("Relancer", "seal"),
                 FollowUpSubject::Opportunity(_) => ("Écrire", "seal"),
             };
+            let href = format!("{dossier_href}/ecrire");
             html! {
-                form hx-post=(format!("{dossier_href}/ecrire")) hx-target="#content" hx-push-url="true" {
-                    button class=(class) type="submit" { (label) }
+                a class=(class) href=(href)
+                  hx-get=(href) hx-target="#content" hx-push-url="true" {
+                    (label)
                 }
             }
         }
@@ -486,21 +502,21 @@ pub fn new_conversation(
 ) -> Markup {
     html! {
         div class="letter" data-view=(ViewId::Gens.slug()) {
-            a class="back" href="/gens" hx-get="/gens" hx-target="#content" hx-push-url="true" {
-                "← Les gens"
+            a class="back" href="/affaires" hx-get="/affaires" hx-target="#content" hx-push-url="true" {
+                "← Les affaires"
             }
             h1 { "Une conversation." }
             p class="lede" { "Un nom, une phrase. Le reste viendra — devis, projet, facture — quand ce sera vrai." }
             @if let Some(msg) = banner {
                 p class="mast-note" role="alert" { (msg) }
             }
-            form hx-post="/gens/nouvelle" hx-target="#content" hx-push-url="true" {
+            form hx-post="/affaires/nouvelle" hx-target="#content" hx-push-url="true" {
                 (form::text("who", "Qui", who, who_error))
                 (form::text("phrase", "Ce dont il s'agit", phrase, phrase_error))
                 input type="hidden" name="today" value=(format_date(today));
                 div class="row-actions" {
                     button class="seal" type="submit" { "Ouvrir la conversation" }
-                    a class="quiet" href="/gens" hx-get="/gens" hx-target="#content" hx-push-url="true" {
+                    a class="quiet" href="/affaires" hx-get="/affaires" hx-target="#content" hx-push-url="true" {
                         "Annuler"
                     }
                 }
@@ -548,14 +564,24 @@ pub fn letter_page(
     let sender = follow_up_sender(store.connection())?;
     let from = sender.sender_email.as_deref().unwrap_or("—");
     let to = card.and_then(|c| c.contact_email.as_deref()).unwrap_or("—");
+    let subject = card
+        .and_then(|c| c.preview_subject.as_deref())
+        .unwrap_or("");
     let body = card.and_then(|c| c.preview_body.as_deref()).unwrap_or("");
+    let previous: Vec<&HistoryEvent> = dossier
+        .history
+        .iter()
+        .filter(|e| matches!(e.kind, HistoryKind::Letter { .. }))
+        .collect();
     Ok(html! {
         div class="letter" data-view=(ViewId::Gens.slug()) {
             a class="back" href=(href) hx-get=(href) hx-target="#content" hx-push-url="true" {
                 "← " (dossier.name)
             }
             h1 { "Une lettre, pas un envoi." }
-            p class="lede" { "FreeFlow écrit le brouillon. C'est toi qui l'envoies, depuis ton client mail. Ensuite tu reviens dire que c'est parti." }
+            p class="lede" {
+                "Tu écris ici. Le client mail n'est que la poste. Le double classé est celui de cette page — un mot changé dans le client ne s'y met que si tu le rectifies en classant."
+            }
             @if let Some(msg) = flash {
                 p class="mast-note" role="status" { (msg) }
             }
@@ -563,23 +589,39 @@ pub fn letter_page(
                 div class="meta" {
                     "De " (from) " · À " (to) " · ne sera pas envoyé par FreeFlow"
                 }
-                @if body.is_empty() {
-                    p { "Le brouillon s'ouvre dans ton client mail." }
-                } @else {
-                    pre { (body) }
-                }
-            }
-            div class="row-actions" {
-                form hx-post=(format!("{href}/ecrire")) hx-target="#content" {
-                    button class="seal" type="submit" { "Ouvrir dans le client mail" }
-                }
-                @if card.is_some() {
-                    form hx-post=(format!("{href}/envoye")) hx-target="#content" hx-push-url="true" {
-                        input type="hidden" name="today" value=(format_date(today));
-                        button class="quiet" type="submit" { "Marquer envoyé" }
+                form {
+                    (form::text("subject_line", "Sujet", subject, None))
+                    (form::textarea("body", "Lettre", body, 12, None))
+                    div class="row-actions" {
+                        button class="seal" type="submit"
+                               formaction=(format!("{href}/ecrire"))
+                               formmethod="post"
+                               hx-post=(format!("{href}/ecrire"))
+                               hx-target="#content" {
+                            "Poster"
+                        }
+                        button class="quiet" type="submit"
+                               formaction=(format!("{href}/envoye"))
+                               formmethod="post"
+                               hx-post=(format!("{href}/envoye"))
+                               hx-target="#content"
+                               hx-push-url="true" {
+                            "C'est parti"
+                        }
                     }
                 }
             }
+            @if !previous.is_empty() {
+                div class="block" {
+                    h3 { "Déjà classées" }
+                    ul class="hist" {
+                        @for event in previous {
+                            (history_item(event))
+                        }
+                    }
+                }
+            }
+            p class="date" { (letter_date(today)) }
         }
     })
 }
@@ -587,8 +629,8 @@ pub fn letter_page(
 pub fn not_found(needle: &str, today: Date) -> Markup {
     html! {
         div class="letter" data-view=(ViewId::Gens.slug()) {
-            a class="back" href="/gens" hx-get="/gens" hx-target="#content" hx-push-url="true" {
-                "← Les gens"
+            a class="back" href="/affaires" hx-get="/affaires" hx-target="#content" hx-push-url="true" {
+                "← Les affaires"
             }
             h1 { "Personne." }
             p class="lede" { "Aucune fiche ne correspond à « " (needle) " »." }

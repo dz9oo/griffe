@@ -187,6 +187,9 @@ fn history_fr(event: &freeflow_core::people::HistoryEvent) -> String {
                 None => kind.into(),
             }
         }
+        HistoryKind::Letter { subject, body } => {
+            format!("lettre — {subject}\n    {body}")
+        }
         HistoryKind::QuoteSent { .. } => "Devis envoyé.".into(),
         HistoryKind::QuoteAccepted => "Devis accepté.".into(),
         HistoryKind::InvoiceIssued { number } => format!("Facture {number}."),

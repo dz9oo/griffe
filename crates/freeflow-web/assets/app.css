@@ -754,6 +754,20 @@ tr.row-clickable:hover td { background: var(--paper-2); }
   white-space: pre-wrap;
   color: var(--ink);
 }
+.letter-fold {
+  min-width: 0;
+}
+.letter-fold summary {
+  cursor: pointer;
+  font-family: var(--serif);
+}
+.letter-fold pre {
+  font-family: var(--serif);
+  font-size: 16px;
+  white-space: pre-wrap;
+  margin: 8px 0 0;
+  color: var(--ink);
+}
 .id-line {
   display: grid;
   grid-template-columns: 8.5rem minmax(0, 1fr);

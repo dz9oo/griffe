@@ -561,16 +561,16 @@ fn event_href(
     match target {
         MonthTarget::FollowUp { subject } => Some(party.map_or_else(
             || match subject {
-                FollowUpSubject::Opportunity(id) => format!("/gens/{id}"),
-                FollowUpSubject::Invoice(id) => format!("/gens/{id}"),
+                FollowUpSubject::Opportunity(id) => format!("/affaires/{id}"),
+                FollowUpSubject::Invoice(id) => format!("/affaires/{id}"),
             },
             href_for_party,
         )),
         MonthTarget::Mission { id } => {
-            Some(party.map_or_else(|| format!("/gens/{id}"), href_for_party))
+            Some(party.map_or_else(|| format!("/affaires/{id}"), href_for_party))
         }
         MonthTarget::Invoice { id } => {
-            Some(party.map_or_else(|| format!("/gens/{id}"), href_for_party))
+            Some(party.map_or_else(|| format!("/affaires/{id}"), href_for_party))
         }
         MonthTarget::Taxes => Some(deadline.map_or_else(
             || "/societe/impots".to_string(),

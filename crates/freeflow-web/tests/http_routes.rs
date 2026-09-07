@@ -194,7 +194,7 @@ async fn a_direct_navigation_returns_the_full_shell_page() {
         "la chrome nomme la pièce d'accueil : {body}"
     );
     assert!(
-        body.contains("Les gens") && body.contains("La société"),
+        body.contains("Les affaires") && body.contains("La société"),
         "la chrome n'a que trois pièces : {body}"
     );
     assert!(
@@ -238,11 +238,11 @@ async fn an_htmx_boosted_navigation_returns_only_the_view_fragment() {
         "une navigation boostée ne doit renvoyer que le contenu de #content, pas la coque"
     );
     assert!(
-        body.contains("Les gens") || body.contains("En conversation"),
-        "l'ancienne route rend Les gens : {body}"
+        body.contains("Les affaires") || body.contains("En conversation"),
+        "l'ancienne route rend Les affaires : {body}"
     );
     assert!(
-        body.contains("data-view=\"gens\""),
+        body.contains("data-view=\"affaires\""),
         "le slug de la pièce : {body}"
     );
 }
@@ -261,7 +261,7 @@ async fn the_atelier_chrome_has_three_pieces_and_vendored_fonts() {
     )
     .await;
     assert!(jour.contains("data-piece=\"jour\""), "{jour}");
-    assert!(jour.contains("data-piece=\"gens\""), "{jour}");
+    assert!(jour.contains("data-piece=\"affaires\""), "{jour}");
     assert!(jour.contains("data-piece=\"societe\""), "{jour}");
     assert!(jour.contains("id=\"next-step\""), "{jour}");
     assert!(
@@ -276,12 +276,17 @@ async fn the_atelier_chrome_has_three_pieces_and_vendored_fonts() {
     let gens = body_text(
         router
             .clone()
-            .oneshot(Request::builder().uri("/gens").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap(),
     )
     .await;
-    assert!(gens.contains("data-view=\"gens\""), "{gens}");
+    assert!(gens.contains("data-view=\"affaires\""), "{gens}");
     assert!(gens.contains("Nouvelle conversation"), "{gens}");
     assert!(gens.contains("En conversation"), "{gens}");
 
@@ -454,7 +459,7 @@ async fn the_help_letter_explains_atelier_and_opens_recipes() {
     )
     .await;
     assert!(
-        conversation.contains("href=\"/gens/nouvelle\""),
+        conversation.contains("href=\"/affaires/nouvelle\""),
         "{conversation}"
     );
 
@@ -654,7 +659,7 @@ async fn the_day_letter_shows_the_mast_gestures_and_the_month_grid() {
 }
 
 #[tokio::test]
-async fn les_gens_lists_three_chapters_and_opens_a_dossier() {
+async fn les_affaires_lists_three_chapters_and_opens_a_dossier() {
     let db_path = test_db_path("letter-gens");
     let state = unlocked_state(&db_path)
         .await
@@ -666,7 +671,7 @@ async fn les_gens_lists_three_chapters_and_opens_a_dossier() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/gens/nouvelle")
+                .uri("/affaires/nouvelle")
                 .header("content-type", "application/x-www-form-urlencoded")
                 .header("HX-Request", "true")
                 .body(Body::from(
@@ -690,12 +695,17 @@ async fn les_gens_lists_three_chapters_and_opens_a_dossier() {
     let list = body_text(
         router
             .clone()
-            .oneshot(Request::builder().uri("/gens").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap(),
     )
     .await;
-    assert!(list.contains("data-view=\"gens\""), "{list}");
+    assert!(list.contains("data-view=\"affaires\""), "{list}");
     assert!(list.contains("En conversation"), "{list}");
     assert!(list.contains("En mission"), "{list}");
     assert!(list.contains("Fournisseurs"), "{list}");
@@ -712,7 +722,7 @@ async fn les_gens_lists_three_chapters_and_opens_a_dossier() {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/gens/Camille%20Rivi%C3%A8re")
+                    .uri("/affaires/Camille%20Rivi%C3%A8re")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -730,6 +740,33 @@ async fn les_gens_lists_three_chapters_and_opens_a_dossier() {
         !dossier.contains("freeflow "),
         "pas de commande CLI dans le dossier : {dossier}"
     );
+    assert!(
+        dossier.contains("href=\"/affaires/Camille%20Rivi%C3%A8re/ecrire\""),
+        "Écrire ouvre la lettre : {dossier}"
+    );
+
+    let letter = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Camille%20Rivi%C3%A8re/ecrire")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(letter.contains("Une lettre"), "{letter}");
+    assert!(
+        letter.contains("name=\"body\""),
+        "lettre éditable : {letter}"
+    );
+    assert!(letter.contains("Poster"), "{letter}");
+    assert!(letter.contains("C'est parti"), "{letter}");
+    assert!(!letter.contains("freeflow "), "{letter}");
 
     let old = body_text(
         router
@@ -744,7 +781,7 @@ async fn les_gens_lists_three_chapters_and_opens_a_dossier() {
             .unwrap(),
     )
     .await;
-    assert!(old.contains("data-view=\"gens\""), "{old}");
+    assert!(old.contains("data-view=\"affaires\""), "{old}");
 }
 
 #[tokio::test]
@@ -1241,6 +1278,8 @@ async fn every_screen_renders_successfully_against_a_freshly_seeded_vault() {
 
     for path in [
         "/jour",
+        "/affaires",
+        "/dossiers",
         "/gens",
         "/societe",
         "/aide",

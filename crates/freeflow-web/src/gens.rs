@@ -1,4 +1,4 @@
-//! Routes de la pièce Les gens : liste, dossier, nouvelle conversation, lettre, rencontre.
+//! Routes de la pièce Les affaires : liste, dossier, nouvelle conversation, lettre, rencontre.
 
 use axum::Form;
 use axum::extract::{Path, State};
@@ -165,7 +165,23 @@ async fn load_dossier(
         .await
 }
 
-pub async fn write(
+#[derive(Debug, Deserialize)]
+pub struct LetterForm {
+    #[serde(default)]
+    subject_line: String,
+    #[serde(default)]
+    body: String,
+}
+
+fn optional_letter_field(value: String) -> Option<String> {
+    if value.trim().is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+pub async fn write_get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(reference): Path<String>,
@@ -180,11 +196,47 @@ pub async fn write(
             gens::dossier_markup(&dossier, today, Some("rien à écrire pour l'instant")),
         );
     };
+    let content = state
+        .with_store(|store| {
+            let card = gens::load_card(store, subject, today).ok().flatten();
+            gens::letter_page(store, &dossier, card.as_ref(), today, None)
+                .unwrap_or_else(|err| html! { div class="empty-state" { (err.to_string()) } })
+        })
+        .await
+        .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
+    page(&headers, content)
+}
+
+pub async fn write(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(reference): Path<String>,
+    Form(form): Form<LetterForm>,
+) -> Html<String> {
+    let today = state.today();
+    let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
+        return page(&headers, gens::not_found(&reference, today));
+    };
+    let Some(subject) = dossier.follow_up_subject else {
+        return page(
+            &headers,
+            gens::dossier_markup(&dossier, today, Some("rien à écrire pour l'instant")),
+        );
+    };
     let db_path = state.db_path().to_path_buf();
+    let subject_line = optional_letter_field(form.subject_line);
+    let body = optional_letter_field(form.body);
     let result = state
         .with_store_mut(|store| {
-            let outcome = Executor::new(store)
-                .execute(&PrepareFollowUp { subject, today }, &AppState::human_ctx())?;
+            let outcome = Executor::new(store).execute(
+                &PrepareFollowUp {
+                    subject,
+                    today,
+                    subject_line,
+                    body,
+                },
+                &AppState::human_ctx(),
+            )?;
             if let Outcome::Applied(prepared) = outcome {
                 let _ = freeflow_cli::write_and_open_draft(
                     &db_path,
@@ -221,17 +273,11 @@ pub async fn write(
     }
 }
 
-#[derive(Debug, Deserialize)]
-pub struct SentForm {
-    #[serde(default)]
-    _today: String,
-}
-
 pub async fn sent(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(reference): Path<String>,
-    Form(_form): Form<SentForm>,
+    Form(form): Form<LetterForm>,
 ) -> Html<String> {
     let today = state.today();
     let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
@@ -240,10 +286,19 @@ pub async fn sent(
     let Some(subject) = dossier.follow_up_subject else {
         return page(&headers, gens::dossier_markup(&dossier, today, None));
     };
+    let subject_line = optional_letter_field(form.subject_line);
+    let body = optional_letter_field(form.body);
     let result = state
         .with_store_mut(|store| {
-            Executor::new(store)
-                .execute(&MarkFollowUpSent { subject, today }, &AppState::human_ctx())
+            Executor::new(store).execute(
+                &MarkFollowUpSent {
+                    subject,
+                    today,
+                    subject_line,
+                    body,
+                },
+                &AppState::human_ctx(),
+            )
         })
         .await;
     match result {
@@ -261,11 +316,7 @@ pub async fn sent(
                 })
                 .await
                 .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
-            page(
-                &headers,
-                // Re-render via dossier_page already; flash via a second pass.
-                content,
-            )
+            page(&headers, content)
         }
     }
 }

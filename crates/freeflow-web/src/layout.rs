@@ -1,5 +1,5 @@
 //! La coque commune à tous les écrans : chrome Atelier (lot 48), contenu, journal d'audit
-//! replié, palette ⌘K. Trois pièces — Le jour, Les gens, La société — plus rien dans la
+//! replié, palette ⌘K. Trois pièces — Le jour, Les affaires, La société — plus rien dans la
 //! barre. La console, l'aide (`?`) et les anciens écrans restent joignables par ⌘K
 //! et leurs routes.
 
@@ -21,7 +21,7 @@ impl Piece {
     pub const fn path(self) -> &'static str {
         match self {
             Self::Jour => "/jour",
-            Self::Gens => "/gens",
+            Self::Gens => "/affaires",
             Self::Societe => "/societe",
         }
     }
@@ -30,7 +30,7 @@ impl Piece {
     pub const fn slug(self) -> &'static str {
         match self {
             Self::Jour => "jour",
-            Self::Gens => "gens",
+            Self::Gens => "affaires",
             Self::Societe => "societe",
         }
     }
@@ -39,7 +39,7 @@ impl Piece {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Jour => "Le jour",
-            Self::Gens => "Les gens",
+            Self::Gens => "Les affaires",
             Self::Societe => "La société",
         }
     }
@@ -68,7 +68,7 @@ impl ViewId {
     pub const fn path(self) -> &'static str {
         match self {
             Self::Jour => "/jour",
-            Self::Gens => "/gens",
+            Self::Gens => "/affaires",
             Self::Dashboard => "/view/dashboard",
             Self::Relances => "/view/relances",
             Self::Prospection => "/view/prospection",
@@ -88,7 +88,7 @@ impl ViewId {
     pub const fn slug(self) -> &'static str {
         match self {
             Self::Jour => "jour",
-            Self::Gens => "gens",
+            Self::Gens => "affaires",
             Self::Dashboard => "dashboard",
             Self::Relances => "relances",
             Self::Prospection => "prospection",
@@ -115,7 +115,7 @@ impl ViewId {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Jour => "Le jour",
-            Self::Gens => "Les gens",
+            Self::Gens => "Les affaires",
             Self::Dashboard => "Le jour",
             Self::Relances => "Relances",
             Self::Prospection => "Prospection",
@@ -222,8 +222,8 @@ fn palette() -> Markup {
                         "+ nouveau client"
                     }
                     a class="palette-item" data-label="nouveau prospect nouvelle conversation"
-                      href="/gens/nouvelle"
-                      hx-get="/gens/nouvelle" hx-target="#content" hx-push-url="true" hx-swap="innerHTML" {
+                      href="/affaires/nouvelle"
+                      hx-get="/affaires/nouvelle" hx-target="#content" hx-push-url="true" hx-swap="innerHTML" {
                         "+ nouvelle conversation"
                     }
                     button class="palette-item" type="button" data-label="nouvelle mission"
