@@ -2364,3 +2364,53 @@ async fn papers_add_over_mcp_is_direct_and_purge_needs_a_human() {
 
     client.cancel().await.unwrap();
 }
+
+/// Lot 58 : `invoice.emit` dépose une action ; `freeflow confirm` (humain) fige l'original.
+#[tokio::test]
+async fn confirming_an_invoice_emit_captures_the_issued_original() {
+    let db_path = test_db_path("papers-emit-mcp");
+    let mut store = Store::create(&db_path, &Passphrase::from("s3cret")).unwrap();
+    set_company_profile(&mut store);
+    let client = spawn_client(store).await;
+
+    let created = call(&client, "clients.create", json!({"name": "Kappa Software"})).await;
+    let client_id = json_of(&created)["result"].as_str().unwrap().to_string();
+    let lines_json = serde_json::to_string(&json!([
+        {"description": "Sept.", "quantity": 1.0, "unit_price": 100000, "vat_rate": "Standard"}
+    ]))
+    .unwrap();
+    let emitted = call(
+        &client,
+        "invoice.emit",
+        json!({"client_id": client_id, "lines_json": lines_json, "issued_on": "2026-03-10"}),
+    )
+    .await;
+    let pending_id = json_of(&emitted)["pending_action_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let mut confirming =
+        Store::open_with_passphrase(&db_path, &Passphrase::from("s3cret")).unwrap();
+    let (out, code) = freeflow_cli::run_capturing_with_vault(
+        [
+            "freeflow",
+            "--db",
+            db_path.to_str().expect("chemin UTF-8"),
+            "confirm",
+            pending_id.as_str(),
+        ],
+        freeflow_cli::VaultAccess::Borrowed {
+            store: &mut confirming,
+            db_path: &db_path,
+        },
+    );
+    assert_eq!(code, 0, "{out}");
+
+    let papers = json_of(&call(&client, "papers.list", json!({"kind": "issued_invoice"})).await);
+    assert_eq!(papers.as_array().unwrap().len(), 1, "{papers}");
+    assert_eq!(papers[0]["kind"], "issued_invoice");
+    assert_eq!(papers[0]["origin"], "issued");
+
+    client.cancel().await.unwrap();
+}

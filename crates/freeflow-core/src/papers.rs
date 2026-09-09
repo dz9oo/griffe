@@ -150,7 +150,7 @@ impl Command for ArchivePaper {
     fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
         if self.origin == PaperOrigin::Issued
             && let Some(invoice_id) = self.invoice_id
-            && let Some(existing) = existing_issued(conn, invoice_id, self.kind)?
+            && let Some(existing) = issued_paper(conn, invoice_id, self.kind)?
         {
             return Ok(existing);
         }
@@ -268,7 +268,12 @@ fn insert_paper(
     Ok(())
 }
 
-fn existing_issued(
+/// Original `Issued` déjà figé pour cette facture et cette nature — le premier gagne.
+///
+/// # Errors
+///
+/// Erreur de lecture SQLite.
+pub fn issued_paper(
     conn: &Connection,
     invoice_id: InvoiceId,
     kind: PaperKind,
@@ -405,6 +410,8 @@ pub fn mime_from_name(original_name: &str) -> String {
 
 /// Archive les octets via [`receipts::archive`] puis indexe. En `dry_run`, n'écrit rien.
 /// Si `idempotency_key` est déjà vue, l'[`Executor`] renvoie le `Paper` mémorisé.
+/// Première capture d'un `(kind, invoice_id)` `Issued` : si une ligne existe déjà, la renvoyer
+/// sans réécrire le blob (no-op — le premier original gagne).
 ///
 /// # Errors
 ///
@@ -415,6 +422,12 @@ pub fn archive_paper(
     bytes: &[u8],
     ctx: &ExecutionContext,
 ) -> Result<Outcome<Paper>, AppError> {
+    if spec.origin == PaperOrigin::Issued
+        && let Some(invoice_id) = spec.invoice_id
+        && let Some(existing) = issued_paper(store.connection(), invoice_id, spec.kind)?
+    {
+        return Ok(Outcome::Applied(existing));
+    }
     let hash = hash_receipt(bytes);
     let byte_size = i64::try_from(bytes.len()).unwrap_or(i64::MAX);
     let filename = if ctx.dry_run {
@@ -664,6 +677,116 @@ mod tests {
             )
             .unwrap();
         assert!(matches!(outcome, Outcome::PendingConfirmation(_)));
+        assert_eq!(
+            list_papers(store.connection(), PaperFilter::ACTIVE)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    fn invoice_spec(invoice_id: InvoiceId, original_name: &str, key: Option<&str>) -> NewPaper {
+        NewPaper {
+            kind: PaperKind::IssuedInvoice,
+            origin: PaperOrigin::Issued,
+            original_name: original_name.into(),
+            mime: "application/pdf".into(),
+            period: Some(2026),
+            issued_on: Some(d(2026, 3, 10)),
+            client_id: None,
+            invoice_id: Some(invoice_id),
+            expense_id: None,
+            fiscal_year_id: None,
+            note: None,
+            idempotency_key: key.map(str::to_string),
+        }
+    }
+
+    fn emit_invoice(store: &mut Store) -> InvoiceId {
+        let client_id = match Executor::new(store)
+            .execute(
+                &crate::clients::CreateClient {
+                    name: "Kappa Software".into(),
+                    siren: None,
+                    vat_number: None,
+                    address: None,
+                },
+                &human(),
+            )
+            .unwrap()
+        {
+            Outcome::Applied(id) => id,
+            other => panic!("attendu Applied, obtenu {other:?}"),
+        };
+        match Executor::new(store)
+            .execute(
+                &crate::billing::EmitInvoice {
+                    client_id,
+                    mission_id: None,
+                    lines: vec![crate::domain::InvoiceLine {
+                        description: "Prestation".into(),
+                        quantity: 1.0,
+                        unit_price: crate::domain::Money::from_cents(100_000),
+                        vat_rate: crate::domain::VatRate::Standard,
+                    }],
+                    issued_on: d(2026, 3, 10),
+                    payment_terms_days: 30,
+                },
+                &human(),
+            )
+            .unwrap()
+        {
+            Outcome::Applied(emitted) => emitted.id,
+            other => panic!("attendu Applied, obtenu {other:?}"),
+        }
+    }
+
+    fn receipts_count(store: &Store) -> usize {
+        let dir = store.receipts_dir();
+        if !dir.is_dir() {
+            return 0;
+        }
+        fs::read_dir(dir).map_or(0, |entries| entries.filter_map(Result::ok).count())
+    }
+
+    #[test]
+    fn a_second_issued_invoice_archive_returns_the_first_and_does_not_replace_the_blob() {
+        let mut store = test_store("first-wins");
+        let invoice_id = emit_invoice(&mut store);
+        let first = applied(
+            archive_paper(
+                &mut store,
+                invoice_spec(
+                    invoice_id,
+                    "FA-2026-0001.pdf",
+                    Some("papers:issued_invoice:a"),
+                ),
+                b"%PDF A",
+                &human(),
+            )
+            .unwrap(),
+        );
+        let hash_a = first.content_hash.clone();
+        let filename_a = first.filename.clone();
+        assert_eq!(receipts_count(&store), 1);
+
+        let second = applied(
+            archive_paper(
+                &mut store,
+                invoice_spec(
+                    invoice_id,
+                    "FA-2026-0001.pdf",
+                    Some("papers:issued_invoice:b"),
+                ),
+                b"%PDF B another render",
+                &human(),
+            )
+            .unwrap(),
+        );
+        assert_eq!(second.id, first.id);
+        assert_eq!(second.content_hash, hash_a);
+        assert_eq!(receipts::read(&store, &filename_a).unwrap(), b"%PDF A");
+        assert_eq!(receipts_count(&store), 1);
         assert_eq!(
             list_papers(store.connection(), PaperFilter::ACTIVE)
                 .unwrap()

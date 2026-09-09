@@ -325,11 +325,25 @@ impl FreeflowServer {
         let cmd = expenses::AttachReceipt {
             id,
             revision: current.revision,
-            receipt_hash,
-            receipt_filename,
+            receipt_hash: receipt_hash.clone(),
+            receipt_filename: receipt_filename.clone(),
         };
         match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
-            Ok(outcome) => ok_json(outcome_json(&outcome)),
+            Ok(outcome) => {
+                if matches!(outcome, freeflow_core::app::Outcome::Applied(_))
+                    && !args.dry_run
+                    && !receipt_filename.is_empty()
+                {
+                    let _ = freeflow_cli::capture_expense_receipt(
+                        &mut store,
+                        &self.ctx(false),
+                        id,
+                        &receipt_filename,
+                        &receipt_hash,
+                    );
+                }
+                ok_json(outcome_json(&outcome))
+            }
             Err(e) => err_text(e.to_string()),
         }
     }

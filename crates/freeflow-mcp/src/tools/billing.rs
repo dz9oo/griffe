@@ -226,7 +226,7 @@ impl FreeflowServer {
         Parameters(args): Parameters<RenderInvoiceArgs>,
     ) -> CallToolResult {
         let invoice_id: InvoiceId = ok_or_return!("id", args.id.parse());
-        let store = self.store.lock().await;
+        let mut store = self.store.lock().await;
         let invoice = match billing::invoice_by_id(store.connection(), invoice_id) {
             Ok(Some(invoice)) => invoice,
             Ok(None) => return err_text(format!("facture introuvable : {invoice_id}")),
@@ -249,10 +249,12 @@ impl FreeflowServer {
             "render",
             freeflow_invoice::render_pdf(&invoice, &client, &profile, args.payment_terms_days)
         );
-        match crate::tools::fiscal::write_new_document(&args.out, &pdf) {
-            Ok(msg) => ok_json(json!({ "written": msg })),
-            Err(e) => err_text(e),
-        }
+        let written = match crate::tools::fiscal::write_new_document(&args.out, &pdf) {
+            Ok(msg) => msg,
+            Err(e) => return err_text(e),
+        };
+        let _ = freeflow_cli::capture_invoice(&mut store, &self.ctx(false), invoice_id);
+        ok_json(json!({ "written": written }))
     }
 
     /// Revérifie la chaîne de hash de toutes les factures.
@@ -387,11 +389,38 @@ impl FreeflowServer {
                 "preview": parsed.transactions.iter().take(5).collect::<Vec<_>>(),
             }));
         }
+        let original_name = args
+            .path
+            .as_deref()
+            .and_then(|p| std::path::Path::new(p).file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| "releve.csv".to_string());
+        let period = {
+            let fye = freeflow_core::company::company_profile(store.connection())
+                .ok()
+                .flatten()
+                .and_then(|p| p.fiscal_year_end)
+                .unwrap_or(freeflow_core::domain::FiscalYearEnd::CALENDAR);
+            parsed
+                .transactions
+                .first()
+                .map(|t| fye.containing(t.occurred_on).end().year())
+        };
         let cmd = billing::ImportBankTransactions {
             transactions: parsed.transactions,
         };
         match Executor::new(&mut store).execute(&cmd, &self.ctx(false)) {
             Ok(outcome) => {
+                if matches!(outcome, freeflow_core::app::Outcome::Applied(_)) {
+                    let _ = freeflow_cli::capture_bank_statement(
+                        &mut store,
+                        &self.ctx(false),
+                        &original_name,
+                        &bytes,
+                        period,
+                    );
+                }
                 let mut body = outcome_json(&outcome);
                 body["skipped"] = json!(parsed.skipped);
                 ok_json(body)

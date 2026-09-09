@@ -420,6 +420,10 @@ pub async fn create(State(state): State<AppState>, multipart: Multipart) -> Resp
         },
         None => (None, None),
     };
+    let captured_receipt = receipt_filename
+        .as_deref()
+        .zip(receipt_hash.as_deref())
+        .map(|(f, h)| (f.to_string(), h.to_string()));
     let cmd = expenses::RecordExpense {
         label: parsed.label,
         category: parsed.category,
@@ -434,6 +438,22 @@ pub async fn create(State(state): State<AppState>, multipart: Multipart) -> Resp
     };
     match execute(&state, cmd).await {
         None => locked_fragment().into_response(),
+        Some(Ok(Outcome::Applied(id))) => {
+            if let Some((filename, hash)) = captured_receipt.as_ref() {
+                let _ = state
+                    .with_store_mut(|store| {
+                        freeflow_cli::capture_expense_receipt(
+                            store,
+                            &AppState::human_ctx(),
+                            id,
+                            filename,
+                            hash,
+                        )
+                    })
+                    .await;
+            }
+            saved()
+        }
         Some(Ok(_)) => saved(),
         Some(Err(e)) => {
             let errors = expense_error_banner(e, "/depenses/new");
@@ -546,6 +566,11 @@ pub async fn update(
     } else {
         (current.receipt_hash, current.receipt_filename)
     };
+    let new_receipt = receipt.is_some();
+    let captured_receipt = receipt_filename
+        .as_deref()
+        .zip(receipt_hash.as_deref())
+        .map(|(f, h)| (f.to_string(), h.to_string()));
     let cmd = expenses::UpdateExpense {
         id,
         revision,
@@ -561,7 +586,22 @@ pub async fn update(
     };
     match execute(&state, cmd).await {
         None => locked_fragment().into_response(),
-        Some(Ok(_)) => saved(),
+        Some(Ok(_)) => {
+            if new_receipt && let Some((filename, hash)) = captured_receipt.as_ref() {
+                let _ = state
+                    .with_store_mut(|store| {
+                        freeflow_cli::capture_expense_receipt(
+                            store,
+                            &AppState::human_ctx(),
+                            id,
+                            filename.as_str(),
+                            hash.as_str(),
+                        )
+                    })
+                    .await;
+            }
+            saved()
+        }
         Some(Err(e)) => {
             let errors = expense_error_banner(e, &format!("/depenses/{id}/edit"));
             Html(views::depenses::edit_panel(id, revision, &(&form).into(), &errors).into_string())

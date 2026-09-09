@@ -33,6 +33,10 @@ use std::path::{Path, PathBuf};
 
 pub use follow_up::write_and_open_draft;
 pub use freeflow_core::clock::today_local as today;
+pub use papers::{
+    YearCaptureReport, append_capture_note, capture_bank_statement, capture_expense_receipt,
+    capture_invoice, capture_year, invoice_capture_note,
+};
 
 use clap::{Parser, Subcommand};
 use freeflow_core::app::{Actor, ExecutionContext, PendingActionId};
@@ -412,6 +416,6 @@ fn run_command(
         TopCommand::Forecast(cmd) => forecast::run(cmd, store, json),
         TopCommand::Year(cmd) => year::run(cmd, store, ctx, json),
         TopCommand::Papers(cmd) => papers::run(cmd, store, ctx, json),
-        TopCommand::Fec(cmd) => fec::run(cmd, store, json),
+        TopCommand::Fec(cmd) => fec::run(cmd, store, ctx, json),
     }
 }

@@ -857,7 +857,7 @@ impl FreeflowServer {
         &self,
         Parameters(args): Parameters<RenderYearArgs>,
     ) -> CallToolResult {
-        let store = self.store.lock().await;
+        let mut store = self.store.lock().await;
         if args.doc == "balance_sheet" || args.doc == "inventory" {
             // Dérivé du grand livre : pas besoin d'un exercice clos, comme `fec.export`.
             let (profile, ledger) =
@@ -877,10 +877,12 @@ impl FreeflowServer {
                     )
                 )
             };
-            return match write_new_document(&args.out, &bytes) {
-                Ok(msg) => ok_json(json!({ "written": msg })),
-                Err(e) => err_text(e),
+            let written = match write_new_document(&args.out, &bytes) {
+                Ok(msg) => msg,
+                Err(e) => return err_text(e),
             };
+            let _ = freeflow_cli::capture_year(&mut store, &self.ctx(false), args.period);
+            return ok_json(json!({ "written": written }));
         }
         let record = match require_year(&store, args.period) {
             Ok(r) => r,
@@ -945,10 +947,12 @@ impl FreeflowServer {
                 ));
             }
         };
-        match write_new_document(&args.out, &bytes) {
-            Ok(msg) => ok_json(json!({ "written": msg })),
-            Err(e) => err_text(e),
-        }
+        let written = match write_new_document(&args.out, &bytes) {
+            Ok(msg) => msg,
+            Err(e) => return err_text(e),
+        };
+        let _ = freeflow_cli::capture_year(&mut store, &self.ctx(false), args.period);
+        ok_json(json!({ "written": written }))
     }
 
     /// Immobilisations déclarées, avec la dotation, le cumul et la valeur nette de `period`

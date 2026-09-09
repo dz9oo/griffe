@@ -5,7 +5,7 @@
 //! d'autres (envoi d'email, par exemple, quand ce canal existera).
 
 use clap::Subcommand;
-use freeflow_core::app::{self, Command, Executor, PendingActionId};
+use freeflow_core::app::{self, Actor, Command, ExecutionContext, Executor, PendingActionId};
 use freeflow_core::billing::{
     DeleteBankTransaction, EmitInvoice, IssueCreditNote, ReconcileTransaction, RecordPayment,
     SettleBankTransaction, UnreconcileTransaction, UnsettleBankTransaction, VoidPayment,
@@ -27,6 +27,10 @@ use freeflow_core::store::Store;
 use crate::error::CliError;
 use crate::output::{format_json, format_outcome};
 use crate::table;
+
+fn human_ctx() -> ExecutionContext {
+    ExecutionContext::new(Actor::Human, false)
+}
 
 #[derive(Debug, Subcommand)]
 pub enum PendingCommand {
@@ -98,10 +102,24 @@ pub fn confirm(store: &mut Store, id: PendingActionId, json: bool) -> Result<Str
 
     if action.command_name == EmitInvoice::NAME {
         let outcome = Executor::new(store).confirm::<EmitInvoice>(id)?;
-        Ok(format_outcome(&outcome, json))
+        let rendered = format_outcome(&outcome, json);
+        let note = match &outcome {
+            freeflow_core::app::Outcome::Applied(emitted) => crate::papers::invoice_capture_note(
+                crate::papers::capture_invoice(store, &human_ctx(), emitted.id),
+            ),
+            _ => None,
+        };
+        Ok(crate::papers::append_capture_note(rendered, json, note))
     } else if action.command_name == IssueCreditNote::NAME {
         let outcome = Executor::new(store).confirm::<IssueCreditNote>(id)?;
-        Ok(format_outcome(&outcome, json))
+        let rendered = format_outcome(&outcome, json);
+        let note = match &outcome {
+            freeflow_core::app::Outcome::Applied(emitted) => crate::papers::invoice_capture_note(
+                crate::papers::capture_invoice(store, &human_ctx(), emitted.id),
+            ),
+            _ => None,
+        };
+        Ok(crate::papers::append_capture_note(rendered, json, note))
     } else if action.command_name == DeleteClient::NAME {
         let outcome = Executor::new(store).confirm::<DeleteClient>(id)?;
         Ok(format_outcome(&outcome, json))
@@ -133,12 +151,20 @@ pub fn confirm(store: &mut Store, id: PendingActionId, json: bool) -> Result<Str
         // Même filet que `year approve` : l'approbation rend l'exercice immuable, une sauvegarde
         // est écrite d'abord (lot 36) — son échec abandonne la confirmation.
         let backup = crate::year::pre_approve_backup_for_action(store, &action.command_json)?;
+        let cmd: ApproveFiscalYear = serde_json::from_str(&action.command_json)
+            .map_err(|e| CliError::Unexpected(format!("action en attente illisible : {e}")))?;
+        let period = freeflow_core::fiscal_year::fiscal_year_by_id(store.connection(), cmd.id)?
+            .map_or(0, |r| r.ends_on.year());
         let outcome = Executor::new(store).confirm::<ApproveFiscalYear>(id)?;
-        Ok(crate::year::with_backup_note(
-            format_outcome(&outcome, json),
-            &backup,
-            json,
-        ))
+        let rendered = crate::year::with_backup_note(format_outcome(&outcome, json), &backup, json);
+        let note = if matches!(outcome, freeflow_core::app::Outcome::Applied(_)) {
+            crate::papers::capture_year(store, &human_ctx(), period)
+                .ok()
+                .and_then(|r| r.human_note())
+        } else {
+            None
+        };
+        Ok(crate::papers::append_capture_note(rendered, json, note))
     } else if action.command_name == DeleteFiscalYear::NAME {
         let outcome = Executor::new(store).confirm::<DeleteFiscalYear>(id)?;
         Ok(format_outcome(&outcome, json))
@@ -152,6 +178,22 @@ pub fn confirm(store: &mut Store, id: PendingActionId, json: bool) -> Result<Str
         // Une dépense n'est en attente que si un agent l'a proposée *rapprochée* d'un débit du
         // relevé (`bank_transaction_id`) — le seul cas où `RecordExpense` exige confirmation.
         let outcome = Executor::new(store).confirm::<RecordExpense>(id)?;
+        if let freeflow_core::app::Outcome::Applied(expense_id) = &outcome
+            && let Some(expense) =
+                freeflow_core::expenses::expense_by_id(store.connection(), *expense_id)?
+            && let (Some(filename), Some(hash)) = (
+                expense.receipt_filename.as_deref(),
+                expense.receipt_hash.as_deref(),
+            )
+        {
+            let _ = crate::papers::capture_expense_receipt(
+                store,
+                &human_ctx(),
+                *expense_id,
+                filename,
+                hash,
+            );
+        }
         Ok(format_outcome(&outcome, json))
     } else if action.command_name == VoidPayment::NAME {
         let outcome = Executor::new(store).confirm::<VoidPayment>(id)?;

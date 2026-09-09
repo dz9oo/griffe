@@ -420,6 +420,12 @@ pub async fn approve(
     match execute(&state, cmd).await {
         None => locked_fragment().into_response(),
         Some(Ok(Outcome::Applied(approval))) => {
+            let period = record.ends_on.year();
+            let _ = state
+                .with_store_mut(|store| {
+                    freeflow_cli::capture_year(store, &AppState::human_ctx(), period)
+                })
+                .await;
             // Succès, mais avec quelque chose à dire (sauvegarde, retard) : le panneau reste
             // ouvert sur ce compte rendu, et la liste se rafraîchit quand même.
             let mut response = Html(

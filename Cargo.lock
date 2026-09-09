@@ -1638,6 +1638,7 @@ name = "freeflow-mcp"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "freeflow-cli",
  "freeflow-core",
  "freeflow-docs",
  "freeflow-invoice",

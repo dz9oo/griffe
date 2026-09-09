@@ -11,6 +11,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
+use freeflow_core::app::ExecutionContext;
 use freeflow_core::fec::{FecCheck, FecSeverity, build_fec, check_fec, check_fec_of};
 use freeflow_core::store::Store;
 use serde_json::json;
@@ -67,7 +68,12 @@ pub fn check_file(path: &Path, json: bool) -> Result<String, CliError> {
     Ok(format_check(&check_fec(&bytes, name.as_deref()), json))
 }
 
-pub fn run(cmd: FecCommand, store: &mut Store, json: bool) -> Result<String, CliError> {
+pub fn run(
+    cmd: FecCommand,
+    store: &mut Store,
+    ctx: &ExecutionContext,
+    json: bool,
+) -> Result<String, CliError> {
     match cmd {
         FecCommand::Export { period, out } => {
             let fec = build_fec(store.connection(), period)?;
@@ -76,6 +82,7 @@ pub fn run(cmd: FecCommand, store: &mut Store, json: bool) -> Result<String, Cli
             std::fs::write(&path, &content).map_err(|e| {
                 CliError::Unexpected(format!("écriture de {} impossible : {e}", path.display()))
             })?;
+            let _ = crate::papers::capture_year(store, ctx, period);
             let summary = fec.summary();
             if json {
                 Ok(format_json(

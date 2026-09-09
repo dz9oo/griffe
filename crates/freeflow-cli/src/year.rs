@@ -951,17 +951,21 @@ fn balance_human(balance: &TrialBalance, sheet: &BalanceSheet) -> String {
     )
 }
 
-fn render(
+/// Rend les octets d'un document de clôture, sans les écrire. `today` date un PV encore en projet.
+///
+/// # Errors
+///
+/// Profil manquant, exercice introuvable, ou échec de Typst / JSON.
+pub(crate) fn render_bytes(
     store: &Store,
     period: i32,
     doc: DocKind,
-    out: &Path,
     today: Option<Date>,
-) -> Result<String, CliError> {
+) -> Result<Vec<u8>, CliError> {
     if matches!(doc, DocKind::BalanceSheet | DocKind::Inventory) {
         // Dérivé du grand livre : pas besoin d'un exercice clos, comme le FEC.
         let (profile, ledger) = ledger_ending_in(store.connection(), period)?;
-        let bytes = match doc {
+        return match doc {
             DocKind::BalanceSheet => freeflow_docs::render_balance_sheet(
                 &profile,
                 &ledger.balance_sheet(),
@@ -970,14 +974,17 @@ fn render(
             DocKind::Inventory => {
                 freeflow_docs::render_inventory(&profile, &ledger.trial_balance())
             }
-            _ => unreachable!("filtré ci-dessus"),
+            DocKind::Minutes
+            | DocKind::Appropriation
+            | DocKind::Synthesis
+            | DocKind::Liasse
+            | DocKind::EfiNotice => unreachable!("filtré ci-dessus"),
         }
-        .map_err(|e| CliError::Unexpected(e.to_string()))?;
-        return write_document(out, &bytes);
+        .map_err(|e| CliError::Unexpected(e.to_string()));
     }
     let record = require_year(store, period)?;
     let profile = require_profile(store)?;
-    let bytes = match doc {
+    match doc {
         DocKind::BalanceSheet | DocKind::Inventory => unreachable!("traité ci-dessus"),
         DocKind::Minutes => {
             let today = record.approved_on.or(today).ok_or_else(|| {
@@ -988,10 +995,10 @@ fn render(
                 )
             })?;
             freeflow_docs::render_approval_minutes(&profile, &record, today)
-                .map_err(|e| CliError::Unexpected(e.to_string()))?
+                .map_err(|e| CliError::Unexpected(e.to_string()))
         }
         DocKind::Appropriation => freeflow_docs::render_appropriation_decision(&profile, &record)
-            .map_err(|e| CliError::Unexpected(e.to_string()))?,
+            .map_err(|e| CliError::Unexpected(e.to_string())),
         DocKind::Synthesis => {
             // Le document reflète le snapshot figé à la clôture, pas un recalcul vivant.
             let result = record.accounting_result();
@@ -1001,36 +1008,47 @@ fn render(
                 .filter(|y| y.ends_on < record.starts_on)
                 .max_by_key(|y| y.ends_on);
             freeflow_docs::render_synthesis(&profile, &result, prior)
-                .map_err(|e| CliError::Unexpected(e.to_string()))?
+                .map_err(|e| CliError::Unexpected(e.to_string()))
         }
         DocKind::Liasse => {
-            // La liasse est un JSON : une extension `.pdf` demandée par erreur produirait un
-            // fichier que rien n'ouvre (lot 36).
-            if out
-                .extension()
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
-            {
-                return Err(CliError::Domain(
-                    "la liasse est un fichier JSON, pas un PDF : donnez une extension `.json` \
-                     (les PDF sont minutes, appropriation, synthesis, balance-sheet, inventory, \
-                     efi-notice)"
-                        .into(),
-                ));
-            }
             let ledger = build_ledger(store.connection(), record.period())?;
             let export = freeflow_docs::liasse_export(&profile, &record, Some(&ledger));
             let mut bytes = serde_json::to_vec_pretty(&export)
                 .map_err(|e| CliError::Unexpected(e.to_string()))?;
             bytes.push(b'\n');
-            bytes
+            Ok(bytes)
         }
         DocKind::EfiNotice => {
             let ledger = build_ledger(store.connection(), record.period())?;
             let export = freeflow_docs::liasse_export(&profile, &record, Some(&ledger));
             freeflow_docs::render_efi_notice(&export)
-                .map_err(|e| CliError::Unexpected(e.to_string()))?
+                .map_err(|e| CliError::Unexpected(e.to_string()))
         }
-    };
+    }
+}
+
+fn render(
+    store: &Store,
+    period: i32,
+    doc: DocKind,
+    out: &Path,
+    today: Option<Date>,
+) -> Result<String, CliError> {
+    if matches!(doc, DocKind::Liasse)
+        && out
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
+    {
+        // La liasse est un JSON : une extension `.pdf` demandée par erreur produirait un
+        // fichier que rien n'ouvre (lot 36).
+        return Err(CliError::Domain(
+            "la liasse est un fichier JSON, pas un PDF : donnez une extension `.json` \
+             (les PDF sont minutes, appropriation, synthesis, balance-sheet, inventory, \
+             efi-notice)"
+                .into(),
+        ));
+    }
+    let bytes = render_bytes(store, period, doc, today)?;
     write_document(out, &bytes)
 }
 
@@ -1183,10 +1201,18 @@ pub fn run(
             };
             let outcome = Executor::new(store).execute(&command, ctx)?;
             let rendered = format_outcome(&outcome, json);
-            match backup {
+            let rendered = match backup {
                 Some(b) => with_backup_note(rendered, &b, json),
                 None => rendered,
-            }
+            };
+            let note = if matches!(outcome, freeflow_core::app::Outcome::Applied(_)) {
+                crate::papers::capture_year(store, ctx, period)
+                    .ok()
+                    .and_then(|r| r.human_note())
+            } else {
+                None
+            };
+            crate::papers::append_capture_note(rendered, json, note)
         }
         YearCommand::Opening(cmd) => return run_opening(cmd, store, ctx, json),
         YearCommand::Balance { period } => {
@@ -1230,7 +1256,13 @@ pub fn run(
             doc,
             out,
             today,
-        } => render(store, period, doc, &out, today)?,
+        } => {
+            let rendered = render(store, period, doc, &out, today)?;
+            let note = crate::papers::capture_year(store, ctx, period)
+                .ok()
+                .and_then(|r| r.human_note());
+            crate::papers::append_capture_note(rendered, json, note)
+        }
     };
     Ok(output)
 }

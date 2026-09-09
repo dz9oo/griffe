@@ -5578,3 +5578,68 @@ async fn relances_screen_shows_a_due_opportunity() {
         "l'opportunité due est dans la file : {body}"
     );
 }
+
+/// Lot 58 : approuver un exercice depuis la fenêtre fige le PV au coffre.
+#[tokio::test]
+async fn approving_a_year_from_the_window_captures_the_minutes() {
+    let db_path = test_db_path("papers-approve-http");
+    let state = unlocked_state_with_activity(&db_path).await;
+    let state = state.with_today(time::macros::date!(2027 - 06 - 01));
+    let router = freeflow_web::router(state);
+
+    let closed = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/cloture")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(
+                    "starts_on=2026-01-01&ends_on=2026-12-31&legal_reserve=0&dividends=0",
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        closed
+            .headers()
+            .get("HX-Trigger")
+            .map(|v| v.to_str().unwrap()),
+        Some("freeflow:saved")
+    );
+    let id = fiscal_year_id(&db_path);
+
+    let approved = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/cloture/{id}/approve"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from("approved_on=2027-05-15"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        approved
+            .headers()
+            .get("HX-Trigger")
+            .map(|v| v.to_str().unwrap()),
+        Some("freeflow:saved")
+    );
+
+    let store = Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    let papers = freeflow_core::papers::list_papers(
+        store.connection(),
+        freeflow_core::papers::PaperFilter {
+            period: Some(2026),
+            kind: Some(freeflow_core::domain::PaperKind::Minutes),
+            include_superseded: false,
+        },
+    )
+    .unwrap();
+    assert_eq!(papers.len(), 1, "le PV doit être figé");
+    assert_eq!(papers[0].origin, freeflow_core::domain::PaperOrigin::Issued);
+}

@@ -56,7 +56,7 @@ impl FreeflowServer {
         )
     )]
     async fn fec_export(&self, Parameters(args): Parameters<FecExportArgs>) -> CallToolResult {
-        let store = self.store.lock().await;
+        let mut store = self.store.lock().await;
         let fec = match build_fec(store.connection(), args.period) {
             Ok(fec) => fec,
             Err(e) => return err_text(e.to_string()),
@@ -71,7 +71,10 @@ impl FreeflowServer {
             return err_text("chemin de sortie non UTF-8");
         };
         match write_new_document(path, fec.render().as_bytes()) {
-            Ok(msg) => ok_json(json!({ "written": msg, "path": path, "summary": fec.summary() })),
+            Ok(msg) => {
+                let _ = freeflow_cli::capture_year(&mut store, &self.ctx(false), args.period);
+                ok_json(json!({ "written": msg, "path": path, "summary": fec.summary() }))
+            }
             Err(e) => err_text(e),
         }
     }

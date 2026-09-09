@@ -14,6 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 base64 = "0.22.1"
+freeflow-cli = { version = "0.1.0", path = "../freeflow-cli" }
 freeflow-core = { version = "0.1.0", path = "../freeflow-core" }
 freeflow-docs = { version = "0.1.0", path = "../freeflow-docs" }
 freeflow-invoice = { version = "0.1.0", path = "../freeflow-invoice" }

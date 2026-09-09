@@ -242,6 +242,10 @@ pub fn run(
                     ));
                 }
             };
+            let captured_receipt = receipt_filename
+                .as_deref()
+                .zip(receipt_hash.as_deref())
+                .map(|(f, h)| (f.to_string(), h.to_string()));
             let command = expenses::RecordExpense {
                 label: args.label,
                 category: args.category,
@@ -255,6 +259,11 @@ pub fn run(
                 supplier: args.supplier,
             };
             let outcome = Executor::new(store).execute(&command, ctx)?;
+            if let (freeflow_core::app::Outcome::Applied(id), Some((filename, hash))) =
+                (&outcome, captured_receipt)
+            {
+                let _ = crate::papers::capture_expense_receipt(store, ctx, *id, &filename, &hash);
+            }
             format_outcome(&outcome, json)
         }
         ExpenseCommand::List => {
@@ -300,6 +309,11 @@ pub fn run(
                     ),
                 }
             };
+            let new_receipt = args.receipt.is_some();
+            let captured_receipt = receipt_filename
+                .as_deref()
+                .zip(receipt_hash.as_deref())
+                .map(|(f, h)| (f.to_string(), h.to_string()));
             let command = expenses::UpdateExpense {
                 id,
                 revision: current.revision,
@@ -318,6 +332,9 @@ pub fn run(
                 },
             };
             let outcome = Executor::new(store).execute(&command, ctx)?;
+            if new_receipt && let Some((filename, hash)) = captured_receipt {
+                let _ = crate::papers::capture_expense_receipt(store, ctx, id, &filename, &hash);
+            }
             format_outcome(&outcome, json)
         }
         ExpenseCommand::Rm { reference } => {
@@ -344,10 +361,21 @@ pub fn run(
             let command = expenses::AttachReceipt {
                 id,
                 revision: current.revision,
-                receipt_hash,
-                receipt_filename,
+                receipt_hash: receipt_hash.clone(),
+                receipt_filename: receipt_filename.clone(),
             };
             let outcome = Executor::new(store).execute(&command, ctx)?;
+            if matches!(outcome, freeflow_core::app::Outcome::Applied(_))
+                && !receipt_filename.is_empty()
+            {
+                let _ = crate::papers::capture_expense_receipt(
+                    store,
+                    ctx,
+                    id,
+                    &receipt_filename,
+                    &receipt_hash,
+                );
+            }
             format_outcome_as(&outcome, json, |revision| {
                 format!("justificatif joint (révision {revision})")
             })

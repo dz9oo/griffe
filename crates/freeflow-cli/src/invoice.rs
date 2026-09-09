@@ -194,7 +194,16 @@ pub fn run_invoice(
                 payment_terms_days,
             };
             let outcome = Executor::new(store).execute(&command, ctx)?;
-            format_outcome(&outcome, json)
+            let rendered = format_outcome(&outcome, json);
+            let note = match &outcome {
+                freeflow_core::app::Outcome::Applied(emitted) => {
+                    crate::papers::invoice_capture_note(crate::papers::capture_invoice(
+                        store, ctx, emitted.id,
+                    ))
+                }
+                _ => None,
+            };
+            crate::papers::append_capture_note(rendered, json, note)
         }
         InvoiceCommand::CreditNote { id, issued_on } => {
             let command = billing::IssueCreditNote {
@@ -202,7 +211,16 @@ pub fn run_invoice(
                 issued_on,
             };
             let outcome = Executor::new(store).execute(&command, ctx)?;
-            format_outcome(&outcome, json)
+            let rendered = format_outcome(&outcome, json);
+            let note = match &outcome {
+                freeflow_core::app::Outcome::Applied(emitted) => {
+                    crate::papers::invoice_capture_note(crate::papers::capture_invoice(
+                        store, ctx, emitted.id,
+                    ))
+                }
+                _ => None,
+            };
+            crate::papers::append_capture_note(rendered, json, note)
         }
         InvoiceCommand::VerifyChain => {
             let status = verify_chain(store.connection())?;
@@ -292,9 +310,10 @@ pub fn run_invoice(
             let pdf = freeflow_invoice::render_pdf(&invoice, &client, &profile, None)
                 .map_err(|e| CliError::Unexpected(e.to_string()))?;
             let size = pdf.len();
-            std::fs::write(&out, pdf).map_err(|e| {
+            std::fs::write(&out, &pdf).map_err(|e| {
                 CliError::Unexpected(format!("écriture de {} impossible : {e}", out.display()))
             })?;
+            let _ = crate::papers::capture_invoice(store, ctx, id);
             format!("✓ {} écrit ({size} octets)", out.display())
         }
     };
@@ -518,10 +537,33 @@ pub fn run_bank(
             if ctx.dry_run {
                 return import_preview(store, &parsed, json);
             }
+            let original_name = file
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .filter(|n| !n.is_empty())
+                .unwrap_or_else(|| "releve.csv".to_string());
+            let period = {
+                let fye = freeflow_core::company::company_profile(store.connection())?
+                    .and_then(|p| p.fiscal_year_end)
+                    .unwrap_or(freeflow_core::domain::FiscalYearEnd::CALENDAR);
+                parsed
+                    .transactions
+                    .first()
+                    .map(|t| fye.containing(t.occurred_on).end().year())
+            };
             let command = billing::ImportBankTransactions {
                 transactions: parsed.transactions,
             };
             let outcome = Executor::new(store).execute(&command, ctx)?;
+            if matches!(outcome, freeflow_core::app::Outcome::Applied(_)) {
+                let _ = crate::papers::capture_bank_statement(
+                    store,
+                    ctx,
+                    &original_name,
+                    &bytes,
+                    period,
+                );
+            }
             let rendered = format_outcome(&outcome, json);
             if json || parsed.skipped.is_empty() {
                 rendered

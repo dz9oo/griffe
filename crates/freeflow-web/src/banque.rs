@@ -126,13 +126,45 @@ pub async fn import(State(state): State<AppState>, Form(form): Form<ImportForm>)
                 .into_response();
         }
     };
+    let original_name = {
+        let name = form.filename.trim();
+        if name.is_empty() {
+            "releve.csv".to_string()
+        } else {
+            std::path::Path::new(name)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .filter(|n| !n.is_empty())
+                .unwrap_or_else(|| "releve.csv".to_string())
+        }
+    };
+    let first_on = parsed.transactions.first().map(|t| t.occurred_on);
     let cmd = billing::ImportBankTransactions {
         transactions: parsed.transactions,
     };
     let outcome = state
-        .with_store_mut(|store| Executor::new(store).execute(&cmd, &AppState::human_ctx()))
+        .with_store_mut(|store| {
+            let result = Executor::new(store).execute(&cmd, &AppState::human_ctx());
+            if matches!(&result, Ok(freeflow_core::app::Outcome::Applied(_))) {
+                let period = first_on.map(|on| {
+                    let fye = freeflow_core::company::company_profile(store.connection())
+                        .ok()
+                        .flatten()
+                        .and_then(|p| p.fiscal_year_end)
+                        .unwrap_or(freeflow_core::domain::FiscalYearEnd::CALENDAR);
+                    fye.containing(on).end().year()
+                });
+                let _ = freeflow_cli::capture_bank_statement(
+                    store,
+                    &AppState::human_ctx(),
+                    &original_name,
+                    &bytes,
+                    period,
+                );
+            }
+            result
+        })
         .await;
-    let _ = form.filename;
     match outcome {
         None => locked_fragment().into_response(),
         Some(Ok(_)) => saved(),
