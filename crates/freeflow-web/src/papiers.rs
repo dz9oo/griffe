@@ -1,7 +1,7 @@
-//! Chapitre Les papiers (lot 59) : `GET /societe/papiers`, `POST /societe/papiers` (dépôt
-//! multipart). Succès → `200` vide + `HX-Trigger: freeflow:saved`. Pas de pack (lot 60).
+//! Chapitre Les papiers : `GET /societe/papiers`, `POST /societe/papiers` (dépôt
+//! multipart), `POST /societe/papiers/export` (pack contrôle en clair, dossier temporaire).
 
-use axum::extract::{DefaultBodyLimit, Multipart, Query, State};
+use axum::extract::{DefaultBodyLimit, Form, Multipart, Query, State};
 use axum::http::{HeaderMap, HeaderValue};
 use axum::response::{Html, IntoResponse, Response};
 use freeflow_core::domain::{FiscalYearEnd, PaperKind, PaperOrigin};
@@ -201,5 +201,47 @@ pub async fn deposit(State(state): State<AppState>, multipart: Multipart) -> Res
         Some(Err(e)) => {
             chapter_with_banner(&state, period.unwrap_or(0), &views::errors::message(&e)).await
         }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ExportForm {
+    pub period: i32,
+}
+
+fn control_pack_temp_dir(period: i32) -> std::path::PathBuf {
+    let base = std::env::temp_dir().join(format!("freeflow-controle-{period}"));
+    if !base.exists() {
+        return base;
+    }
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    std::env::temp_dir().join(format!("freeflow-controle-{period}-{nanos}"))
+}
+
+fn open_dir(path: &std::path::Path) {
+    let opener = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    let _ = std::process::Command::new(opener).arg(path).spawn();
+}
+
+pub async fn export(State(state): State<AppState>, Form(form): Form<ExportForm>) -> Response {
+    let today = state.today();
+    let dest = control_pack_temp_dir(form.period);
+    let outcome = state
+        .with_store(|store| freeflow_cli::write_control_pack(store, form.period, &dest, today))
+        .await;
+    match outcome {
+        None => locked().into_response(),
+        Some(Ok(report)) => {
+            open_dir(&dest);
+            Html(views::papiers::export_done(&report).into_string()).into_response()
+        }
+        Some(Err(e)) => chapter_with_banner(&state, form.period, &e.to_string()).await,
     }
 }

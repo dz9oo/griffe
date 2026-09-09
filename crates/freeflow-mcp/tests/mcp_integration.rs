@@ -190,6 +190,7 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "papers.add",
         "papers.purge",
         "papers.checklist",
+        "papers.export",
     ] {
         assert!(names.contains(expected), "outil manquant : {expected}");
     }
@@ -2391,6 +2392,28 @@ async fn papers_add_over_mcp_is_direct_and_purge_needs_a_human() {
     assert_eq!(purged["status"], "pending_confirmation");
     let still = json_of(&call(&client, "papers.list", json!({})).await);
     assert_eq!(still.as_array().unwrap().len(), 1);
+
+    client.cancel().await.unwrap();
+}
+
+/// Lot 60 : `papers.export` refuse d'écrire dans un chemin qui existe déjà.
+#[tokio::test]
+async fn papers_export_over_mcp_refuses_an_existing_destination() {
+    let db_path = test_db_path("papers-export-mcp");
+    let store = Store::create(&db_path, &Passphrase::from("s3cret")).unwrap();
+    let client = spawn_client(store).await;
+
+    let dest = db_path.with_file_name("pack");
+    std::fs::create_dir_all(&dest).unwrap();
+    let refused = call(
+        &client,
+        "papers.export",
+        json!({"period": 2026, "out": dest.to_str().unwrap()}),
+    )
+    .await;
+    assert_eq!(refused.is_error, Some(true), "{refused:?}");
+    let text = tool_text(&refused);
+    assert!(text.contains("existe déjà"), "{text}");
 
     client.cancel().await.unwrap();
 }

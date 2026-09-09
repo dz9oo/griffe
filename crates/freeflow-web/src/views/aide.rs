@@ -125,7 +125,34 @@ const CLORE: Recipe = Recipe {
     action: Some("Ouvrir la clôture"),
 };
 
-const RECIPES: &[Recipe] = &[RELANCER, CONVERSATION, DEVIS, RELEVE, IMPOTS, CFE, CLORE];
+const PAPIERS: Recipe = Recipe {
+    slug: "papiers",
+    kicker: "L'État",
+    title: "Garder les originaux, tendre le dossier d'un contrôle.",
+    lede: "Les originaux nés ici restent ici. Ce que FreeFlow ne produit pas, vous le déposez. Le jour d'un contrôle, un dossier en clair.",
+    steps: &[
+        "Les papiers, dans La société : la liste dit ce qui manque pour l'exercice.",
+        "Déposez ce que FreeFlow ne produit pas : Kbis, statuts, accusé de dépôt.",
+        "Quand il faut tendre une liasse : Préparer le dossier d'un contrôle. Un dossier s'ouvre, en clair.",
+        "Ces fichiers ne sont plus chiffrés. Ne les laissez pas à côté du coffre.",
+    ],
+    does_not: Some(
+        "Ce n'est pas un coffre-fort certifié. Un scan déposé est une copie de travail ; le papier reste l'original.",
+    ),
+    href: Some("/societe/papiers"),
+    action: Some("Ouvrir Les papiers"),
+};
+
+const RECIPES: &[Recipe] = &[
+    RELANCER,
+    CONVERSATION,
+    DEVIS,
+    RELEVE,
+    IMPOTS,
+    CFE,
+    CLORE,
+    PAPIERS,
+];
 
 fn chapter_link(href: &str, title: &str, sub: &str) -> Markup {
     html! {
@@ -191,6 +218,7 @@ pub fn index() -> Markup {
             (chapter_link("/aide/impots", "Ce que tu dois à l'État.", "Le jour vous prévient"))
             (chapter_link("/aide/cfe", "La cotisation foncière.", "l'avis, pas le coffre"))
             (chapter_link("/aide/clore", "Clore, approuver, déposer.", "le parcours, puis le greffe"))
+            (chapter_link("/aide/papiers", "Garder les originaux.", "tendre le dossier d'un contrôle"))
         }
         p class="section-label" { "Portes" }
         ul class="chapters" {

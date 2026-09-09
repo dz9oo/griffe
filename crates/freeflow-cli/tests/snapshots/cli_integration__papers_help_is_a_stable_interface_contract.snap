@@ -12,6 +12,7 @@ Commands:
   add        Dépose un fichier au coffre (statuts, Kbis, avis, contrat…) — chiffré comme un justificatif. Un scan est une copie de travail ; un original né ici se fige à l'émission
   rm         Purge une pièce dont le délai de conservation est échu. Un agent propose, un humain confirme. Les statuts et le Kbis ne se purgent pas tant que la société existe
   checklist  Checklist de conservation d'un exercice : originaux figés, pièces manquantes
+  export     Écrit le dossier d'un contrôle en clair (inventaire + originaux). Le dossier doit être neuf — on n'écrase jamais. Ces fichiers ne sont plus chiffrés
   help       Print this message or the help of the given subcommand(s)
 
 Options:

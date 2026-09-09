@@ -330,6 +330,20 @@ implémentation.
   et clore à nouveau) ; l'utilisation de la créance (paiement de l'IS des cinq exercices
   suivants, remboursement au terme) n'est pas suivie.
 
+### Les papiers
+- Coffre documentaire local : les originaux nés ici (Factur-X, PV, FEC, liasse, relevé importé)
+  se figent au premier geste, chiffrés comme un justificatif. Un re-rendu plus tard ne les
+  remplace pas. Un scan déposé est une **copie de travail** ; le papier reste l'original.
+- Catalogue SASU, 10 ans après la clôture (statuts et Kbis : jusqu'à radiation). Pas de
+  destruction automatique. `freeflow papers list|show|add|rm|checklist`, outils MCP `papers.*`,
+  chapitre Les papiers dans La société.
+- **Pack contrôle en clair** : `freeflow papers export 2026 --out ./controle-2026` (dossier
+  **neuf**), outil MCP `papers.export` (refuse d'écraser), bouton « Préparer le dossier d'un
+  contrôle » dans la fenêtre (dossier temporaire ouvert). Un `inventaire.txt` liste chaque
+  pièce (chemin, nature, empreinte, date). Ces fichiers ne sont plus chiffrés — ne les laissez
+  pas à côté du coffre. **Ce n'est pas un SAE**, pas une valeur probante opposable, pas NF
+  Z42-013 : un coffre local intègre, assez pour tendre une liasse le jour d'un contrôle.
+
 ### Sécurité & fiabilité
 - Chiffrement SQLCipher par une **clé maître aléatoire** (modèle LUKS) : la passphrase ne sert
   qu'à dériver, par Argon2id, la clé qui enveloppe cette clé maître dans le sidecar `<db>.kdf`

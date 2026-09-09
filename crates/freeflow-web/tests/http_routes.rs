@@ -396,6 +396,7 @@ async fn the_help_letter_explains_atelier_and_opens_recipes() {
         "impots",
         "cfe",
         "clore",
+        "papiers",
         "lexique",
     ] {
         assert!(
@@ -506,6 +507,25 @@ async fn the_help_letter_explains_atelier_and_opens_recipes() {
         clore.contains("href=\"/societe/impots/accounts-filing\""),
         "{clore}"
     );
+
+    let papiers = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/aide/papiers")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(papiers.contains("Garder les originaux"), "{papiers}");
+    assert!(papiers.contains("href=\"/societe/papiers\""), "{papiers}");
+    assert!(!papiers.contains("SAE"), "{papiers}");
+    assert!(!papiers.contains("NF Z42"), "{papiers}");
+    assert!(!papiers.contains("freeflow "), "{papiers}");
 
     let impots = body_text(
         router
@@ -894,6 +914,8 @@ async fn la_societe_shows_the_landscape_chapters_and_a_closed_dividend() {
     assert!(home.contains("class=\"landscape\""), "paysage : {home}");
     assert!(home.contains("Te payer"), "{home}");
     assert!(home.contains("/societe/payer"), "{home}");
+    assert!(home.contains("Les papiers"), "{home}");
+    assert!(home.contains("/societe/papiers"), "{home}");
     assert!(
         !home.contains("freeflow "),
         "pas de commande CLI dans la lettre : {home}"
@@ -5734,4 +5756,63 @@ async fn depositing_a_kbis_from_the_papers_chapter_archives_it() {
         .filter_map(Result::ok)
         .collect();
     assert_eq!(files.len(), 1, "un blob chiffré dans .receipts/");
+}
+
+#[tokio::test]
+async fn exporting_the_control_pack_from_the_window_writes_a_readable_inventory() {
+    let db_path = test_db_path("papiers-export");
+    let state = unlocked_state(&db_path)
+        .await
+        .with_today(time::macros::date!(2027 - 06 - 01));
+    let router = freeflow_web::router(state);
+
+    let posted = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/societe/papiers/export")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from("period=2026"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(posted.status(), StatusCode::OK);
+    let body = body_text(posted).await;
+    assert!(
+        body.contains("Ces fichiers ne sont plus chiffrés"),
+        "{body}"
+    );
+    assert!(!body.contains("freeflow "), "{body}");
+    let dir = body
+        .split("data-pack-dir=\"")
+        .nth(1)
+        .and_then(|s| s.split('"').next())
+        .expect("le panneau porte le chemin du dossier");
+    let inventory = Path::new(dir).join("inventaire.txt");
+    let inventory_text = std::fs::read_to_string(&inventory)
+        .unwrap_or_else(|e| panic!("inventaire introuvable à {} : {e}", inventory.display()));
+    assert!(
+        inventory_text.contains("Dossier d'un contrôle — exercice 2026"),
+        "{inventory_text}"
+    );
+
+    let papiers = body_text(
+        router
+            .oneshot(
+                Request::builder()
+                    .uri("/societe/papiers?period=2026")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        papiers.contains("Préparer le dossier d'un contrôle"),
+        "{papiers}"
+    );
+    assert!(!papiers.contains("freeflow "), "{papiers}");
 }

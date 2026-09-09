@@ -195,6 +195,7 @@ pub fn router(state: AppState) -> Router {
                 .post(papiers::deposit)
                 .layer(papiers::body_limit()),
         )
+        .route("/societe/papiers/export", post(papiers::export))
         .route("/premiers-pas", get(premiers_pas::show))
         .route(
             "/premiers-pas/nouvelle",

@@ -1,4 +1,5 @@
-//! Coffre documentaire (lots 57–59) : index SQL des pièces, primitive d'archivage, checklist.
+//! Coffre documentaire (lots 57–60) : index SQL des pièces, primitive d'archivage, checklist,
+//! manifeste du pack contrôle.
 //!
 //! Les octets vivent dans `<coffre>.receipts/` via [`crate::receipts`] — même crypto que les
 //! justificatifs. Une [`Command`] n'écrit que l'index (`&Connection`) ; l'IO fichier est faite
@@ -719,6 +720,147 @@ pub fn missing_identity_papers(checklist: &PapersChecklist) -> Vec<PaperKind> {
         .collect()
 }
 
+/// Une ligne du pack contrôle : chemin relatif en clair dans le dossier exporté.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControlPackItem {
+    pub relative_path: String,
+    pub paper_id: PaperId,
+    pub content_hash: String,
+    pub kind: PaperKind,
+}
+
+fn safe_file_name(original_name: &str) -> String {
+    std::path::Path::new(original_name)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .filter(|n| !n.is_empty() && n != "." && n != "..")
+        .unwrap_or_else(|| "document".to_string())
+}
+
+fn extension_of(name: &str) -> String {
+    std::path::Path::new(name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .filter(|e| !e.is_empty())
+        .unwrap_or_else(|| "bin".to_string())
+}
+
+fn hash12(hash: &str) -> String {
+    hash.chars().take(12).collect()
+}
+
+fn compact_date(date: Date) -> String {
+    format_date(date).replace('-', "")
+}
+
+fn uniquify(path: String, hash: &str, used: &mut std::collections::HashSet<String>) -> String {
+    if used.insert(path.clone()) {
+        return path;
+    }
+    let insert = format!("-{}", hash12(hash));
+    let uniqued = match path.rsplit_once('.') {
+        Some((stem, ext)) => format!("{stem}{insert}.{ext}"),
+        None => format!("{path}{insert}"),
+    };
+    if used.insert(uniqued.clone()) {
+        return uniqued;
+    }
+    let fallback = format!("{uniqued}-{}", used.len());
+    used.insert(fallback.clone());
+    fallback
+}
+
+fn fec_pack_name(conn: &Connection, period: i32) -> Result<String, AppError> {
+    let Some(profile) = company_profile(conn)? else {
+        return Ok(format!("fec-{period}.txt"));
+    };
+    let end = exercise_of(conn, period)?.end();
+    Ok(format!("{}FEC{}.txt", profile.siren, compact_date(end)))
+}
+
+fn invoice_pack_name(conn: &Connection, paper: &Paper) -> Result<String, AppError> {
+    if let Some(id) = paper.invoice_id
+        && let Some(invoice) = crate::billing::invoice_by_id(conn, id)?
+    {
+        return Ok(format!("{}.pdf", invoice.number));
+    }
+    let name = safe_file_name(&paper.original_name);
+    if name.rsplit_once('.').is_some() {
+        Ok(name)
+    } else {
+        Ok(format!("{name}.pdf"))
+    }
+}
+
+fn kind_relative_path(conn: &Connection, paper: &Paper, period: i32) -> Result<String, AppError> {
+    Ok(match paper.kind {
+        PaperKind::IssuedInvoice | PaperKind::CreditNote => {
+            format!("factures/{}", invoice_pack_name(conn, paper)?)
+        }
+        PaperKind::Fec => format!("fec/{}", fec_pack_name(conn, period)?),
+        PaperKind::Minutes => "cloture/minutes.pdf".into(),
+        PaperKind::Appropriation => "cloture/appropriation.pdf".into(),
+        PaperKind::Synthesis => "cloture/synthesis.pdf".into(),
+        PaperKind::BalanceSheet => "cloture/bilan.pdf".into(),
+        PaperKind::Inventory => "cloture/inventaire.pdf".into(),
+        PaperKind::EfiNotice => "cloture/efi.pdf".into(),
+        PaperKind::Liasse => "cloture/liasse.json".into(),
+        PaperKind::BankStatement => {
+            format!("releves/{}", safe_file_name(&paper.original_name))
+        }
+        PaperKind::ExpenseReceipt => {
+            format!("justificatifs/{}", safe_file_name(&paper.original_name))
+        }
+        other => {
+            let ext = extension_of(&paper.original_name);
+            format!(
+                "societe/{}-{}.{ext}",
+                other.as_str(),
+                hash12(&paper.content_hash)
+            )
+        }
+    })
+}
+
+fn pack_belongs(paper: &Paper, period: i32) -> bool {
+    paper.period == Some(period)
+        || (paper.period.is_none() && matches!(paper.kind, PaperKind::Statutes | PaperKind::Kbis))
+}
+
+/// Manifeste du pack contrôle d'un exercice : chemins relatifs en clair, hors pièces remplacées.
+/// L'écriture du dossier est de l'IO d'adaptateur.
+///
+/// # Errors
+///
+/// Erreur de lecture SQLite.
+pub fn control_pack_manifest(
+    conn: &Connection,
+    period: i32,
+) -> Result<Vec<ControlPackItem>, AppError> {
+    let papers = list_papers(conn, PaperFilter::ACTIVE)?
+        .into_iter()
+        .filter(|p| pack_belongs(p, period))
+        .collect::<Vec<_>>();
+    let mut used = std::collections::HashSet::new();
+    let mut items = Vec::with_capacity(papers.len());
+    for paper in papers {
+        let relative_path = uniquify(
+            kind_relative_path(conn, &paper, period)?,
+            &paper.content_hash,
+            &mut used,
+        );
+        items.push(ControlPackItem {
+            relative_path,
+            paper_id: paper.id,
+            content_hash: paper.content_hash,
+            kind: paper.kind,
+        });
+    }
+    items.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+    Ok(items)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1164,6 +1306,224 @@ mod tests {
                     && i.paper_id.is_none()
             }),
             "un justificatif déjà sur la dépense compte sans ligne papers : {empty_identity:?}"
+        );
+    }
+
+    fn spec(
+        kind: PaperKind,
+        origin: PaperOrigin,
+        original_name: &str,
+        period: Option<i32>,
+        invoice_id: Option<InvoiceId>,
+    ) -> NewPaper {
+        NewPaper {
+            kind,
+            origin,
+            original_name: original_name.into(),
+            mime: mime_from_name(original_name),
+            period,
+            issued_on: None,
+            client_id: None,
+            invoice_id,
+            expense_id: None,
+            fiscal_year_id: None,
+            note: None,
+            idempotency_key: None,
+        }
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn control_pack_manifest_lists_fec_invoice_and_minutes_with_unique_paths_and_skips_superseded()
+    {
+        use crate::company::SetCompanyProfile;
+        use crate::domain::{Address, Money, Siren, VatRegime};
+
+        let mut store = test_store("pack");
+        Executor::new(&mut store)
+            .execute(
+                &SetCompanyProfile {
+                    name: "Argon Digital".into(),
+                    legal_form: "SASU".into(),
+                    siren: Siren::parse("552100554").unwrap(),
+                    vat_number: None,
+                    address: Address {
+                        street: "12 rue de la Paix".into(),
+                        postal_code: "75002".into(),
+                        city: "Paris".into(),
+                        country: "FR".into(),
+                    },
+                    share_capital: Some(Money::from_cents(1_000_000)),
+                    rcs_city: Some("Paris".into()),
+                    iban: None,
+                    fiscal_year_end: Some(FiscalYearEnd::CALENDAR),
+                    vat_regime: Some(VatRegime::RealNormalMonthly),
+                    director_monthly_gross: None,
+                    director_charge_ratio_bps: None,
+                    president_name: None,
+                    sole_shareholder_name: None,
+                    sole_shareholder_address: None,
+                    share_count: None,
+                },
+                &human(),
+            )
+            .unwrap();
+        let invoice_id = emit_invoice(&mut store);
+        let invoice = crate::billing::invoice_by_id(store.connection(), invoice_id)
+            .unwrap()
+            .unwrap();
+
+        let invoice_paper = applied(
+            archive_paper(
+                &mut store,
+                spec(
+                    PaperKind::IssuedInvoice,
+                    PaperOrigin::Issued,
+                    &format!("{}.pdf", invoice.number),
+                    Some(2026),
+                    Some(invoice_id),
+                ),
+                b"%PDF FA",
+                &human(),
+            )
+            .unwrap(),
+        );
+        applied(
+            archive_paper(
+                &mut store,
+                spec(
+                    PaperKind::Fec,
+                    PaperOrigin::Issued,
+                    "552100554FEC20261231.txt",
+                    Some(2026),
+                    None,
+                ),
+                b"JournalCode|JournalLib|",
+                &human(),
+            )
+            .unwrap(),
+        );
+        applied(
+            archive_paper(
+                &mut store,
+                spec(
+                    PaperKind::Minutes,
+                    PaperOrigin::Issued,
+                    "pv-2026.pdf",
+                    Some(2026),
+                    None,
+                ),
+                b"%PDF PV",
+                &human(),
+            )
+            .unwrap(),
+        );
+        applied(
+            archive_paper(
+                &mut store,
+                spec(
+                    PaperKind::ExpenseReceipt,
+                    PaperOrigin::Imported,
+                    "facture.pdf",
+                    Some(2026),
+                    None,
+                ),
+                b"%PDF recu A",
+                &human(),
+            )
+            .unwrap(),
+        );
+        applied(
+            archive_paper(
+                &mut store,
+                spec(
+                    PaperKind::ExpenseReceipt,
+                    PaperOrigin::Imported,
+                    "facture.pdf",
+                    Some(2026),
+                    None,
+                ),
+                b"%PDF recu B different",
+                &human(),
+            )
+            .unwrap(),
+        );
+
+        let old_statutes = applied(
+            archive_paper(
+                &mut store,
+                spec(
+                    PaperKind::Statutes,
+                    PaperOrigin::Uploaded,
+                    "statuts-v1.pdf",
+                    None,
+                    None,
+                ),
+                b"%PDF v1",
+                &human(),
+            )
+            .unwrap(),
+        );
+        let replacement = applied(
+            archive_paper(
+                &mut store,
+                spec(
+                    PaperKind::Statutes,
+                    PaperOrigin::Uploaded,
+                    "statuts-v2.pdf",
+                    None,
+                    None,
+                ),
+                b"%PDF v2",
+                &human(),
+            )
+            .unwrap(),
+        );
+        store
+            .connection()
+            .execute(
+                "UPDATE papers SET superseded_by = ?1 WHERE id = ?2",
+                rusqlite::params![replacement.id.to_string(), old_statutes.id.to_string()],
+            )
+            .unwrap();
+
+        let pack = control_pack_manifest(store.connection(), 2026).unwrap();
+        let paths: Vec<&str> = pack.iter().map(|i| i.relative_path.as_str()).collect();
+        let unique: std::collections::HashSet<&str> = paths.iter().copied().collect();
+        assert_eq!(unique.len(), paths.len(), "chemins uniques : {paths:?}");
+
+        assert!(
+            pack.iter().any(|i| {
+                i.kind == PaperKind::IssuedInvoice
+                    && i.paper_id == invoice_paper.id
+                    && i.relative_path == format!("factures/{}.pdf", invoice.number)
+            }),
+            "{pack:?}"
+        );
+        assert!(
+            pack.iter().any(|i| {
+                i.kind == PaperKind::Fec && i.relative_path == "fec/552100554FEC20261231.txt"
+            }),
+            "{pack:?}"
+        );
+        assert!(
+            pack.iter()
+                .any(|i| i.kind == PaperKind::Minutes && i.relative_path == "cloture/minutes.pdf"),
+            "{pack:?}"
+        );
+        let receipts: Vec<_> = pack
+            .iter()
+            .filter(|i| i.kind == PaperKind::ExpenseReceipt)
+            .collect();
+        assert_eq!(receipts.len(), 2, "{pack:?}");
+        assert!(
+            pack.iter()
+                .any(|i| i.kind == PaperKind::Statutes && i.paper_id == replacement.id),
+            "le remplacement est dans le pack : {pack:?}"
+        );
+        assert!(
+            pack.iter().all(|i| i.paper_id != old_statutes.id),
+            "une pièce remplacée n'entre pas dans le pack : {pack:?}"
         );
     }
 }

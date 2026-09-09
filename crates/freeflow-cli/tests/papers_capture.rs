@@ -297,3 +297,115 @@ fn papers_checklist_json_shows_issued_invoice_todo_then_done() {
         .expect("une ligne issued_invoice");
     assert_eq!(invoice_item["status"], "done", "{after}");
 }
+
+/// Lot 60 : un dossier neuf, un inventaire, un PDF relisible, pas d'écrasement.
+#[test]
+fn papers_export_writes_a_cleartext_pack_and_refuses_to_overwrite() {
+    let db = temp_db("papers-export");
+    provision(&db);
+    let pdf = db.with_file_name("statuts.pdf");
+    std::fs::write(&pdf, b"%PDF-1.4 statuts SASU").unwrap();
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["papers", "add"])
+        .arg(&pdf)
+        .args(["--kind", "statutes"])
+        .assert()
+        .success();
+
+    let dest = db.with_file_name("pack");
+    let text = String::from_utf8(
+        freeflow()
+            .env("FREEFLOW_DB", &db)
+            .args(["papers", "export", "2026", "--out"])
+            .arg(&dest)
+            .args(["--today", "2026-09-09"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    )
+    .unwrap();
+    assert!(text.contains("Dossier d'un contrôle"), "{text}");
+    assert!(
+        text.contains("Ces fichiers ne sont plus chiffrés"),
+        "{text}"
+    );
+
+    let inventory = dest.join("inventaire.txt");
+    let inventory_text = std::fs::read_to_string(&inventory).unwrap();
+    assert!(
+        inventory_text.contains("Dossier d'un contrôle — exercice 2026"),
+        "{inventory_text}"
+    );
+    assert!(inventory_text.contains("statuts"), "{inventory_text}");
+
+    let mut found_pdf = false;
+    for entry in walkdir_files(&dest) {
+        let bytes = std::fs::read(&entry).unwrap();
+        if bytes.starts_with(b"%PDF") {
+            found_pdf = true;
+            break;
+        }
+    }
+    assert!(
+        found_pdf,
+        "au moins un PDF relisible dans {}",
+        dest.display()
+    );
+
+    let json = json_result(
+        &freeflow()
+            .env("FREEFLOW_DB", &db)
+            .args(["--json", "papers", "export", "2026", "--out"])
+            .arg(db.with_file_name("pack-json"))
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert_eq!(json["period"], 2026);
+    assert!(json["files"].as_u64().unwrap() >= 2, "{json}");
+    assert!(
+        json["warning"]
+            .as_str()
+            .unwrap()
+            .contains("ne sont plus chiffrés"),
+        "{json}"
+    );
+
+    let stderr = String::from_utf8_lossy(
+        &freeflow()
+            .env("FREEFLOW_DB", &db)
+            .args(["papers", "export", "2026", "--out"])
+            .arg(&dest)
+            .assert()
+            .failure()
+            .code(4)
+            .get_output()
+            .stderr,
+    )
+    .into_owned();
+    assert!(stderr.contains("existe déjà"), "{stderr}");
+}
+
+fn walkdir_files(root: &Path) -> Vec<std::path::PathBuf> {
+    let mut files = Vec::new();
+    fn walk(dir: &Path, files: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, files);
+            } else {
+                files.push(path);
+            }
+        }
+    }
+    walk(root, &mut files);
+    files
+}

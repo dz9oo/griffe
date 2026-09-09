@@ -1,4 +1,5 @@
-//! `papers.list` / `papers.show` / `papers.add` / `papers.purge` / `papers.checklist`.
+//! `papers.list` / `papers.show` / `papers.add` / `papers.purge` / `papers.checklist` /
+//! `papers.export`.
 
 use freeflow_core::app::Executor;
 use freeflow_core::clock::today_local;
@@ -65,6 +66,16 @@ pub(crate) struct PapersPurgeArgs {
 pub(crate) struct PapersChecklistArgs {
     /// Année civile de la clôture (ex. `2026`) — même désignation que `fiscal.year_show`.
     period: i32,
+    /// Date du jour `AAAA-MM-JJ`. Défaut : aujourd'hui (heure locale).
+    today: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct PapersExportArgs {
+    /// Année civile de la clôture (ex. `2026`) — même désignation que `fiscal.year_show`.
+    period: i32,
+    /// Répertoire **neuf** à créer. Refusé s'il existe déjà (un agent n'écrase pas).
+    out: String,
     /// Date du jour `AAAA-MM-JJ`. Défaut : aujourd'hui (heure locale).
     today: Option<String>,
 }
@@ -218,6 +229,36 @@ impl FreeflowServer {
         let store = self.store.lock().await;
         match load_papers_checklist(store.connection(), args.period, today) {
             Ok(checklist) => ok_json(checklist),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
+    /// Écrit le dossier d'un contrôle en clair (inventaire + originaux déchiffrés). `out` est un
+    /// répertoire **neuf** — refusé s'il existe. Ces fichiers ne sont plus chiffrés.
+    #[tool(
+        name = "papers.export",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false
+        )
+    )]
+    async fn papers_export(
+        &self,
+        Parameters(args): Parameters<PapersExportArgs>,
+    ) -> CallToolResult {
+        let today = match args.today {
+            Some(s) => ok_or_return!("today", parse_date(&s)),
+            None => today_local(),
+        };
+        let store = self.store.lock().await;
+        match freeflow_cli::write_control_pack(
+            &store,
+            args.period,
+            std::path::Path::new(&args.out),
+            today,
+        ) {
+            Ok(report) => ok_json(report),
             Err(e) => err_text(e.to_string()),
         }
     }

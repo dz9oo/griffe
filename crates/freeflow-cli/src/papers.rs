@@ -1,9 +1,9 @@
-//! `freeflow papers list|show|add|rm` — Les papiers (lot 57) et capture automatique des
-//! originaux nés ici (lot 58). Les helpers [`capture_invoice`], [`capture_year`],
-//! [`capture_bank_statement`] et [`capture_expense_receipt`] sont publics : la fenêtre et le
-//! serveur MCP les appellent après l'effet juridique, jamais depuis un `Command::apply`.
+//! `freeflow papers list|show|add|rm|checklist|export` — Les papiers. Les helpers
+//! [`capture_invoice`], [`capture_year`], [`capture_bank_statement`],
+//! [`capture_expense_receipt`] et [`write_control_pack`] sont publics : la fenêtre et le
+//! serveur MCP les appellent, jamais depuis un `Command::apply`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
 use freeflow_core::app::{ExecutionContext, Executor, Outcome};
@@ -17,8 +17,9 @@ use freeflow_core::expenses::{expense_by_id, hash_receipt};
 use freeflow_core::fec::build_fec;
 use freeflow_core::fiscal_year::fiscal_year_ending_in;
 use freeflow_core::papers::{
-    ArchivePaper, NewPaper, Paper, PaperFilter, PapersChecklist, PurgePaper, archive_paper,
-    issued_paper, list_papers, mime_from_name, paper_by_id, papers_checklist,
+    ArchivePaper, ControlPackItem, NewPaper, Paper, PaperFilter, PapersChecklist, PurgePaper,
+    archive_paper, control_pack_manifest, issued_paper, list_papers, mime_from_name, paper_by_id,
+    papers_checklist,
 };
 use freeflow_core::store::Store;
 use time::Date;
@@ -106,6 +107,18 @@ pub enum PapersCommand {
     Checklist {
         /// Année civile de la clôture (ex. `2026`) — même désignation que `year show`.
         period: i32,
+        /// Date du jour (défaut : aujourd'hui, heure locale) — pour les tests.
+        #[arg(long, value_parser = parse_date)]
+        today: Option<Date>,
+    },
+    /// Écrit le dossier d'un contrôle en clair (inventaire + originaux). Le dossier doit être
+    /// neuf — on n'écrase jamais. Ces fichiers ne sont plus chiffrés.
+    Export {
+        /// Année civile de la clôture (ex. `2026`) — même désignation que `year show`.
+        period: i32,
+        /// Répertoire **neuf** à créer. Refusé s'il existe déjà.
+        #[arg(long)]
+        out: PathBuf,
         /// Date du jour (défaut : aujourd'hui, heure locale) — pour les tests.
         #[arg(long, value_parser = parse_date)]
         today: Option<Date>,
@@ -219,6 +232,11 @@ pub fn run(
             let checklist = papers_checklist(store.connection(), period, today)?;
             Ok(format_value(&checklist, json))
         }
+        PapersCommand::Export { period, out, today } => {
+            let today = today.unwrap_or_else(today_local);
+            let report = write_control_pack(store, period, &out, today)?;
+            Ok(format_value(&report, json))
+        }
     }
 }
 
@@ -248,6 +266,121 @@ impl HumanRender for PapersChecklist {
         }
         out.trim_end().to_string()
     }
+}
+
+/// Bandeau / stdout du pack : les octets ne sont plus sous FFR1.
+pub const CLEARTEXT_WARNING: &str =
+    "Ces fichiers ne sont plus chiffrés. Ne les laissez pas à côté du coffre.";
+
+/// Rapport de [`write_control_pack`] — `--json` de `papers export`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ControlPackReport {
+    pub period: i32,
+    pub dest: String,
+    pub files: usize,
+    pub warning: String,
+    pub items: Vec<ControlPackItem>,
+}
+
+impl HumanRender for ControlPackReport {
+    fn render_human(&self) -> String {
+        format!(
+            "Dossier d'un contrôle — exercice {}\n  {} fichier{} dans {}\n  {}",
+            self.period,
+            self.files,
+            if self.files > 1 { "s" } else { "" },
+            self.dest,
+            self.warning
+        )
+    }
+}
+
+#[cfg(unix)]
+fn set_mode(path: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
+}
+
+#[cfg(not(unix))]
+fn set_mode(_path: &Path, _mode: u32) {}
+
+fn render_inventory(period: i32, today: Date, rows: &[(ControlPackItem, Paper)]) -> String {
+    use std::fmt::Write as _;
+    let mut out = format!(
+        "Dossier d'un contrôle — exercice {period}\nPréparé le {}\n\n",
+        format_date(today)
+    );
+    for (item, paper) in rows {
+        let _ = writeln!(
+            out,
+            "{}\t{}\t{}\t{}",
+            item.relative_path,
+            kind_label(item.kind),
+            item.content_hash,
+            format_date(paper.captured_at.date()),
+        );
+    }
+    out
+}
+
+/// Écrit le pack contrôle en clair dans `dest` (répertoire **neuf**, mode 0700 ; fichiers 0600).
+///
+/// # Errors
+///
+/// Destination déjà présente, IO, ou pièce illisible.
+pub fn write_control_pack(
+    store: &Store,
+    period: i32,
+    dest: &Path,
+    today: Date,
+) -> Result<ControlPackReport, CliError> {
+    if dest.exists() {
+        return Err(CliError::Domain(format!(
+            "le dossier {} existe déjà — choisissez un chemin neuf",
+            dest.display()
+        )));
+    }
+    let items = control_pack_manifest(store.connection(), period)?;
+    std::fs::create_dir_all(dest).map_err(|e| {
+        CliError::Unexpected(format!("création de {} impossible : {e}", dest.display()))
+    })?;
+    set_mode(dest, 0o700);
+
+    let mut rows = Vec::with_capacity(items.len());
+    for item in &items {
+        let paper = paper_by_id(store.connection(), item.paper_id)?
+            .ok_or_else(|| CliError::Domain(format!("pièce introuvable : {}", item.paper_id)))?;
+        let bytes = freeflow_core::receipts::read(store, &paper.filename)
+            .map_err(|e| CliError::Unexpected(e.to_string()))?;
+        let path = dest.join(&item.relative_path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                CliError::Unexpected(format!("création de {} impossible : {e}", parent.display()))
+            })?;
+        }
+        std::fs::write(&path, &bytes).map_err(|e| {
+            CliError::Unexpected(format!("écriture de {} impossible : {e}", path.display()))
+        })?;
+        set_mode(&path, 0o600);
+        rows.push((item.clone(), paper));
+    }
+
+    let inventory = dest.join("inventaire.txt");
+    std::fs::write(&inventory, render_inventory(period, today, &rows)).map_err(|e| {
+        CliError::Unexpected(format!(
+            "écriture de {} impossible : {e}",
+            inventory.display()
+        ))
+    })?;
+    set_mode(&inventory, 0o600);
+
+    Ok(ControlPackReport {
+        period,
+        dest: dest.display().to_string(),
+        files: items.len() + 1,
+        warning: CLEARTEXT_WARNING.to_string(),
+        items,
+    })
 }
 
 /// Rapport de [`capture_year`] : chaque nature est indépendante.

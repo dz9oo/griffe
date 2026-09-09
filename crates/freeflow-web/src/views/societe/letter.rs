@@ -1,8 +1,11 @@
-//! Lettres de La société (lot 51) : accueil, Te payer, impôts, clore, relevé, identité.
+//! Lettres de La société : accueil, Te payer, impôts, clore, relevé, identité, Les papiers.
 
 use freeflow_core::app::AppError;
-use freeflow_core::domain::{Money, VatRegime, format_date, format_date_fr};
+use freeflow_core::closing::StepStatus;
+use freeflow_core::company::company_profile;
+use freeflow_core::domain::{FiscalYearEnd, Money, VatRegime, format_date, format_date_fr};
 use freeflow_core::fiscal::FiscalDeadlineKind;
+use freeflow_core::papers::papers_checklist;
 use freeflow_core::society::{
     AmountBasis, AmountStory, BeatKind, BeatWhen, BoxCoverage, BoxRole, ClosingBeat, ClosingStory,
     ConversationBar, DividendClosed, DividendDoor, Duty, DutyBriefing, Expect, FormBox,
@@ -44,10 +47,41 @@ fn back() -> Markup {
 /// La pièce « La société » : identité courte, paysage, conversations, chapitres.
 pub fn piece(store: &Store, today: Date) -> Result<Markup, AppError> {
     let home = society_home(store.connection(), today)?;
-    Ok(home_markup(&home, today))
+    let papers_sub = papers_chapter_sub(store, today);
+    Ok(home_markup(&home, today, &papers_sub))
 }
 
-fn home_markup(home: &SocietyHome, today: Date) -> Markup {
+fn papers_chapter_sub(store: &Store, today: Date) -> String {
+    let fiscal_year_end = company_profile(store.connection())
+        .ok()
+        .flatten()
+        .and_then(|p| p.fiscal_year_end)
+        .unwrap_or(FiscalYearEnd::CALENDAR);
+    let period = fiscal_year_end
+        .previous(fiscal_year_end.current(today))
+        .end()
+        .year();
+    let Ok(checklist) = papers_checklist(store.connection(), period, today) else {
+        return "Les originaux, pour un contrôle".into();
+    };
+    let missing = checklist
+        .items
+        .iter()
+        .filter(|i| {
+            matches!(
+                i.status,
+                StepStatus::Todo | StepStatus::Warning | StepStatus::Blocked
+            )
+        })
+        .count();
+    match missing {
+        0 => "Tout est au coffre".into(),
+        1 => format!("1 manquant pour {period}"),
+        n => format!("{n} manquants pour {period}"),
+    }
+}
+
+fn home_markup(home: &SocietyHome, today: Date, papers_sub: &str) -> Markup {
     let title = home.identity.name.as_deref().unwrap_or("La société.");
     let lede = identity_lede(&home.identity);
     let pay_sub = if home.pay.possible.is_zero() {
@@ -114,6 +148,7 @@ fn home_markup(home: &SocietyHome, today: Date) -> Markup {
                 (chapter_link("/societe/cloture", "Clore l'exercice", &closing_sub))
                 (chapter_link("/societe/releve", "Le relevé", &releve_sub))
                 (chapter_link("/societe/identite", "L'identité", &identite_sub))
+                (chapter_link("/societe/papiers", "Les papiers", papers_sub))
             }
         }
     }

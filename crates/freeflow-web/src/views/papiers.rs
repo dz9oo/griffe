@@ -1,5 +1,6 @@
-//! Chapitre Les papiers (lot 59) : checklist de conservation et dépôt d'une pièce extérieure.
+//! Chapitre Les papiers : checklist, dépôt, pack contrôle.
 
+use freeflow_cli::ControlPackReport;
 use freeflow_core::app::AppError;
 use freeflow_core::closing::StepStatus;
 use freeflow_core::domain::{PaperKind, format_date_fr};
@@ -125,6 +126,15 @@ fn chapter_markup(
                     p class="prose" { (p.kind.label_fr()) " · " (p.original_name) }
                 }
             }
+            h2 { "Pour un contrôle" }
+            p class="prose" {
+                "Un dossier en clair, à tendre. Ces fichiers ne sont plus chiffrés."
+            }
+            form hx-post="/societe/papiers/export" hx-target="#pack-result" hx-swap="innerHTML" {
+                (form::hidden("period", &period.to_string()))
+                button class="btn" type="submit" { "Préparer le dossier d'un contrôle" }
+            }
+            div id="pack-result" {}
             h2 { "Déposer une pièce" }
             form hx-post="/societe/papiers" hx-encoding="multipart/form-data" hx-swap="none" {
                 (form::select("kind", "Nature", &options, "kbis", None))
@@ -132,6 +142,18 @@ fn chapter_markup(
                 (form::file("file", "Fichier", ".pdf,.png,.jpg,.jpeg,.txt"))
                 (form::actions("Déposer"))
             }
+        }
+    }
+}
+
+/// Confirmation après `POST /societe/papiers/export` — le dossier est déjà sur le disque.
+#[must_use]
+pub fn export_done(report: &ControlPackReport) -> Markup {
+    html! {
+        div id="pack-result" data-pack-dir=(report.dest.as_str()) {
+            p class="prose" { (report.files) " fichiers, dossier ouvert." }
+            p class="prose" { (report.dest) }
+            p class="prose" style="color:var(--ink-2);font-size:14px" { (report.warning) }
         }
     }
 }
