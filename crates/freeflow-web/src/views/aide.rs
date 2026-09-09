@@ -2,7 +2,7 @@
 //! chaque recette ouvre une pièce déjà là. Copy fixe, aucune query.
 
 use freeflow_core::closing::GLOSSARY;
-use freeflow_core::fiscal::FiscalDeadlineKind;
+use freeflow_core::fiscal::{FiscalDeadlineKind, VatFilingScheme};
 use maud::{Markup, html};
 
 use crate::layout::ViewId;
@@ -261,7 +261,11 @@ fn duty_chapters(kinds: &[FiscalDeadlineKind]) -> Markup {
     html! {
         ul class="chapters" {
             @for kind in kinds {
-                (chapter_link(&duty_href(*kind), deadline_fr(*kind), "la lettre de la démarche"))
+                (chapter_link(
+                    &duty_href(*kind, None),
+                    deadline_fr(*kind, VatFilingScheme::Ca3Monthly),
+                    "la lettre de la démarche",
+                ))
             }
         }
     }

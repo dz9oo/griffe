@@ -783,6 +783,40 @@ fn society_duty_is_acompte_json_on_an_empty_vault_has_the_path() {
     let path = value["path"].as_array().expect("path");
     assert_eq!(path[0], "Déclarer");
     assert_eq!(path[1], "Impôt sur les sociétés");
+    let boxes = value["boxes"].as_array().expect("boxes");
+    assert_eq!(boxes[0]["case"], "03");
+    assert_eq!(boxes[1]["case"], "10");
+}
+
+#[test]
+fn society_filed_marks_the_current_is_acompte() {
+    let db = temp_db("society-filed");
+    provision(&db);
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["society", "filed", "is_acompte", "--today", "2026-09-05"])
+        .assert()
+        .success();
+    let output = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "--json",
+            "society",
+            "duty",
+            "is_acompte",
+            "--period",
+            "2026-09-15",
+            "--today",
+            "2026-09-05",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(value["filed_on"], "2026-09-05");
+    assert_eq!(value["due_on"], "2026-09-15");
 }
 
 #[test]

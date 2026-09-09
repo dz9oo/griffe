@@ -7,16 +7,29 @@
 //! défensifs (`with_store` renvoie `None` plutôt que de paniquer) au cas où l'état basculerait
 //! entre le passage du middleware et l'exécution du handler.
 
-use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::extract::rejection::FormRejection;
+use axum::extract::{Form, Path, State};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use maud::{Markup, html};
+use serde::Deserialize;
 
 use crate::layout::{self, ViewId};
 use crate::state::AppState;
 use crate::views;
+use freeflow_core::app::Executor;
+use freeflow_core::domain::parse_date;
 use freeflow_core::fiscal::FiscalDeadlineKind;
-use freeflow_core::society::duty_briefing;
+use freeflow_core::setup::vault_started_on;
+use freeflow_core::society::{MarkCatchUpFiled, MarkDutyFiled, RetractDutyFiled, duty_briefing};
+
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct FiledForm {
+    #[serde(default)]
+    filed_on: Option<String>,
+    #[serde(default)]
+    at_due: Option<String>,
+}
 
 fn is_htmx_request(headers: &HeaderMap) -> bool {
     headers.contains_key("hx-request")
@@ -109,11 +122,28 @@ pub async fn societe_duty(
     headers: HeaderMap,
     Path(kind): Path<String>,
 ) -> Response {
+    duty_letter(&state, headers, kind, None).await
+}
+
+pub async fn societe_duty_at(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((kind, period)): Path<(String, String)>,
+) -> Response {
+    duty_letter(&state, headers, kind, Some(period)).await
+}
+
+async fn duty_letter(
+    state: &AppState,
+    headers: HeaderMap,
+    kind: String,
+    period: Option<String>,
+) -> Response {
     let Some(kind) = parse_external_kind(&kind) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    letter(&state, headers, ViewId::Societe, move |store, today| {
-        views::societe::duty(store, today, kind)
+    letter(state, headers, ViewId::Societe, move |store, today| {
+        views::societe::duty(store, today, kind, period.as_deref())
     })
     .await
     .into_response()
@@ -124,22 +154,195 @@ pub async fn societe_duty_open(
     headers: HeaderMap,
     Path(kind): Path<String>,
 ) -> Response {
+    duty_open(&state, headers, kind, None).await
+}
+
+pub async fn societe_duty_open_at(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((kind, period)): Path<(String, String)>,
+) -> Response {
+    duty_open(&state, headers, kind, Some(period)).await
+}
+
+async fn duty_open(
+    state: &AppState,
+    headers: HeaderMap,
+    kind: String,
+    period: Option<String>,
+) -> Response {
     let Some(kind) = parse_external_kind(&kind) else {
         return StatusCode::NOT_FOUND.into_response();
     };
     let today = state.today();
+    let period_ref = period.as_deref();
     state
         .with_store(|store| {
-            if let Ok(briefing) = duty_briefing(store.connection(), kind, today) {
+            if let Ok(briefing) = duty_briefing(store.connection(), kind, today, period_ref) {
                 open_allowed_url(briefing.url);
             }
         })
         .await;
-    letter(&state, headers, ViewId::Societe, move |store, today| {
-        views::societe::duty(store, today, kind)
+    letter(state, headers, ViewId::Societe, move |store, today| {
+        views::societe::duty(store, today, kind, period.as_deref())
     })
     .await
     .into_response()
+}
+
+pub async fn societe_duty_filed(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(kind): Path<String>,
+    form: Result<Form<FiledForm>, FormRejection>,
+) -> Response {
+    mark_duty_filed(&state, headers, kind, None, form.ok().map(|Form(f)| f)).await
+}
+
+pub async fn societe_duty_filed_at(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((kind, period)): Path<(String, String)>,
+    form: Result<Form<FiledForm>, FormRejection>,
+) -> Response {
+    mark_duty_filed(
+        &state,
+        headers,
+        kind,
+        Some(period),
+        form.ok().map(|Form(f)| f),
+    )
+    .await
+}
+
+pub async fn societe_duties_catch_up(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Response {
+    let today = state.today();
+    let result = state
+        .with_store_mut(|store| {
+            let before = vault_started_on(store.connection(), today)?;
+            Executor::new(store).execute(&MarkCatchUpFiled { before }, &AppState::human_ctx())?;
+            Ok::<_, freeflow_core::app::AppError>(())
+        })
+        .await;
+    if let Some(Err(e)) = result {
+        return respond(headers, ViewId::Societe, error_markup(ViewId::Societe, e))
+            .await
+            .into_response();
+    }
+    letter(&state, headers, ViewId::Societe, views::societe::duties)
+        .await
+        .into_response()
+}
+
+async fn mark_duty_filed(
+    state: &AppState,
+    headers: HeaderMap,
+    kind: String,
+    period: Option<String>,
+    form: Option<FiledForm>,
+) -> Response {
+    let Some(kind) = parse_external_kind(&kind) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let today = state.today();
+    let period_owned = period.clone();
+    let form = form.unwrap_or_default();
+    let result = state
+        .with_store_mut(|store| {
+            let briefing = duty_briefing(store.connection(), kind, today, period_owned.as_deref())?;
+            let filed_on = if form.at_due.as_deref().is_some_and(|v| !v.is_empty()) {
+                briefing.due_on
+            } else {
+                form.filed_on
+                    .as_deref()
+                    .and_then(|s| parse_date(s).ok())
+                    .unwrap_or(today)
+            };
+            Executor::new(store).execute(
+                &MarkDutyFiled {
+                    kind,
+                    period_key: briefing.period_key,
+                    due_on: briefing.due_on,
+                    filed_on,
+                },
+                &AppState::human_ctx(),
+            )?;
+            Ok::<_, freeflow_core::app::AppError>(())
+        })
+        .await;
+    if let Some(Err(e)) = result {
+        return respond(headers, ViewId::Societe, error_markup(ViewId::Societe, e))
+            .await
+            .into_response();
+    }
+    let mut response = letter(state, headers, ViewId::Societe, move |store, today| {
+        views::societe::duty(store, today, kind, period.as_deref())
+    })
+    .await
+    .into_response();
+    response
+        .headers_mut()
+        .insert("HX-Trigger", HeaderValue::from_static("freeflow:saved"));
+    response
+}
+
+pub async fn societe_duty_unfiled(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(kind): Path<String>,
+) -> Response {
+    retract_duty_filed(&state, headers, kind, None).await
+}
+
+pub async fn societe_duty_unfiled_at(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((kind, period)): Path<(String, String)>,
+) -> Response {
+    retract_duty_filed(&state, headers, kind, Some(period)).await
+}
+
+async fn retract_duty_filed(
+    state: &AppState,
+    headers: HeaderMap,
+    kind: String,
+    period: Option<String>,
+) -> Response {
+    let Some(kind) = parse_external_kind(&kind) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let today = state.today();
+    let period_owned = period.clone();
+    let result = state
+        .with_store_mut(|store| {
+            let briefing = duty_briefing(store.connection(), kind, today, period_owned.as_deref())?;
+            Executor::new(store).execute(
+                &RetractDutyFiled {
+                    kind,
+                    period_key: briefing.period_key,
+                },
+                &AppState::human_ctx(),
+            )?;
+            Ok::<_, freeflow_core::app::AppError>(())
+        })
+        .await;
+    if let Some(Err(e)) = result {
+        return respond(headers, ViewId::Societe, error_markup(ViewId::Societe, e))
+            .await
+            .into_response();
+    }
+    let mut response = letter(state, headers, ViewId::Societe, move |store, today| {
+        views::societe::duty(store, today, kind, period.as_deref())
+    })
+    .await
+    .into_response();
+    response
+        .headers_mut()
+        .insert("HX-Trigger", HeaderValue::from_static("freeflow:saved"));
+    response
 }
 
 fn parse_external_kind(raw: &str) -> Option<FiscalDeadlineKind> {

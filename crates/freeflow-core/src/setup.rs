@@ -13,12 +13,13 @@
 
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
+use time::{Date, OffsetDateTime};
 
 use crate::app::{AppError, Command};
 use crate::billing::list_bank_transactions;
 use crate::company::{CompanyProfile, company_profile};
+use crate::domain::parse_date;
 use crate::opening_balance::opening_balance;
 
 /// L'état d'un prérequis.
@@ -196,6 +197,37 @@ pub fn setup_status(conn: &Connection) -> Result<SetupStatus, AppError> {
         declared_new_company,
         next_step,
     })
+}
+
+/// Jour où ce coffre a commencé à être utilisé. Les échéances d'État antérieures ne sont pas
+/// des retards dans `FreeFlow` : c'est un rattrapage.
+///
+/// Ordre : `setup.created_on` s'il est posé, sinon la date du premier événement d'audit, sinon
+/// `today` (coffre encore vierge).
+///
+/// # Errors
+pub fn vault_started_on(conn: &Connection, today: Date) -> Result<Date, AppError> {
+    let from_setup: Option<Option<String>> = conn
+        .query_row("SELECT created_on FROM setup WHERE id = 1", [], |row| {
+            row.get(0)
+        })
+        .optional()?;
+    if let Some(Some(s)) = from_setup
+        && let Ok(d) = parse_date(&s)
+    {
+        return Ok(d);
+    }
+    let from_audit: Option<String> = conn.query_row(
+        "SELECT substr(min(occurred_at), 1, 10) FROM audit_log",
+        [],
+        |row| row.get(0),
+    )?;
+    if let Some(s) = from_audit
+        && let Ok(d) = parse_date(&s)
+    {
+        return Ok(d);
+    }
+    Ok(today)
 }
 
 /// Déclare que la société vient d'être créée : il n'y a pas de bilan de cabinet à reprendre, la

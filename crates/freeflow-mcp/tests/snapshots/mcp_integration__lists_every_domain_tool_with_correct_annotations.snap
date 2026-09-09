@@ -167,7 +167,9 @@ expression: "json!({\n    \"tool_names\": names, \"invoice_emit_input_schema\":\
     "society.duties",
     "society.duty",
     "society.identity",
+    "society.mark_duty_filed",
     "society.pay",
+    "society.retract_duty_filed",
     "society.show",
     "society.statement"
   ]

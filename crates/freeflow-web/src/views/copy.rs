@@ -2,7 +2,7 @@
 //! les queries du mât / du mois / de se payer arrivent au lot 49.
 
 use freeflow_core::domain::{FiscalYearEnd, format_date_fr};
-use freeflow_core::fiscal::FiscalDeadlineKind;
+use freeflow_core::fiscal::{FiscalDeadlineKind, VatFilingScheme};
 use time::{Date, Weekday};
 
 #[must_use]
@@ -47,9 +47,12 @@ pub fn year_end_fr(end: FiscalYearEnd) -> String {
 }
 
 #[must_use]
-pub fn deadline_fr(kind: FiscalDeadlineKind) -> &'static str {
+pub fn deadline_fr(kind: FiscalDeadlineKind, scheme: VatFilingScheme) -> &'static str {
     match kind {
-        FiscalDeadlineKind::Ca3 => "TVA du trimestre",
+        FiscalDeadlineKind::Ca3 => match scheme {
+            VatFilingScheme::Ca3Monthly => "TVA du mois",
+            _ => "TVA du trimestre",
+        },
         FiscalDeadlineKind::VatInstalment => "acompte de TVA",
         FiscalDeadlineKind::Ca12 => "TVA de l'année",
         FiscalDeadlineKind::IsAcompte => "acompte d'impôt sur les sociétés",
@@ -64,9 +67,72 @@ pub fn deadline_fr(kind: FiscalDeadlineKind) -> &'static str {
     }
 }
 
+/// Libellé d'une occurrence, avec la période déclarée : « TVA du mois de septembre ».
 #[must_use]
-pub fn duty_href(kind: FiscalDeadlineKind) -> String {
-    format!("/societe/impots/{}", kind.as_str().replace('_', "-"))
+pub fn duty_occurrence_fr(
+    kind: FiscalDeadlineKind,
+    scheme: VatFilingScheme,
+    period_key: &str,
+    due_on: Date,
+) -> String {
+    match kind {
+        FiscalDeadlineKind::Ca3 => match scheme {
+            VatFilingScheme::Ca3Monthly => parse_year_month(period_key).map_or_else(
+                || deadline_fr(kind, scheme).to_string(),
+                |(_, month)| format!("TVA du mois {}", de_mois(month)),
+            ),
+            _ => parse_year_month(period_key).map_or_else(
+                || deadline_fr(kind, scheme).to_string(),
+                |(year, month)| {
+                    let start = month_fr(month);
+                    let end_month = month.saturating_add(2);
+                    let (end_month, _) = if end_month > 12 {
+                        (end_month - 12, year + 1)
+                    } else {
+                        (end_month, year)
+                    };
+                    format!("TVA de {start} à {}", month_fr(end_month))
+                },
+            ),
+        },
+        FiscalDeadlineKind::VatInstalment => {
+            format!("acompte de TVA {}", de_mois(u8::from(due_on.month())))
+        }
+        FiscalDeadlineKind::Ca12 => format!("TVA de l'année {}", due_on.year()),
+        FiscalDeadlineKind::IsAcompte => format!(
+            "acompte d'impôt sur les sociétés {}",
+            de_mois(u8::from(due_on.month()))
+        ),
+        _ => deadline_fr(kind, scheme).to_string(),
+    }
+}
+
+fn de_mois(month: u8) -> String {
+    let name = month_fr(month);
+    match name.chars().next() {
+        Some('a' | 'à' | 'â' | 'e' | 'é' | 'è' | 'ê' | 'i' | 'î' | 'o' | 'ô' | 'u' | 'ù') =>
+        {
+            format!("d'{name}")
+        }
+        _ => format!("de {name}"),
+    }
+}
+
+fn parse_year_month(key: &str) -> Option<(i32, u8)> {
+    let (year, month) = key.split_once('-')?;
+    if month.len() != 2 {
+        return None;
+    }
+    Some((year.parse().ok()?, month.parse().ok()?))
+}
+
+#[must_use]
+pub fn duty_href(kind: FiscalDeadlineKind, period: Option<&str>) -> String {
+    let base = format!("/societe/impots/{}", kind.as_str().replace('_', "-"));
+    match period {
+        Some(p) if !p.is_empty() => format!("{base}/{p}"),
+        _ => base,
+    }
 }
 
 #[must_use]
@@ -125,12 +191,76 @@ mod tests {
 
     #[test]
     fn vat_deadlines_are_said_in_french() {
-        assert_eq!(deadline_fr(FiscalDeadlineKind::Ca3), "TVA du trimestre");
         assert_eq!(
-            deadline_fr(FiscalDeadlineKind::VatInstalment),
+            deadline_fr(FiscalDeadlineKind::Ca3, VatFilingScheme::Ca3Quarterly),
+            "TVA du trimestre"
+        );
+        assert_eq!(
+            deadline_fr(
+                FiscalDeadlineKind::VatInstalment,
+                VatFilingScheme::Simplified
+            ),
             "acompte de TVA"
         );
-        assert!(!deadline_fr(FiscalDeadlineKind::Ca12).contains("CA12"));
+        assert!(
+            !deadline_fr(FiscalDeadlineKind::Ca12, VatFilingScheme::Simplified).contains("CA12")
+        );
+    }
+
+    #[test]
+    fn vat_occurrence_names_the_declared_month() {
+        assert_eq!(
+            duty_occurrence_fr(
+                FiscalDeadlineKind::Ca3,
+                VatFilingScheme::Ca3Monthly,
+                "2026-09",
+                time::macros::date!(2026 - 10 - 26)
+            ),
+            "TVA du mois de septembre"
+        );
+        assert_eq!(
+            duty_occurrence_fr(
+                FiscalDeadlineKind::Ca3,
+                VatFilingScheme::Ca3Monthly,
+                "2026-08",
+                time::macros::date!(2026 - 09 - 24)
+            ),
+            "TVA du mois d'août"
+        );
+        assert_eq!(
+            duty_occurrence_fr(
+                FiscalDeadlineKind::Ca3,
+                VatFilingScheme::Ca3Quarterly,
+                "2026-07",
+                time::macros::date!(2026 - 10 - 21)
+            ),
+            "TVA de juillet à septembre"
+        );
+        assert_eq!(
+            duty_occurrence_fr(
+                FiscalDeadlineKind::IsAcompte,
+                VatFilingScheme::Ca3Monthly,
+                "2026-09-15",
+                time::macros::date!(2026 - 09 - 15)
+            ),
+            "acompte d'impôt sur les sociétés de septembre"
+        );
+    }
+
+    #[test]
+    fn vat_label_follows_the_filing_scheme() {
+        assert_eq!(
+            deadline_fr(FiscalDeadlineKind::Ca3, VatFilingScheme::Ca3Monthly),
+            "TVA du mois"
+        );
+        assert_eq!(
+            deadline_fr(FiscalDeadlineKind::Ca3, VatFilingScheme::Ca3Quarterly),
+            "TVA du trimestre"
+        );
+        assert!(
+            !deadline_fr(FiscalDeadlineKind::Ca3, VatFilingScheme::Ca3Monthly)
+                .contains("trimestre")
+        );
     }
 
     #[test]
@@ -149,7 +279,7 @@ mod tests {
     #[test]
     fn an_is_instalment_is_said_like_la_societe() {
         assert_eq!(
-            deadline_fr(FiscalDeadlineKind::IsAcompte),
+            deadline_fr(FiscalDeadlineKind::IsAcompte, VatFilingScheme::Ca3Monthly),
             "acompte d'impôt sur les sociétés"
         );
     }

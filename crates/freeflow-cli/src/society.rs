@@ -1,20 +1,22 @@
 //! `freeflow society` — paysage, se payer, relevé, chapitres. Lectures pures, `today` d'adaptateur.
 
 use clap::Subcommand;
+use freeflow_core::app::{ExecutionContext, Executor};
 use freeflow_core::clock::today_local;
 use freeflow_core::domain::{Money, format_date};
-use freeflow_core::fiscal::FiscalDeadlineKind;
+use freeflow_core::fiscal::{FiscalDeadlineKind, VatFilingScheme};
 use freeflow_core::society::{
-    AmountBasis, AmountStory, BeatKind, BeatWhen, ClosingStory, DepositPlace, DividendClosed,
-    DividendDoor, Duty, DutyBriefing, Expect, IdentityCard, PayYourself, SocietyHome,
-    StatementMove, StatementReading, UnknownReason, WaiverReason, closing_story, duty_briefing,
-    pay_yourself, society_duties, society_home, society_identity, statement_moves,
+    AmountBasis, AmountStory, BeatKind, BeatWhen, BoxCoverage, BoxRole, ClosingStory, DepositPlace,
+    DividendClosed, DividendDoor, Duty, DutyBriefing, DutyFiling, Expect, FormBox, IdentityCard,
+    MarkDutyFiled, PayYourself, RetractDutyFiled, SocietyHome, StatementMove, StatementReading,
+    UnknownReason, WaiverReason, closing_story, duty_briefing, pay_yourself, society_duties,
+    society_home, society_identity, statement_moves,
 };
 use freeflow_core::store::Store;
 use time::Date;
 
 use crate::error::CliError;
-use crate::output::{HumanRender, format_value, key_values};
+use crate::output::{HumanRender, format_outcome_as, format_value, key_values};
 use crate::parsers::parse_date;
 use crate::table;
 
@@ -99,17 +101,79 @@ fn duty_line(d: &Duty) -> String {
         .filter(|m| *m != Money::ZERO)
         .map(|m| format!(" · {m}"))
         .unwrap_or_default();
+    let filed = d
+        .filed_on
+        .map(|on| format!(" · déposé le {}", format_date(on)))
+        .unwrap_or_default();
     format!(
-        "{} {}{amount} · {}",
+        "{} {}{amount}{filed} · {}",
         format_date(d.due_on),
-        deadline_fr(d.kind),
+        deadline_occurrence_fr(d.kind, d.vat_scheme, &d.period_key, d.due_on),
         deposit_fr(d.deposit)
     )
 }
 
-pub(crate) fn deadline_fr(kind: FiscalDeadlineKind) -> &'static str {
+pub(crate) fn deadline_occurrence_fr(
+    kind: FiscalDeadlineKind,
+    scheme: VatFilingScheme,
+    period_key: &str,
+    due_on: Date,
+) -> String {
     match kind {
-        FiscalDeadlineKind::Ca3 => "TVA du trimestre",
+        FiscalDeadlineKind::Ca3 => match scheme {
+            VatFilingScheme::Ca3Monthly => period_key
+                .split_once('-')
+                .and_then(|(_, m)| m.parse::<u8>().ok())
+                .map(|m| format!("TVA du mois {}", de_mois(m)))
+                .unwrap_or_else(|| deadline_fr(kind, scheme).to_string()),
+            _ => deadline_fr(kind, scheme).to_string(),
+        },
+        FiscalDeadlineKind::IsAcompte => format!(
+            "acompte d'impôt sur les sociétés de {}",
+            month_fr(u8::from(due_on.month()))
+        ),
+        _ => deadline_fr(kind, scheme).to_string(),
+    }
+}
+
+fn de_mois(month: u8) -> String {
+    let name = month_fr(month);
+    match name.chars().next() {
+        Some('a' | 'à' | 'â' | 'e' | 'é' | 'è' | 'ê' | 'i' | 'î' | 'o' | 'ô' | 'u' | 'ù') =>
+        {
+            format!("d'{name}")
+        }
+        _ => format!("de {name}"),
+    }
+}
+
+fn month_fr(month: u8) -> &'static str {
+    const MONTHS: [&str; 12] = [
+        "janvier",
+        "février",
+        "mars",
+        "avril",
+        "mai",
+        "juin",
+        "juillet",
+        "août",
+        "septembre",
+        "octobre",
+        "novembre",
+        "décembre",
+    ];
+    MONTHS
+        .get(usize::from(month.saturating_sub(1)))
+        .copied()
+        .unwrap_or("")
+}
+
+pub(crate) fn deadline_fr(kind: FiscalDeadlineKind, scheme: VatFilingScheme) -> &'static str {
+    match kind {
+        FiscalDeadlineKind::Ca3 => match scheme {
+            VatFilingScheme::Ca3Monthly => "TVA du mois",
+            _ => "TVA du trimestre",
+        },
         FiscalDeadlineKind::VatInstalment => "acompte de TVA",
         FiscalDeadlineKind::Ca12 => "TVA de l'année",
         FiscalDeadlineKind::IsAcompte => "acompte d'impôt sur les sociétés",
@@ -127,7 +191,11 @@ pub(crate) fn deadline_fr(kind: FiscalDeadlineKind) -> &'static str {
 impl HumanRender for DutyBriefing {
     fn render_human(&self) -> String {
         let mut lines = vec![
-            format!("{} {}", format_date(self.due_on), deadline_fr(self.kind)),
+            format!(
+                "{} {}",
+                format_date(self.due_on),
+                deadline_occurrence_fr(self.kind, self.vat_scheme, &self.period_key, self.due_on,)
+            ),
             amount_story_fr(&self.amount),
         ];
         if !self.path.is_empty() {
@@ -148,8 +216,50 @@ impl HumanRender for DutyBriefing {
         if !expect.is_empty() {
             lines.push(format!("à faire : {expect}"));
         }
+        if let Some(on) = self.filed_on {
+            lines.push(format!("déposé le {}", format_date(on)));
+        }
+        if !self.boxes.is_empty() {
+            lines.push(String::new());
+            lines.push("cases :".into());
+            for b in &self.boxes {
+                lines.push(format!("  {}", box_line(b)));
+            }
+            if self.coverage == BoxCoverage::Complete {
+                lines.push("  le reste, laisse vide".into());
+            }
+        }
         lines.push("indicatif — l'administration prime".into());
         lines.join("\n")
+    }
+}
+
+fn box_line(b: &FormBox) -> String {
+    let label = box_label(b.form, b.case);
+    let amount = b.amount.map_or_else(|| "—".into(), |m| m.to_string());
+    let consigne = match b.role {
+        BoxRole::Fill => format!("saisir {amount}"),
+        BoxRole::SiteComputes => format!("le site calcule, doit faire {amount}"),
+        BoxRole::LeaveEmpty => "laisse vide".into(),
+        BoxRole::Check => "cocher si besoin".into(),
+    };
+    format!("{} {} — {label} — {consigne}", b.case, amount)
+}
+
+pub(crate) fn box_label(form: &str, case: &str) -> &'static str {
+    match (form, case) {
+        ("2571", "03") => "montant à payer, impôt sur les sociétés",
+        ("2571", "10") => "total à payer",
+        ("3310-CA3", "02") => "prestations de services (HT)",
+        ("3310-CA3", "08") => "TVA brute 20 %",
+        ("3310-CA3", "9B") => "TVA brute 10 %",
+        ("3310-CA3", "09") => "TVA brute 5,5 %",
+        ("3310-CA3", "19") => "TVA déductible, immobilisations",
+        ("3310-CA3", "20") => "TVA déductible, autres biens et services",
+        ("3310-CA3", "25") => "crédit de TVA antérieur",
+        ("3310-CA3", "27") => "crédit de TVA à reporter",
+        ("3310-CA3", "28") => "TVA nette due",
+        _ => "",
     }
 }
 
@@ -173,6 +283,9 @@ fn amount_story_fr(story: &AmountStory) -> String {
             }
             UnknownReason::PriorVatMissing => {
                 "Montant inconnu — TVA de l'exercice précédent non reprise".into()
+            }
+            UnknownReason::PeriodNotInVault => {
+                "Montant inconnu — cette période n'est pas dans le coffre".into()
             }
         },
         AmountStory::External => "Le montant est sur l'avis, pas ici".into(),
@@ -345,6 +458,9 @@ pub enum SocietyCommand {
     Duty {
         /// Nature (`is_acompte`, `ca3`, `cfe`, …).
         kind: FiscalDeadlineKind,
+        /// Période (`AAAA-MM` ou `AAAA-MM-JJ`). Défaut : la prochaine non déposée.
+        #[arg(long)]
+        period: Option<String>,
         #[arg(long, value_parser = parse_date)]
         today: Option<Date>,
     },
@@ -360,9 +476,43 @@ pub enum SocietyCommand {
     },
     /// La carte d'identité de la société.
     Identity,
+    /// Marquer une démarche comme déposée (fait humain, pas une preuve DGFiP).
+    Filed {
+        /// Nature (`is_acompte`, `ca3`, …).
+        kind: FiscalDeadlineKind,
+        /// Période (`AAAA-MM` ou `AAAA-MM-JJ`). Défaut : l'occurrence courante.
+        #[arg(long)]
+        period: Option<String>,
+        #[arg(long, value_parser = parse_date)]
+        today: Option<Date>,
+    },
+    /// Retirer le marquage « déposé ».
+    Unfiled {
+        kind: FiscalDeadlineKind,
+        #[arg(long)]
+        period: Option<String>,
+        #[arg(long, value_parser = parse_date)]
+        today: Option<Date>,
+    },
 }
 
-pub fn run(cmd: SocietyCommand, store: &Store, json: bool) -> Result<String, CliError> {
+impl HumanRender for DutyFiling {
+    fn render_human(&self) -> String {
+        format!(
+            "{} {} déposé le {}",
+            format_date(self.due_on),
+            deadline_fr(self.kind, VatFilingScheme::Ca3Monthly),
+            format_date(self.filed_on)
+        )
+    }
+}
+
+pub fn run(
+    cmd: SocietyCommand,
+    store: &mut Store,
+    ctx: &ExecutionContext,
+    json: bool,
+) -> Result<String, CliError> {
     match cmd {
         SocietyCommand::Show { today } => {
             let today = today.unwrap_or_else(today_local);
@@ -379,9 +529,13 @@ pub fn run(cmd: SocietyCommand, store: &Store, json: bool) -> Result<String, Cli
             let duties = society_duties(store.connection(), today)?;
             Ok(format_value(&duties, json))
         }
-        SocietyCommand::Duty { kind, today } => {
+        SocietyCommand::Duty {
+            kind,
+            period,
+            today,
+        } => {
             let today = today.unwrap_or_else(today_local);
-            let briefing = duty_briefing(store.connection(), kind, today)?;
+            let briefing = duty_briefing(store.connection(), kind, today, period.as_deref())?;
             Ok(format_value(&briefing, json))
         }
         SocietyCommand::Closing { today } => {
@@ -397,6 +551,42 @@ pub fn run(cmd: SocietyCommand, store: &Store, json: bool) -> Result<String, Cli
         SocietyCommand::Identity => {
             let card = society_identity(store.connection())?;
             Ok(format_value(&card, json))
+        }
+        SocietyCommand::Filed {
+            kind,
+            period,
+            today,
+        } => {
+            let today = today.unwrap_or_else(today_local);
+            let briefing = duty_briefing(store.connection(), kind, today, period.as_deref())?;
+            let outcome = Executor::new(store).execute(
+                &MarkDutyFiled {
+                    kind,
+                    period_key: briefing.period_key,
+                    due_on: briefing.due_on,
+                    filed_on: today,
+                },
+                ctx,
+            )?;
+            Ok(format_outcome_as(&outcome, json, |f| {
+                format!("déposé le {}", format_date(f.filed_on))
+            }))
+        }
+        SocietyCommand::Unfiled {
+            kind,
+            period,
+            today,
+        } => {
+            let today = today.unwrap_or_else(today_local);
+            let briefing = duty_briefing(store.connection(), kind, today, period.as_deref())?;
+            let outcome = Executor::new(store).execute(
+                &RetractDutyFiled {
+                    kind,
+                    period_key: briefing.period_key,
+                },
+                ctx,
+            )?;
+            Ok(format_outcome_as(&outcome, json, |_| "dépôt retiré".into()))
         }
     }
 }

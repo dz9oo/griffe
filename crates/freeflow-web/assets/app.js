@@ -259,8 +259,145 @@ auditToggle?.addEventListener("click", () => {
   applyAudit();
 });
 
+function dismissNativeDatePicker(input) {
+  if (!(input instanceof HTMLInputElement) || input.type !== "date") return;
+  input.blur();
+}
+
 document.body.addEventListener("change", (event) => {
   const input = event.target;
   if (!(input instanceof HTMLInputElement) || input.type !== "date") return;
-  requestAnimationFrame(() => input.blur());
+  requestAnimationFrame(() => dismissNativeDatePicker(input));
+});
+
+const MONTHS_FR = [
+  "janvier", "février", "mars", "avril", "mai", "juin",
+  "juillet", "août", "septembre", "octobre", "novembre", "décembre",
+];
+
+function pad2(n) {
+  return String(n).padStart(2, "0");
+}
+
+function isoDate(year, month, day) {
+  return `${year}-${pad2(month)}-${pad2(day)}`;
+}
+
+function parseIsoDate(iso) {
+  const [year, month, day] = iso.split("-").map(Number);
+  if (!year || !month || !day) return null;
+  return { year, month, day };
+}
+
+function formatDateFr(iso) {
+  const parts = parseIsoDate(iso);
+  if (!parts) return iso;
+  return `${parts.day} ${MONTHS_FR[parts.month - 1]} ${parts.year}`;
+}
+
+function closeDatePick(root) {
+  const pop = root.querySelector(".date-pick-pop");
+  const toggle = root.querySelector(".date-pick-toggle");
+  if (pop) pop.hidden = true;
+  if (toggle) toggle.setAttribute("aria-expanded", "false");
+}
+
+function renderDatePop(root) {
+  const pop = root.querySelector(".date-pick-pop");
+  const input = root.querySelector("input");
+  if (!pop || !input) return;
+  const selected = parseIsoDate(input.value) || parseIsoDate(root.dataset.max || "") || {
+    year: 2026, month: 1, day: 1,
+  };
+  const view = parseIsoDate(`${pop.dataset.view}-01`) || selected;
+  const max = root.dataset.max || "";
+  const first = new Date(view.year, view.month - 1, 1);
+  const empty = (first.getDay() + 6) % 7;
+  const lastDay = new Date(view.year, view.month, 0).getDate();
+  const title = `${MONTHS_FR[view.month - 1]} ${view.year}`;
+  let cells = "";
+  for (let i = 0; i < empty; i += 1) cells += '<div class="d empty"></div>';
+  for (let day = 1; day <= lastDay; day += 1) {
+    const iso = isoDate(view.year, view.month, day);
+    const off = max && iso > max;
+    const sel = iso === input.value;
+    const cls = `d${off ? " off" : ""}${sel ? " sel" : ""}`;
+    const isoAttr = off ? "" : ` data-iso="${iso}"`;
+    cells += `<button type="button" class="${cls}"${isoAttr}>${day}</button>`;
+  }
+  pop.innerHTML = `<div class="date-pick-nav"><button type="button" data-nav="-1" aria-label="Mois précédent">‹</button><span>${title}</span><button type="button" data-nav="1" aria-label="Mois suivant">›</button></div><div class="cal"><div class="dow">Lu</div><div class="dow">Ma</div><div class="dow">Me</div><div class="dow">Je</div><div class="dow">Ve</div><div class="dow">Sa</div><div class="dow">Di</div>${cells}</div>`;
+  pop.dataset.view = `${view.year}-${pad2(view.month)}`;
+}
+
+function openDatePick(root) {
+  document.querySelectorAll(".date-pick").forEach((other) => {
+    if (other !== root) closeDatePick(other);
+  });
+  const pop = root.querySelector(".date-pick-pop");
+  const toggle = root.querySelector(".date-pick-toggle");
+  const input = root.querySelector("input");
+  if (!pop || !toggle) return;
+  const seed = parseIsoDate(input?.value || "") || parseIsoDate(root.dataset.max || "");
+  if (seed) pop.dataset.view = `${seed.year}-${pad2(seed.month)}`;
+  renderDatePop(root);
+  pop.hidden = false;
+  toggle.setAttribute("aria-expanded", "true");
+}
+
+document.body.addEventListener("click", (event) => {
+  const target = event.target;
+  if (!(target instanceof Element)) return;
+  const toggle = target.closest(".date-pick-toggle");
+  if (toggle) {
+    const root = toggle.closest(".date-pick");
+    if (!root) return;
+    const pop = root.querySelector(".date-pick-pop");
+    if (pop && !pop.hidden) closeDatePick(root);
+    else openDatePick(root);
+    return;
+  }
+  const nav = target.closest(".date-pick-pop [data-nav]");
+  if (nav) {
+    const root = nav.closest(".date-pick");
+    const pop = root?.querySelector(".date-pick-pop");
+    if (!root || !pop) return;
+    const view = parseIsoDate(`${pop.dataset.view}-01`);
+    if (!view) return;
+    const next = new Date(view.year, view.month - 1 + Number(nav.dataset.nav), 1);
+    pop.dataset.view = `${next.getFullYear()}-${pad2(next.getMonth() + 1)}`;
+    renderDatePop(root);
+    return;
+  }
+  const day = target.closest(".date-pick-pop .d[data-iso]");
+  if (day) {
+    const root = day.closest(".date-pick");
+    const input = root?.querySelector("input");
+    const button = root?.querySelector(".date-pick-toggle");
+    const iso = day.getAttribute("data-iso");
+    if (!root || !input || !button || !iso) return;
+    input.value = iso;
+    button.textContent = formatDateFr(iso);
+    closeDatePick(root);
+  }
+});
+
+document.body.addEventListener("pointerdown", (event) => {
+  const onPick = event.target instanceof Element
+    ? event.target.closest(".date-pick")
+    : null;
+  document.querySelectorAll(".date-pick").forEach((root) => {
+    if (root !== onPick) closeDatePick(root);
+  });
+  const onNative = event.target instanceof Element
+    ? event.target.closest("input[type=date]")
+    : null;
+  document.querySelectorAll("input[type=date]").forEach((input) => {
+    if (input !== onNative) dismissNativeDatePicker(input);
+  });
+});
+
+document.body.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  document.querySelectorAll(".date-pick").forEach(closeDatePick);
+  dismissNativeDatePicker(document.activeElement);
 });

@@ -40,8 +40,9 @@ pub use follow_up::{
     format_date_fr, parse_email, render_eml, render_template, snooze_date,
 };
 pub use ids::{
-    BankTransactionId, ClientId, ContactId, ExpenseId, FiscalYearId, FixedAssetId, FollowUpEventId,
-    InteractionId, InvoiceId, MissionId, OpportunityId, PaymentId, QuoteId, TimeEntryId,
+    BankTransactionId, ClientId, ContactId, DutyFilingId, ExpenseId, FiscalYearId, FixedAssetId,
+    FollowUpEventId, InteractionId, InvoiceId, MissionId, OpportunityId, PaymentId, QuoteId,
+    TimeEntryId,
 };
 pub use interaction::{Interaction, InteractionKind, UnknownInteractionKind};
 pub use invoice::{Invoice, InvoiceLine, InvoiceStatus};

@@ -512,7 +512,10 @@ async fn the_help_letter_explains_atelier_and_opens_recipes() {
             .unwrap(),
     )
     .await;
-    assert!(impots.contains("TVA du trimestre"), "{impots}");
+    assert!(
+        impots.contains("TVA du mois") || impots.contains("TVA du trimestre"),
+        "{impots}"
+    );
     assert!(
         impots.contains("cotisation foncière") || impots.contains("href=\"/societe/impots\""),
         "{impots}"
@@ -631,6 +634,10 @@ async fn the_day_letter_shows_the_mast_gestures_and_the_month_grid() {
         jour.contains("acompte d'impôt sur les sociétés")
             || jour.contains("acompte d&#x27;impôt sur les sociétés"),
         "l'acompte d'IS du 15 septembre se dit comme dans La société : {jour}"
+    );
+    assert!(
+        jour.contains("TVA du mois d'août") || jour.contains("TVA du mois d&#x27;août"),
+        "la CA3 de septembre déclare août, comme dans La société : {jour}"
     );
     assert!(
         jour.contains("/societe/impots/is-acompte"),
@@ -1050,6 +1057,249 @@ async fn society_duty_letter_shows_the_amount_and_the_2571_path() {
 }
 
 #[tokio::test]
+async fn society_duty_letter_names_2571_boxes_and_marks_filed() {
+    let state = unlocked_state(&test_db_path("letter-is-boxes"))
+        .await
+        .with_today(time::macros::date!(2026 - 09 - 05));
+    let router = freeflow_web::router(state);
+
+    let page = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/societe/impots/is-acompte")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(page.contains("Les cases"), "{page}");
+    assert!(page.contains(">03<") || page.contains("03"), "{page}");
+    assert!(
+        page.contains("Montant à payer, impôt sur les sociétés"),
+        "{page}"
+    );
+    assert!(page.contains("C'est déposé."), "{page}");
+    assert!(!page.contains("freeflow "), "{page}");
+
+    let filed = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/societe/impots/is-acompte/2026-09-15/filed")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(filed.status(), StatusCode::OK);
+    assert_eq!(filed.headers().get("HX-Trigger").unwrap(), "freeflow:saved");
+    let body = body_text(filed).await;
+    assert!(body.contains("Déposé le"), "{body}");
+    assert!(body.contains("Ce n'était pas ça"), "{body}");
+    assert!(!body.contains("C'est déposé."), "{body}");
+
+    let reopened = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/societe/impots/is-acompte/2026-09-15")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(reopened.contains("Déposé le"), "{reopened}");
+    assert!(!reopened.contains("C'est déposé."), "{reopened}");
+
+    let list = body_text(
+        router
+            .oneshot(
+                Request::builder()
+                    .uri("/societe/impots")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(list.contains("fait"), "{list}");
+    assert!(
+        list.contains("<details") && list.contains("Déjà déposé"),
+        "les dépôts sont au volet : {list}"
+    );
+}
+
+#[tokio::test]
+async fn filing_september_ca3_does_not_clear_august() {
+    let db_path = test_db_path("letter-ca3-monthly");
+    let state = unlocked_state(&db_path)
+        .await
+        .with_today(time::macros::date!(2026 - 09 - 08));
+    {
+        let mut store =
+            Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &freeflow_core::company::SetCompanyProfile {
+                        name: "Lumen Conseil".into(),
+                        legal_form: "SASU".into(),
+                        siren: freeflow_core::domain::Siren::parse("552100554").unwrap(),
+                        vat_number: None,
+                        address: freeflow_core::domain::Address {
+                            street: "18 rue des Ateliers".into(),
+                            postal_code: "69003".into(),
+                            city: "Lyon".into(),
+                            country: "FR".into(),
+                        },
+                        share_capital: Some(Money::from_cents(100_000)),
+                        rcs_city: Some("Lyon".into()),
+                        iban: None,
+                        fiscal_year_end: Some(
+                            freeflow_core::domain::FiscalYearEnd::new(9, 30).unwrap(),
+                        ),
+                        vat_regime: Some(freeflow_core::domain::VatRegime::RealNormalMonthly),
+                        director_monthly_gross: Some(Money::from_cents(300_000)),
+                        director_charge_ratio_bps: None,
+                        president_name: Some("Nicolas Lumen".into()),
+                        sole_shareholder_name: Some("Nicolas Lumen".into()),
+                        sole_shareholder_address: Some("18 rue des Ateliers, 69003 Lyon".into()),
+                        share_count: Some(1000),
+                    },
+                    &human_ctx(),
+                )
+                .unwrap(),
+        );
+        store
+            .connection()
+            .execute(
+                "INSERT INTO setup (id, declared_new_company, updated_at, created_on)
+                 VALUES (1, 0, '2026-01-01T00:00:00Z', '2026-01-01')
+                 ON CONFLICT (id) DO UPDATE SET created_on = '2026-01-01'",
+                [],
+            )
+            .unwrap();
+    }
+    let router = freeflow_web::router(state);
+
+    let list = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/societe/impots")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(list.contains("TVA du mois de juillet"), "{list}");
+    assert!(!list.contains("TVA du trimestre"), "{list}");
+    assert!(
+        list.contains("/societe/impots/ca3/2026-07"),
+        "août : {list}"
+    );
+    assert!(
+        list.contains("/societe/impots/ca3/2026-08"),
+        "septembre : {list}"
+    );
+    assert!(!list.contains("Pas encore déposé"), "{list}");
+
+    let august = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/societe/impots/ca3/2026-07")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(august.contains("C'est déposé."), "{august}");
+    assert!(august.contains("août"), "{august}");
+
+    let filed = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/societe/impots/ca3/2026-07/filed")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(filed.status(), StatusCode::OK);
+    let filed_body = body_text(filed).await;
+    assert!(filed_body.contains("Déposé le"), "{filed_body}");
+    assert!(!filed_body.contains("C'est déposé."), "{filed_body}");
+
+    let list = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/societe/impots")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(list.contains("fait"), "août déposé : {list}");
+    assert!(
+        list.contains("Déjà déposé"),
+        "août a quitté En retard : {list}"
+    );
+
+    let august = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/societe/impots/ca3/2026-07")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(august.contains("Déposé le"), "{august}");
+    assert!(!august.contains("C'est déposé."), "{august}");
+
+    let sept = body_text(
+        router
+            .oneshot(
+                Request::builder()
+                    .uri("/societe/impots/ca3/2026-08")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(sept.contains("C'est déposé."), "{sept}");
+    assert!(!sept.contains("Ce n'était pas ça"), "{sept}");
+}
+
+#[tokio::test]
 async fn a_duty_letter_does_not_squeeze_steps_into_a_date_column() {
     let state = unlocked_state(&test_db_path("letter-is-measure"))
         .await
@@ -1111,6 +1361,109 @@ async fn a_duty_letter_does_not_squeeze_steps_into_a_date_column() {
     assert!(
         css.contains("minmax(0, 1fr)"),
         "la piste texte d'une .hist ne déborde pas : {css}"
+    );
+}
+
+#[tokio::test]
+async fn duty_letter_keeps_filing_actions_on_one_wrapping_row() {
+    let state = unlocked_state(&test_db_path("letter-filed-on-row"))
+        .await
+        .with_today(time::macros::date!(2026 - 09 - 05));
+    let router = freeflow_web::router(state);
+
+    let page = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/societe/impots/is-acompte")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        page.contains(r#"name="filed_on""#) && page.contains(r#"class="date-pick""#),
+        "la date s'ouvre dans un calendrier de la page, pas le popover natif : {page}"
+    );
+    let bar_for_date = page
+        .split(r#"class="duty-bar""#)
+        .nth(1)
+        .expect("rangée duty-bar");
+    assert!(
+        !bar_for_date.contains(r#"type="date""#),
+        "WebKitGTK ne ferme pas son calendrier natif : {bar_for_date}"
+    );
+    assert!(
+        page.contains(r#"class="duty-bar""#),
+        "date et boutons partagent une rangée : {page}"
+    );
+    let bar = page
+        .split(r#"class="duty-bar""#)
+        .nth(1)
+        .expect("rangée duty-bar");
+    assert!(
+        bar.contains(r#"name="filed_on""#),
+        "la date est dans la rangée : {bar}"
+    );
+    assert!(bar.contains("C'est déposé."), "déposer : {bar}");
+    assert!(bar.contains("Ouvrir dans le navigateur"), "ouvrir : {bar}");
+    assert!(bar.contains("Revenir"), "revenir : {bar}");
+    assert!(
+        bar.contains(r#"class="field-inline""#),
+        "libellé et date sur une ligne, pas un .field empilé : {bar}"
+    );
+
+    let css = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/assets/app.css")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    let row = css
+        .split(".duty-bar {")
+        .nth(1)
+        .and_then(|rest| rest.split('}').next())
+        .expect("règle .duty-bar");
+    assert!(
+        row.contains("display: flex")
+            && row.contains("flex-wrap: wrap")
+            && row.contains("align-items: center"),
+        "une ligne sur grand écran, qui se replie : {row}"
+    );
+    let mobile = css
+        .split("@media (max-width: 700px)")
+        .nth(1)
+        .expect("le bureau 700 px empile déjà le chrome");
+    assert!(
+        mobile.contains(".duty-bar") && mobile.contains("flex-direction: column"),
+        "sous 700 px la rangée s'empile : {mobile}"
+    );
+
+    let js = body_text(
+        router
+            .oneshot(
+                Request::builder()
+                    .uri("/assets/app.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        js.contains("closeDatePick") && js.contains("date-pick") && js.contains("Escape"),
+        "le calendrier de la page se ferme au jour choisi, au clic dehors et sur Échap : {js}"
     );
 }
 

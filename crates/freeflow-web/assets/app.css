@@ -256,7 +256,83 @@ ol.gestes > li:last-child { border-bottom: 1px solid var(--rule); }
 .unfold { display: none; grid-column: 2; padding: 0 0 20px; }
 li.open .unfold { display: block; }
 
-.row-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+.row-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; align-items: center; }
+.duty-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 28px;
+}
+.duty-file {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.field-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+.field-inline span {
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+.date-pick { position: relative; }
+.date-pick-toggle {
+  min-width: 11rem;
+  padding: 8px 0;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--rule);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 16px;
+  text-align: left;
+  cursor: pointer;
+}
+.date-pick-toggle:focus { border-color: var(--ink); outline: none; }
+.date-pick-pop {
+  position: absolute;
+  z-index: 40;
+  left: 0;
+  bottom: calc(100% + 8px);
+  width: 18rem;
+  padding: 12px;
+  background: var(--paper);
+  border: 1px solid var(--ink);
+}
+.date-pick-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 14px;
+}
+.date-pick-nav button {
+  padding: 4px 8px;
+  border: 1px solid var(--ink);
+  background: transparent;
+  font-family: var(--sans);
+  font-size: 13px;
+  cursor: pointer;
+}
+.date-pick-pop .cal { margin: 0; }
+.date-pick-pop .d {
+  min-height: 32px;
+  padding: 6px 2px;
+  font-size: 14px;
+  cursor: pointer;
+  text-align: center;
+}
+.date-pick-pop .d.off { opacity: 0.35; pointer-events: none; cursor: default; }
+.date-pick-pop .d.sel { color: var(--seal); box-shadow: inset 0 -1px 0 var(--seal); }
 .seal, .btn.primary, .auth-submit {
   background: var(--seal);
   color: #f8f1ea;
@@ -333,6 +409,19 @@ li.open .unfold { display: block; }
 .chapters li:last-child > div { border-bottom: 1px solid var(--rule); }
 .chapters li > div strong { font-weight: 500; display: block; }
 .chapters li > div span { color: var(--ink-2); font-size: 14px; }
+
+.duties-done { margin-top: 28px; }
+.duties-done summary {
+  cursor: pointer;
+  font-size: 11px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  font-weight: 600;
+  list-style: none;
+}
+.duties-done summary::-webkit-details-marker { display: none; }
+.duties-done[open] summary { margin-bottom: 4px; }
 
 .block { margin: 32px 0; }
 .block h3, .panel-title {
@@ -711,7 +800,20 @@ tr.row-clickable:hover td { background: var(--paper-2); }
   font-size: 15px;
 }
 .hist li:last-child { border-bottom: 1px solid var(--rule); }
-.hist time, .hist .when { color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.hist time, .hist .when, .chapters .when { color: var(--ink-2); font-variant-numeric: tabular-nums; font-weight: 400; }
+.boxes { list-style: none; margin-top: 8px; }
+.boxes li {
+  display: grid;
+  grid-template-columns: 3.2rem minmax(0, 1fr) auto;
+  gap: 12px;
+  padding: 10px 0;
+  border-top: 1px solid var(--rule);
+  font-size: 15px;
+  align-items: baseline;
+}
+.boxes li:last-child { border-bottom: 1px solid var(--rule); }
+.boxes .case { font-family: var(--serif); font-style: italic; }
+.boxes .amount { font-variant-numeric: tabular-nums; }
 .steps { list-style: none; }
 .steps li {
   display: grid;
@@ -850,4 +952,8 @@ tr.row-clickable:hover td { background: var(--paper-2); }
   .people a, .people button { grid-template-columns: 1fr; }
   .agenda button, .agenda a, .track { grid-template-columns: 1fr; gap: 4px; }
   .cal .d { min-height: 44px; font-size: 14px; padding: 5px 3px; }
+  .duty-bar, .duty-file { flex-direction: column; align-items: stretch; }
+  .duty-bar .quiet, .duty-bar .seal { width: 100%; text-align: center; }
+  .field-inline { justify-content: space-between; }
+  .date-pick-toggle, .date-pick-pop { width: 100%; }
 }

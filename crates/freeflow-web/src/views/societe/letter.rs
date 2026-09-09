@@ -1,21 +1,22 @@
 //! Lettres de La société (lot 51) : accueil, Te payer, impôts, clore, relevé, identité.
 
 use freeflow_core::app::AppError;
-use freeflow_core::domain::{Money, VatRegime, format_date_fr};
+use freeflow_core::domain::{Money, VatRegime, format_date, format_date_fr};
 use freeflow_core::fiscal::FiscalDeadlineKind;
 use freeflow_core::society::{
-    AmountBasis, AmountStory, BeatKind, BeatWhen, ClosingBeat, ClosingStory, ConversationBar,
-    DividendClosed, DividendDoor, DutyBriefing, Expect, IdentityCard, IdentityShort, Landscape,
-    PayYourself, SocietyHome, StatementMove, StatementReading, UnknownReason, WaiverReason,
-    closing_story, duty_briefing, pay_yourself, society_duties, society_home, society_identity,
-    statement_moves,
+    AmountBasis, AmountStory, BeatKind, BeatWhen, BoxCoverage, BoxRole, ClosingBeat, ClosingStory,
+    ConversationBar, DividendClosed, DividendDoor, Duty, DutyBriefing, Expect, FormBox,
+    IdentityCard, IdentityShort, Landscape, PayYourself, SocietyHome, StatementMove,
+    StatementReading, UnknownReason, WaiverReason, closing_story, duty_briefing, pay_yourself,
+    society_duties, society_home, society_identity, statement_moves,
 };
 use freeflow_core::store::Store;
 use maud::{Markup, PreEscaped, html};
 use time::Date;
 
 use crate::layout::ViewId;
-use crate::views::copy::{deadline_fr, letter_date, month_fr, year_end_fr};
+use crate::views::copy::{duty_occurrence_fr, letter_date, month_fr, year_end_fr};
+use crate::views::form;
 
 fn chapter_link(href: &str, title: &str, sub: &str) -> Markup {
     html! {
@@ -66,7 +67,7 @@ fn home_markup(home: &SocietyHome, today: Date) -> Markup {
                 .unwrap_or_default();
             format!(
                 "{} le {}{amount}",
-                deadline_fr(d.kind),
+                duty_occurrence_fr(d.kind, d.vat_scheme, &d.period_key, d.due_on),
                 format_date_fr(d.due_on)
             )
         }
@@ -368,38 +369,94 @@ fn pay_markup(pay: &PayYourself) -> Markup {
 
 pub fn duties(store: &Store, today: Date) -> Result<Markup, AppError> {
     let duties = society_duties(store.connection(), today)?;
-    let mut rows = Vec::new();
-    for d in &duties {
-        if d.kind == FiscalDeadlineKind::ApprovalMeeting {
-            continue;
-        }
-        let briefing = duty_briefing(store.connection(), d.kind, today)?;
-        rows.push((d.kind, d.due_on, list_line(&briefing)));
-    }
-    Ok(duties_markup(&rows))
+    Ok(duties_markup(&duties, today))
 }
 
-fn duties_markup(rows: &[(FiscalDeadlineKind, Date, String)]) -> Markup {
+fn duties_markup(rows: &[Duty], today: Date) -> Markup {
+    let catch_up: Vec<&Duty> = rows
+        .iter()
+        .filter(|d| d.filed_on.is_none() && d.catch_up)
+        .collect();
+    let overdue: Vec<&Duty> = rows
+        .iter()
+        .filter(|d| d.filed_on.is_none() && d.due_on < today && !d.catch_up)
+        .collect();
+    let mut upcoming: Vec<&Duty> = Vec::new();
+    for d in rows
+        .iter()
+        .filter(|d| d.filed_on.is_none() && d.due_on >= today)
+    {
+        if upcoming.iter().any(|u| u.kind == d.kind) {
+            continue;
+        }
+        upcoming.push(d);
+    }
+    let done: Vec<&Duty> = rows.iter().filter(|d| d.filed_on.is_some()).collect();
     html! {
         div class="letter" data-view=(ViewId::Societe.slug()) {
             (back())
             h1 { "Ce que tu dois." }
             p class="lede" { "Pas des sigles. Des dates, des montants, et où le déposer. On prépare. On ne transmet rien." }
-            @if rows.is_empty() {
+            @if catch_up.is_empty() && overdue.is_empty() && upcoming.is_empty() && done.is_empty() {
                 p class="prose" { "Aucune échéance dans l'horizon." }
-            } @else {
-                ul class="chapters" {
-                    @for (kind, due_on, line) in rows {
-                        @let href = crate::views::copy::duty_href(*kind);
-                        li {
-                            a href=(href) hx-get=(href) hx-target="#content" hx-push-url="true" {
-                                div {
-                                    strong { (format_date_fr(*due_on)) " — " (deadline_fr(*kind)) }
-                                    span { (line) }
+            }
+            @if !catch_up.is_empty() {
+                p class="section-label" { "Avant ce coffre" }
+                p class="prose" {
+                    "Ces dates sont antérieures à FreeFlow. Si vous les avez déjà déposées, dites-le — à l'échéance, ou à la date réelle."
+                }
+                form class="row-actions" hx-post="/societe/impots/catch-up" hx-target="#content" {
+                    button class="quiet" type="submit" { "Tout était à jour à l'échéance" }
+                }
+                (duty_list(&catch_up, today))
+            }
+            @if !overdue.is_empty() {
+                p class="section-label" { "En retard" }
+                (duty_list(&overdue, today))
+            }
+            @if !upcoming.is_empty() {
+                p class="section-label" { "À venir" }
+                (duty_list(&upcoming, today))
+            }
+            @if catch_up.is_empty() && overdue.is_empty() && upcoming.is_empty() && !done.is_empty() {
+                p class="prose" { "Rien à déposer pour l'instant." }
+            }
+            @if !done.is_empty() {
+                details class="duties-done" {
+                    summary { "Déjà déposé (" (done.len()) ")" }
+                    (duty_list(&done, today))
+                }
+            }
+        }
+    }
+}
+
+fn duty_list(rows: &[&Duty], today: Date) -> Markup {
+    html! {
+        ul class="chapters" {
+            @for d in rows {
+                @let href = crate::views::copy::duty_href(d.kind, Some(d.period_key.as_str()));
+                @let line = duty_list_line(d, today);
+                li {
+                    a href=(href) hx-get=(href) hx-target="#content" hx-push-url="true" {
+                        div {
+                            strong {
+                                @if let Some(on) = d.filed_on {
+                                    span class="when" { "fait · " (format_date_fr(on)) }
+                                    " "
+                                } @else if d.due_on < today {
+                                    span class="when" style="color:var(--seal)" { "en retard" }
+                                    " "
                                 }
-                                span class="go" { "→" }
+                                (format_date_fr(d.due_on))
+                                " — "
+                                (duty_occurrence_fr(d.kind, d.vat_scheme, &d.period_key, d.due_on))
+                            }
+                            @if !line.is_empty() {
+                                span { (line) }
                             }
                         }
+                        span class="go" { "→" }
                     }
                 }
             }
@@ -407,19 +464,19 @@ fn duties_markup(rows: &[(FiscalDeadlineKind, Date, String)]) -> Markup {
     }
 }
 
-fn list_line(b: &DutyBriefing) -> String {
-    match &b.amount {
-        AmountStory::Due { amount, .. } if *amount != Money::ZERO => {
+fn duty_list_line(d: &Duty, today: Date) -> String {
+    if let Some(on) = d.filed_on {
+        return format!("Déposé le {}.", format_date_fr(on));
+    }
+    if d.due_on < today {
+        return String::new();
+    }
+    match d.amount {
+        Some(amount) if amount != Money::ZERO => {
             format!("{amount} — ouvrir la lettre avant de partir")
         }
-        AmountStory::Due { .. } => "Même à zéro, on dépose — ouvrir la lettre".into(),
-        AmountStory::Waiver { .. } => "Rien à verser — la lettre dit pourquoi".into(),
-        AmountStory::Unknown { .. } => {
-            "Le montant n'est pas encore connu — la lettre dit quoi vérifier".into()
-        }
-        AmountStory::External => "Le montant est sur l'avis, pas ici".into(),
-        AmountStory::NotYourHands { .. } => "Chez l'expert-paie, pas toi sur le site".into(),
-        AmountStory::Declaration => "Une déclaration — la lettre dit le chemin".into(),
+        Some(_) => "Même à zéro, on dépose — ouvrir la lettre".into(),
+        None => "Ouvrir la lettre".into(),
     }
 }
 
@@ -428,28 +485,63 @@ fn list_line(b: &DutyBriefing) -> String {
 /// # Errors
 ///
 /// Lecture du coffre, ou démarche interne (`ApprovalMeeting`).
-pub fn duty(store: &Store, today: Date, kind: FiscalDeadlineKind) -> Result<Markup, AppError> {
-    let briefing = duty_briefing(store.connection(), kind, today)?;
-    Ok(duty_markup(&briefing))
+pub fn duty(
+    store: &Store,
+    today: Date,
+    kind: FiscalDeadlineKind,
+    period: Option<&str>,
+) -> Result<Markup, AppError> {
+    let briefing = duty_briefing(store.connection(), kind, today, period)?;
+    Ok(duty_markup(&briefing, today))
 }
 
-fn duty_markup(b: &DutyBriefing) -> Markup {
-    let title = duty_title(b.kind);
+fn duty_markup(b: &DutyBriefing, today: Date) -> Markup {
+    let title = duty_title(b);
     let lede = duty_lede(b.kind);
     let amount = amount_story_fr(&b.amount);
     let why = duty_why(b.kind);
     let expects: Vec<&'static str> = b.expect.iter().map(expect_fr).collect();
     let show_open = !matches!(b.amount, AmountStory::NotYourHands { .. }) && !b.path.is_empty();
-    let open = format!("{}/open", crate::views::copy::duty_href(b.kind));
+    let href = crate::views::copy::duty_href(b.kind, Some(b.period_key.as_str()));
+    let open = format!("{href}/open");
+    let filed = format!("{href}/filed");
+    let unfiled = format!("{href}/unfiled");
     html! {
         div class="letter" data-view=(ViewId::Societe.slug()) {
             (back())
             div class="date" { (format_date_fr(b.due_on)) }
             h1 { (title) }
-            p class="lede" { (lede) }
+            @if let Some(on) = b.filed_on {
+                p class="lede" { "Déposé le " (format_date_fr(on)) "." }
+            } @else {
+                p class="lede" { (lede) }
+            }
             div class="block" {
                 h3 { "Le montant" }
                 p class="prose" { (amount) }
+            }
+            @if !b.boxes.is_empty() {
+                div class="block" {
+                    h3 { "Les cases" }
+                    ul class="boxes" {
+                        @for bx in &b.boxes {
+                            li {
+                                span class="case" { (bx.case) }
+                                span { (box_label_fr(bx)) }
+                                span class="amount" { (box_amount_fr(bx)) }
+                            }
+                        }
+                    }
+                    @if b.coverage == BoxCoverage::Complete {
+                        p class="prose" style="color:var(--ink-2);font-size:14px" {
+                            "Le reste, laisse vide."
+                        }
+                    } @else if b.coverage == BoxCoverage::Incomplete {
+                        p class="prose" style="color:var(--ink-2);font-size:14px" {
+                            "Les montants manquent encore. Les cases sont déjà les bonnes."
+                        }
+                    }
+                }
             }
             div class="block" {
                 h3 { "Pourquoi" }
@@ -483,10 +575,29 @@ fn duty_markup(b: &DutyBriefing) -> Markup {
             p class="prose" style="color:var(--ink-2);font-size:14px" {
                 "Indicatif. L'administration prime."
             }
-            div class="row-actions" {
+            div class="duty-bar" {
+                @if b.filed_on.is_none() && !matches!(b.amount, AmountStory::NotYourHands { .. }) {
+                    @let default_on = if b.catch_up {
+                        format_date(b.due_on)
+                    } else {
+                        format_date(today)
+                    };
+                    form class="duty-file" hx-post=(filed) hx-target="#content" {
+                        (form::date_inline("filed_on", "Déposé le", &default_on, &format_date(today), None))
+                        button class="quiet" type="submit" { "C'est déposé." }
+                        @if b.catch_up || b.due_on < today {
+                            button class="quiet" type="submit" name="at_due" value="1" { "C'était à l'échéance" }
+                        }
+                    }
+                }
                 @if show_open {
                     form hx-post=(open) hx-target="#content" {
                         button class="seal" type="submit" { "Ouvrir dans le navigateur" }
+                    }
+                }
+                @if b.filed_on.is_some() {
+                    form hx-post=(unfiled) hx-target="#content" {
+                        button class="quiet" type="submit" { "Ce n'était pas ça" }
                     }
                 }
                 a class="quiet" href="/societe/impots"
@@ -498,8 +609,34 @@ fn duty_markup(b: &DutyBriefing) -> Markup {
     }
 }
 
-fn duty_title(kind: FiscalDeadlineKind) -> String {
-    let s = deadline_fr(kind);
+fn box_label_fr(b: &FormBox) -> &'static str {
+    match (b.form, b.case) {
+        ("2571", "03") => "Montant à payer, impôt sur les sociétés",
+        ("2571", "10") => "Total à payer",
+        ("3310-CA3", "02") => "Prestations de services (HT)",
+        ("3310-CA3", "08") => "TVA brute 20 %",
+        ("3310-CA3", "9B") => "TVA brute 10 %",
+        ("3310-CA3", "09") => "TVA brute 5,5 %",
+        ("3310-CA3", "19") => "TVA déductible, immobilisations",
+        ("3310-CA3", "20") => "TVA déductible, autres biens et services",
+        ("3310-CA3", "25") => "Crédit de TVA antérieur",
+        ("3310-CA3", "27") => "Crédit de TVA à reporter",
+        ("3310-CA3", "28") => "TVA nette due",
+        _ => "",
+    }
+}
+
+fn box_amount_fr(b: &FormBox) -> String {
+    match (b.role, b.amount) {
+        (BoxRole::Fill | BoxRole::SiteComputes, Some(amount)) => amount.to_string(),
+        (BoxRole::Fill | BoxRole::SiteComputes, None) => "à saisir".into(),
+        (BoxRole::LeaveEmpty, _) => "vide".into(),
+        (BoxRole::Check, _) => "cocher si besoin".into(),
+    }
+}
+
+fn duty_title(b: &DutyBriefing) -> String {
+    let s = duty_occurrence_fr(b.kind, b.vat_scheme, &b.period_key, b.due_on);
     let mut chars = s.chars();
     match chars.next() {
         Some(first) => format!("{}{}.", first.to_uppercase(), chars.as_str()),
@@ -597,6 +734,9 @@ fn amount_story_fr(story: &AmountStory) -> String {
             }
             UnknownReason::PriorVatMissing => {
                 "On ne le sait pas encore. La TVA de l'exercice précédent n'est pas reprise.".into()
+            }
+            UnknownReason::PeriodNotInVault => {
+                "On ne le sait pas encore. Cette période n'est pas dans le coffre — chiffres de l'ancien cabinet, pas ici.".into()
             }
         },
         AmountStory::External => "Le montant est sur l'avis, pas ici.".into(),

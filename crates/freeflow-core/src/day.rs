@@ -272,6 +272,7 @@ pub enum GestureSource {
         #[serde(with = "crate::domain::serde_date::date")]
         due_on: Date,
         amount: Option<Money>,
+        period_key: String,
     },
 }
 
@@ -289,7 +290,7 @@ pub fn day_gestures(conn: &Connection, today: Date) -> Result<Vec<DayGesture>, A
     let queue = follow_up_queue(conn, today)?;
     let unmatched = unmatched_count(conn)?;
     let calendar = fiscal_calendar(conn, today)?;
-    let duty = next_state_duty(&calendar, today);
+    let duty = next_state_duty(conn, &calendar, today)?;
 
     let mut gestes = Vec::new();
     if !setup.is_done() {
@@ -336,15 +337,43 @@ fn unmatched_count(conn: &Connection) -> Result<u32, AppError> {
     Ok(u32::try_from(n).unwrap_or(u32::MAX))
 }
 
-fn next_state_duty(calendar: &[FiscalDeadline], today: Date) -> Option<&FiscalDeadline> {
+fn next_state_duty<'a>(
+    conn: &Connection,
+    calendar: &'a [FiscalDeadline],
+    today: Date,
+) -> Result<Option<&'a FiscalDeadline>, AppError> {
     let soon: Vec<&FiscalDeadline> = calendar
         .iter()
-        .filter(|d| (d.due_on - today).whole_days() <= STATE_DUTY_HORIZON_DAYS)
+        .filter(|d| {
+            (d.due_on - today).whole_days() <= STATE_DUTY_HORIZON_DAYS
+                && d.kind != FiscalDeadlineKind::ApprovalMeeting
+        })
         .collect();
-    soon.iter()
+    let mut open = Vec::new();
+    for d in soon {
+        if duty_is_filed(conn, d.kind, &d.period_key)? {
+            continue;
+        }
+        open.push(d);
+    }
+    Ok(open
+        .iter()
         .copied()
         .find(|d| is_vat_deadline(d.kind))
-        .or_else(|| soon.first().copied())
+        .or_else(|| open.first().copied()))
+}
+
+fn duty_is_filed(
+    conn: &Connection,
+    kind: FiscalDeadlineKind,
+    period_key: &str,
+) -> Result<bool, AppError> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM duty_filings WHERE kind = ?1 AND period_key = ?2",
+        rusqlite::params![kind.as_str(), period_key],
+        |row| row.get(0),
+    )?;
+    Ok(n > 0)
 }
 
 fn is_vat_deadline(kind: FiscalDeadlineKind) -> bool {
@@ -398,6 +427,7 @@ fn state_duty_gesture(deadline: &FiscalDeadline) -> DayGesture {
             deadline: deadline.kind,
             due_on: deadline.due_on,
             amount: deadline.amount,
+            period_key: deadline.period_key.clone(),
         },
     }
 }
@@ -459,6 +489,7 @@ pub struct MonthEvent {
     pub on: Date,
     pub kind: MonthEventKind,
     pub deadline: Option<FiscalDeadlineKind>,
+    pub period_key: Option<String>,
     pub party: Option<String>,
     pub title: String,
     pub amount: Option<Money>,
@@ -537,6 +568,7 @@ fn collect_follow_up_events(
             on,
             kind: MonthEventKind::FollowUp,
             deadline: None,
+            period_key: None,
             party: Some(card.party.clone()),
             title: card.title.clone(),
             amount: Some(card.amount),
@@ -581,6 +613,7 @@ fn collect_invoice_due_events(
             on: invoice.due_on,
             kind: MonthEventKind::InvoiceDue,
             deadline: None,
+            period_key: None,
             party: Some(party),
             title: invoice.number.clone(),
             amount: Some(aged.outstanding),
@@ -611,6 +644,7 @@ fn collect_meeting_events(
                 on,
                 kind: MonthEventKind::Meeting,
                 deadline: None,
+                period_key: None,
                 party: Some(party),
                 title: interaction.note.clone(),
                 amount: None,
@@ -646,6 +680,7 @@ fn collect_mission_events(
                 on,
                 kind: MonthEventKind::Milestone,
                 deadline: None,
+                period_key: None,
                 party: Some(party.clone()),
                 title: milestone.label.clone(),
                 amount: None,
@@ -659,6 +694,7 @@ fn collect_mission_events(
                 on,
                 kind: MonthEventKind::MissionEnd,
                 deadline: None,
+                period_key: None,
                 party: Some(party),
                 title: mission.name.clone(),
                 amount: None,
@@ -683,6 +719,7 @@ fn collect_fiscal_events(
             on: deadline.due_on,
             kind: MonthEventKind::StateDuty,
             deadline: Some(deadline.kind),
+            period_key: Some(deadline.period_key.clone()),
             party: None,
             title: deadline.kind.as_str().to_string(),
             amount: deadline.amount,
@@ -711,6 +748,7 @@ fn collect_year_end(
         on,
         kind: MonthEventKind::YearEnd,
         deadline: None,
+        period_key: None,
         party: None,
         title: format_date(on),
         amount: None,

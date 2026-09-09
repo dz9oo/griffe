@@ -19,10 +19,11 @@
 use rusqlite::Connection;
 
 use crate::app::AppError;
-use crate::billing::{compute_totals, list_invoices};
+use crate::billing::{VatBreakdownLine, compute_totals, list_invoices};
 use crate::company::CompanyProfile;
-use crate::domain::{FiscalYear, Money};
+use crate::domain::{ExpenseId, FiscalYear, Money, VatRate};
 use crate::expenses::expenses_between;
+use crate::fixed_assets::list_fixed_assets;
 
 /// Plafond de la tranche à taux réduit d'IS : 42 500 € de bénéfice.
 const REDUCED_RATE_CEILING: Money = Money::from_cents(4_250_000);
@@ -404,7 +405,7 @@ pub fn prepaid_expenses_of(lines: &[crate::domain::OpeningBalanceLine]) -> Money
 
 /// Déclaration de TVA d'une période (CA3) : TVA collectée sur les factures émises, TVA déductible
 /// sur les dépenses, et le solde à reverser (positif) ou le crédit de TVA (négatif).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct VatReturn {
     #[serde(with = "crate::domain::serde_date::date")]
     pub period_start: time::Date,
@@ -414,6 +415,14 @@ pub struct VatReturn {
     pub deductible: Money,
     /// `collected − deductible` : à reverser si positif, crédit de TVA reportable si négatif.
     pub due: Money,
+    /// Bases HT et TVA collectée, un élément par taux réellement présent (lot 56, cases CA3).
+    pub collected_by_rate: Vec<VatBreakdownLine>,
+    /// TVA déductible des dépenses immobilisées (CA3 ligne 19).
+    pub deductible_assets: Money,
+    /// TVA déductible des autres biens et services (CA3 ligne 20).
+    pub deductible_other: Money,
+    /// Total HT des factures émises de la période (CA3 cadre A, prestations).
+    pub taxable_ht: Money,
 }
 
 /// TVA due sur une période `[start, end]` (bornes inclusives) — premier calcul de montant de la
@@ -427,16 +436,54 @@ pub fn vat_due_for_period(
     start: time::Date,
     end: time::Date,
 ) -> Result<VatReturn, AppError> {
-    let collected: Money = list_invoices(conn)?
-        .iter()
+    let invoices: Vec<_> = list_invoices(conn)?
+        .into_iter()
         .filter(|inv| inv.issued_on >= start && inv.issued_on <= end)
-        .map(|inv| compute_totals(&inv.lines).total_vat)
-        .sum();
-
-    let deductible: Money = expenses_between(conn, start, end)?
+        .collect();
+    let totals: Vec<_> = invoices
         .iter()
-        .map(|e| e.vat_deductible)
-        .sum();
+        .map(|inv| compute_totals(&inv.lines))
+        .collect();
+    let collected: Money = totals.iter().map(|t| t.total_vat).sum();
+    let taxable_ht: Money = totals.iter().map(|t| t.subtotal_ht).sum();
+    let collected_by_rate: Vec<VatBreakdownLine> = VatRate::ALL
+        .into_iter()
+        .filter_map(|rate| {
+            let taxable_amount: Money = totals
+                .iter()
+                .flat_map(|t| t.vat_breakdown.iter())
+                .filter(|b| b.rate == rate)
+                .map(|b| b.taxable_amount)
+                .sum();
+            let vat_amount: Money = totals
+                .iter()
+                .flat_map(|t| t.vat_breakdown.iter())
+                .filter(|b| b.rate == rate)
+                .map(|b| b.vat_amount)
+                .sum();
+            (!taxable_amount.is_zero() || !vat_amount.is_zero()).then_some(VatBreakdownLine {
+                rate,
+                taxable_amount,
+                vat_amount,
+            })
+        })
+        .collect();
+
+    let asset_expense_ids: Vec<ExpenseId> = list_fixed_assets(conn)?
+        .into_iter()
+        .filter_map(|a| a.expense_id)
+        .collect();
+    let expenses = expenses_between(conn, start, end)?;
+    let mut deductible_assets = Money::ZERO;
+    let mut deductible_other = Money::ZERO;
+    for expense in &expenses {
+        if asset_expense_ids.contains(&expense.id) {
+            deductible_assets += expense.vat_deductible;
+        } else {
+            deductible_other += expense.vat_deductible;
+        }
+    }
+    let deductible = deductible_assets + deductible_other;
 
     Ok(VatReturn {
         period_start: start,
@@ -444,6 +491,10 @@ pub fn vat_due_for_period(
         collected,
         deductible,
         due: collected - deductible,
+        collected_by_rate,
+        deductible_assets,
+        deductible_other,
+        taxable_ht,
     })
 }
 
@@ -762,6 +813,15 @@ mod tests {
         assert_eq!(vat.collected, Money::from_cents(123_500));
         assert_eq!(vat.deductible, Money::from_cents(16_000));
         assert_eq!(vat.due, Money::from_cents(107_500));
+        assert_eq!(vat.taxable_ht, Money::from_cents(617_500));
+        assert_eq!(vat.deductible_assets, Money::ZERO);
+        assert_eq!(vat.deductible_other, Money::from_cents(16_000));
+        assert_eq!(vat.collected_by_rate.len(), 1);
+        assert_eq!(vat.collected_by_rate[0].rate, VatRate::Standard);
+        assert_eq!(
+            vat.collected_by_rate[0].vat_amount,
+            Money::from_cents(123_500)
+        );
     }
 
     // --- Lot 41 : arrondi à l'euro (art. 1657 CGI). ---

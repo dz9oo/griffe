@@ -183,6 +183,8 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "society.closing",
         "society.statement",
         "society.identity",
+        "society.mark_duty_filed",
+        "society.retract_duty_filed",
     ] {
         assert!(names.contains(expected), "outil manquant : {expected}");
     }

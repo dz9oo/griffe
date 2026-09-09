@@ -9,6 +9,7 @@
 //! `number`/`textarea`/`field_help`, en suivant ce même patron ; les prochains lots (devis…) en
 //! ajouteront d'autres de la même façon.
 
+use freeflow_core::domain::{format_date_fr, parse_date};
 use maud::{Markup, html};
 
 /// Champ texte simple. `value` est déjà la valeur à afficher (celle re-soumise en cas d'erreur,
@@ -49,6 +50,25 @@ pub fn date_max(name: &str, label: &str, value: &str, max: &str, error: Option<&
             @if let Some(e) = error {
                 div class="field-error" { (e) }
             }
+        }
+    }
+}
+
+/// Date compacte : libellé et champ sur une ligne, pour une rangée d'actions.
+/// Calendrier HTML (`app.js`) — le popover natif WebKitGTK ne se ferme pas au clic dehors.
+pub fn date_inline(name: &str, label: &str, value: &str, max: &str, error: Option<&str>) -> Markup {
+    let shown = parse_date(value).map_or_else(|_| value.to_string(), format_date_fr);
+    html! {
+        div class="field-inline" {
+            span { (label) }
+            div class="date-pick" data-max=(max) {
+                input type="hidden" id=(name) name=(name) value=(value);
+                button type="button" class="date-pick-toggle" aria-expanded="false" aria-haspopup="dialog" { (shown) }
+                div class="date-pick-pop" hidden {}
+            }
+        }
+        @if let Some(e) = error {
+            div class="field-error" { (e) }
         }
     }
 }

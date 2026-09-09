@@ -385,7 +385,7 @@ fn run_command(
         TopCommand::Company(cmd) => company::run(cmd, store, ctx, json),
         TopCommand::Day(cmd) => day::run(cmd, store, json),
         TopCommand::People(cmd) => people::run(cmd, store, json),
-        TopCommand::Society(cmd) => society::run(cmd, store, json),
+        TopCommand::Society(cmd) => society::run(cmd, store, ctx, json),
         TopCommand::FollowUp(cmd) => follow_up::run(cmd, store, ctx, json),
         TopCommand::Prospect(cmd) => prospect::run(cmd, store, ctx, json),
         TopCommand::Mission(cmd) => mission::run(cmd, store, ctx, json),

@@ -152,10 +152,38 @@ pub fn router(state: AppState) -> Router {
         .route("/societe", get(handlers::societe_piece).post(societe::save))
         .route("/societe/payer", get(handlers::societe_pay))
         .route("/societe/impots", get(handlers::societe_duties))
+        .route(
+            "/societe/impots/catch-up",
+            post(handlers::societe_duties_catch_up),
+        )
         .route("/societe/impots/{kind}", get(handlers::societe_duty))
         .route(
             "/societe/impots/{kind}/open",
             post(handlers::societe_duty_open),
+        )
+        .route(
+            "/societe/impots/{kind}/filed",
+            post(handlers::societe_duty_filed),
+        )
+        .route(
+            "/societe/impots/{kind}/unfiled",
+            post(handlers::societe_duty_unfiled),
+        )
+        .route(
+            "/societe/impots/{kind}/{period}",
+            get(handlers::societe_duty_at),
+        )
+        .route(
+            "/societe/impots/{kind}/{period}/open",
+            post(handlers::societe_duty_open_at),
+        )
+        .route(
+            "/societe/impots/{kind}/{period}/filed",
+            post(handlers::societe_duty_filed_at),
+        )
+        .route(
+            "/societe/impots/{kind}/{period}/unfiled",
+            post(handlers::societe_duty_unfiled_at),
         )
         .route("/societe/cloture", get(handlers::societe_closing))
         .route("/societe/releve", get(handlers::societe_statement))

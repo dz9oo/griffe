@@ -20,6 +20,7 @@ use freeflow_core::opening_balance::{
     DeleteOpeningBalance, RecordOpeningBalance, UpdateOpeningBalance,
 };
 use freeflow_core::prospection::{DeleteInteraction, DeleteOpportunity};
+use freeflow_core::society::{MarkCatchUpFiled, MarkDutyFiled, RetractDutyFiled};
 use freeflow_core::store::Store;
 
 use crate::error::CliError;
@@ -180,6 +181,15 @@ pub fn confirm(store: &mut Store, id: PendingActionId, json: bool) -> Result<Str
         Ok(format_outcome(&outcome, json))
     } else if action.command_name == MarkFollowUpSent::NAME {
         let outcome = Executor::new(store).confirm::<MarkFollowUpSent>(id)?;
+        Ok(format_outcome(&outcome, json))
+    } else if action.command_name == MarkDutyFiled::NAME {
+        let outcome = Executor::new(store).confirm::<MarkDutyFiled>(id)?;
+        Ok(format_outcome(&outcome, json))
+    } else if action.command_name == MarkCatchUpFiled::NAME {
+        let outcome = Executor::new(store).confirm::<MarkCatchUpFiled>(id)?;
+        Ok(format_outcome(&outcome, json))
+    } else if action.command_name == RetractDutyFiled::NAME {
+        let outcome = Executor::new(store).confirm::<RetractDutyFiled>(id)?;
         Ok(format_outcome(&outcome, json))
     } else {
         Err(CliError::UnknownConfirmableCommand(action.command_name))

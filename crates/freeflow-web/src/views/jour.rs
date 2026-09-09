@@ -2,21 +2,26 @@
 //! cette vue ne fait que rédiger le français.
 
 use freeflow_core::app::AppError;
+use freeflow_core::company::company_profile;
 use freeflow_core::day::{
     DayGesture, DayMark, GestureSource, GestureVerb, Mast, MastSignal, MissionTrack, MonthEvent,
     MonthEventKind, MonthTarget, MonthView, day_gestures, day_mast, day_month,
 };
 use freeflow_core::domain::{
-    FollowUpSubject, Money, Month, SnoozePreset, format_date, format_date_fr, snooze_date,
+    FiscalYearEnd, FollowUpSubject, Money, Month, SnoozePreset, format_date, format_date_fr,
+    snooze_date,
 };
 use freeflow_core::setup::setup_status;
 use freeflow_core::store::Store;
 use maud::{Markup, html};
 use time::{Date, Weekday};
 
+use freeflow_core::fiscal::VatFilingScheme;
+
 use crate::layout::ViewId;
 use crate::views::copy::{
-    deadline_fr, duty_href, event_kind_fr, gestes_title, is_vat, letter_date, month_fr, month_title,
+    deadline_fr, duty_href, duty_occurrence_fr, event_kind_fr, gestes_title, is_vat, letter_date,
+    month_fr, month_title,
 };
 use crate::views::gens::{href_for_party, person_href};
 
@@ -28,6 +33,15 @@ pub fn render(store: &Store, today: Date) -> Result<Markup, AppError> {
     let month = Month::new(today.year(), u8::from(today.month()))
         .expect("le mois courant est toujours valide");
     let month_view = day_month(conn, month, today)?;
+    let vat_scheme = {
+        let profile = company_profile(conn).ok().flatten();
+        let regime = profile.as_ref().and_then(|p| p.vat_regime);
+        let fye = profile
+            .as_ref()
+            .and_then(|p| p.fiscal_year_end)
+            .unwrap_or(FiscalYearEnd::CALENDAR);
+        VatFilingScheme::for_exercise(regime, fye.current(today))
+    };
 
     let title = gestes_title(gestes.len());
     let year_end = month_view
@@ -80,11 +94,11 @@ pub fn render(store: &Store, today: Date) -> Result<Markup, AppError> {
             @if !gestes.is_empty() {
                 ol class="gestes" {
                     @for (i, g) in gestes.iter().enumerate() {
-                        (geste_li(i + 1, g, today))
+                        (geste_li(i + 1, g, today, vat_scheme))
                     }
                 }
             }
-            (month_section(&month_view, today))
+            (month_section(&month_view, today, vat_scheme))
         }
     })
 }
@@ -154,8 +168,8 @@ fn letter_lede(n: usize, setup_done: bool, today: Date, year_end: Option<Date>) 
     "Rien d'autre n'est urgent.".into()
 }
 
-fn geste_li(n: usize, g: &DayGesture, today: Date) -> Markup {
-    let (title, body) = geste_copy(g);
+fn geste_li(n: usize, g: &DayGesture, today: Date, vat_scheme: VatFilingScheme) -> Markup {
+    let (title, body) = geste_copy(g, vat_scheme);
     html! {
         li {
             button class="geste" type="button" {
@@ -172,7 +186,7 @@ fn geste_li(n: usize, g: &DayGesture, today: Date) -> Markup {
     }
 }
 
-fn geste_copy(g: &DayGesture) -> (String, String) {
+fn geste_copy(g: &DayGesture, vat_scheme: VatFilingScheme) -> (String, String) {
     match &g.source {
         GestureSource::Setup { step } => ("Configurer ma société".into(), step.text().to_string()),
         GestureSource::FollowUp {
@@ -217,11 +231,12 @@ fn geste_copy(g: &DayGesture) -> (String, String) {
             deadline,
             due_on,
             amount,
+            ..
         } => {
             let title = if is_vat(*deadline) {
                 "Savoir pour la TVA".into()
             } else {
-                format!("Savoir pour {}", deadline_fr(*deadline))
+                format!("Savoir pour {}", deadline_fr(*deadline, vat_scheme))
             };
             let amount = amount
                 .filter(|m| *m != Money::ZERO)
@@ -281,8 +296,12 @@ fn geste_actions(g: &DayGesture, today: Date) -> Markup {
                 "Lire les mouvements"
             }
         },
-        GestureSource::StateDuty { deadline, .. } => {
-            let href = duty_href(*deadline);
+        GestureSource::StateDuty {
+            deadline,
+            period_key,
+            ..
+        } => {
+            let href = duty_href(*deadline, Some(period_key.as_str()));
             html! {
                 a class="quiet" href=(href)
                   hx-get=(href) hx-target="#content" hx-push-url="true" {
@@ -293,7 +312,7 @@ fn geste_actions(g: &DayGesture, today: Date) -> Markup {
     }
 }
 
-fn month_section(view: &MonthView, today: Date) -> Markup {
+fn month_section(view: &MonthView, today: Date, vat_scheme: VatFilingScheme) -> Markup {
     let title = month_title(view.month.month());
     let lede = month_lede(view);
     let days = view.month.last_day().day();
@@ -343,7 +362,7 @@ fn month_section(view: &MonthView, today: Date) -> Markup {
             @if !agenda.is_empty() {
                 ul class="agenda" {
                     @for event in &agenda {
-                        li { (agenda_row(event, today)) }
+                        li { (agenda_row(event, today, vat_scheme)) }
                     }
                 }
             }
@@ -469,7 +488,7 @@ fn track_row(track: &MissionTrack, month: Month, today: Date) -> Markup {
     }
 }
 
-fn agenda_row(event: &MonthEvent, today: Date) -> Markup {
+fn agenda_row(event: &MonthEvent, today: Date, vat_scheme: VatFilingScheme) -> Markup {
     let kind = if event.on == today {
         "aujourd'hui"
     } else if event.kind == MonthEventKind::StateDuty {
@@ -481,8 +500,13 @@ fn agenda_row(event: &MonthEvent, today: Date) -> Markup {
     } else {
         event_kind_fr(event.kind)
     };
-    let ttl = agenda_title(event);
-    let href = event_href(&event.target, event.party.as_deref(), event.deadline);
+    let ttl = agenda_title(event, vat_scheme);
+    let href = event_href(
+        &event.target,
+        event.party.as_deref(),
+        event.deadline,
+        event.period_key.as_deref(),
+    );
     let on_today = event.on == today;
     html! {
         @if let Some(href) = href {
@@ -505,7 +529,7 @@ fn agenda_row(event: &MonthEvent, today: Date) -> Markup {
     }
 }
 
-fn agenda_title(event: &MonthEvent) -> String {
+fn agenda_title(event: &MonthEvent, vat_scheme: VatFilingScheme) -> String {
     match event.kind {
         MonthEventKind::StateDuty => {
             let amount = event
@@ -513,10 +537,15 @@ fn agenda_title(event: &MonthEvent) -> String {
                 .filter(|m| *m != Money::ZERO)
                 .map(|m| format!(" · {m}"))
                 .unwrap_or_default();
-            let label = event
-                .deadline
-                .map(deadline_fr)
-                .unwrap_or(event.title.as_str());
+            let label = match event.deadline {
+                Some(k) => duty_occurrence_fr(
+                    k,
+                    vat_scheme,
+                    event.period_key.as_deref().unwrap_or(""),
+                    event.on,
+                ),
+                None => event.title.clone(),
+            };
             format!("{label}{amount}")
         }
         MonthEventKind::YearEnd => "Dernier jour — on clôt le lendemain".into(),
@@ -557,6 +586,7 @@ fn event_href(
     target: &MonthTarget,
     party: Option<&str>,
     deadline: Option<freeflow_core::fiscal::FiscalDeadlineKind>,
+    period_key: Option<&str>,
 ) -> Option<String> {
     match target {
         MonthTarget::FollowUp { subject } => Some(party.map_or_else(
@@ -578,7 +608,7 @@ fn event_href(
                 if k == freeflow_core::fiscal::FiscalDeadlineKind::ApprovalMeeting {
                     "/societe/cloture".to_string()
                 } else {
-                    duty_href(k)
+                    duty_href(k, period_key)
                 }
             },
         )),

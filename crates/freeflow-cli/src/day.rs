@@ -151,9 +151,15 @@ impl HumanRender for MonthView {
                 .map(|e| {
                     let title = if e.kind == MonthEventKind::StateDuty {
                         e.deadline
-                            .map(crate::society::deadline_fr)
-                            .unwrap_or(e.title.as_str())
-                            .to_string()
+                            .map(|k| {
+                                crate::society::deadline_occurrence_fr(
+                                    k,
+                                    freeflow_core::fiscal::VatFilingScheme::Ca3Monthly,
+                                    e.period_key.as_deref().unwrap_or(""),
+                                    e.on,
+                                )
+                            })
+                            .unwrap_or_else(|| e.title.clone())
                     } else {
                         e.title.clone()
                     };

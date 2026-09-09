@@ -38,7 +38,7 @@ use crate::opening_balance::opening_balance;
 /// est inférieur à 3 000 €.
 pub(crate) const IS_ACOMPTE_DISPENSATION: Money = Money::from_cents(300_000);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum FiscalDeadlineKind {
     /// Déclaration de TVA (CA3) — périodicité pilotée par le régime de TVA.
     Ca3,
@@ -128,6 +128,9 @@ pub struct FiscalDeadline {
     pub amount: Option<Money>,
     /// Précision facultative (« indicatif — dernier chiffre SIREN inconnu », etc.).
     pub note: Option<String>,
+    /// Identité stable de l'occurrence (période déclarée), distincte de [`Self::due_on`]
+    /// qui peut glisser au jour ouvré. Lot 56.
+    pub period_key: String,
 }
 
 fn nth_of_month(month: Month, day: u8) -> Date {
@@ -666,13 +669,119 @@ pub(crate) fn next_cfe(today: Date) -> Date {
     }
 }
 
+fn date_period_key(due_on: Date) -> String {
+    crate::domain::format_date(due_on)
+}
+
+/// Clé d'une CA3 : `AAAA-MM` du premier mois de la période déclarée.
+#[must_use]
+pub fn ca3_period_key(period_start: Month) -> String {
+    format!("{:04}-{:02}", period_start.year(), period_start.month())
+}
+
 fn bare(kind: FiscalDeadlineKind, due_on: Date) -> FiscalDeadline {
     FiscalDeadline {
         kind,
         due_on,
         amount: None,
         note: None,
+        period_key: date_period_key(due_on),
     }
+}
+
+/// Dernière CA3 dont `due_on < today`, dans une fenêtre d'un an. `None` si aucune n'est encore
+/// échue (début de régime).
+///
+/// # Panics
+///
+/// Ne panique jamais en pratique : le mois courant est valide, le jour est borné à `15..=24`.
+#[must_use]
+pub fn previous_ca3_filing(
+    today: Date,
+    periodicity: Ca3Periodicity,
+    day: u8,
+    earliest_period: Option<Month>,
+) -> Option<Ca3Filing> {
+    let day = day.clamp(Ca3FilingRule::EARLIEST_DAY, 24);
+    let mut filing_month =
+        Month::new(today.year(), u8::from(today.month())).expect("mois courant valide");
+    for _ in 0..14 {
+        if periodicity.files_in(filing_month) {
+            let period_start = periodicity.period_start(filing_month);
+            let nominal_due_on = nth_of_month(filing_month, day);
+            let due_on = next_french_business_day_on_or_after(nominal_due_on);
+            if due_on < today && earliest_period.is_none_or(|earliest| period_start >= earliest) {
+                return Some(Ca3Filing {
+                    period_start,
+                    period_end: filing_month.pred(),
+                    nominal_due_on,
+                    due_on,
+                });
+            }
+        }
+        filing_month = filing_month.pred();
+    }
+    None
+}
+
+/// Toutes les CA3 dont `due_on` est dans `[from, to]` (bornes incluses).
+///
+/// # Panics
+///
+/// Ne panique jamais : le mois de `from` est une date calendaire valide, donc `Month::new` tient.
+#[must_use]
+pub fn ca3_filings_in_range(
+    from: Date,
+    to: Date,
+    periodicity: Ca3Periodicity,
+    day: u8,
+    earliest_period: Option<Month>,
+) -> Vec<Ca3Filing> {
+    if to < from {
+        return Vec::new();
+    }
+    let day = day.clamp(Ca3FilingRule::EARLIEST_DAY, 24);
+    let mut filing_month = Month::new(from.year(), u8::from(from.month()))
+        .expect("le mois de `from` est valide")
+        .pred();
+    let mut filings = Vec::new();
+    for _ in 0..40 {
+        if periodicity.files_in(filing_month) {
+            let period_start = periodicity.period_start(filing_month);
+            let nominal_due_on = nth_of_month(filing_month, day);
+            let due_on = next_french_business_day_on_or_after(nominal_due_on);
+            if due_on > to {
+                break;
+            }
+            if due_on >= from && earliest_period.is_none_or(|earliest| period_start >= earliest) {
+                filings.push(Ca3Filing {
+                    period_start,
+                    period_end: filing_month.pred(),
+                    nominal_due_on,
+                    due_on,
+                });
+            }
+        }
+        filing_month = filing_month.succ();
+    }
+    filings
+}
+
+/// L'acompte d'IS immédiatement antérieur à `today` (15 mars, juin, septembre ou décembre).
+///
+/// # Panics
+///
+/// Ne panique jamais : les mois 3, 6, 9 et 12 existent, et le 15 aussi.
+#[must_use]
+pub fn previous_is_acompte(today: Date) -> Date {
+    let year = today.year();
+    for month in IS_ACOMPTE_MONTHS.into_iter().rev() {
+        let candidate = nth_of_month(Month::new(year, month).unwrap(), 15);
+        if candidate < today {
+            return candidate;
+        }
+    }
+    nth_of_month(Month::new(year - 1, 12).unwrap(), 15)
 }
 
 /// Les trois prochaines échéances calendaires de base (CA3, acompte d'IS, CFE), triées par date —
@@ -856,6 +965,7 @@ fn push_simplified_vat_deadlines(
                     due_on,
                     amount,
                     note: Some(note),
+                    period_key: date_period_key(due_on),
                 });
             }
         }
@@ -940,6 +1050,7 @@ fn push_simplified_vat_deadlines(
             due_on,
             amount,
             note: Some(note),
+            period_key: date_period_key(due_on),
         });
     }
     Ok(())
@@ -1042,6 +1153,7 @@ pub fn fiscal_calendar(conn: &Connection, today: Date) -> Result<Vec<FiscalDeadl
                 due_on: filing.due_on,
                 amount: Some(vat.due),
                 note: Some(note),
+                period_key: ca3_period_key(filing.period_start),
             });
         }
     }
@@ -1073,6 +1185,7 @@ pub fn fiscal_calendar(conn: &Connection, today: Date) -> Result<Vec<FiscalDeadl
             due_on: solde_due,
             amount: previous_is,
             note: Some("solde d'IS de l'exercice clos (indicatif)".to_string()),
+            period_key: date_period_key(solde_due),
         });
     }
 
@@ -1106,6 +1219,7 @@ pub fn fiscal_calendar(conn: &Connection, today: Date) -> Result<Vec<FiscalDeadl
             due_on: acompte_due,
             amount,
             note: Some(note),
+            period_key: date_period_key(acompte_due),
         });
     }
 
@@ -1117,6 +1231,7 @@ pub fn fiscal_calendar(conn: &Connection, today: Date) -> Result<Vec<FiscalDeadl
             due_on: cfe,
             amount: None,
             note: Some("montant établi par l'avis de CFE, non calculé ici".to_string()),
+            period_key: date_period_key(cfe),
         });
     }
 
@@ -1128,6 +1243,7 @@ pub fn fiscal_calendar(conn: &Connection, today: Date) -> Result<Vec<FiscalDeadl
             due_on: liasse_due,
             amount: None,
             note: Some("2065 + tableaux 2033, télétransmission EDI-TDFC (indicatif)".to_string()),
+            period_key: date_period_key(liasse_due),
         });
     }
 
@@ -1171,6 +1287,7 @@ pub fn fiscal_calendar(conn: &Connection, today: Date) -> Result<Vec<FiscalDeadl
                  salariales selon le ratio du profil, hors salaire net)"
                     .to_string(),
             ),
+            period_key: date_period_key(dsn_due),
         });
     }
 
@@ -1227,6 +1344,7 @@ pub fn fiscal_calendar(conn: &Connection, today: Date) -> Result<Vec<FiscalDeadl
                     .sum()
             }),
             note: Some(note),
+            period_key: date_period_key(due_on),
         });
     }
 
@@ -1259,6 +1377,7 @@ pub fn fiscal_calendar(conn: &Connection, today: Date) -> Result<Vec<FiscalDeadl
                 social_bps / 100,
                 social_bps % 100 / 10,
             )),
+            period_key: date_period_key(due_on),
         });
     }
 

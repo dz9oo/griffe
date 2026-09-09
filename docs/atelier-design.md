@@ -70,7 +70,7 @@ On parle comme on parlerait à voix haute.
 
 | Ne pas écrire | Écrire |
 |---|---|
-| CA3 / 3514 / CA12 | TVA du trimestre, acompte de TVA, TVA de l’année |
+| CA3 / 3514 / CA12 | TVA du mois / du trimestre, acompte de TVA, TVA de l’année |
 | Impayé, aged balance | 6 200 € chez Atlas |
 | Pipeline pondéré | Une seule conversation derrière Camille |
 | Trésorerie prévisionnelle | Piste (en mois) |

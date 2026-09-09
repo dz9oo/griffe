@@ -385,7 +385,7 @@ pub(crate) fn read(store: &Store, uri: &str) -> Result<ReadResourceResult, McpEr
             McpError::resource_not_found(format!("démarche inconnue : {kind_raw}"), None)
         })?;
         let today = freeflow_core::clock::today_local();
-        let briefing = freeflow_core::society::duty_briefing(store.connection(), kind, today)
+        let briefing = freeflow_core::society::duty_briefing(store.connection(), kind, today, None)
             .map_err(|e| McpError::resource_not_found(e.to_string(), None))?;
         return json_contents(uri, briefing);
     }
