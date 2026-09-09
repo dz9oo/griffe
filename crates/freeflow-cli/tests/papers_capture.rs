@@ -182,3 +182,118 @@ fn approving_a_year_archives_minutes_appropriation_fec_and_liasse() {
         assert_eq!(listed[0]["period"], 2026, "{kind}");
     }
 }
+
+#[test]
+fn papers_checklist_json_shows_issued_invoice_todo_then_done() {
+    let db = temp_db("papers-checklist");
+    provision(&db);
+    let client_id = create_client(&db, "Kappa Software");
+    let lines =
+        r#"[{"description":"Prestation","quantity":1,"unit_price":100000,"vat_rate":"Standard"}]"#;
+    let emit_out = json_result(
+        &freeflow()
+            .env("FREEFLOW_DB", &db)
+            .args([
+                "--json",
+                "invoice",
+                "emit",
+                "--client",
+                &client_id,
+                "--lines",
+                lines,
+                "--issued-on",
+                "2026-03-10",
+            ])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    let invoice_id = emit_out["result"]["id"].as_str().unwrap().to_string();
+    assert!(
+        papers_of_kind(&db, "issued_invoice")
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "sans profil, l'émission n'a pas figé l'original"
+    );
+    set_company_profile(&db);
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["year", "close", "--period", "2026", "--today", "2027-01-05"])
+        .assert()
+        .success();
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "year",
+            "approve",
+            "2026",
+            "--approved-on",
+            "2027-05-15",
+            "--today",
+            "2027-06-01",
+        ])
+        .assert()
+        .success();
+
+    let before = json_result(
+        &freeflow()
+            .env("FREEFLOW_DB", &db)
+            .args([
+                "--json",
+                "papers",
+                "checklist",
+                "2026",
+                "--today",
+                "2027-06-01",
+            ])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    let invoice_item = before["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["kind"] == "issued_invoice")
+        .expect("une ligne issued_invoice");
+    assert_eq!(invoice_item["status"], "todo", "{before}");
+    assert_eq!(invoice_item["required"], true);
+
+    let pdf = db.with_file_name("FA.pdf");
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["invoice", "render", "--id", &invoice_id, "--out"])
+        .arg(&pdf)
+        .assert()
+        .success();
+
+    let after = json_result(
+        &freeflow()
+            .env("FREEFLOW_DB", &db)
+            .args([
+                "--json",
+                "papers",
+                "checklist",
+                "2026",
+                "--today",
+                "2027-06-01",
+            ])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    let invoice_item = after["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["kind"] == "issued_invoice")
+        .expect("une ligne issued_invoice");
+    assert_eq!(invoice_item["status"], "done", "{after}");
+}

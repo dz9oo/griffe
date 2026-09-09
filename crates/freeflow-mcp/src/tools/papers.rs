@@ -1,5 +1,4 @@
-//! `papers.list` / `papers.show` / `papers.add` / `papers.purge` — lot 57. Dépôt manuel ;
-//! capture automatique et checklist : lots suivants.
+//! `papers.list` / `papers.show` / `papers.add` / `papers.purge` / `papers.checklist`.
 
 use freeflow_core::app::Executor;
 use freeflow_core::clock::today_local;
@@ -7,6 +6,7 @@ use freeflow_core::domain::{PaperKind, PaperOrigin, parse_date};
 use freeflow_core::expenses::hash_receipt;
 use freeflow_core::papers::{
     NewPaper, PaperFilter, PurgePaper, archive_paper, list_papers, mime_from_name, paper_by_id,
+    papers_checklist as load_papers_checklist,
 };
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
@@ -59,6 +59,14 @@ pub(crate) struct PapersPurgeArgs {
     today: Option<String>,
     #[serde(default)]
     dry_run: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct PapersChecklistArgs {
+    /// Année civile de la clôture (ex. `2026`) — même désignation que `fiscal.year_show`.
+    period: i32,
+    /// Date du jour `AAAA-MM-JJ`. Défaut : aujourd'hui (heure locale).
+    today: Option<String>,
 }
 
 #[tool_router(router = papers_router, vis = "pub(crate)")]
@@ -188,6 +196,28 @@ impl FreeflowServer {
         match Executor::new(&mut store).execute(&PurgePaper { id, today }, &self.ctx(args.dry_run))
         {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
+    /// Checklist de conservation d'un exercice : originaux que FreeFlow doit avoir figés
+    /// (`required`), pièces extérieures en avertissement (statuts, Kbis, relevé, accusé).
+    /// Lecture seule. `today` facultatif. Voir aussi la ressource `freeflow://papers/{period}`.
+    #[tool(
+        name = "papers.checklist",
+        annotations(read_only_hint = true, idempotent_hint = true)
+    )]
+    async fn papers_checklist(
+        &self,
+        Parameters(args): Parameters<PapersChecklistArgs>,
+    ) -> CallToolResult {
+        let today = match args.today {
+            Some(s) => ok_or_return!("today", parse_date(&s)),
+            None => today_local(),
+        };
+        let store = self.store.lock().await;
+        match load_papers_checklist(store.connection(), args.period, today) {
+            Ok(checklist) => ok_json(checklist),
             Err(e) => err_text(e.to_string()),
         }
     }

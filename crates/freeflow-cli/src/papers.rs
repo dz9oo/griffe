@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use clap::Subcommand;
 use freeflow_core::app::{ExecutionContext, Executor, Outcome};
 use freeflow_core::clock::today_local;
+use freeflow_core::closing::StepStatus;
 use freeflow_core::company::company_profile;
 use freeflow_core::domain::{
     ExpenseId, FiscalYearEnd, FiscalYearId, InvoiceId, PaperKind, PaperOrigin, format_date,
@@ -16,8 +17,8 @@ use freeflow_core::expenses::{expense_by_id, hash_receipt};
 use freeflow_core::fec::build_fec;
 use freeflow_core::fiscal_year::fiscal_year_ending_in;
 use freeflow_core::papers::{
-    ArchivePaper, NewPaper, Paper, PaperFilter, PurgePaper, archive_paper, issued_paper,
-    list_papers, mime_from_name, paper_by_id,
+    ArchivePaper, NewPaper, Paper, PaperFilter, PapersChecklist, PurgePaper, archive_paper,
+    issued_paper, list_papers, mime_from_name, paper_by_id, papers_checklist,
 };
 use freeflow_core::store::Store;
 use time::Date;
@@ -48,29 +49,7 @@ impl HumanRender for Paper {
 }
 
 fn kind_label(kind: PaperKind) -> &'static str {
-    match kind {
-        PaperKind::IssuedInvoice => "facture émise",
-        PaperKind::CreditNote => "avoir",
-        PaperKind::Fec => "FEC",
-        PaperKind::Minutes => "PV",
-        PaperKind::Appropriation => "affectation",
-        PaperKind::Synthesis => "synthèse",
-        PaperKind::BalanceSheet => "bilan",
-        PaperKind::Inventory => "inventaire",
-        PaperKind::EfiNotice => "notice EFI",
-        PaperKind::Liasse => "liasse",
-        PaperKind::BankStatement => "relevé",
-        PaperKind::ExpenseReceipt => "justificatif",
-        PaperKind::Statutes => "statuts",
-        PaperKind::Kbis => "Kbis",
-        PaperKind::ShareLedger => "registre des mouvements de titres",
-        PaperKind::ClientContract => "contrat",
-        PaperKind::Insurance => "assurance",
-        PaperKind::TaxNotice => "avis d'imposition",
-        PaperKind::FilingAck => "accusé de dépôt",
-        PaperKind::Payroll => "bulletin de paie",
-        PaperKind::Other => "autre",
-    }
+    kind.label_fr()
 }
 
 fn origin_label(origin: PaperOrigin) -> &'static str {
@@ -119,6 +98,14 @@ pub enum PapersCommand {
     Rm {
         #[arg(value_name = "RÉFÉRENCE")]
         reference: String,
+        /// Date du jour (défaut : aujourd'hui, heure locale) — pour les tests.
+        #[arg(long, value_parser = parse_date)]
+        today: Option<Date>,
+    },
+    /// Checklist de conservation d'un exercice : originaux figés, pièces manquantes.
+    Checklist {
+        /// Année civile de la clôture (ex. `2026`) — même désignation que `year show`.
+        period: i32,
         /// Date du jour (défaut : aujourd'hui, heure locale) — pour les tests.
         #[arg(long, value_parser = parse_date)]
         today: Option<Date>,
@@ -227,6 +214,39 @@ pub fn run(
             )?;
             Ok(format_outcome(&outcome, json))
         }
+        PapersCommand::Checklist { period, today } => {
+            let today = today.unwrap_or_else(today_local);
+            let checklist = papers_checklist(store.connection(), period, today)?;
+            Ok(format_value(&checklist, json))
+        }
+    }
+}
+
+impl HumanRender for PapersChecklist {
+    fn render_human(&self) -> String {
+        use std::fmt::Write as _;
+        let mut out = format!(
+            "Les papiers — exercice {}, vu le {}\n",
+            self.period,
+            freeflow_core::domain::format_date(self.today)
+        );
+        if self.items.is_empty() {
+            out.push_str("  (rien à signaler)");
+            return out;
+        }
+        for item in &self.items {
+            let glyph = match item.status {
+                StepStatus::Done => "✓",
+                StepStatus::Todo => "→",
+                StepStatus::Warning => "!",
+                StepStatus::Blocked => "✗",
+                StepStatus::Info => "·",
+                StepStatus::Later => "○",
+            };
+            let req = if item.required { " (requis)" } else { "" };
+            let _ = writeln!(out, "  {glyph} {}{req}", kind_label(item.kind));
+        }
+        out.trim_end().to_string()
     }
 }
 

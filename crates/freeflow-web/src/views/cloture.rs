@@ -506,7 +506,10 @@ fn step_action(checklist: &ClosingChecklist, step: &ClosingStep) -> Markup {
             || html! {},
             |id| panel_button(format!("/cloture/{id}/approve"), "approuver"),
         ),
-        ClosingStepKey::Documents | ClosingStepKey::Liasse => id.map_or_else(
+        ClosingStepKey::Documents => {
+            nav_link(&format!("/societe/papiers?period={period}"), "Les papiers")
+        }
+        ClosingStepKey::Liasse => id.map_or_else(
             || html! {},
             |id| panel_button(format!("/cloture/{id}"), "documents de l'exercice"),
         ),

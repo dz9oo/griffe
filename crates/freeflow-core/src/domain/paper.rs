@@ -125,6 +125,34 @@ impl PaperKind {
         }
     }
 
+    /// Libellé français d'une nature — une seule source pour CLI, fenêtre et checklist.
+    #[must_use]
+    pub const fn label_fr(self) -> &'static str {
+        match self {
+            Self::IssuedInvoice => "facture émise",
+            Self::CreditNote => "avoir",
+            Self::Fec => "FEC",
+            Self::Minutes => "PV",
+            Self::Appropriation => "affectation",
+            Self::Synthesis => "synthèse",
+            Self::BalanceSheet => "bilan",
+            Self::Inventory => "inventaire",
+            Self::EfiNotice => "notice EFI",
+            Self::Liasse => "liasse",
+            Self::BankStatement => "relevé",
+            Self::ExpenseReceipt => "justificatif",
+            Self::Statutes => "statuts",
+            Self::Kbis => "Kbis",
+            Self::ShareLedger => "registre des mouvements de titres",
+            Self::ClientContract => "contrat",
+            Self::Insurance => "assurance",
+            Self::TaxNotice => "avis d'imposition",
+            Self::FilingAck => "accusé de dépôt",
+            Self::Payroll => "bulletin de paie",
+            Self::Other => "autre",
+        }
+    }
+
     #[must_use]
     pub const fn clock(self) -> RetentionClock {
         match self {

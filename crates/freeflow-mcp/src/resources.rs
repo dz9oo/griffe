@@ -42,6 +42,7 @@ const PEOPLE_DETAIL_PREFIX: &str = "freeflow://people/";
 const SOCIETY_URI: &str = "freeflow://society";
 const SOCIETY_DUTY_PREFIX: &str = "freeflow://society/duties/";
 const PAPERS_URI: &str = "freeflow://papers";
+const PAPERS_PERIOD_PREFIX: &str = "freeflow://papers/";
 
 pub(crate) fn list() -> ListResourcesResult {
     ListResourcesResult::with_all_items(vec![
@@ -198,6 +199,12 @@ pub(crate) fn list_templates() -> ListResourceTemplatesResult {
             .with_description(
                 "Lettre d'une démarche hors de l'app (`is_acompte`, `ca3`, …) — même vue que \
                  society.duty.",
+            )
+            .with_mime_type("application/json"),
+        ResourceTemplate::new(format!("{PAPERS_PERIOD_PREFIX}{{period}}"), "papers-period")
+            .with_description(
+                "Checklist de conservation de l'exercice clos dans cette année civile, plus les \
+                 pièces actives de la période — même vue que papers.checklist + papers.list.",
             )
             .with_mime_type("application/json"),
     ])
@@ -423,6 +430,24 @@ pub(crate) fn read(store: &Store, uri: &str) -> Result<ReadResourceResult, McpEr
         )
         .map_err(|e| McpError::resource_not_found(e.to_string(), None))?;
         return json_contents(uri, papers);
+    }
+    if let Some(raw) = uri.strip_prefix(PAPERS_PERIOD_PREFIX) {
+        let period: i32 = raw.parse().map_err(|_| {
+            McpError::resource_not_found(format!("période invalide : {raw} (attendu AAAA)"), None)
+        })?;
+        let today = freeflow_core::clock::today_local();
+        let checklist = freeflow_core::papers::papers_checklist(store.connection(), period, today)
+            .map_err(|e| McpError::resource_not_found(e.to_string(), None))?;
+        let papers = freeflow_core::papers::list_papers(
+            store.connection(),
+            freeflow_core::papers::PaperFilter {
+                period: Some(period),
+                kind: None,
+                include_superseded: false,
+            },
+        )
+        .map_err(|e| McpError::resource_not_found(e.to_string(), None))?;
+        return json_contents(uri, json!({ "checklist": checklist, "papers": papers }));
     }
 
     if uri == ASSETS_URI {

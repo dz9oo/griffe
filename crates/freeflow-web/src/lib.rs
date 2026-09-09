@@ -14,6 +14,7 @@ mod gens;
 mod handlers;
 mod layout;
 mod missions;
+mod papiers;
 mod premiers_pas;
 mod prospection;
 mod relances;
@@ -188,6 +189,12 @@ pub fn router(state: AppState) -> Router {
         .route("/societe/cloture", get(handlers::societe_closing))
         .route("/societe/releve", get(handlers::societe_statement))
         .route("/societe/identite", get(handlers::societe_identity))
+        .route(
+            "/societe/papiers",
+            get(papiers::chapter)
+                .post(papiers::deposit)
+                .layer(papiers::body_limit()),
+        )
         .route("/premiers-pas", get(premiers_pas::show))
         .route(
             "/premiers-pas/nouvelle",

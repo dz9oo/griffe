@@ -789,10 +789,7 @@ fn cli_hint(checklist: &ClosingChecklist, step: &ClosingStep) -> Option<String> 
         ClosingStepKey::Approve => {
             format!("freeflow year approve {period} --approved-on AAAA-MM-JJ")
         }
-        ClosingStepKey::Documents => format!(
-            "freeflow year render {period} <minutes|appropriation|synthesis|balance-sheet|\
-             inventory|efi-notice|liasse> --out … ; freeflow fec export {period} --out …"
-        ),
+        ClosingStepKey::Documents => format!("freeflow papers checklist {period}"),
         ClosingStepKey::Liasse => {
             format!(
                 "freeflow year render {period} efi-notice --out … ; year render {period} liasse --out …"

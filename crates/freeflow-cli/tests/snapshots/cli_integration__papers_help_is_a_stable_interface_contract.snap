@@ -7,11 +7,12 @@ Les papiers : originaux et copies de travail du coffre, classés par nature et d
 Usage: freeflow papers [OPTIONS] <COMMAND>
 
 Commands:
-  list  Liste les pièces du coffre (hors remplacées)
-  show  Affiche une pièce (UUID, préfixe, ou nom de fichier d'origine)
-  add   Dépose un fichier au coffre (statuts, Kbis, avis, contrat…) — chiffré comme un justificatif. Un scan est une copie de travail ; un original né ici se fige à l'émission
-  rm    Purge une pièce dont le délai de conservation est échu. Un agent propose, un humain confirme. Les statuts et le Kbis ne se purgent pas tant que la société existe
-  help  Print this message or the help of the given subcommand(s)
+  list       Liste les pièces du coffre (hors remplacées)
+  show       Affiche une pièce (UUID, préfixe, ou nom de fichier d'origine)
+  add        Dépose un fichier au coffre (statuts, Kbis, avis, contrat…) — chiffré comme un justificatif. Un scan est une copie de travail ; un original né ici se fige à l'émission
+  rm         Purge une pièce dont le délai de conservation est échu. Un agent propose, un humain confirme. Les statuts et le Kbis ne se purgent pas tant que la société existe
+  checklist  Checklist de conservation d'un exercice : originaux figés, pièces manquantes
+  help       Print this message or the help of the given subcommand(s)
 
 Options:
       --db <DB>

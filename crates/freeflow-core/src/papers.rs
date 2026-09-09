@@ -1,4 +1,4 @@
-//! Coffre documentaire (lot 57) : index SQL des pièces, primitive d'archivage.
+//! Coffre documentaire (lots 57–59) : index SQL des pièces, primitive d'archivage, checklist.
 //!
 //! Les octets vivent dans `<coffre>.receipts/` via [`crate::receipts`] — même crypto que les
 //! justificatifs. Une [`Command`] n'écrit que l'index (`&Connection`) ; l'IO fichier est faite
@@ -11,11 +11,15 @@ use time::format_description::well_known::Rfc3339;
 use time::{Date, OffsetDateTime};
 
 use crate::app::{AppError, Command, ExecutionContext, Executor, Outcome};
+use crate::billing::list_invoices;
+use crate::closing::StepStatus;
+use crate::company::company_profile;
 use crate::domain::{
-    ClientId, ExpenseId, FiscalYearEnd, FiscalYearId, InvoiceId, PaperId, PaperKind, PaperOrigin,
-    format_date, parse_date, retained_until,
+    ClientId, ExpenseId, FiscalYear, FiscalYearEnd, FiscalYearId, InvoiceId, PaperId, PaperKind,
+    PaperOrigin, format_date, parse_date, retained_until,
 };
-use crate::expenses::hash_receipt;
+use crate::expenses::{expenses_between, hash_receipt};
+use crate::fiscal_year::fiscal_year_ending_in;
 use crate::receipts::{self, ReceiptError};
 use crate::store::Store;
 
@@ -457,6 +461,264 @@ pub fn archive_paper(
     Executor::new(store).execute(&cmd, ctx)
 }
 
+/// Une ligne de [`papers_checklist`] : une nature (ou une facture / dépense) et où elle en est.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PapersCheckItem {
+    pub kind: PaperKind,
+    pub status: StepStatus,
+    pub required: bool,
+    pub paper_id: Option<PaperId>,
+}
+
+/// Ce qui manque au coffre pour un exercice, vu depuis `today`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PapersChecklist {
+    pub period: i32,
+    #[serde(with = "crate::domain::serde_date::date")]
+    pub today: Date,
+    pub items: Vec<PapersCheckItem>,
+}
+
+fn exercise_of(conn: &Connection, period: i32) -> Result<FiscalYear, AppError> {
+    if let Some(record) = fiscal_year_ending_in(conn, period)? {
+        return Ok(record.period());
+    }
+    let fye = company_profile(conn)?
+        .and_then(|p| p.fiscal_year_end)
+        .unwrap_or(FiscalYearEnd::CALENDAR);
+    Ok(fye.containing(fye.end_in_year(period)))
+}
+
+fn first_of(
+    conn: &Connection,
+    kind: PaperKind,
+    period: Option<i32>,
+) -> Result<Option<Paper>, AppError> {
+    Ok(list_papers(
+        conn,
+        PaperFilter {
+            period,
+            kind: Some(kind),
+            include_superseded: false,
+        },
+    )?
+    .into_iter()
+    .next())
+}
+
+fn item(
+    kind: PaperKind,
+    paper_id: Option<PaperId>,
+    present: bool,
+    due: bool,
+    required: bool,
+) -> PapersCheckItem {
+    let status = if present {
+        StepStatus::Done
+    } else if due {
+        StepStatus::Todo
+    } else {
+        StepStatus::Later
+    };
+    PapersCheckItem {
+        kind,
+        status,
+        required,
+        paper_id,
+    }
+}
+
+fn warning_item(kind: PaperKind, paper: Option<&Paper>) -> PapersCheckItem {
+    PapersCheckItem {
+        kind,
+        status: if paper.is_some() {
+            StepStatus::Done
+        } else {
+            StepStatus::Warning
+        },
+        required: false,
+        paper_id: paper.map(|p| p.id),
+    }
+}
+
+fn filing_belongs(period_key: &str, due_on: Date, period: i32, exercise: FiscalYear) -> bool {
+    period_key == period.to_string()
+        || period_key.starts_with(&format!("{period}-"))
+        || exercise.contains(due_on)
+}
+
+/// Natures d'originaux **générés** que l'étape `Documents` du parcours attend au coffre.
+const GENERATED_KINDS: [PaperKind; 6] = [
+    PaperKind::Fec,
+    PaperKind::Minutes,
+    PaperKind::Appropriation,
+    PaperKind::Synthesis,
+    PaperKind::BalanceSheet,
+    PaperKind::Liasse,
+];
+
+/// Checklist de conservation d'un exercice : originaux que l'application doit avoir figés
+/// (`required`), et pièces extérieures signalées en avertissement (statuts, Kbis, relevé,
+/// accusé de dépôt). Un justificatif de dépense compte s'il a une ligne `papers` **ou** un
+/// `receipt_filename` (pièces antérieures au lot 57).
+///
+/// # Errors
+///
+/// Erreur de lecture SQLite.
+#[allow(clippy::too_many_lines)]
+pub fn papers_checklist(
+    conn: &Connection,
+    period: i32,
+    today: Date,
+) -> Result<PapersChecklist, AppError> {
+    let record = fiscal_year_ending_in(conn, period)?;
+    let exercise = exercise_of(conn, period)?;
+    let approved = record
+        .as_ref()
+        .is_some_and(crate::fiscal_year::FiscalYearRecord::is_approved);
+    let closed = record.is_some();
+    let mut items = Vec::new();
+
+    let invoices = list_invoices(conn)?
+        .into_iter()
+        .filter(|inv| exercise.contains(inv.issued_on))
+        .collect::<Vec<_>>();
+    for invoice in &invoices {
+        let kind = if invoice.credited_invoice_id.is_some() {
+            PaperKind::CreditNote
+        } else {
+            PaperKind::IssuedInvoice
+        };
+        let paper = issued_paper(conn, invoice.id, kind)?;
+        items.push(item(
+            kind,
+            paper.as_ref().map(|p| p.id),
+            paper.is_some(),
+            closed || approved,
+            approved,
+        ));
+    }
+
+    for kind in GENERATED_KINDS {
+        let paper = first_of(conn, kind, Some(period))?;
+        let capturable = match kind {
+            PaperKind::Minutes | PaperKind::Appropriation => approved,
+            _ => closed,
+        };
+        items.push(item(
+            kind,
+            paper.as_ref().map(|p| p.id),
+            paper.is_some(),
+            capturable,
+            approved && capturable,
+        ));
+    }
+
+    let expenses = expenses_between(conn, exercise.start(), exercise.end())?;
+    let receipt_papers = list_papers(
+        conn,
+        PaperFilter {
+            period: None,
+            kind: Some(PaperKind::ExpenseReceipt),
+            include_superseded: false,
+        },
+    )?;
+    for expense in &expenses {
+        let paper = receipt_papers
+            .iter()
+            .find(|p| p.expense_id == Some(expense.id));
+        let present = paper.is_some() || expense.receipt_filename.is_some();
+        items.push(item(
+            PaperKind::ExpenseReceipt,
+            paper.map(|p| p.id),
+            present,
+            closed || approved,
+            approved,
+        ));
+    }
+
+    for kind in [PaperKind::Statutes, PaperKind::Kbis] {
+        let paper = first_of(conn, kind, None)?;
+        items.push(warning_item(kind, paper.as_ref()));
+    }
+
+    let bank_txs = crate::billing::list_bank_transactions(conn)?
+        .into_iter()
+        .filter(|t| exercise.contains(t.occurred_on))
+        .count();
+    if bank_txs > 0 {
+        let statements = list_papers(
+            conn,
+            PaperFilter {
+                period: None,
+                kind: Some(PaperKind::BankStatement),
+                include_superseded: false,
+            },
+        )?;
+        let paper = statements
+            .iter()
+            .find(|p| p.period == Some(period) || p.period.is_none());
+        items.push(warning_item(PaperKind::BankStatement, paper));
+    }
+
+    let filings = crate::society::list_filings(conn)?;
+    let has_filed = filings
+        .iter()
+        .any(|f| filing_belongs(&f.period_key, f.due_on, period, exercise));
+    if has_filed {
+        let acks = list_papers(
+            conn,
+            PaperFilter {
+                period: None,
+                kind: Some(PaperKind::FilingAck),
+                include_superseded: false,
+            },
+        )?;
+        let paper = acks
+            .iter()
+            .find(|p| p.period == Some(period) || p.period.is_none());
+        items.push(warning_item(PaperKind::FilingAck, paper));
+    }
+
+    Ok(PapersChecklist {
+        period,
+        today,
+        items,
+    })
+}
+
+/// Les originaux générés requis manquent-ils ? L'étape `Documents` du parcours s'en sert —
+/// pas les dépôts extérieurs (Kbis, statuts, accusés), ni les justificatifs déjà suivis par
+/// l'étape Dépenses.
+#[must_use]
+pub fn missing_generated_originals(checklist: &PapersChecklist) -> Vec<PaperKind> {
+    checklist
+        .items
+        .iter()
+        .filter(|i| {
+            (matches!(i.kind, PaperKind::IssuedInvoice | PaperKind::CreditNote)
+                || GENERATED_KINDS.contains(&i.kind))
+                && i.status != StepStatus::Done
+                && i.status != StepStatus::Later
+        })
+        .map(|i| i.kind)
+        .collect()
+}
+
+/// Un Kbis ou des statuts manquent (avertissement, jamais bloquant pour `Documents`).
+#[must_use]
+pub fn missing_identity_papers(checklist: &PapersChecklist) -> Vec<PaperKind> {
+    checklist
+        .items
+        .iter()
+        .filter(|i| {
+            matches!(i.kind, PaperKind::Statutes | PaperKind::Kbis)
+                && i.status == StepStatus::Warning
+        })
+        .map(|i| i.kind)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -814,6 +1076,94 @@ mod tests {
             list_papers(store.connection(), PaperFilter::ACTIVE)
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn checklist_warns_on_missing_kbis_and_counts_a_legacy_expense_receipt() {
+        use crate::company::SetCompanyProfile;
+        use crate::domain::{Address, ExpenseCategory, Money, Siren, VatRate, VatRegime};
+        use crate::expenses::RecordExpense;
+        use crate::fiscal_year::CloseFiscalYear;
+
+        let mut store = test_store("checklist");
+        Executor::new(&mut store)
+            .execute(
+                &SetCompanyProfile {
+                    name: "Argon Digital".into(),
+                    legal_form: "SASU".into(),
+                    siren: Siren::parse("552100554").unwrap(),
+                    vat_number: None,
+                    address: Address {
+                        street: "12 rue de la Paix".into(),
+                        postal_code: "75002".into(),
+                        city: "Paris".into(),
+                        country: "FR".into(),
+                    },
+                    share_capital: Some(Money::from_cents(1_000_000)),
+                    rcs_city: Some("Paris".into()),
+                    iban: None,
+                    fiscal_year_end: Some(FiscalYearEnd::CALENDAR),
+                    vat_regime: Some(VatRegime::RealNormalMonthly),
+                    director_monthly_gross: None,
+                    director_charge_ratio_bps: None,
+                    president_name: None,
+                    sole_shareholder_name: None,
+                    sole_shareholder_address: None,
+                    share_count: None,
+                },
+                &human(),
+            )
+            .unwrap();
+        Executor::new(&mut store)
+            .execute(
+                &RecordExpense {
+                    label: "Hébergement".into(),
+                    category: ExpenseCategory::Software,
+                    amount: Money::from_cents(12_000),
+                    vat_rate: VatRate::Standard,
+                    vat_deductible: Money::from_cents(2_000),
+                    incurred_on: d(2026, 6, 1),
+                    receipt_hash: Some("abc".into()),
+                    receipt_filename: Some("hebergement.pdf".into()),
+                    supplier: None,
+                    bank_transaction_id: None,
+                },
+                &human(),
+            )
+            .unwrap();
+        Executor::new(&mut store)
+            .execute(
+                &CloseFiscalYear {
+                    starts_on: d(2026, 1, 1),
+                    ends_on: d(2026, 12, 31),
+                    legal_reserve: Money::ZERO,
+                    dividends: Money::ZERO,
+                    carry_back: false,
+                    today: None,
+                    non_deductible_expenses: Money::ZERO,
+                },
+                &human(),
+            )
+            .unwrap();
+
+        let empty_identity = papers_checklist(store.connection(), 2026, d(2027, 4, 20)).unwrap();
+        assert!(
+            empty_identity
+                .items
+                .iter()
+                .any(|i| i.kind == PaperKind::Kbis
+                    && i.status == StepStatus::Warning
+                    && !i.required),
+            "{empty_identity:?}"
+        );
+        assert!(
+            empty_identity.items.iter().any(|i| {
+                i.kind == PaperKind::ExpenseReceipt
+                    && i.status == StepStatus::Done
+                    && i.paper_id.is_none()
+            }),
+            "un justificatif déjà sur la dépense compte sans ligne papers : {empty_identity:?}"
         );
     }
 }

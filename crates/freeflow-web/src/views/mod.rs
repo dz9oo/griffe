@@ -13,6 +13,7 @@ pub mod gens;
 pub mod jour;
 pub mod missions;
 pub mod panel;
+pub mod papiers;
 pub mod premiers_pas;
 pub mod prospection;
 pub mod relances;

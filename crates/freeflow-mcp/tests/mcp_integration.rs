@@ -189,6 +189,7 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "papers.show",
         "papers.add",
         "papers.purge",
+        "papers.checklist",
     ] {
         assert!(names.contains(expected), "outil manquant : {expected}");
     }
@@ -238,6 +239,7 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "society.identity",
         "papers.list",
         "papers.show",
+        "papers.checklist",
     ] {
         assert_eq!(
             by_name(read_only)
@@ -2349,6 +2351,34 @@ async fn papers_add_over_mcp_is_direct_and_purge_needs_a_human() {
     let papers: Value = serde_json::from_str(&text).unwrap();
     assert_eq!(papers.as_array().unwrap().len(), 1);
     assert_eq!(papers[0]["kind"], "kbis");
+
+    let checklist = json_of(
+        &call(
+            &client,
+            "papers.checklist",
+            json!({"period": 2026, "today": "2027-06-01"}),
+        )
+        .await,
+    );
+    assert_eq!(checklist["period"], 2026);
+    assert!(
+        checklist["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["kind"] == "kbis" && i["status"] == "done"),
+        "{checklist}"
+    );
+    let period_res = client
+        .read_resource(ReadResourceRequestParams::new("freeflow://papers/2026"))
+        .await
+        .unwrap();
+    let period_text = match &period_res.contents[0] {
+        rmcp::model::ResourceContents::TextResourceContents { text, .. } => text.clone(),
+        other => panic!("expected text contents, got {other:?}"),
+    };
+    let period_json: Value = serde_json::from_str(&period_text).unwrap();
+    assert_eq!(period_json["checklist"]["period"], 2026);
 
     let purged = json_of(
         &call(

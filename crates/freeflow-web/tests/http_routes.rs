@@ -42,6 +42,14 @@ async fn body_text(response: axum::response::Response) -> String {
 /// des champs texte, et éventuellement un fichier dans le champ `receipt`. Renvoie l'en-tête
 /// `content-type` (avec sa frontière) et le corps.
 fn multipart_form(fields: &[(&str, &str)], file: Option<(&str, &[u8])>) -> (String, Vec<u8>) {
+    multipart_form_file(fields, "receipt", file)
+}
+
+fn multipart_form_file(
+    fields: &[(&str, &str)],
+    file_field: &str,
+    file: Option<(&str, &[u8])>,
+) -> (String, Vec<u8>) {
     const BOUNDARY: &str = "----freeflow-test-boundary-7d4a";
     let mut body = Vec::new();
     for (name, value) in fields {
@@ -55,7 +63,7 @@ fn multipart_form(fields: &[(&str, &str)], file: Option<(&str, &[u8])>) -> (Stri
     if let Some((filename, content)) = file {
         body.extend_from_slice(
             format!(
-                "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"receipt\"; \
+                "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"{file_field}\"; \
                  filename=\"{filename}\"\r\nContent-Type: application/octet-stream\r\n\r\n"
             )
             .as_bytes(),
@@ -5642,4 +5650,88 @@ async fn approving_a_year_from_the_window_captures_the_minutes() {
     .unwrap();
     assert_eq!(papers.len(), 1, "le PV doit être figé");
     assert_eq!(papers[0].origin, freeflow_core::domain::PaperOrigin::Issued);
+}
+
+#[tokio::test]
+async fn depositing_a_kbis_from_the_papers_chapter_archives_it() {
+    let db_path = test_db_path("papiers-kbis");
+    let state = unlocked_state(&db_path)
+        .await
+        .with_today(time::macros::date!(2027 - 06 - 01));
+    let router = freeflow_web::router(state);
+
+    let page = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/societe/papiers?period=2026")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(page.status(), StatusCode::OK);
+    let body = body_text(page).await;
+    assert!(body.contains("Les papiers"), "{body}");
+    assert!(body.contains("Déposer"), "{body}");
+    assert!(body.contains("Kbis"), "{body}");
+    assert!(!body.contains("freeflow "), "{body}");
+
+    let content: &[u8] = b"%PDF-1.4 kbis SASU";
+    let (content_type, form_body) = multipart_form_file(
+        &[("kind", "kbis"), ("period", "2026")],
+        "file",
+        Some(("../../kbis.pdf", content)),
+    );
+    let posted = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/societe/papiers")
+                .header("content-type", content_type)
+                .body(Body::from(form_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(posted.status(), StatusCode::OK);
+    assert_eq!(
+        posted.headers().get("HX-Trigger").unwrap(),
+        "freeflow:saved"
+    );
+    let posted_body = body_text(posted).await;
+    assert!(posted_body.is_empty(), "{posted_body}");
+
+    let refreshed = router
+        .oneshot(
+            Request::builder()
+                .uri("/societe/papiers?period=2026")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let refreshed_body = body_text(refreshed).await;
+    assert!(refreshed_body.contains("kbis.pdf"), "{refreshed_body}");
+
+    let store = Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    let papers = freeflow_core::papers::list_papers(
+        store.connection(),
+        freeflow_core::papers::PaperFilter {
+            period: None,
+            kind: Some(freeflow_core::domain::PaperKind::Kbis),
+            include_superseded: false,
+        },
+    )
+    .unwrap();
+    assert_eq!(papers.len(), 1);
+    assert_eq!(papers[0].original_name, "kbis.pdf");
+    let dir = store.receipts_dir();
+    assert!(dir.is_dir(), "{}", dir.display());
+    let files: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .collect();
+    assert_eq!(files.len(), 1, "un blob chiffré dans .receipts/");
 }

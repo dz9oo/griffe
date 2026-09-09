@@ -449,7 +449,7 @@ pub fn closing_checklist(
     steps.push(close_step(&facts, blocked_before_close, minimum_reserve));
     steps.push(appropriation_step(&facts, minimum_reserve));
     steps.push(approve_step(&facts, today));
-    steps.push(documents_step(&facts));
+    steps.push(documents_step(conn, &facts, today)?);
     steps.push(corporate_tax_step(&facts, result.as_ref(), today));
     steps.push(vat_step(conn, &facts)?);
     steps.push(das2_step(conn, &facts, today)?);
@@ -1210,27 +1210,61 @@ fn approve_step(facts: &Facts, today: Date) -> ClosingStep {
 // Déclarer et déposer
 // ---------------------------------------------------------------------------------------------
 
-fn documents_step(facts: &Facts) -> ClosingStep {
+fn documents_step(conn: &Connection, facts: &Facts, today: Date) -> Result<ClosingStep, AppError> {
     match &facts.record {
-        None => ClosingStep::new(
+        None => Ok(ClosingStep::new(
             ClosingStepKey::Documents,
             StepStatus::Later,
             "Après la clôture : PV d'approbation, décision d'affectation, compte de résultat, \
              bilan et balance, liasse (JSON) et FEC — générés depuis le snapshot figé.",
-        ),
-        Some(record) if record.is_approved() => ClosingStep::new(
-            ClosingStepKey::Documents,
-            StepStatus::Todo,
-            "À générer, relire et conserver : PV d'approbation (daté de la décision), décision \
-             d'affectation, compte de résultat, bilan et balance, liasse (JSON pour \
-             l'expert-comptable) et FEC.",
-        ),
-        Some(_) => ClosingStep::new(
+        )),
+        Some(record) if !record.is_approved() => Ok(ClosingStep::new(
             ClosingStepKey::Documents,
             StepStatus::Todo,
             "Disponibles en projet : compte de résultat, bilan et balance, liasse et FEC ; le PV \
              d'approbation reste un projet daté du jour tant que l'exercice n'est pas approuvé.",
-        ),
+        )),
+        Some(_) => {
+            let papers = crate::papers::papers_checklist(conn, facts.exercise.end().year(), today)?;
+            let missing = crate::papers::missing_generated_originals(&papers);
+            if missing.is_empty() {
+                let identity = crate::papers::missing_identity_papers(&papers);
+                let extra = if identity.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " Manquent encore {} — déposez-les dans Les papiers.",
+                        identity
+                            .iter()
+                            .map(|k| k.label_fr())
+                            .collect::<Vec<_>>()
+                            .join(" et ")
+                    )
+                };
+                Ok(ClosingStep::new(
+                    ClosingStepKey::Documents,
+                    StepStatus::Done,
+                    format!(
+                        "Les originaux générés (factures, PV, affectation, synthèse, bilan, \
+                         liasse, FEC) sont au coffre.{extra}"
+                    ),
+                ))
+            } else {
+                let names = missing
+                    .iter()
+                    .map(|k| k.label_fr())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                Ok(ClosingStep::new(
+                    ClosingStepKey::Documents,
+                    StepStatus::Todo,
+                    format!(
+                        "Originaux encore absents du coffre : {names}. Générez-les ou déposez-les \
+                         dans Les papiers."
+                    ),
+                ))
+            }
+        }
     }
 }
 
@@ -1755,8 +1789,8 @@ mod tests {
     use crate::billing::{EmitInvoice, ImportBankTransactions, ParsedTransaction, RecordPayment};
     use crate::company::SetCompanyProfile;
     use crate::domain::{
-        Address, ClientId, ExpenseCategory, InvoiceLine, OpeningBalanceLine, PaymentMethod, Siren,
-        VatRate, VatRegime,
+        Address, ClientId, ExpenseCategory, InvoiceLine, OpeningBalanceLine, PaperKind,
+        PaperOrigin, PaymentMethod, Siren, VatRate, VatRegime,
     };
     use crate::expenses::RecordExpense;
     use crate::fiscal_year::{ApproveFiscalYear, CloseFiscalYear};
@@ -2714,6 +2748,105 @@ mod tests {
             step.detail.contains("registre des décisions"),
             "{}",
             step.detail
+        );
+    }
+
+    fn archive_dummy(
+        store: &mut Store,
+        kind: PaperKind,
+        period: Option<i32>,
+        invoice_id: Option<crate::domain::InvoiceId>,
+    ) {
+        let spec = crate::papers::NewPaper {
+            kind,
+            origin: PaperOrigin::Issued,
+            original_name: format!("{kind}.pdf"),
+            mime: "application/pdf".into(),
+            period,
+            issued_on: None,
+            client_id: None,
+            invoice_id,
+            expense_id: None,
+            fiscal_year_id: None,
+            note: None,
+            idempotency_key: Some(format!("test:{kind}:{period:?}")),
+        };
+        crate::papers::archive_paper(store, spec, b"%PDF dummy", &human()).unwrap();
+    }
+
+    #[test]
+    fn documents_are_todo_until_generated_originals_are_at_the_vault() {
+        let mut store = test_store("papers-docs");
+        set_profile(&mut store, Some(1_000_000));
+        let invoice_id = seed_activity(&mut store, 2026);
+        let id = close(&mut store, 2026, 22_845);
+        let record = crate::fiscal_year::fiscal_year_by_id(store.connection(), id)
+            .unwrap()
+            .unwrap();
+        Executor::new(&mut store)
+            .execute(
+                &ApproveFiscalYear {
+                    id,
+                    revision: record.revision,
+                    approved_on: date(2027, TimeMonth::April, 15),
+                    today: None,
+                },
+                &human(),
+            )
+            .unwrap();
+        let today = date(2027, TimeMonth::April, 20);
+        let before = closing_checklist(store.connection(), 2026, today).unwrap();
+        assert_eq!(
+            status_of(&before, ClosingStepKey::Documents),
+            StepStatus::Todo
+        );
+
+        let papers = crate::papers::papers_checklist(store.connection(), 2026, today).unwrap();
+        assert!(
+            papers
+                .items
+                .iter()
+                .any(|i| i.kind == PaperKind::Kbis && i.status == StepStatus::Warning),
+            "{papers:?}"
+        );
+        assert!(
+            papers.items.iter().any(|i| {
+                i.kind == PaperKind::IssuedInvoice && i.status == StepStatus::Todo && i.required
+            }),
+            "{papers:?}"
+        );
+
+        archive_dummy(
+            &mut store,
+            PaperKind::IssuedInvoice,
+            Some(2026),
+            Some(invoice_id),
+        );
+        for kind in [
+            PaperKind::Fec,
+            PaperKind::Minutes,
+            PaperKind::Appropriation,
+            PaperKind::Synthesis,
+            PaperKind::BalanceSheet,
+            PaperKind::Liasse,
+        ] {
+            archive_dummy(&mut store, kind, Some(2026), None);
+        }
+
+        let after = closing_checklist(store.connection(), 2026, today).unwrap();
+        assert_eq!(
+            status_of(&after, ClosingStepKey::Documents),
+            StepStatus::Done,
+            "{}",
+            after.step(ClosingStepKey::Documents).unwrap().detail
+        );
+        let still = crate::papers::papers_checklist(store.connection(), 2026, today).unwrap();
+        assert!(
+            still
+                .items
+                .iter()
+                .any(|i| i.kind == PaperKind::Kbis && i.status == StepStatus::Warning),
+            "sans Kbis : avertissement dans la checklist papiers, pas un Todo de Documents"
         );
     }
 }

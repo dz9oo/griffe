@@ -568,7 +568,11 @@ fn a_preexisting_sasu_closes_two_exercises_alone_from_the_cli() {
     let approved = checklist(&db, "2026", "2026-12-20");
     assert_eq!(approved["stage"], "approved");
     assert_eq!(step(&approved, "approve")["status"], "done");
-    assert_eq!(step(&approved, "documents")["status"], "todo");
+    assert_eq!(
+        step(&approved, "documents")["status"],
+        "done",
+        "l'approbation fige les originaux (PV, FEC, liasse…) : l'étape Documents dit vrai"
+    );
     assert_eq!(step(&approved, "liasse")["status"], "todo");
     assert_eq!(step(&approved, "filing")["status"], "todo");
     assert_eq!(step(&approved, "filing")["due_on"], "2027-01-15");
