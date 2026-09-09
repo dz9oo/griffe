@@ -16,6 +16,7 @@ mod forecast;
 mod invoice;
 mod mission;
 mod output;
+mod papers;
 mod parsers;
 mod pending;
 mod people;
@@ -154,6 +155,9 @@ enum TopCommand {
     /// Clôture d'exercice : snapshot du résultat, affectation, approbation, documents.
     #[command(subcommand)]
     Year(year::YearCommand),
+    /// Les papiers : originaux et copies de travail du coffre, classés par nature et durée.
+    #[command(subcommand)]
+    Papers(papers::PapersCommand),
     /// Fichier des Écritures Comptables (FEC) d'un exercice, pour l'expert-comptable.
     #[command(subcommand)]
     Fec(fec::FecCommand),
@@ -407,6 +411,7 @@ fn run_command(
         TopCommand::Fiscal(cmd) => fiscal::run(cmd, store, json),
         TopCommand::Forecast(cmd) => forecast::run(cmd, store, json),
         TopCommand::Year(cmd) => year::run(cmd, store, ctx, json),
+        TopCommand::Papers(cmd) => papers::run(cmd, store, ctx, json),
         TopCommand::Fec(cmd) => fec::run(cmd, store, json),
     }
 }

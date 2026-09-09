@@ -13,9 +13,9 @@ use rusqlite::Connection;
 use crate::app::AppError;
 use crate::domain::{
     ClientId, ExpenseId, FixedAssetId, FollowUpSubject, InvoiceId, MissionId, OpportunityId,
-    QuoteId,
+    PaperId, QuoteId,
 };
-use crate::{billing, clients, expenses, fixed_assets, missions, prospection, quotes};
+use crate::{billing, clients, expenses, fixed_assets, missions, papers, prospection, quotes};
 
 /// Résultat de la résolution d'une référence texte vers un identifiant typé. `label` (dans
 /// `Ambiguous`) est le libellé lisible du candidat — le nom d'un client, par exemple — pour que
@@ -308,6 +308,35 @@ pub fn resolve_fixed_asset(
                     a.account,
                     crate::domain::format_date(a.acquired_on)
                 )
+            })
+    }))
+}
+
+/// Résout `needle` en identifiant de pièce, par `original_name` — l'ambiguïté est qualifiée
+/// par la nature et la date (comme [`resolve_expense`] date + montant).
+///
+/// # Errors
+pub fn resolve_paper(conn: &Connection, needle: &str) -> Result<RefMatch<PaperId>, AppError> {
+    let all = papers::list_papers(
+        conn,
+        papers::PaperFilter {
+            include_superseded: true,
+            ..papers::PaperFilter::ACTIVE
+        },
+    )?;
+    let candidates: Vec<(PaperId, String)> = all
+        .iter()
+        .map(|p| (p.id, p.original_name.clone()))
+        .collect();
+    let result = resolve_among(needle, &candidates);
+    Ok(qualify_ambiguous(result, |id| {
+        all.iter()
+            .find(|p| p.id == id)
+            .map_or_else(String::new, |p| {
+                let when = p
+                    .issued_on
+                    .map_or_else(|| "—".to_string(), crate::domain::format_date);
+                format!("{} — {} ({when})", p.original_name, p.kind.as_str())
             })
     }))
 }

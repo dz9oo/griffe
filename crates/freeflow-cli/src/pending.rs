@@ -19,6 +19,7 @@ use freeflow_core::missions::{DeleteMission, DeleteTimeEntry};
 use freeflow_core::opening_balance::{
     DeleteOpeningBalance, RecordOpeningBalance, UpdateOpeningBalance,
 };
+use freeflow_core::papers::PurgePaper;
 use freeflow_core::prospection::{DeleteInteraction, DeleteOpportunity};
 use freeflow_core::society::{MarkCatchUpFiled, MarkDutyFiled, RetractDutyFiled};
 use freeflow_core::store::Store;
@@ -190,6 +191,9 @@ pub fn confirm(store: &mut Store, id: PendingActionId, json: bool) -> Result<Str
         Ok(format_outcome(&outcome, json))
     } else if action.command_name == RetractDutyFiled::NAME {
         let outcome = Executor::new(store).confirm::<RetractDutyFiled>(id)?;
+        Ok(format_outcome(&outcome, json))
+    } else if action.command_name == PurgePaper::NAME {
+        let outcome = Executor::new(store).confirm::<PurgePaper>(id)?;
         Ok(format_outcome(&outcome, json))
     } else {
         Err(CliError::UnknownConfirmableCommand(action.command_name))

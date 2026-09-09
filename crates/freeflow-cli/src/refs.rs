@@ -6,7 +6,7 @@
 use std::fmt::Display;
 
 use freeflow_core::domain::{
-    ClientId, ExpenseId, FixedAssetId, FollowUpSubject, MissionId, OpportunityId, QuoteId,
+    ClientId, ExpenseId, FixedAssetId, FollowUpSubject, MissionId, OpportunityId, PaperId, QuoteId,
 };
 use freeflow_core::reference::{self, RefMatch};
 use freeflow_core::store::Store;
@@ -98,6 +98,16 @@ pub fn resolve_follow_up(store: &Store, needle: &str) -> Result<FollowUpSubject,
         "aucune relance",
         "relances",
         reference::resolve_follow_up_subject(store.connection(), needle)?,
+    )
+}
+
+/// # Errors
+pub fn resolve_paper(store: &Store, needle: &str) -> Result<PaperId, CliError> {
+    translate(
+        needle,
+        "aucune pièce",
+        "pièces",
+        reference::resolve_paper(store.connection(), needle)?,
     )
 }
 

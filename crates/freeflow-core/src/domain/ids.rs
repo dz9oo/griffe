@@ -68,6 +68,7 @@ define_id!(FiscalYearId);
 define_id!(FixedAssetId);
 define_id!(FollowUpEventId);
 define_id!(DutyFilingId);
+define_id!(PaperId);
 
 #[cfg(test)]
 mod tests {

@@ -185,6 +185,10 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "society.identity",
         "society.mark_duty_filed",
         "society.retract_duty_filed",
+        "papers.list",
+        "papers.show",
+        "papers.add",
+        "papers.purge",
     ] {
         assert!(names.contains(expected), "outil manquant : {expected}");
     }
@@ -232,6 +236,8 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "society.closing",
         "society.statement",
         "society.identity",
+        "papers.list",
+        "papers.show",
     ] {
         assert_eq!(
             by_name(read_only)
@@ -255,6 +261,7 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "mission.time.delete",
         "fiscal.delete_year",
         "fiscal.delete_asset",
+        "papers.purge",
     ] {
         let ann = by_name(destructive).annotations.as_ref().unwrap();
         assert_eq!(ann.read_only_hint, Some(false));
@@ -2298,4 +2305,62 @@ async fn importing_an_opening_balance_over_mcp_previews_then_needs_a_human() {
     assert_eq!(proposed["preview"]["derived_result_cents"], 120_000);
     let read = json_of(&call(&client, "fiscal.opening_balance", json!({})).await);
     assert!(read.is_null(), "rien tant qu'un humain n'a pas confirmé");
+}
+
+/// Lot 57 : `papers.add` en base64 archive directement (pas de confirmation) ; `papers.purge`
+/// dépose une action en attente ; la ressource collection liste les pièces actives.
+#[tokio::test]
+async fn papers_add_over_mcp_is_direct_and_purge_needs_a_human() {
+    use base64::Engine as _;
+    let db_path = test_db_path("papers-mcp");
+    let store = Store::create(&db_path, &Passphrase::from("s3cret")).unwrap();
+    let client = spawn_client(store).await;
+
+    let b64 = base64::engine::general_purpose::STANDARD.encode(b"%PDF-1.4 kbis");
+    let added = json_of(
+        &call(
+            &client,
+            "papers.add",
+            json!({
+                "content_base64": b64,
+                "original_name": "kbis.pdf",
+                "kind": "kbis",
+            }),
+        )
+        .await,
+    );
+    assert_eq!(added["status"], "applied");
+    assert_eq!(added["result"]["kind"], "kbis");
+    assert_eq!(added["result"]["origin"], "uploaded");
+
+    let listed = json_of(&call(&client, "papers.list", json!({})).await);
+    assert_eq!(listed.as_array().unwrap().len(), 1);
+
+    let resources = client.list_resources(None).await.unwrap().resources;
+    assert!(resources.iter().any(|r| r.uri == "freeflow://papers"));
+    let read = client
+        .read_resource(ReadResourceRequestParams::new("freeflow://papers"))
+        .await
+        .unwrap();
+    let text = match &read.contents[0] {
+        rmcp::model::ResourceContents::TextResourceContents { text, .. } => text.clone(),
+        other => panic!("expected text contents, got {other:?}"),
+    };
+    let papers: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(papers.as_array().unwrap().len(), 1);
+    assert_eq!(papers[0]["kind"], "kbis");
+
+    let purged = json_of(
+        &call(
+            &client,
+            "papers.purge",
+            json!({"paper": "kbis.pdf", "today": "2099-01-01"}),
+        )
+        .await,
+    );
+    assert_eq!(purged["status"], "pending_confirmation");
+    let still = json_of(&call(&client, "papers.list", json!({})).await);
+    assert_eq!(still.as_array().unwrap().len(), 1);
+
+    client.cancel().await.unwrap();
 }

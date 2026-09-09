@@ -138,6 +138,17 @@ pub(crate) fn resolve_fixed_asset(
 
 /// Résout une référence texte vers un identifiant de devis (le libellé cherché est le nom du
 /// client porteur) — voir [`resolve_opportunity`].
+pub(crate) fn resolve_paper(
+    store: &freeflow_core::store::Store,
+    needle: &str,
+) -> Result<freeflow_core::domain::PaperId, String> {
+    resolve_ref(
+        freeflow_core::reference::resolve_paper(store.connection(), needle),
+        "aucune pièce",
+        "pièces",
+    )
+}
+
 pub(crate) fn resolve_quote(
     store: &freeflow_core::store::Store,
     needle: &str,

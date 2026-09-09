@@ -12,6 +12,7 @@ mod mission;
 mod money;
 mod opening;
 mod opportunity;
+mod paper;
 mod payment;
 mod period;
 mod quote;
@@ -41,8 +42,8 @@ pub use follow_up::{
 };
 pub use ids::{
     BankTransactionId, ClientId, ContactId, DutyFilingId, ExpenseId, FiscalYearId, FixedAssetId,
-    FollowUpEventId, InteractionId, InvoiceId, MissionId, OpportunityId, PaymentId, QuoteId,
-    TimeEntryId,
+    FollowUpEventId, InteractionId, InvoiceId, MissionId, OpportunityId, PaperId, PaymentId,
+    QuoteId, TimeEntryId,
 };
 pub use interaction::{Interaction, InteractionKind, UnknownInteractionKind};
 pub use invoice::{Invoice, InvoiceLine, InvoiceStatus};
@@ -54,6 +55,9 @@ pub use opening::{
 };
 pub use opportunity::{
     LossReason, Opportunity, OpportunityStage, Probability, ProbabilityError, UnknownStage,
+};
+pub use paper::{
+    PaperKind, PaperOrigin, RetentionClock, UnknownPaperKind, UnknownPaperOrigin, retained_until,
 };
 pub use payment::{BankTransaction, Payment, PaymentMethod, UnknownPaymentMethod};
 pub use period::{

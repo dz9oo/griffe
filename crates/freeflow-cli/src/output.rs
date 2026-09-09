@@ -16,7 +16,7 @@ use freeflow_core::app::Outcome;
 use freeflow_core::billing::EmittedInvoice;
 use freeflow_core::domain::{
     BankTransactionId, ClientId, ContactId, ExpenseId, FiscalYearId, InteractionId, InvoiceId,
-    MissionId, OpportunityId, PaymentId, QuoteId, TimeEntryId,
+    MissionId, OpportunityId, PaperId, PaymentId, QuoteId, TimeEntryId,
 };
 use freeflow_core::fiscal_year::Approval;
 use serde::Serialize;
@@ -186,6 +186,7 @@ render_by_display!(
     InvoiceId,
     MissionId,
     OpportunityId,
+    PaperId,
     PaymentId,
     QuoteId,
     TimeEntryId,

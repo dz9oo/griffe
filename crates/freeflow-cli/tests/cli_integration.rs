@@ -3754,3 +3754,102 @@ fn a_cabinet_balance_is_imported_as_the_opening_balance_without_typing_a_line() 
         .code(4)
         .stderr(predicate::str::contains("Attendu : une balance générale"));
 }
+
+#[test]
+fn papers_help_is_a_stable_interface_contract() {
+    let output = freeflow().args(["papers", "--help"]).output().unwrap();
+    insta::assert_snapshot!(String::from_utf8(output.stdout).unwrap());
+}
+
+/// Lot 57 : un humain dépose les statuts, les retrouve, un agent ne peut pas les purger tout
+/// seul, un fichier illisible sort en code 4.
+#[test]
+fn papers_add_lists_and_shows_statutes_and_an_agent_cannot_purge_them() {
+    let db = temp_db("papers-add");
+    provision(&db);
+    let pdf = db.with_file_name("statuts.pdf");
+    std::fs::write(&pdf, b"%PDF-1.4 statuts SASU").unwrap();
+    let added = json_result(
+        &freeflow()
+            .env("FREEFLOW_DB", &db)
+            .args(["--json", "papers", "add"])
+            .arg(&pdf)
+            .args(["--kind", "statutes"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert_eq!(added["status"], "applied");
+    assert_eq!(added["result"]["kind"], "statutes");
+    assert_eq!(added["result"]["origin"], "uploaded");
+    assert_eq!(added["result"]["original_name"], "statuts.pdf");
+
+    let listed = json_result(
+        &freeflow()
+            .env("FREEFLOW_DB", &db)
+            .args(["--json", "papers", "list"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert_eq!(listed.as_array().unwrap().len(), 1);
+    assert_eq!(listed[0]["kind"], "statutes");
+
+    let shown = json_result(
+        &freeflow()
+            .env("FREEFLOW_DB", &db)
+            .args(["--json", "papers", "show", "statuts.pdf"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert_eq!(shown["original_name"], "statuts.pdf");
+    assert_eq!(shown["mime"], "application/pdf");
+
+    let pending = json_result(
+        &freeflow()
+            .env("FREEFLOW_DB", &db)
+            .args([
+                "--json",
+                "--actor",
+                "agent:audit",
+                "papers",
+                "rm",
+                "statuts.pdf",
+            ])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert_eq!(pending["status"], "pending_confirmation");
+    // L'humain qui confirmerait se heurte encore au délai (statuts : jusqu'à radiation).
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["confirm", pending["pending_action_id"].as_str().unwrap()])
+        .assert()
+        .failure()
+        .code(4)
+        .stderr(predicate::str::contains("délai de conservation"));
+
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "papers",
+            "add",
+            "/no/such/statuts.pdf",
+            "--kind",
+            "statutes",
+        ])
+        .assert()
+        .failure()
+        .code(4)
+        .stderr(predicate::str::contains("lecture"));
+}

@@ -41,6 +41,7 @@ const PEOPLE_URI: &str = "freeflow://people";
 const PEOPLE_DETAIL_PREFIX: &str = "freeflow://people/";
 const SOCIETY_URI: &str = "freeflow://society";
 const SOCIETY_DUTY_PREFIX: &str = "freeflow://society/duties/";
+const PAPERS_URI: &str = "freeflow://papers";
 
 pub(crate) fn list() -> ListResourcesResult {
     ListResourcesResult::with_all_items(vec![
@@ -121,6 +122,12 @@ pub(crate) fn list() -> ListResourcesResult {
             .with_description(
                 "La société : identité courte, paysage, conversations, chapitres — même vue que \
                  society.show.",
+            )
+            .with_mime_type("application/json"),
+        Resource::new(PAPERS_URI, "papers")
+            .with_description(
+                "Les papiers : pièces actives du coffre (hors remplacées) — même vue que \
+                 papers.list.",
             )
             .with_mime_type("application/json"),
     ])
@@ -407,6 +414,15 @@ pub(crate) fn read(store: &Store, uri: &str) -> Result<ReadResourceResult, McpEr
         let view = freeflow_core::day::day_month(store.connection(), month, today)
             .map_err(|e| McpError::resource_not_found(e.to_string(), None))?;
         return json_contents(uri, view);
+    }
+
+    if uri == PAPERS_URI {
+        let papers = freeflow_core::papers::list_papers(
+            store.connection(),
+            freeflow_core::papers::PaperFilter::ACTIVE,
+        )
+        .map_err(|e| McpError::resource_not_found(e.to_string(), None))?;
+        return json_contents(uri, papers);
     }
 
     if uri == ASSETS_URI {

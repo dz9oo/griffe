@@ -408,7 +408,10 @@ impl Store {
         // d'abord le `.kdf` d'un éventuel coffre à cette destination (détruisant son sel et son
         // vérificateur, donc le rendant illisible) avant même que la copie de la base n'échoue.
         // Une destination de sauvegarde est toujours un fichier neuf.
-        if dest_db_path.exists() || kdf::sidecar_path(dest_db_path).exists() {
+        if dest_db_path.exists()
+            || kdf::sidecar_path(dest_db_path).exists()
+            || receipts_dir_of(dest_db_path).exists()
+        {
             return Err(StoreError::BackupDestinationExists(
                 dest_db_path.to_path_buf(),
             ));
@@ -429,6 +432,7 @@ impl Store {
             kdf::sidecar_path(&self.db_path),
             kdf::sidecar_path(dest_db_path),
         )?;
+        copy_receipts_sidecar(&self.db_path, dest_db_path)?;
         tighten_permissions(dest_db_path);
         Ok(())
     }
@@ -449,7 +453,10 @@ impl Store {
         // Ne jamais écraser un coffre existant à la destination : restaurer se fait vers un
         // chemin neuf, explicite (cf. `freeflow backup restore --to`). Sans ce contrôle, un
         // `fs::copy` inconditionnel remplaçait silencieusement le coffre visé.
-        if dest_db_path.exists() || kdf::sidecar_path(dest_db_path).exists() {
+        if dest_db_path.exists()
+            || kdf::sidecar_path(dest_db_path).exists()
+            || receipts_dir_of(dest_db_path).exists()
+        {
             return Err(StoreError::BackupDestinationExists(
                 dest_db_path.to_path_buf(),
             ));
@@ -462,6 +469,7 @@ impl Store {
             kdf::sidecar_path(backup_db_path),
             kdf::sidecar_path(dest_db_path),
         )?;
+        copy_receipts_sidecar(backup_db_path, dest_db_path)?;
         Self::open_with_passphrase(dest_db_path, passphrase)
     }
 
@@ -493,9 +501,13 @@ impl Store {
         // d'un coffre tiers par un `backup create --out` maladroit). Ici, une collision ne peut
         // provenir que d'une auto-sauvegarde de la *même seconde* dans notre propre répertoire :
         // c'est notre fichier, on le remplace délibérément avant de réécrire.
-        if dest.exists() || kdf::sidecar_path(&dest).exists() {
+        if dest.exists() || kdf::sidecar_path(&dest).exists() || receipts_dir_of(&dest).exists() {
             let _ = fs::remove_file(&dest);
             let _ = fs::remove_file(kdf::sidecar_path(&dest));
+            let receipts = receipts_dir_of(&dest);
+            if receipts.is_dir() {
+                let _ = fs::remove_dir_all(&receipts);
+            }
         }
         self.backup_to(&dest)?;
         Ok(Some(dest))
@@ -763,9 +775,7 @@ impl Store {
     /// partagé par tous les coffres du répertoire).
     #[must_use]
     pub fn receipts_dir(&self) -> PathBuf {
-        let mut name = self.db_path.as_os_str().to_owned();
-        name.push(".receipts");
-        PathBuf::from(name)
+        receipts_dir_of(&self.db_path)
     }
 
     /// Accès mutable à la connexion sous-jacente, pour les écritures.
@@ -892,6 +902,48 @@ fn unlock(conn: &Connection, key: &VaultKey) -> Result<(), StoreError> {
     apply_key(conn, key)?;
     configure(conn)
 }
+
+/// `<coffre>.receipts/` — un dossier par fichier de coffre, pièces et archives légales.
+#[must_use]
+pub(crate) fn receipts_dir_of(db_path: &Path) -> PathBuf {
+    let mut name = db_path.as_os_str().to_owned();
+    name.push(".receipts");
+    PathBuf::from(name)
+}
+
+fn copy_receipts_sidecar(src_db: &Path, dest_db: &Path) -> Result<(), StoreError> {
+    let src = receipts_dir_of(src_db);
+    if !src.is_dir() {
+        return Ok(());
+    }
+    copy_dir_0700(&src, &receipts_dir_of(dest_db))
+}
+
+fn copy_dir_0700(src: &Path, dest: &Path) -> Result<(), StoreError> {
+    fs::create_dir_all(dest)?;
+    set_mode(dest, 0o700);
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let dest_path = dest.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir_0700(&entry.path(), &dest_path)?;
+        } else if file_type.is_file() {
+            fs::copy(entry.path(), &dest_path)?;
+            set_mode(&dest_path, 0o600);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_mode(path: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = fs::set_permissions(path, fs::Permissions::from_mode(mode));
+}
+
+#[cfg(not(unix))]
+fn set_mode(_path: &Path, _mode: u32) {}
 
 /// Resserre les permissions du `.db` et de son sidecar `.kdf` à 0600 (Unix uniquement) : les
 /// deux peuvent avoir été créés avec un umask plus permissif que ce que ce coffre exige.
@@ -1193,6 +1245,63 @@ mod tests {
 
         // Le coffre visé reste intact et ouvrable avec SA passphrase.
         Store::open_with_passphrase(&victim_path, &Passphrase::from("other-secret")).unwrap();
+    }
+
+    #[test]
+    fn backup_then_restore_carries_the_receipts_sidecar() {
+        use crate::app::{Actor, ExecutionContext};
+        use crate::domain::{PaperKind, PaperOrigin};
+        use crate::papers::{NewPaper, archive_paper};
+        use crate::receipts;
+
+        let original_path = temp_db_path("backup-receipts-src");
+        let backup_path = temp_db_path("backup-receipts-copy").with_file_name("backup.db");
+        let restored_path = temp_db_path("backup-receipts-restored");
+
+        let mut store = create(&original_path, "s3cret");
+        let paper = match archive_paper(
+            &mut store,
+            NewPaper {
+                kind: PaperKind::Statutes,
+                origin: PaperOrigin::Uploaded,
+                original_name: "statuts.pdf".into(),
+                mime: "application/pdf".into(),
+                period: None,
+                issued_on: None,
+                client_id: None,
+                invoice_id: None,
+                expense_id: None,
+                fiscal_year_id: None,
+                note: None,
+                idempotency_key: None,
+            },
+            b"%PDF-1.4 statuts",
+            &ExecutionContext::new(Actor::Human, false),
+        )
+        .unwrap()
+        {
+            crate::app::Outcome::Applied(p) => p,
+            other => panic!("attendu Applied, obtenu {other:?}"),
+        };
+        store.backup_to(&backup_path).unwrap();
+
+        let restored =
+            Store::restore_from(&backup_path, &restored_path, &Passphrase::from("s3cret")).unwrap();
+        assert_eq!(
+            receipts::read(&restored, &paper.filename).unwrap(),
+            b"%PDF-1.4 statuts"
+        );
+    }
+
+    #[test]
+    fn backup_of_a_vault_without_receipts_dir_still_succeeds() {
+        let original_path = temp_db_path("backup-no-receipts-src");
+        let backup_path = temp_db_path("backup-no-receipts-copy").with_file_name("backup.db");
+        let store = create(&original_path, "s3cret");
+        assert!(!store.receipts_dir().exists());
+        store.backup_to(&backup_path).unwrap();
+        assert!(backup_path.exists());
+        assert!(!receipts_dir_of(&backup_path).exists());
     }
 
     #[test]
