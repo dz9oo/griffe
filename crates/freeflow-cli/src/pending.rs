@@ -22,8 +22,8 @@ use freeflow_core::opening_balance::{
 use freeflow_core::papers::PurgePaper;
 use freeflow_core::prospection::{DeleteInteraction, DeleteOpportunity};
 use freeflow_core::society::{
-    DeleteVatCarryIn, MarkCatchUpFiled, MarkDutyFiled, RecordVatCarryIn, RetractDutyFiled,
-    UpdateVatCarryIn,
+    DeleteVatCarryIn, MarkCatchUpFiled, MarkDutyFiled, RecordVatCarryIn, RequestVatRefund,
+    RetractDutyFiled, RetractVatRefund, UpdateVatCarryIn,
 };
 use freeflow_core::store::Store;
 
@@ -245,6 +245,12 @@ pub fn confirm(store: &mut Store, id: PendingActionId, json: bool) -> Result<Str
         Ok(format_outcome(&outcome, json))
     } else if action.command_name == DeleteVatCarryIn::NAME {
         let outcome = Executor::new(store).confirm::<DeleteVatCarryIn>(id)?;
+        Ok(format_outcome(&outcome, json))
+    } else if action.command_name == RequestVatRefund::NAME {
+        let outcome = Executor::new(store).confirm::<RequestVatRefund>(id)?;
+        Ok(format_outcome(&outcome, json))
+    } else if action.command_name == RetractVatRefund::NAME {
+        let outcome = Executor::new(store).confirm::<RetractVatRefund>(id)?;
         Ok(format_outcome(&outcome, json))
     } else if action.command_name == PurgePaper::NAME {
         let outcome = Executor::new(store).confirm::<PurgePaper>(id)?;

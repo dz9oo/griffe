@@ -8,10 +8,11 @@ use freeflow_core::fiscal::{FiscalDeadlineKind, VatFilingScheme};
 use freeflow_core::society::{
     AmountBasis, AmountStory, BeatKind, BeatWhen, BoxCoverage, BoxRole, ClosingStory,
     DeleteVatCarryIn, DepositPlace, DividendClosed, DividendDoor, Duty, DutyBriefing, DutyFiling,
-    Expect, FormBox, IdentityCard, MarkDutyFiled, PayYourself, RecordVatCarryIn, RetractDutyFiled,
-    SocietyHome, StatementMove, StatementReading, UnknownReason, VatCarryInRecord, WaiverReason,
-    closing_story, duty_briefing, pay_yourself, society_duties, society_home, society_identity,
-    statement_moves, vat_carry_in,
+    Expect, FormBox, IdentityCard, MarkDutyFiled, PayYourself, RecordVatCarryIn, RequestVatRefund,
+    RetractDutyFiled, RetractVatRefund, SocietyHome, StatementMove, StatementReading,
+    UnknownReason, VatCarryInRecord, VatRefundRecord, VatRefundStatus, WaiverReason, closing_story,
+    duty_briefing, pay_yourself, society_duties, society_home, society_identity, statement_moves,
+    vat_carry_in,
 };
 use freeflow_core::store::Store;
 use time::Date;
@@ -257,7 +258,9 @@ pub(crate) fn box_label(form: &str, case: &str) -> &'static str {
         ("3310-CA3", "09") => "TVA brute 5,5 %",
         ("3310-CA3", "19") => "TVA déductible, immobilisations",
         ("3310-CA3", "20") => "TVA déductible, autres biens et services",
-        ("3310-CA3", "25") => "crédit de TVA antérieur",
+        ("3310-CA3", "22") => "crédit reporté",
+        ("3310-CA3", "25") => "crédit de cette période",
+        ("3310-CA3", "26") => "à vous verser",
         ("3310-CA3", "27") => "crédit de TVA à reporter",
         ("3310-CA3", "28") => "TVA nette due",
         _ => "",
@@ -302,6 +305,7 @@ fn amount_basis_fr(basis: AmountBasis) -> &'static str {
     match basis {
         AmountBasis::QuarterOfPriorIs => "un quart de l'IS de référence",
         AmountBasis::VatForPeriod => "TVA de la période",
+        AmountBasis::VatCredit => "l'État vous les doit",
         AmountBasis::VatInstalment => "acompte de TVA",
         AmountBasis::Ca12Net => "TVA de l'année, nette des acomptes",
         AmountBasis::SnapshotIs => "IS de l'exercice clos",
@@ -498,6 +502,9 @@ pub enum SocietyCommand {
     /// Crédit de TVA à reporter (case 27 de la dernière CA3 déjà déposée).
     #[command(subcommand)]
     VatCredit(VatCreditCommand),
+    /// Demander le versement d'un crédit de TVA (case 26), ou l'annuler.
+    #[command(subcommand)]
+    VatRefund(VatRefundCommand),
 }
 
 #[derive(Debug, Subcommand)]
@@ -518,6 +525,25 @@ pub enum VatCreditCommand {
     },
     /// Refusé : le crédit repris est figé.
     Rm,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum VatRefundCommand {
+    /// Demander le versement (tout le crédit, ou --amount une partie).
+    Request {
+        /// Période CA3 `AAAA-MM`.
+        period: String,
+        #[arg(long, value_parser = parse_money)]
+        amount: Option<Money>,
+        #[arg(long, value_parser = parse_date)]
+        today: Option<Date>,
+    },
+    /// Annuler la demande (si la CA3 n'est pas encore marquée déposée).
+    Retract {
+        period: String,
+        #[arg(long, value_parser = parse_date)]
+        today: Option<Date>,
+    },
 }
 
 impl HumanRender for DutyFiling {
@@ -613,6 +639,7 @@ pub fn run(
             Ok(format_outcome_as(&outcome, json, |_| "dépôt retiré".into()))
         }
         SocietyCommand::VatCredit(cmd) => run_vat_credit(cmd, store, ctx, json),
+        SocietyCommand::VatRefund(cmd) => run_vat_refund(cmd, store, ctx, json),
     }
 }
 
@@ -627,6 +654,16 @@ impl HumanRender for VatCarryInRecord {
             pairs.push(("provenance", source.clone()));
         }
         key_values(&pairs)
+    }
+}
+
+impl HumanRender for VatRefundRecord {
+    fn render_human(&self) -> String {
+        key_values(&[
+            ("période", self.period_key.clone()),
+            ("versement", self.amount.to_string()),
+            ("demandé le", format_date(self.requested_on)),
+        ])
     }
 }
 
@@ -674,6 +711,67 @@ fn run_vat_credit(
             )?;
             Ok(format_outcome_as(&outcome, json, |()| {
                 "crédit de TVA repris oublié".into()
+            }))
+        }
+    }
+}
+
+fn run_vat_refund(
+    cmd: VatRefundCommand,
+    store: &mut Store,
+    ctx: &ExecutionContext,
+    json: bool,
+) -> Result<String, CliError> {
+    match cmd {
+        VatRefundCommand::Request {
+            period,
+            amount,
+            today,
+        } => {
+            let today = today.unwrap_or_else(today_local);
+            let briefing = duty_briefing(
+                store.connection(),
+                FiscalDeadlineKind::Ca3,
+                today,
+                Some(&period),
+            )?;
+            let amount = match amount {
+                Some(amount) => amount,
+                None => match briefing.vat_refund {
+                    Some(VatRefundStatus::Offered { credit, .. }) => credit,
+                    _ => {
+                        return Err(CliError::Domain("pas de crédit à récupérer".into()));
+                    }
+                },
+            };
+            let outcome = Executor::new(store).execute(
+                &RequestVatRefund {
+                    period_key: briefing.period_key,
+                    amount,
+                    requested_on: today,
+                },
+                ctx,
+            )?;
+            Ok(format_outcome_as(&outcome, json, |r| {
+                format!("versement demandé ({})", r.amount)
+            }))
+        }
+        VatRefundCommand::Retract { period, today } => {
+            let today = today.unwrap_or_else(today_local);
+            let briefing = duty_briefing(
+                store.connection(),
+                FiscalDeadlineKind::Ca3,
+                today,
+                Some(&period),
+            )?;
+            let outcome = Executor::new(store).execute(
+                &RetractVatRefund {
+                    period_key: briefing.period_key,
+                },
+                ctx,
+            )?;
+            Ok(format_outcome_as(&outcome, json, |()| {
+                "demande de versement retirée".into()
             }))
         }
     }
