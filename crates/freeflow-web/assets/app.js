@@ -8,12 +8,13 @@ const PIECE_OF = {
   jour: "jour",
   dashboard: "jour",
   relances: "jour",
-  gens: "gens",
-  prospection: "gens",
-  devis: "gens",
-  missions: "gens",
-  facturation: "gens",
-  clients: "gens",
+  affaires: "affaires",
+  gens: "affaires",
+  prospection: "affaires",
+  devis: "affaires",
+  missions: "affaires",
+  facturation: "affaires",
+  clients: "affaires",
   societe: "societe",
   depenses: "societe",
   cloture: "societe",
@@ -48,13 +49,18 @@ document.body.addEventListener("click", (event) => {
   }
   if (event.target.closest(".mark")) markNav("jour");
 
-  const geste = event.target.closest("ol.gestes .geste");
+  const geste = event.target.closest("ol.gestes .geste, ol.papers .paper-fiche");
   if (geste && !event.target.closest(".unfold")) {
     const item = geste.closest("li");
     if (item) {
       item.classList.toggle("open");
+      const expanded = item.classList.contains("open");
+      geste.setAttribute("aria-expanded", expanded ? "true" : "false");
       item.parentElement?.querySelectorAll(":scope > li").forEach((other) => {
-        if (other !== item) other.classList.remove("open");
+        if (other !== item) {
+          other.classList.remove("open");
+          other.querySelector(".geste, .paper-fiche")?.setAttribute("aria-expanded", "false");
+        }
       });
     }
     return;

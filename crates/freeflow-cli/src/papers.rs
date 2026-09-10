@@ -262,7 +262,7 @@ impl HumanRender for PapersChecklist {
                 StepStatus::Later => "○",
             };
             let req = if item.required { " (requis)" } else { "" };
-            let _ = writeln!(out, "  {glyph} {}{req}", kind_label(item.kind));
+            let _ = writeln!(out, "  {glyph} {}{req}", item.kind.brief().title);
         }
         out.trim_end().to_string()
     }

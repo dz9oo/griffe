@@ -297,6 +297,36 @@ async fn the_atelier_chrome_has_three_pieces_and_vendored_fonts() {
     assert!(gens.contains("data-view=\"affaires\""), "{gens}");
     assert!(gens.contains("Nouvelle conversation"), "{gens}");
     assert!(gens.contains("En conversation"), "{gens}");
+    assert!(
+        gens.contains("data-piece=\"affaires\"") && gens.contains("aria-current=\"page\""),
+        "Les affaires se soulignent au chargement : {gens}"
+    );
+
+    let js = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/assets/app.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        js.contains("affaires: \"affaires\""),
+        "après htmx, le slug affaires doit souligner la pièce affaires : {js}"
+    );
+    assert!(
+        js.contains("prospection: \"affaires\""),
+        "les anciens écrans des affaires soulignent la même pièce : {js}"
+    );
+    assert!(
+        !js.contains(": \"gens\""),
+        "l'ancien slug gens n'est plus une pièce : {js}"
+    );
 
     let societe = body_text(
         router
@@ -5672,6 +5702,99 @@ async fn approving_a_year_from_the_window_captures_the_minutes() {
     .unwrap();
     assert_eq!(papers.len(), 1, "le PV doit être figé");
     assert_eq!(papers[0].origin, freeflow_core::domain::PaperOrigin::Issued);
+}
+
+#[tokio::test]
+async fn the_papers_chapter_explains_the_pieces_and_where_they_live() {
+    let db_path = test_db_path("papiers-lettre");
+    let state = unlocked_state(&db_path)
+        .await
+        .with_today(time::macros::date!(2027 - 06 - 01));
+    let router = freeflow_web::router(state);
+
+    let body = body_text(
+        router
+            .oneshot(
+                Request::builder()
+                    .uri("/societe/papiers?period=2026")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(body.contains("Deux endroits"), "{body}");
+    assert!(body.contains("Au coffre"), "{body}");
+    assert!(
+        body.contains("chiffré") || body.contains("chiffrés"),
+        "{body}"
+    );
+    assert!(body.contains(".receipts"), "{body}");
+    assert!(body.contains("en clair"), "{body}");
+    assert!(body.contains("Fichier des Écritures Comptables"), "{body}");
+    assert!(
+        body.contains("Procès-verbal") || body.contains("Proc&#xE8;s-verbal"),
+        "{body}"
+    );
+    assert!(body.contains("2033-A") || body.contains("2033"), "{body}");
+    assert!(body.contains("INPI"), "{body}");
+    assert!(body.contains("Ce que FreeFlow écrit"), "{body}");
+    assert!(body.contains("Ce que vous apportez"), "{body}");
+    assert!(body.contains("class=\"papers\""), "{body}");
+    assert!(!body.contains("À avoir au coffre"), "{body}");
+    assert!(!body.contains("freeflow "), "{body}");
+    assert!(!body.contains("SAE"), "{body}");
+    assert!(!body.contains("NF Z42"), "{body}");
+}
+
+#[tokio::test]
+async fn the_papers_chapter_is_a_letter_not_a_dump() {
+    let db_path = test_db_path("papiers-rythme");
+    let state = unlocked_state(&db_path)
+        .await
+        .with_today(time::macros::date!(2027 - 06 - 01));
+    let router = freeflow_web::router(state);
+
+    let body = body_text(
+        router
+            .oneshot(
+                Request::builder()
+                    .uri("/societe/papiers?period=2026")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+
+    let written = body.find("Ce que FreeFlow écrit").expect(&body);
+    let brought = body.find("Ce que vous apportez").expect(&body);
+    let deposit = body.find(">Déposer<").expect(&body);
+    let places = body.find("Deux endroits").expect(&body);
+    let pack = body.find("Préparer le dossier d'un contrôle").expect(&body);
+    assert!(
+        written < brought && brought < deposit && deposit < places && places < pack,
+        "inventaires puis dépôt puis coda des deux lieux, pas l'inverse : {body}"
+    );
+
+    let h2 = body.matches("<h2>").count();
+    assert_eq!(h2, 3, "trois chapitres serif, pas un h2 par ligne : {body}");
+    assert!(body.contains("class=\"mast\""), "{body}");
+    assert!(body.contains("for=\"period\""), "{body}");
+    assert!(body.contains("Il manque les statuts et le Kbis."), "{body}");
+    assert!(body.contains("aria-expanded=\"false\""), "{body}");
+    assert!(body.contains("class=\"nm\""), "{body}");
+    assert!(!body.contains("Déjà au coffre"), "{body}");
+    assert!(!body.contains("<h2>Pour un contrôle"), "{body}");
+    assert!(!body.contains("Déposer une pièce"), "{body}");
+    assert!(!body.contains("bouton plus bas"), "{body}");
+    assert!(
+        !body.contains("style="),
+        "plus de style inline sur la lettre : {body}"
+    );
+    assert!(!body.contains("freeflow "), "{body}");
 }
 
 #[tokio::test]

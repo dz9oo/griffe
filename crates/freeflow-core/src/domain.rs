@@ -57,7 +57,8 @@ pub use opportunity::{
     LossReason, Opportunity, OpportunityStage, Probability, ProbabilityError, UnknownStage,
 };
 pub use paper::{
-    PaperKind, PaperOrigin, RetentionClock, UnknownPaperKind, UnknownPaperOrigin, retained_until,
+    PaperBrief, PaperKind, PaperOrigin, PaperWhence, RetentionClock, UnknownPaperKind,
+    UnknownPaperOrigin, retained_until,
 };
 pub use payment::{BankTransaction, Payment, PaymentMethod, UnknownPaymentMethod};
 pub use period::{
