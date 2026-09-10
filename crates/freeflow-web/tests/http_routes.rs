@@ -1514,7 +1514,7 @@ async fn requesting_the_december_credit_from_the_letter_fills_case_26() {
     let db_path = test_db_path("letter-vat-refund-dec");
     let state = unlocked_state(&db_path)
         .await
-        .with_today(time::macros::date!(2026 - 12 - 08));
+        .with_today(time::macros::date!(2027 - 01 - 08));
     {
         let mut store =
             Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
@@ -1585,6 +1585,21 @@ async fn requesting_the_december_credit_from_the_letter_fills_case_26() {
     assert_3519_only_after_sur_le_site(&letter);
     assert!(!letter.contains("freeflow "), "{letter}");
 
+    let jour = body_text(
+        router
+            .clone()
+            .oneshot(Request::builder().uri("/jour").body(Body::empty()).unwrap())
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(jour.contains("Savoir pour la TVA"), "{jour}");
+    assert!(
+        jour.contains("324,00") || jour.contains("324"),
+        "montant du crédit offert : {jour}"
+    );
+    assert!(jour.contains("récupérer"), "{jour}");
+
     let posted = router
         .clone()
         .oneshot(
@@ -1614,19 +1629,6 @@ async fn requesting_the_december_credit_from_the_letter_fills_case_26() {
     );
     assert_3519_only_after_sur_le_site(&body);
     assert!(!body.contains("freeflow "), "{body}");
-
-    let jour = body_text(
-        router
-            .oneshot(Request::builder().uri("/jour").body(Body::empty()).unwrap())
-            .await
-            .unwrap(),
-    )
-    .await;
-    assert!(jour.contains("Savoir pour la TVA"), "{jour}");
-    assert!(
-        jour.contains("récupérer") || jour.contains("324"),
-        "geste TVA : {jour}"
-    );
 }
 
 #[tokio::test]

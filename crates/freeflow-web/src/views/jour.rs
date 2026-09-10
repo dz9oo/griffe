@@ -16,7 +16,7 @@ use freeflow_core::store::Store;
 use maud::{Markup, html};
 use time::{Date, Weekday};
 
-use freeflow_core::fiscal::{FiscalDeadlineKind, VatFilingScheme};
+use freeflow_core::fiscal::VatFilingScheme;
 use freeflow_core::society::{VatRefundStatus, duty_briefing};
 
 use crate::layout::ViewId;
@@ -250,7 +250,15 @@ fn geste_copy(
             } else {
                 format!("Savoir pour {}", deadline_fr(*deadline, vat_scheme))
             };
-            let recover = vat_recover_prefix(store, *deadline, today, period_key);
+            let recover = if is_vat(*deadline)
+                && let Ok(briefing) =
+                    duty_briefing(store.connection(), *deadline, today, Some(period_key))
+                && let Some(VatRefundStatus::Offered { credit, .. }) = briefing.vat_refund
+            {
+                format!("{credit} à récupérer · ")
+            } else {
+                String::new()
+            };
             let amount = amount
                 .filter(|m| *m != Money::ZERO)
                 .map(|m| format!("{m} · "))
@@ -262,35 +270,6 @@ fn geste_copy(
             (title, body)
         }
     }
-}
-
-fn vat_recover_prefix(
-    store: &Store,
-    deadline: FiscalDeadlineKind,
-    today: Date,
-    period_key: &str,
-) -> String {
-    if !is_vat(deadline) {
-        return String::new();
-    }
-    let month_key = format!("{}-{:02}", today.year(), u8::from(today.month()));
-    let extra =
-        (deadline == FiscalDeadlineKind::Ca3 && month_key != period_key).then_some(month_key);
-    for key in [Some(period_key), extra.as_deref()].into_iter().flatten() {
-        let Ok(briefing) = duty_briefing(store.connection(), deadline, today, Some(key)) else {
-            continue;
-        };
-        match briefing.vat_refund {
-            Some(VatRefundStatus::Offered { credit, .. }) => {
-                return format!("{credit} à récupérer · ");
-            }
-            Some(VatRefundStatus::Requested { amount, .. }) => {
-                return format!("{amount} à récupérer · ");
-            }
-            _ => {}
-        }
-    }
-    String::new()
 }
 
 fn geste_actions(g: &DayGesture, today: Date) -> Markup {
