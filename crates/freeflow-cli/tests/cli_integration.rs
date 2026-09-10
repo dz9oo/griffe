@@ -861,8 +861,12 @@ fn society_vat_credit_seeds_the_next_ca3() {
         .clone();
     let duty: serde_json::Value = serde_json::from_slice(&duty).unwrap();
     let boxes = duty["boxes"].as_array().expect("boxes");
+    let case22 = boxes.iter().find(|b| b["case"] == "22").expect("case 22");
+    assert_eq!(case22["amount"], 32400);
     let case25 = boxes.iter().find(|b| b["case"] == "25").expect("case 25");
     assert_eq!(case25["amount"], 32400);
+    let case27 = boxes.iter().find(|b| b["case"] == "27").expect("case 27");
+    assert_eq!(case27["amount"], 32400);
     let again = freeflow()
         .env("FREEFLOW_DB", &db)
         .args([
@@ -881,6 +885,132 @@ fn society_vat_credit_seeds_the_next_ca3() {
     assert!(
         stderr.contains("figé") || stderr.contains("existe déjà"),
         "{stderr}"
+    );
+}
+
+#[test]
+fn society_vat_refund_on_december_clears_january() {
+    let db = temp_db("society-vat-refund");
+    provision(&db);
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "company",
+            "set-profile",
+            "--name",
+            "Lumen Conseil",
+            "--legal-form",
+            "SASU",
+            "--siren",
+            "552100554",
+            "--street",
+            "18 rue des Ateliers",
+            "--postal-code",
+            "69003",
+            "--city",
+            "Lyon",
+            "--country",
+            "FR",
+            "--fiscal-year-end",
+            "30/09",
+            "--vat-regime",
+            "real_normal_monthly",
+        ])
+        .assert()
+        .success();
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "society",
+            "vat-credit",
+            "set",
+            "--after",
+            "2026-08",
+            "--amount",
+            "324.00",
+        ])
+        .assert()
+        .success();
+
+    let too_soon = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "society",
+            "vat-refund",
+            "request",
+            "2026-09",
+            "--amount",
+            "324.00",
+            "--today",
+            "2026-09-08",
+        ])
+        .output()
+        .unwrap();
+    assert!(!too_soon.status.success(), "324 € < 760 € en septembre");
+    let stderr = String::from_utf8_lossy(&too_soon.stderr);
+    assert!(stderr.contains("760"), "{stderr}");
+
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "society",
+            "vat-refund",
+            "request",
+            "2026-12",
+            "--today",
+            "2026-12-08",
+        ])
+        .assert()
+        .success();
+
+    let december = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "--json",
+            "society",
+            "duty",
+            "ca3",
+            "--period",
+            "2026-12",
+            "--today",
+            "2026-12-08",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let december: serde_json::Value = serde_json::from_slice(&december).unwrap();
+    let boxes = december["boxes"].as_array().expect("boxes");
+    let case26 = boxes.iter().find(|b| b["case"] == "26").expect("case 26");
+    assert_eq!(case26["amount"], 32400);
+    assert!(
+        boxes.iter().all(|b| b["case"] != "27"),
+        "pas de case 27 : {boxes:?}"
+    );
+
+    let january = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "--json",
+            "society",
+            "duty",
+            "ca3",
+            "--period",
+            "2027-01",
+            "--today",
+            "2027-01-08",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let january: serde_json::Value = serde_json::from_slice(&january).unwrap();
+    let jan_boxes = january["boxes"].as_array().expect("boxes");
+    assert!(
+        jan_boxes.iter().all(|b| b["case"] != "22"),
+        "le 26 de décembre a coupé la chaîne : {jan_boxes:?}"
     );
 }
 

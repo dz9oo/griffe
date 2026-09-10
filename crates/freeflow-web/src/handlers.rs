@@ -22,7 +22,8 @@ use freeflow_core::domain::{Money, parse_date};
 use freeflow_core::fiscal::FiscalDeadlineKind;
 use freeflow_core::setup::vault_started_on;
 use freeflow_core::society::{
-    MarkCatchUpFiled, MarkDutyFiled, RecordVatCarryIn, RetractDutyFiled, duty_briefing,
+    MarkCatchUpFiled, MarkDutyFiled, RecordVatCarryIn, RequestVatRefund, RetractDutyFiled,
+    RetractVatRefund, VatRefundStatus, duty_briefing,
 };
 
 #[derive(Debug, Default, Deserialize)]
@@ -333,6 +334,142 @@ pub async fn societe_vat_credit_at(
     form: Result<Form<VatCreditPosted>, FormRejection>,
 ) -> Response {
     save_vat_credit(&state, headers, kind, Some(period), form).await
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct VatRefundPosted {
+    #[serde(default)]
+    amount: String,
+}
+
+pub async fn societe_vat_refund(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(kind): Path<String>,
+    form: Result<Form<VatRefundPosted>, FormRejection>,
+) -> Response {
+    request_vat_refund(&state, headers, kind, None, form).await
+}
+
+pub async fn societe_vat_refund_at(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((kind, period)): Path<(String, String)>,
+    form: Result<Form<VatRefundPosted>, FormRejection>,
+) -> Response {
+    request_vat_refund(&state, headers, kind, Some(period), form).await
+}
+
+pub async fn societe_vat_refund_retract(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(kind): Path<String>,
+) -> Response {
+    retract_vat_refund(&state, headers, kind, None).await
+}
+
+pub async fn societe_vat_refund_retract_at(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((kind, period)): Path<(String, String)>,
+) -> Response {
+    retract_vat_refund(&state, headers, kind, Some(period)).await
+}
+
+async fn request_vat_refund(
+    state: &AppState,
+    headers: HeaderMap,
+    kind: String,
+    period: Option<String>,
+    form: Result<Form<VatRefundPosted>, FormRejection>,
+) -> Response {
+    let Some(kind) = parse_external_kind(&kind) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let posted = form.map_or_else(|_| VatRefundPosted::default(), |Form(f)| f);
+    let today = state.today();
+    let period_owned = period.clone();
+    let result = state
+        .with_store_mut(|store| {
+            let briefing = duty_briefing(store.connection(), kind, today, period_owned.as_deref())?;
+            let trimmed = posted.amount.trim();
+            let amount = if trimmed.is_empty() {
+                match briefing.vat_refund {
+                    Some(VatRefundStatus::Offered { credit, .. }) => credit,
+                    _ => {
+                        return Err(freeflow_core::app::AppError::Domain(
+                            "pas de crédit à récupérer".into(),
+                        ));
+                    }
+                }
+            } else {
+                Money::parse_decimal(trimmed)
+                    .map_err(|e| freeflow_core::app::AppError::Domain(e.to_string()))?
+            };
+            Executor::new(store).execute(
+                &RequestVatRefund {
+                    period_key: briefing.period_key,
+                    amount,
+                    requested_on: today,
+                },
+                &AppState::human_ctx(),
+            )?;
+            Ok::<_, freeflow_core::app::AppError>(())
+        })
+        .await;
+    if let Some(Err(e)) = result {
+        return respond(headers, ViewId::Societe, error_markup(ViewId::Societe, e))
+            .await
+            .into_response();
+    }
+    let mut response = letter(state, headers, ViewId::Societe, move |store, today| {
+        views::societe::duty(store, today, kind, period.as_deref())
+    })
+    .await
+    .into_response();
+    response
+        .headers_mut()
+        .insert("HX-Trigger", HeaderValue::from_static("freeflow:saved"));
+    response
+}
+
+async fn retract_vat_refund(
+    state: &AppState,
+    headers: HeaderMap,
+    kind: String,
+    period: Option<String>,
+) -> Response {
+    let Some(kind) = parse_external_kind(&kind) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let today = state.today();
+    let period_owned = period.clone();
+    let result = state
+        .with_store_mut(|store| {
+            let briefing = duty_briefing(store.connection(), kind, today, period_owned.as_deref())?;
+            Executor::new(store).execute(
+                &RetractVatRefund {
+                    period_key: briefing.period_key,
+                },
+                &AppState::human_ctx(),
+            )?;
+            Ok::<_, freeflow_core::app::AppError>(())
+        })
+        .await;
+    if let Some(Err(e)) = result {
+        return respond(headers, ViewId::Societe, error_markup(ViewId::Societe, e))
+            .await
+            .into_response();
+    }
+    let mut response = letter(state, headers, ViewId::Societe, move |store, today| {
+        views::societe::duty(store, today, kind, period.as_deref())
+    })
+    .await
+    .into_response();
+    response
+        .headers_mut()
+        .insert("HX-Trigger", HeaderValue::from_static("freeflow:saved"));
+    response
 }
 
 async fn save_vat_credit(

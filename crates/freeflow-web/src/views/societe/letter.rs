@@ -10,8 +10,9 @@ use freeflow_core::society::{
     AmountBasis, AmountStory, BeatKind, BeatWhen, BoxCoverage, BoxRole, ClosingBeat, ClosingStory,
     ConversationBar, DividendClosed, DividendDoor, Duty, DutyBriefing, Expect, FormBox,
     IdentityCard, IdentityShort, Landscape, PayYourself, SocietyHome, StatementMove,
-    StatementReading, UnknownReason, VatCarryInRecord, WaiverReason, closing_story, duty_briefing,
-    pay_yourself, society_duties, society_home, society_identity, statement_moves, vat_carry_in,
+    StatementReading, UnknownReason, VatCarryInRecord, VatRefundStatus, WaiverReason,
+    closing_story, duty_briefing, pay_yourself, society_duties, society_home, society_identity,
+    statement_moves, vat_carry_in,
 };
 use freeflow_core::store::Store;
 use maud::{Markup, PreEscaped, html};
@@ -636,14 +637,15 @@ fn duty_markup(b: &DutyBriefing, today: Date, vat_form: Option<&VatCreditForm>) 
                             "Les montants manquent encore. Les cases sont déjà les bonnes."
                         }
                     }
+                    (vat_refund_fr(b, &href))
                 }
             }
             @if let Some(vat) = vat_form {
                 div class="block" {
-                    h3 { "Crédit déjà déclaré" }
+                    h3 { "Crédit avant ce coffre" }
                     p class="prose" {
-                        "Case 27 de votre dernière CA3 déposée sur le site des impôts. Sans ce \
-                         chiffre, les cases partent de zéro."
+                        "Vous l'avez déjà déclaré ailleurs. Ici, on le reprend une fois — il \
+                         remplira le crédit reporté — puis c'est figé. On ne le recollera pas."
                     }
                     @if let Some(banner) = &vat.banner {
                         p class="prose" { (banner) }
@@ -684,6 +686,15 @@ fn duty_markup(b: &DutyBriefing, today: Date, vat_form: Option<&VatCreditForm>) 
                         (b.path.join(" → "))
                         @if let Some(form) = b.form {
                             " — " (form)
+                        }
+                        @if b.kind == FiscalDeadlineKind::Ca3 {
+                            " — 3310-CA3"
+                            @if matches!(
+                                b.vat_refund,
+                                Some(VatRefundStatus::Offered { .. } | VatRefundStatus::Requested { .. })
+                            ) {
+                                " — 3519"
+                            }
                         }
                     }
                     p class="prose" { (b.url) }
@@ -739,6 +750,78 @@ fn duty_markup(b: &DutyBriefing, today: Date, vat_form: Option<&VatCreditForm>) 
     }
 }
 
+fn vat_refund_fr(b: &DutyBriefing, href: &str) -> Markup {
+    let Some(status) = &b.vat_refund else {
+        return html! {};
+    };
+    let refund = format!("{href}/vat-refund");
+    let retract = format!("{href}/vat-refund/retract");
+    match status {
+        VatRefundStatus::BelowThreshold {
+            min,
+            calendar_year_end,
+            ..
+        } => html! {
+            p class="prose" {
+                "L'État ne verse pas encore : en cours d'année, il faut " (min) "."
+                @if !*calendar_year_end {
+                    " À la dernière déclaration de l'année, "
+                    (freeflow_core::fiscal::CA12_REFUND_THRESHOLD)
+                    " suffisent."
+                }
+            }
+        },
+        VatRefundStatus::Offered { credit, .. } => {
+            let part = credit.to_decimal_string();
+            html! {
+                form hx-post=(refund.as_str()) hx-target="#content" {
+                    button class="seal" type="submit" { "L\u{2019}État me le verse" }
+                }
+                details {
+                    summary class="prose" style="color:var(--ink-2);font-size:14px" {
+                        "ou seulement une partie"
+                    }
+                    form hx-post=(refund.as_str()) hx-target="#content" {
+                        (form::number(
+                            "amount",
+                            "Montant à verser, en euros",
+                            &part,
+                            "0.01",
+                            None,
+                        ))
+                        button class="quiet" type="submit" { "Verser cette partie" }
+                    }
+                }
+            }
+        }
+        VatRefundStatus::Requested { amount, remainder } => {
+            let total = b
+                .boxes
+                .iter()
+                .find(|bx| bx.case == "25")
+                .and_then(|bx| bx.amount);
+            html! {
+                p class="prose" {
+                    @if remainder.is_zero() {
+                        (amount) ", tout le crédit."
+                    } @else if let Some(total) = total {
+                        (amount) " sur " (total) "."
+                    } @else {
+                        (amount) "."
+                    }
+                }
+                @if b.filed_on.is_some() {
+                    p class="prose" { "Pas encore sur le relevé." }
+                } @else {
+                    form hx-post=(retract) hx-target="#content" {
+                        button class="quiet" type="submit" { "Finalement, je le laisse en crédit" }
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn box_label_fr(b: &FormBox) -> &'static str {
     match (b.form, b.case) {
         ("2571", "03") => "Montant à payer, impôt sur les sociétés",
@@ -749,7 +832,9 @@ fn box_label_fr(b: &FormBox) -> &'static str {
         ("3310-CA3", "09") => "TVA brute 5,5 %",
         ("3310-CA3", "19") => "TVA déductible, immobilisations",
         ("3310-CA3", "20") => "TVA déductible, autres biens et services",
-        ("3310-CA3", "25") => "Crédit de TVA antérieur",
+        ("3310-CA3", "22") => "Crédit reporté",
+        ("3310-CA3", "25") => "Crédit de cette période",
+        ("3310-CA3", "26") => "À vous verser",
         ("3310-CA3", "27") => "Crédit de TVA à reporter",
         ("3310-CA3", "28") => "TVA nette due",
         _ => "",
@@ -882,6 +967,7 @@ fn amount_basis_fr(basis: AmountBasis) -> &'static str {
     match basis {
         AmountBasis::QuarterOfPriorIs => "un quart de l'impôt de l'exercice de référence",
         AmountBasis::VatForPeriod => "TVA de la période",
+        AmountBasis::VatCredit => "l'État vous les doit",
         AmountBasis::VatInstalment => "acompte de TVA",
         AmountBasis::Ca12Net => "TVA de l'année, nette des acomptes",
         AmountBasis::SnapshotIs => "impôt de l'exercice clos",

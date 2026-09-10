@@ -5,9 +5,9 @@ use freeflow_core::clock::today_local;
 use freeflow_core::domain::Money;
 use freeflow_core::fiscal::FiscalDeadlineKind;
 use freeflow_core::society::{
-    DeleteVatCarryIn, MarkDutyFiled, RecordVatCarryIn, RetractDutyFiled, closing_story,
-    duty_briefing, pay_yourself, society_duties, society_home, society_identity, statement_moves,
-    vat_carry_in,
+    DeleteVatCarryIn, MarkDutyFiled, RecordVatCarryIn, RequestVatRefund, RetractDutyFiled,
+    RetractVatRefund, VatRefundStatus, closing_story, duty_briefing, pay_yourself, society_duties,
+    society_home, society_identity, statement_moves, vat_carry_in,
 };
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
@@ -324,6 +324,87 @@ impl FreeflowServer {
             Err(e) => err_text(e.to_string()),
         }
     }
+
+    /// Demander le versement d'un crédit de TVA (case 26). Confirmation humaine requise.
+    #[tool(
+        name = "society.request_vat_refund",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false
+        )
+    )]
+    async fn society_request_vat_refund(
+        &self,
+        Parameters(args): Parameters<RequestVatRefundArgs>,
+    ) -> CallToolResult {
+        let today = match today_or(args.today) {
+            Ok(d) => d,
+            Err(e) => return err_text(e),
+        };
+        let mut store = self.store.lock().await;
+        let briefing = match duty_briefing(
+            store.connection(),
+            FiscalDeadlineKind::Ca3,
+            today,
+            Some(&args.period),
+        ) {
+            Ok(b) => b,
+            Err(e) => return err_text(e.to_string()),
+        };
+        let amount = match args.amount_cents {
+            Some(cents) => Money::from_cents(cents),
+            None => match briefing.vat_refund {
+                Some(VatRefundStatus::Offered { credit, .. }) => credit,
+                _ => return err_text("pas de crédit à récupérer"),
+            },
+        };
+        let cmd = RequestVatRefund {
+            period_key: briefing.period_key,
+            amount,
+            requested_on: today,
+        };
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
+            Ok(outcome) => ok_json(outcome_json(&outcome)),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
+    /// Retirer une demande de versement de crédit de TVA. Confirmation humaine requise.
+    #[tool(
+        name = "society.retract_vat_refund",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false
+        )
+    )]
+    async fn society_retract_vat_refund(
+        &self,
+        Parameters(args): Parameters<RetractVatRefundArgs>,
+    ) -> CallToolResult {
+        let today = match today_or(args.today) {
+            Ok(d) => d,
+            Err(e) => return err_text(e),
+        };
+        let mut store = self.store.lock().await;
+        let briefing = match duty_briefing(
+            store.connection(),
+            FiscalDeadlineKind::Ca3,
+            today,
+            Some(&args.period),
+        ) {
+            Ok(b) => b,
+            Err(e) => return err_text(e.to_string()),
+        };
+        let cmd = RetractVatRefund {
+            period_key: briefing.period_key,
+        };
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
+            Ok(outcome) => ok_json(outcome_json(&outcome)),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -341,6 +422,30 @@ pub(crate) struct SetVatCreditArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct DeleteVatCreditArgs {
+    /// `true` : montre ce qui serait fait, n'écrit rien.
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct RequestVatRefundArgs {
+    /// Période CA3 `AAAA-MM`.
+    period: String,
+    /// Case 26, en centimes. Défaut : tout le crédit offert.
+    amount_cents: Option<i64>,
+    /// Date `AAAA-MM-JJ`. Défaut : aujourd'hui (heure locale).
+    today: Option<String>,
+    /// `true` : montre ce qui serait fait, n'écrit rien.
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct RetractVatRefundArgs {
+    /// Période CA3 `AAAA-MM`.
+    period: String,
+    /// Date `AAAA-MM-JJ`. Défaut : aujourd'hui (heure locale).
+    today: Option<String>,
     /// `true` : montre ce qui serait fait, n'écrit rien.
     #[serde(default)]
     dry_run: bool,

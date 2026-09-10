@@ -188,6 +188,8 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "society.vat_credit",
         "society.set_vat_credit",
         "society.delete_vat_credit",
+        "society.request_vat_refund",
+        "society.retract_vat_refund",
         "papers.list",
         "papers.show",
         "papers.add",
@@ -2469,6 +2471,121 @@ async fn confirming_an_invoice_emit_captures_the_issued_original() {
     assert_eq!(papers.as_array().unwrap().len(), 1, "{papers}");
     assert_eq!(papers[0]["kind"], "issued_invoice");
     assert_eq!(papers[0]["origin"], "issued");
+
+    client.cancel().await.unwrap();
+}
+
+/// Demande de versement (case 26) : l'agent dépose une action ; case 26 absente tant qu'un
+/// humain n'a pas confirmé hors MCP.
+#[tokio::test]
+async fn requesting_a_vat_refund_over_mcp_needs_a_human_before_case_26_appears() {
+    use freeflow_core::app::{Actor, ExecutionContext};
+    use freeflow_core::domain::{Address, FiscalYearEnd, Money, Siren, VatRegime};
+    use freeflow_core::society::{RecordVatCarryIn, RequestVatRefund};
+
+    let db_path = test_db_path("vat-refund-mcp");
+    let mut store = Store::create(&db_path, &Passphrase::from("s3cret")).unwrap();
+    let human = ExecutionContext::new(Actor::Human, false);
+    Executor::new(&mut store)
+        .execute(
+            &freeflow_core::company::SetCompanyProfile {
+                name: "Lumen Conseil".into(),
+                legal_form: "SASU".into(),
+                siren: Siren::parse("552100554").unwrap(),
+                vat_number: None,
+                address: Address {
+                    street: "18 rue des Ateliers".into(),
+                    postal_code: "69003".into(),
+                    city: "Lyon".into(),
+                    country: "FR".into(),
+                },
+                share_capital: Some(Money::from_cents(100_000)),
+                rcs_city: Some("Lyon".into()),
+                iban: None,
+                fiscal_year_end: Some(FiscalYearEnd::new(9, 30).unwrap()),
+                vat_regime: Some(VatRegime::RealNormalMonthly),
+                director_monthly_gross: None,
+                director_charge_ratio_bps: None,
+                president_name: None,
+                sole_shareholder_name: None,
+                sole_shareholder_address: None,
+                share_count: None,
+            },
+            &human,
+        )
+        .unwrap();
+    Executor::new(&mut store)
+        .execute(
+            &RecordVatCarryIn {
+                after_period: "2026-08".into(),
+                credit: Money::from_cents(32_400),
+                source: Some("CA3 août".into()),
+            },
+            &human,
+        )
+        .unwrap();
+    let client = spawn_client(store).await;
+
+    let proposed = json_of(
+        &call(
+            &client,
+            "society.request_vat_refund",
+            json!({
+                "period": "2026-12",
+                "amount_cents": 32_400,
+                "today": "2026-12-08",
+            }),
+        )
+        .await,
+    );
+    assert_eq!(proposed["status"], "pending_confirmation");
+    let pending_id = proposed["pending_action_id"].as_str().unwrap().to_string();
+
+    let pending = json_of(&call(&client, "pending.list", json!(null)).await);
+    assert!(
+        pending.as_array().unwrap().iter().any(|a| {
+            a["id"] == pending_id && a["command_name"] == "society.request_vat_refund"
+        }),
+        "pending.list doit porter society.request_vat_refund : {pending}"
+    );
+
+    let duty = json_of(
+        &call(
+            &client,
+            "society.duty",
+            json!({"kind": "ca3", "period": "2026-12", "today": "2026-12-08"}),
+        )
+        .await,
+    );
+    let boxes = duty["boxes"].as_array().expect("boxes");
+    assert!(
+        boxes.iter().all(|b| b["case"] != "26"),
+        "pas de case 26 tant que la demande n'est pas confirmée : {boxes:?}"
+    );
+
+    let mut confirming =
+        Store::open_with_passphrase(&db_path, &Passphrase::from("s3cret")).unwrap();
+    let confirmed = Executor::new(&mut confirming)
+        .confirm::<RequestVatRefund>(pending_id.parse().unwrap())
+        .unwrap();
+    assert!(matches!(confirmed, Outcome::Applied(_)));
+    drop(confirming);
+
+    let after = json_of(
+        &call(
+            &client,
+            "society.duty",
+            json!({"kind": "ca3", "period": "2026-12", "today": "2026-12-08"}),
+        )
+        .await,
+    );
+    let case26 = after["boxes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["case"] == "26")
+        .expect("case 26 après confirmation");
+    assert_eq!(case26["amount"], 32400);
 
     client.cancel().await.unwrap();
 }

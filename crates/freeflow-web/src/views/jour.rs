@@ -17,6 +17,7 @@ use maud::{Markup, html};
 use time::{Date, Weekday};
 
 use freeflow_core::fiscal::VatFilingScheme;
+use freeflow_core::society::{VatRefundStatus, duty_briefing};
 
 use crate::layout::ViewId;
 use crate::views::copy::{
@@ -94,7 +95,7 @@ pub fn render(store: &Store, today: Date) -> Result<Markup, AppError> {
             @if !gestes.is_empty() {
                 ol class="gestes" {
                     @for (i, g) in gestes.iter().enumerate() {
-                        (geste_li(i + 1, g, today, vat_scheme))
+                        (geste_li(i + 1, g, store, today, vat_scheme))
                     }
                 }
             }
@@ -168,8 +169,14 @@ fn letter_lede(n: usize, setup_done: bool, today: Date, year_end: Option<Date>) 
     "Rien d'autre n'est urgent.".into()
 }
 
-fn geste_li(n: usize, g: &DayGesture, today: Date, vat_scheme: VatFilingScheme) -> Markup {
-    let (title, body) = geste_copy(g, vat_scheme);
+fn geste_li(
+    n: usize,
+    g: &DayGesture,
+    store: &Store,
+    today: Date,
+    vat_scheme: VatFilingScheme,
+) -> Markup {
+    let (title, body) = geste_copy(g, store, today, vat_scheme);
     html! {
         li {
             button class="geste" type="button" {
@@ -186,7 +193,12 @@ fn geste_li(n: usize, g: &DayGesture, today: Date, vat_scheme: VatFilingScheme) 
     }
 }
 
-fn geste_copy(g: &DayGesture, vat_scheme: VatFilingScheme) -> (String, String) {
+fn geste_copy(
+    g: &DayGesture,
+    store: &Store,
+    today: Date,
+    vat_scheme: VatFilingScheme,
+) -> (String, String) {
     match &g.source {
         GestureSource::Setup { step } => ("Configurer ma société".into(), step.text().to_string()),
         GestureSource::FollowUp {
@@ -231,19 +243,28 @@ fn geste_copy(g: &DayGesture, vat_scheme: VatFilingScheme) -> (String, String) {
             deadline,
             due_on,
             amount,
-            ..
+            period_key,
         } => {
             let title = if is_vat(*deadline) {
                 "Savoir pour la TVA".into()
             } else {
                 format!("Savoir pour {}", deadline_fr(*deadline, vat_scheme))
             };
+            let recover = if is_vat(*deadline)
+                && let Ok(briefing) =
+                    duty_briefing(store.connection(), *deadline, today, Some(period_key))
+                && let Some(VatRefundStatus::Offered { credit, .. }) = briefing.vat_refund
+            {
+                format!("{credit} à récupérer · ")
+            } else {
+                String::new()
+            };
             let amount = amount
                 .filter(|m| *m != Money::ZERO)
                 .map(|m| format!("{m} · "))
                 .unwrap_or_default();
             let body = format!(
-                "{amount}à déposer avant le {}. La lettre dit le chemin — le dépôt se fait sur le site des impôts, pas ici.",
+                "{recover}{amount}à déposer avant le {}. La lettre dit le chemin — le dépôt se fait sur le site des impôts, pas ici.",
                 format_date_fr(*due_on)
             );
             (title, body)

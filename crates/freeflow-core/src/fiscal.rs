@@ -263,7 +263,12 @@ pub const SIMPLIFIED_REGIME_REPEAL: Date =
     };
 
 /// Seuil de remboursement d'un crédit de TVA sur la CA12 (formulaire 3519) : 150 € (lot 41).
+/// Même plancher sur la dernière CA3 de l'année civile (décembre / T4).
 pub const CA12_REFUND_THRESHOLD: Money = Money::from_cents(15_000);
+
+/// Seuil de versement d'un crédit de TVA en cours d'année (CA3 de janvier à novembre, ou T1 à
+/// T3) : 760 € (CGI annexe II art. 242-0 C). Plancher sur la case 26, « au moins égal à ».
+pub const VAT_REFUND_IN_YEAR_THRESHOLD: Money = Money::from_cents(76_000);
 
 /// Seuil de la déclaration des honoraires (DAS2) par bénéficiaire et par année civile — 2 400 €
 /// depuis les sommes versées en 2024 (art. 240 CGI, BOI-BIC-DECLA-30-70-20 § 140 ; c'était
