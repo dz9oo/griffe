@@ -233,6 +233,19 @@ button { font-family: inherit; color: inherit; cursor: pointer; background: none
   margin-top: 32px;
   padding-top: 16px;
 }
+#papiers-letter .later-line a,
+#papiers-letter .place .prose a,
+ol.papers .unfold a {
+  color: inherit;
+  text-decoration: none;
+  box-shadow: inset 0 -1px 0 var(--ink);
+}
+#papiers-letter .later-line a:hover,
+#papiers-letter .place .prose a:hover,
+ol.papers .unfold a:hover {
+  color: var(--seal);
+  box-shadow: inset 0 -1px 0 var(--seal);
+}
 
 .mast {
   margin: 0 0 36px;

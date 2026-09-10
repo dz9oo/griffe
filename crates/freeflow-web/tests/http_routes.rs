@@ -537,6 +537,10 @@ async fn the_help_letter_explains_atelier_and_opens_recipes() {
         clore.contains("href=\"/societe/impots/accounts-filing\""),
         "{clore}"
     );
+    assert!(
+        clore.contains("href=\"/aide/papiers\""),
+        "clore renvoie vers Les papiers : {clore}"
+    );
 
     let papiers = body_text(
         router
@@ -553,6 +557,20 @@ async fn the_help_letter_explains_atelier_and_opens_recipes() {
     .await;
     assert!(papiers.contains("Garder les originaux"), "{papiers}");
     assert!(papiers.contains("href=\"/societe/papiers\""), "{papiers}");
+    for word in [
+        "PV",
+        "FEC",
+        "bilan",
+        "liasse",
+        "Kbis",
+        "statuts",
+        "contrôle",
+    ] {
+        assert!(
+            papiers.contains(word),
+            "aide papiers nomme « {word} » : {papiers}"
+        );
+    }
     assert!(!papiers.contains("SAE"), "{papiers}");
     assert!(!papiers.contains("NF Z42"), "{papiers}");
     assert!(!papiers.contains("freeflow "), "{papiers}");
@@ -5841,6 +5859,18 @@ async fn the_papers_chapter_is_a_letter_not_a_dump() {
         body.contains("se figent ici, à la clôture"),
         "une phrase pour les nés-ici pas encore dus : {body}"
     );
+    assert!(
+        body.contains("Lesquelles ?"),
+        "lien quiet sous la phrase des nés-ici : {body}"
+    );
+    assert!(
+        body.contains("Qu'est-ce qu'un contrôle ?") || body.contains("Qu&#x27;est-ce"),
+        "lien quiet dans Pour un contrôle : {body}"
+    );
+    assert!(
+        body.contains("href=\"/aide/papiers\""),
+        "les deux liens mènent à la recette : {body}"
+    );
     assert_eq!(
         body.matches("Plus tard, à la clôture").count(),
         0,
@@ -5986,6 +6016,7 @@ async fn depositing_a_kbis_from_the_papers_chapter_archives_it() {
     assert!(posted_body.is_empty(), "{posted_body}");
 
     let refreshed = router
+        .clone()
         .oneshot(
             Request::builder()
                 .uri("/societe/papiers?period=2026")
@@ -5996,6 +6027,10 @@ async fn depositing_a_kbis_from_the_papers_chapter_archives_it() {
         .unwrap();
     let refreshed_body = body_text(refreshed).await;
     assert!(refreshed_body.contains("kbis.pdf"), "{refreshed_body}");
+    assert!(
+        refreshed_body.contains("Ouvrir"),
+        "le dépli d'une fiche au coffre ouvre la pièce : {refreshed_body}"
+    );
 
     let store = Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
     let papers = freeflow_core::papers::list_papers(
@@ -6016,6 +6051,35 @@ async fn depositing_a_kbis_from_the_papers_chapter_archives_it() {
         .filter_map(Result::ok)
         .collect();
     assert_eq!(files.len(), 1, "un blob chiffré dans .receipts/");
+
+    let shown = router
+        .oneshot(
+            Request::builder()
+                .uri(format!("/societe/papiers/{}", papers[0].id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(shown.status(), StatusCode::OK);
+    assert_eq!(
+        shown
+            .headers()
+            .get("content-type")
+            .map(|v| v.to_str().unwrap()),
+        Some("application/pdf")
+    );
+    let disposition = shown
+        .headers()
+        .get("content-disposition")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        disposition.contains("kbis.pdf"),
+        "inline nomme le fichier : {disposition}"
+    );
+    let bytes = shown.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(&bytes[..], content);
 }
 
 #[tokio::test]

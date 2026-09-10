@@ -119,16 +119,20 @@ fn fiche_class(status: StepStatus) -> &'static str {
     }
 }
 
-fn original_names<'a>(items: &[&PapersCheckItem], papers: &'a [Paper]) -> Vec<&'a str> {
+fn papers_of<'a>(items: &[&PapersCheckItem], papers: &'a [Paper]) -> Vec<&'a Paper> {
     items
         .iter()
         .filter_map(|item| {
             let id = item.paper_id?;
-            papers
-                .iter()
-                .find(|p| p.id == id)
-                .map(|p| p.original_name.as_str())
+            papers.iter().find(|p| p.id == id)
         })
+        .collect()
+}
+
+fn original_names<'a>(items: &[&PapersCheckItem], papers: &'a [Paper]) -> Vec<&'a str> {
+    papers_of(items, papers)
+        .into_iter()
+        .map(|p| p.original_name.as_str())
         .collect()
 }
 
@@ -269,6 +273,13 @@ fn paper_fiche(
                 @if open {
                     (deposit_form(period, kind.as_str(), &format!("file-{}", kind.as_str())))
                 }
+                @for paper in papers_of(items, papers) {
+                    p class="prose" {
+                        a href=(format!("/societe/papiers/{}", paper.id)) target="_blank" {
+                            "Ouvrir " (paper.original_name)
+                        }
+                    }
+                }
                 p class="paper-official" { (brief.official) }
                 p class="prose" { (brief.what) }
                 p class="prose" { (brief.whence) }
@@ -355,7 +366,14 @@ fn places(period: i32, receipts_dir: &str) -> Markup {
                 p class="kicker" { "en clair" }
                 h3 { "Pour un contrôle" }
                 p class="prose" {
-                    "Un dossier neuf, à tendre. Ces fichiers ne sont plus chiffrés : "
+                    "Un dossier neuf, à tendre. "
+                    a href="/aide/papiers"
+                      hx-get="/aide/papiers"
+                      hx-target="#content"
+                      hx-push-url="true" {
+                        "Qu'est-ce qu'un contrôle ?"
+                    }
+                    " Ces fichiers ne sont plus chiffrés : "
                     "ne les laissez pas à côté du coffre."
                 }
                 form class="place-act"
@@ -432,7 +450,16 @@ fn chapter_markup(
             }
             h2 { "Ce que FreeFlow écrit." }
             @if let Some(line) = later {
-                p class="prose later-line" { (line) }
+                p class="prose later-line" {
+                    (line)
+                    " "
+                    a href="/aide/papiers"
+                      hx-get="/aide/papiers"
+                      hx-target="#content"
+                      hx-push-url="true" {
+                        "Lesquelles ?"
+                    }
+                }
             }
             (paper_list(&checklist.items, papers, true, period))
             h2 { "Ce que vous apportez." }

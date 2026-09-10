@@ -1,11 +1,12 @@
 //! Chapitre Les papiers : `GET /societe/papiers`, `POST /societe/papiers` (dépôt
-//! multipart), `POST /societe/papiers/export` (pack contrôle en clair, dossier temporaire).
+//! multipart), `GET /societe/papiers/{id}` (pièce déchiffrée, inline),
+//! `POST /societe/papiers/export` (pack contrôle en clair, dossier temporaire).
 
-use axum::extract::{DefaultBodyLimit, Form, Multipart, Query, State};
+use axum::extract::{DefaultBodyLimit, Form, Multipart, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue};
 use axum::response::{Html, IntoResponse, Response};
-use freeflow_core::domain::{FiscalYearEnd, PaperKind, PaperOrigin};
-use freeflow_core::papers::{NewPaper, archive_paper, mime_from_name};
+use freeflow_core::domain::{FiscalYearEnd, PaperId, PaperKind, PaperOrigin};
+use freeflow_core::papers::{NewPaper, archive_paper, mime_from_name, paper_by_id};
 use maud::html;
 use serde::Deserialize;
 
@@ -44,6 +45,64 @@ fn locked() -> Html<String> {
     Html(
         html! { div class="empty-state" { "coffre verrouillé — rechargez la page" } }.into_string(),
     )
+}
+
+fn message_fragment(message: &str) -> Html<String> {
+    Html(html! { div class="empty-state" { (message) } }.into_string())
+}
+
+fn parse_id(raw: &str) -> Option<PaperId> {
+    raw.parse().ok()
+}
+
+/// `GET /societe/papiers/{id}` : la pièce déchiffrée à la volée — même geste que
+/// le justificatif de dépense, IO d'adaptateur (`receipts::read`), pas de Command.
+pub async fn show(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let Some(id) = parse_id(&id) else {
+        return message_fragment("identifiant de pièce invalide").into_response();
+    };
+    let loaded = state
+        .with_store(
+            |store| -> Result<Option<(String, String, Vec<u8>)>, String> {
+                let Some(paper) = paper_by_id(store.connection(), id).map_err(|e| e.to_string())?
+                else {
+                    return Ok(None);
+                };
+                let bytes = freeflow_core::receipts::read(store, &paper.filename)
+                    .map_err(|e| e.to_string())?;
+                Ok(Some((paper.original_name, paper.mime, bytes)))
+            },
+        )
+        .await;
+    match loaded {
+        None => locked().into_response(),
+        Some(Err(e)) => message_fragment(&e).into_response(),
+        Some(Ok(None)) => message_fragment("cette pièce n'est pas au coffre").into_response(),
+        Some(Ok(Some((original, mime, bytes)))) => file_response(bytes, &mime, &original),
+    }
+}
+
+fn file_response(bytes: Vec<u8>, mime: &str, filename: &str) -> Response {
+    let content_type = if mime.is_empty() {
+        mime_from_name(filename)
+    } else {
+        mime.to_string()
+    };
+    let mut response = bytes.into_response();
+    if let Ok(value) = HeaderValue::from_str(&content_type) {
+        response
+            .headers_mut()
+            .insert(axum::http::header::CONTENT_TYPE, value);
+    }
+    if let Ok(disposition) = HeaderValue::from_str(&format!(
+        "inline; filename=\"{}\"",
+        filename.replace('"', "")
+    )) {
+        response
+            .headers_mut()
+            .insert(axum::http::header::CONTENT_DISPOSITION, disposition);
+    }
+    response
 }
 
 fn saved() -> Response {

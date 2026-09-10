@@ -256,6 +256,27 @@ fn recipe_letter(recipe: &Recipe) -> Markup {
             ul class="chapters" {
                 (chapter_link("/societe/impots/liasse", "Liasse fiscale", "recopier, ne pas transmettre d'ici"))
                 (chapter_link("/societe/impots/accounts-filing", "Dépôt des comptes", "guichet unique, confidentialité possible"))
+                (chapter_link("/aide/papiers", "Les papiers.", "ce qui se fige ici, ce que vous apportez"))
+            }
+        },
+        "papiers" => html! {
+            div class="block" {
+                h3 { "Ce que FreeFlow écrit." }
+                p class="prose" {
+                    "À la clôture, le FEC, les factures, le bilan 2033-A, la liasse et la synthèse se figent ici, tout seuls. À l'approbation, le PV et l'affectation. Vous n'allez nulle part les chercher."
+                }
+            }
+            div class="block" {
+                h3 { "Ce que vous apportez." }
+                p class="prose" {
+                    "Le Kbis, les statuts, les accusés de dépôt : FreeFlow ne les produit pas. Vous les déposez, dans Les papiers."
+                }
+            }
+            div class="block" {
+                h3 { "Qu'est-ce qu'un contrôle ?" }
+                p class="prose" {
+                    "Un inspecteur demande les originaux de l'exercice. FreeFlow prépare un dossier en clair à tendre. Il ne transmet rien."
+                }
             }
         },
         _ => html! {},
