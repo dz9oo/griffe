@@ -596,6 +596,7 @@ async fn the_help_letter_explains_atelier_and_opens_recipes() {
         impots.contains("cotisation foncière") || impots.contains("href=\"/societe/impots\""),
         "{impots}"
     );
+    assert!(impots.contains("Si l'État vous doit de la TVA"), "{impots}");
     assert!(!impots.contains("CA3"), "{impots}");
     assert!(!impots.contains("Tiime"), "{impots}");
 
@@ -1434,8 +1435,13 @@ async fn a_vat_carry_in_posted_from_the_letter_fills_case_25() {
             .unwrap(),
     )
     .await;
-    assert!(letter.contains("Crédit déjà déclaré"), "{letter}");
+    assert!(letter.contains("Crédit avant ce coffre"), "{letter}");
+    assert!(!letter.contains("Crédit déjà déclaré"), "{letter}");
     assert!(letter.contains("vat-credit"), "{letter}");
+    assert!(
+        !letter.contains("L\u{2019}État me le verse") && !letter.contains("L'État me le verse"),
+        "pas de sceau avant la reprise : {letter}"
+    );
 
     let posted = router
         .clone()
@@ -1454,13 +1460,19 @@ async fn a_vat_carry_in_posted_from_the_letter_fills_case_25() {
     let body = body_text(posted).await;
     assert!(
         body.contains("324,00") || body.contains("324.00"),
-        "case 25 après reprise : {body}"
+        "cases 22 et 25 après reprise : {body}"
     );
     assert!(body.contains("Figé"), "{body}");
     assert!(
         !body.contains("Reprendre ce crédit"),
         "plus de formulaire : {body}"
     );
+    assert!(
+        !body.contains("L\u{2019}État me le verse") && !body.contains("L'État me le verse"),
+        "324 € < 760 € en septembre : {body}"
+    );
+    assert!(body.contains("760"), "seuil en cours d'année : {body}");
+    assert!(body.contains("150"), "seuil de fin d'année : {body}");
 
     let again = router
         .oneshot(
@@ -1481,6 +1493,140 @@ async fn a_vat_carry_in_posted_from_the_letter_fills_case_25() {
         "le 100 € n'écrase pas : {again_body}"
     );
     assert!(!again_body.contains("100,00"), "{again_body}");
+}
+
+fn assert_3519_only_after_sur_le_site(html: &str) {
+    let Some(idx) = html.find("Sur le site") else {
+        assert!(
+            !html.contains("3519"),
+            "3519 sans bloc Sur le site : {html}"
+        );
+        return;
+    };
+    assert!(
+        !html[..idx].contains("3519"),
+        "3519 hors Sur le site : {html}"
+    );
+}
+
+#[tokio::test]
+async fn requesting_the_december_credit_from_the_letter_fills_case_26() {
+    let db_path = test_db_path("letter-vat-refund-dec");
+    let state = unlocked_state(&db_path)
+        .await
+        .with_today(time::macros::date!(2026 - 12 - 08));
+    {
+        let mut store =
+            Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &freeflow_core::company::SetCompanyProfile {
+                        name: "Lumen Conseil".into(),
+                        legal_form: "SASU".into(),
+                        siren: freeflow_core::domain::Siren::parse("552100554").unwrap(),
+                        vat_number: None,
+                        address: freeflow_core::domain::Address {
+                            street: "18 rue des Ateliers".into(),
+                            postal_code: "69003".into(),
+                            city: "Lyon".into(),
+                            country: "FR".into(),
+                        },
+                        share_capital: Some(Money::from_cents(100_000)),
+                        rcs_city: Some("Lyon".into()),
+                        iban: None,
+                        fiscal_year_end: Some(
+                            freeflow_core::domain::FiscalYearEnd::new(9, 30).unwrap(),
+                        ),
+                        vat_regime: Some(freeflow_core::domain::VatRegime::RealNormalMonthly),
+                        director_monthly_gross: Some(Money::from_cents(300_000)),
+                        director_charge_ratio_bps: None,
+                        president_name: Some("Nicolas Lumen".into()),
+                        sole_shareholder_name: Some("Nicolas Lumen".into()),
+                        sole_shareholder_address: Some("18 rue des Ateliers, 69003 Lyon".into()),
+                        share_count: Some(1000),
+                    },
+                    &human_ctx(),
+                )
+                .unwrap(),
+        );
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &freeflow_core::society::RecordVatCarryIn {
+                        after_period: "2026-08".into(),
+                        credit: Money::from_cents(32_400),
+                        source: Some("test".into()),
+                    },
+                    &human_ctx(),
+                )
+                .unwrap(),
+        );
+    }
+    let router = freeflow_web::router(state);
+
+    let letter = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/societe/impots/ca3/2026-12")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        letter.contains("L\u{2019}État me le verse") || letter.contains("L'État me le verse"),
+        "{letter}"
+    );
+    assert_3519_only_after_sur_le_site(&letter);
+    assert!(!letter.contains("freeflow "), "{letter}");
+
+    let posted = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/societe/impots/ca3/2026-12/vat-refund")
+                .header("HX-Request", "true")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(posted.status(), StatusCode::OK);
+    assert_eq!(
+        posted.headers().get("HX-Trigger").unwrap(),
+        "freeflow:saved"
+    );
+    let body = body_text(posted).await;
+    assert!(
+        body.contains("324,00") || body.contains("324.00"),
+        "case 26 = 324 : {body}"
+    );
+    assert!(body.contains("À vous verser"), "{body}");
+    assert!(
+        body.contains("Finalement, je le laisse en crédit"),
+        "{body}"
+    );
+    assert_3519_only_after_sur_le_site(&body);
+    assert!(!body.contains("freeflow "), "{body}");
+
+    let jour = body_text(
+        router
+            .oneshot(Request::builder().uri("/jour").body(Body::empty()).unwrap())
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(jour.contains("Savoir pour la TVA"), "{jour}");
+    assert!(
+        jour.contains("récupérer") || jour.contains("324"),
+        "geste TVA : {jour}"
+    );
 }
 
 #[tokio::test]
