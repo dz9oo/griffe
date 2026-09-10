@@ -41,6 +41,14 @@ function markNav(slug) {
   if (content) content.classList.toggle("wide", WIDE.has(slug));
 }
 
+document.body.addEventListener("change", (event) => {
+  const input = event.target;
+  if (!(input instanceof HTMLInputElement) || input.type !== "file") return;
+  const name = input.closest(".pick-file")?.querySelector(".pick-name");
+  if (!name) return;
+  name.textContent = input.files && input.files[0] ? input.files[0].name : "le fichier";
+});
+
 document.body.addEventListener("click", (event) => {
   const pieceLink = event.target.closest(".chrome nav a[data-piece]");
   if (pieceLink) {

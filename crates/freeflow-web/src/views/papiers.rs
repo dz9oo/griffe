@@ -4,6 +4,7 @@ use freeflow_cli::ControlPackReport;
 use freeflow_core::app::AppError;
 use freeflow_core::closing::StepStatus;
 use freeflow_core::domain::{PaperKind, format_date_fr};
+use freeflow_core::fiscal_year::list_fiscal_years;
 use freeflow_core::papers::{
     Paper, PapersCheckItem, PapersChecklist, missing_identity_papers, papers_checklist,
 };
@@ -14,10 +15,10 @@ use time::Date;
 use crate::layout::ViewId;
 use crate::views::form;
 
-pub fn kind_options() -> Vec<(&'static str, &'static str)> {
+fn kind_options() -> Vec<(&'static str, &'static str)> {
     PaperKind::sasu_kinds()
         .iter()
-        .map(|k| (k.as_str(), k.brief().title))
+        .map(|k| (k.as_str(), k.label_fr()))
         .collect()
 }
 
@@ -54,8 +55,18 @@ pub fn chapter(
     .filter(|p| matches!(p.kind, PaperKind::Statutes | PaperKind::Kbis));
     papers.extend(identity);
     let receipts = store.receipts_dir().display().to_string();
+    let millesimes: Vec<i32> = list_fiscal_years(store.connection())?
+        .into_iter()
+        .map(|y| y.ends_on.year())
+        .collect();
     Ok(chapter_markup(
-        period, today, &checklist, &papers, banner, &receipts,
+        period,
+        today,
+        &checklist,
+        &papers,
+        banner,
+        &receipts,
+        &millesimes,
     ))
 }
 
@@ -66,6 +77,9 @@ fn groups_of(
     let mut groups: Vec<(PaperKind, Vec<&PapersCheckItem>)> = Vec::new();
     for item in items {
         if item.kind.is_born_here() != born_here {
+            continue;
+        }
+        if item.status == StepStatus::Later {
             continue;
         }
         if let Some((_, bucket)) = groups.iter_mut().find(|(k, _)| *k == item.kind) {
@@ -174,7 +188,59 @@ fn default_kind(checklist: &PapersChecklist) -> &'static str {
         .unwrap_or("kbis")
 }
 
-fn paper_fiche(kind: PaperKind, items: &[&PapersCheckItem], papers: &[Paper]) -> Markup {
+fn missing_bring(kind: PaperKind, status: StepStatus) -> bool {
+    !kind.is_born_here() && matches!(status, StepStatus::Todo | StepStatus::Warning)
+}
+
+fn later_born_here_line(items: &[PapersCheckItem]) -> Option<&'static str> {
+    let later: Vec<PaperKind> = items
+        .iter()
+        .filter(|i| i.kind.is_born_here() && i.status == StepStatus::Later)
+        .map(|i| i.kind)
+        .collect();
+    if later.is_empty() {
+        return None;
+    }
+    let only_approval = later
+        .iter()
+        .all(|k| matches!(k, PaperKind::Minutes | PaperKind::Appropriation));
+    Some(if only_approval {
+        "Le PV et l'affectation se figent ici, à l'approbation."
+    } else {
+        "Le PV, le FEC, les factures se figent ici, à la clôture."
+    })
+}
+
+fn pick_file(id: &str) -> Markup {
+    html! {
+        label class="pick-file" for=(id) {
+            input class="sr-only" id=(id) name="file" type="file"
+                  accept=".pdf,.png,.jpg,.jpeg,.txt";
+            span class="pick-name" { "le fichier" }
+        }
+    }
+}
+
+fn deposit_form(period: i32, kind: &str, file_id: &str) -> Markup {
+    html! {
+        form class="deposit" hx-post="/societe/papiers"
+             hx-encoding="multipart/form-data" hx-swap="none" {
+            (form::hidden("kind", kind))
+            (form::hidden("period", &period.to_string()))
+            div class="deposit-act" {
+                (pick_file(file_id))
+                button class="seal" type="submit" { "Déposer" }
+            }
+        }
+    }
+}
+
+fn paper_fiche(
+    kind: PaperKind,
+    items: &[&PapersCheckItem],
+    papers: &[Paper],
+    period: i32,
+) -> Markup {
     let brief = kind.brief();
     let status = group_status(items);
     let required = items
@@ -182,10 +248,12 @@ fn paper_fiche(kind: PaperKind, items: &[&PapersCheckItem], papers: &[Paper]) ->
         .any(|i| i.required && i.status != StepStatus::Done);
     let kick = kicker_body(kind, items, papers);
     let unfold_id = format!("paper-unfold-{}", kind.as_str());
+    let open = missing_bring(kind, status);
+    let expanded = if open { "true" } else { "false" };
     html! {
-        li {
+        li class={ @if open { "open" } } {
             button class=(fiche_class(status)) type="button"
-                   aria-expanded="false" aria-controls=(unfold_id) {
+                   aria-expanded=(expanded) aria-controls=(unfold_id) {
                 span class="spot" {}
                 div {
                     span class="nm" { (brief.title) }
@@ -198,6 +266,9 @@ fn paper_fiche(kind: PaperKind, items: &[&PapersCheckItem], papers: &[Paper]) ->
                 }
             }
             div class="unfold" id=(unfold_id) {
+                @if open {
+                    (deposit_form(period, kind.as_str(), &format!("file-{}", kind.as_str())))
+                }
                 p class="paper-official" { (brief.official) }
                 p class="prose" { (brief.what) }
                 p class="prose" { (brief.whence) }
@@ -207,36 +278,54 @@ fn paper_fiche(kind: PaperKind, items: &[&PapersCheckItem], papers: &[Paper]) ->
     }
 }
 
-fn paper_list(items: &[PapersCheckItem], papers: &[Paper], born_here: bool) -> Markup {
+fn paper_list(items: &[PapersCheckItem], papers: &[Paper], born_here: bool, period: i32) -> Markup {
     let groups = groups_of(items, born_here);
     html! {
         @if groups.is_empty() {
-            p class="prose" {
-                @if born_here {
-                    "Rien à produire ici pour cet exercice."
-                } @else {
-                    "Rien à apporter pour cet exercice."
-                }
+            @if !born_here {
+                p class="prose" { "Rien à apporter pour cet exercice." }
             }
-        }
-        ol class="papers" {
-            @for (kind, group) in &groups {
-                (paper_fiche(*kind, group.as_slice(), papers))
+        } @else {
+            ol class="papers" {
+                @for (kind, group) in &groups {
+                    (paper_fiche(*kind, group.as_slice(), papers, period))
+                }
             }
         }
     }
 }
 
-fn mast(period: i32, today: Date) -> Markup {
+fn year_control(period: i32, millesimes: &[i32]) -> Markup {
+    if millesimes.len() < 2 {
+        return html! {
+            b id="period" { (period) }
+        };
+    }
+    html! {
+        nav class="millesimes" id="period" aria-label="Exercice" {
+            @for year in [period - 1, period, period + 1] {
+                @if year == period {
+                    b { (year) }
+                } @else {
+                    a href=(format!("/societe/papiers?period={year}"))
+                      hx-get=(format!("/societe/papiers?period={year}"))
+                      hx-target="#content" hx-push-url="true" hx-swap="innerHTML" {
+                        (year)
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn mast(period: i32, today: Date, millesimes: &[i32]) -> Markup {
     html! {
         div class="mast" {
             div class="mast-facts" {
-                form class="field-inline" hx-get="/societe/papiers" hx-target="#content"
-                     hx-push-url="true" {
-                    label for="period" { "Exercice clos en" }
-                    input id="period" type="number" name="period" value=(period)
-                          min="2000" max="2100" {}
-                    button class="btn small" type="submit" { "voir" }
+                span {
+                    span class="dim" { "Exercice clos en" }
+                    " "
+                    (year_control(period, millesimes))
                 }
                 span {
                     span class="dim" { "vu le" }
@@ -281,15 +370,30 @@ fn places(period: i32, receipts_dir: &str) -> Markup {
     }
 }
 
-fn deposit(period: i32, selected: &str) -> Markup {
+fn deposit_other(period: i32, selected: &str) -> Markup {
     let options = kind_options();
     html! {
-        form class="deposit" hx-post="/societe/papiers"
-             hx-encoding="multipart/form-data" hx-swap="none" {
-            (form::select("kind", "Quelle pièce", &options, selected, None))
-            (form::hidden("period", &period.to_string()))
-            (form::file("file", "Fichier", ".pdf,.png,.jpg,.jpeg,.txt"))
-            (form::actions("Déposer"))
+        details class="deposit-other" {
+            summary { "une autre pièce" }
+            form class="deposit" hx-post="/societe/papiers"
+                 hx-encoding="multipart/form-data" hx-swap="none" {
+                (form::hidden("period", &period.to_string()))
+                p class="deposit-line" {
+                    "Je dépose "
+                    select name="kind" id="kind" {
+                        @for (value, text) in &options {
+                            option value=(value) selected[*value == selected] { (*text) }
+                        }
+                    }
+                    " de l'exercice "
+                    (period)
+                    "."
+                }
+                div class="deposit-act" {
+                    (pick_file("file-other"))
+                    button class="seal" type="submit" { "Déposer" }
+                }
+            }
         }
     }
 }
@@ -301,10 +405,12 @@ fn chapter_markup(
     papers: &[Paper],
     banner: Option<&str>,
     receipts_dir: &str,
+    millesimes: &[i32],
 ) -> Markup {
     let href = format!("/societe/papiers?period={period}");
     let note = identity_note(checklist);
     let selected = default_kind(checklist);
+    let later = later_born_here_line(&checklist.items);
     html! {
         div class="letter" id="papiers-letter" data-view=(ViewId::Societe.slug())
             hx-get=(href)
@@ -312,7 +418,7 @@ fn chapter_markup(
             hx-swap="outerHTML"
             hx-disinherit="hx-swap" {
             (back())
-            (mast(period, today))
+            (mast(period, today, millesimes))
             h1 { "Les papiers." }
             p class="lede" {
                 "Les originaux nés ici restent ici. Ce que FreeFlow ne produit pas "
@@ -325,10 +431,13 @@ fn chapter_markup(
                 p class="mast-note" { (msg) }
             }
             h2 { "Ce que FreeFlow écrit." }
-            (paper_list(&checklist.items, papers, true))
+            @if let Some(line) = later {
+                p class="prose later-line" { (line) }
+            }
+            (paper_list(&checklist.items, papers, true, period))
             h2 { "Ce que vous apportez." }
-            (paper_list(&checklist.items, papers, false))
-            (deposit(period, selected))
+            (paper_list(&checklist.items, papers, false, period))
+            (deposit_other(period, selected))
             (places(period, receipts_dir))
         }
     }

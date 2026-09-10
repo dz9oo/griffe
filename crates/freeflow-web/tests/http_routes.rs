@@ -5704,13 +5704,58 @@ async fn approving_a_year_from_the_window_captures_the_minutes() {
     assert_eq!(papers[0].origin, freeflow_core::domain::PaperOrigin::Issued);
 }
 
+/// Les briefs officiels (FEC, PV, 2033) ne vivent plus dans des fiches Later : ils
+/// n'apparaissent que lorsque la pièce est due. On clôture et on approuve pour les
+/// rendre dues, plutôt que de garder des fiches fantômes sur un coffre vide.
 #[tokio::test]
 async fn the_papers_chapter_explains_the_pieces_and_where_they_live() {
     let db_path = test_db_path("papiers-lettre");
-    let state = unlocked_state(&db_path)
+    let state = unlocked_state_with_activity(&db_path)
         .await
         .with_today(time::macros::date!(2027 - 06 - 01));
     let router = freeflow_web::router(state);
+
+    let closed = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/cloture")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(
+                    "starts_on=2026-01-01&ends_on=2026-12-31&legal_reserve=0&dividends=0",
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        closed
+            .headers()
+            .get("HX-Trigger")
+            .map(|v| v.to_str().unwrap()),
+        Some("freeflow:saved")
+    );
+    let id = fiscal_year_id(&db_path);
+    let approved = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/cloture/{id}/approve"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from("approved_on=2027-05-15"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        approved
+            .headers()
+            .get("HX-Trigger")
+            .map(|v| v.to_str().unwrap()),
+        Some("freeflow:saved")
+    );
 
     let body = body_text(
         router
@@ -5782,10 +5827,43 @@ async fn the_papers_chapter_is_a_letter_not_a_dump() {
     let h2 = body.matches("<h2>").count();
     assert_eq!(h2, 3, "trois chapitres serif, pas un h2 par ligne : {body}");
     assert!(body.contains("class=\"mast\""), "{body}");
-    assert!(body.contains("for=\"period\""), "{body}");
+    assert!(
+        body.contains("id=\"period\""),
+        "l'année reste un fait du mât : {body}"
+    );
+    assert!(
+        !body.contains("type=\"number\""),
+        "plus d'input d'exercice : {body}"
+    );
+    assert!(!body.contains(">voir<"), "plus de bouton voir : {body}");
     assert!(body.contains("Il manque les statuts et le Kbis."), "{body}");
-    assert!(body.contains("aria-expanded=\"false\""), "{body}");
+    assert!(
+        body.contains("se figent ici, à la clôture"),
+        "une phrase pour les nés-ici pas encore dus : {body}"
+    );
+    assert_eq!(
+        body.matches("Plus tard, à la clôture").count(),
+        0,
+        "pas une liste de fiches Later : {body}"
+    );
+    assert_eq!(
+        body.matches("paper-fiche").count(),
+        2,
+        "statuts et Kbis seulement, pas six cercles vides : {body}"
+    );
+    assert!(body.contains("aria-expanded=\"true\""), "{body}");
+    assert!(body.contains("class=\"open\""), "{body}");
     assert!(body.contains("class=\"nm\""), "{body}");
+    assert!(
+        body.contains("name=\"kind\" value=\"kbis\"")
+            || body.contains("name=\"kind\" value=\"statutes\""),
+        "nature déjà choisie dans la fiche manquante : {body}"
+    );
+    assert!(
+        body.contains("une autre pièce"),
+        "le formulaire générique reste, replié : {body}"
+    );
+    assert!(!body.contains("Quelle pièce"), "{body}");
     assert!(!body.contains("Déjà au coffre"), "{body}");
     assert!(!body.contains("<h2>Pour un contrôle"), "{body}");
     assert!(!body.contains("Déposer une pièce"), "{body}");
@@ -5795,6 +5873,65 @@ async fn the_papers_chapter_is_a_letter_not_a_dump() {
         "plus de style inline sur la lettre : {body}"
     );
     assert!(!body.contains("freeflow "), "{body}");
+    assert!(
+        !body.contains("class=\"millesimes\""),
+        "un seul exercice possible : l'année est un fait, pas un contrôle : {body}"
+    );
+}
+
+#[tokio::test]
+async fn the_papers_chapter_offers_millesimes_when_two_years_exist() {
+    let db_path = test_db_path("papiers-millesimes");
+    let state = unlocked_state_with_activity(&db_path)
+        .await
+        .with_today(time::macros::date!(2027 - 06 - 01));
+    let router = freeflow_web::router(state);
+
+    for (starts, ends) in [("2025-01-01", "2025-12-31"), ("2026-01-01", "2026-12-31")] {
+        let closed = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/cloture")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(format!(
+                        "starts_on={starts}&ends_on={ends}&legal_reserve=0&dividends=0"
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            closed
+                .headers()
+                .get("HX-Trigger")
+                .map(|v| v.to_str().unwrap()),
+            Some("freeflow:saved"),
+            "{starts} → {ends}"
+        );
+    }
+
+    let body = body_text(
+        router
+            .oneshot(
+                Request::builder()
+                    .uri("/societe/papiers?period=2026")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(body.contains("class=\"millesimes\""), "{body}");
+    assert!(body.contains("/societe/papiers?period=2025"), "{body}");
+    assert!(body.contains("/societe/papiers?period=2027"), "{body}");
+    assert!(
+        !body.contains("type=\"number\""),
+        "millésimes en liens, pas un champ : {body}"
+    );
+    assert!(!body.contains(">voir<"), "{body}");
 }
 
 #[tokio::test]
