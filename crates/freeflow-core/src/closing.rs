@@ -1455,7 +1455,9 @@ fn vat_step(conn: &Connection, facts: &Facts) -> Result<ClosingStep, AppError> {
     } else {
         format!("TVA nette à reverser sur l'exercice : {}", vat.due)
     };
-    let status = if regime.is_none() && scheme != VatFilingScheme::NoFiling {
+    let missing_carry =
+        opening_balance(conn)?.is_some() && crate::society::vat_carry_in(conn)?.is_none();
+    let status = if (regime.is_none() && scheme != VatFilingScheme::NoFiling) || missing_carry {
         StepStatus::Warning
     } else {
         StepStatus::Info
@@ -1465,11 +1467,18 @@ fn vat_step(conn: &Connection, facts: &Facts) -> Result<ClosingStep, AppError> {
         status,
         format!(
             "TVA collectée {}, déductible {} — {balance}. Déclarations dues sur l'exercice : \
-             {filings}.{}",
+             {filings}.{}{}",
             vat.collected,
             vat.deductible,
             if regime.is_none() && scheme != VatFilingScheme::NoFiling {
                 " Régime de TVA non renseigné au profil : mensuel supposé — renseignez-le."
+            } else {
+                ""
+            },
+            if missing_carry {
+                " Le crédit de TVA de votre dernière CA3 (case 27) n'est pas saisi : les \
+                 prochaines déclarations partiront de zéro. Reprenez-le depuis la lettre de TVA, \
+                 et saisissez toutes les factures et dépenses depuis l'ouverture."
             } else {
                 ""
             }

@@ -6,18 +6,19 @@ use freeflow_core::clock::today_local;
 use freeflow_core::domain::{Money, format_date};
 use freeflow_core::fiscal::{FiscalDeadlineKind, VatFilingScheme};
 use freeflow_core::society::{
-    AmountBasis, AmountStory, BeatKind, BeatWhen, BoxCoverage, BoxRole, ClosingStory, DepositPlace,
-    DividendClosed, DividendDoor, Duty, DutyBriefing, DutyFiling, Expect, FormBox, IdentityCard,
-    MarkDutyFiled, PayYourself, RetractDutyFiled, SocietyHome, StatementMove, StatementReading,
-    UnknownReason, WaiverReason, closing_story, duty_briefing, pay_yourself, society_duties,
-    society_home, society_identity, statement_moves,
+    AmountBasis, AmountStory, BeatKind, BeatWhen, BoxCoverage, BoxRole, ClosingStory,
+    DeleteVatCarryIn, DepositPlace, DividendClosed, DividendDoor, Duty, DutyBriefing, DutyFiling,
+    Expect, FormBox, IdentityCard, MarkDutyFiled, PayYourself, RecordVatCarryIn, RetractDutyFiled,
+    SocietyHome, StatementMove, StatementReading, UnknownReason, UpdateVatCarryIn,
+    VatCarryInRecord, WaiverReason, closing_story, duty_briefing, pay_yourself, society_duties,
+    society_home, society_identity, statement_moves, vat_carry_in,
 };
 use freeflow_core::store::Store;
 use time::Date;
 
 use crate::error::CliError;
-use crate::output::{HumanRender, format_outcome_as, format_value, key_values};
-use crate::parsers::parse_date;
+use crate::output::{HumanRender, format_json, format_outcome_as, format_value, key_values};
+use crate::parsers::{parse_date, parse_money};
 use crate::table;
 
 impl HumanRender for PayYourself {
@@ -494,6 +495,29 @@ pub enum SocietyCommand {
         #[arg(long, value_parser = parse_date)]
         today: Option<Date>,
     },
+    /// Crédit de TVA à reporter (case 27 de la dernière CA3 déjà déposée).
+    #[command(subcommand)]
+    VatCredit(VatCreditCommand),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum VatCreditCommand {
+    /// Afficher le crédit repris, s'il est enregistré.
+    Show,
+    /// Enregistrer ou remplacer : période de la dernière CA3 (`AAAA-MM`) et case 27.
+    Set {
+        /// Période de la dernière CA3 déjà déposée (`AAAA-MM`).
+        #[arg(long)]
+        after: String,
+        /// Case 27, en euros.
+        #[arg(long, value_parser = parse_money)]
+        amount: Money,
+        /// Provenance libre (espace impôts, CA3 d'août…).
+        #[arg(long)]
+        source: Option<String>,
+    },
+    /// Oublier le crédit repris.
+    Rm,
 }
 
 impl HumanRender for DutyFiling {
@@ -587,6 +611,81 @@ pub fn run(
                 ctx,
             )?;
             Ok(format_outcome_as(&outcome, json, |_| "dépôt retiré".into()))
+        }
+        SocietyCommand::VatCredit(cmd) => run_vat_credit(cmd, store, ctx, json),
+    }
+}
+
+impl HumanRender for VatCarryInRecord {
+    fn render_human(&self) -> String {
+        let mut pairs = vec![
+            ("après", self.after_period.clone()),
+            ("crédit à reporter", self.credit.to_string()),
+            ("révision", self.revision.to_string()),
+        ];
+        if let Some(source) = &self.source {
+            pairs.push(("provenance", source.clone()));
+        }
+        key_values(&pairs)
+    }
+}
+
+fn run_vat_credit(
+    cmd: VatCreditCommand,
+    store: &mut Store,
+    ctx: &ExecutionContext,
+    json: bool,
+) -> Result<String, CliError> {
+    match cmd {
+        VatCreditCommand::Show => match vat_carry_in(store.connection())? {
+            Some(record) => Ok(format_value(&record, json)),
+            None if json => Ok(format_json(&serde_json::Value::Null)),
+            None => Ok(
+                "aucun crédit de TVA repris — `freeflow society vat-credit set --after AAAA-MM --amount …`"
+                    .into(),
+            ),
+        },
+        VatCreditCommand::Set {
+            after,
+            amount,
+            source,
+        } => {
+            let outcome = match vat_carry_in(store.connection())? {
+                Some(existing) => Executor::new(store).execute(
+                    &UpdateVatCarryIn {
+                        revision: existing.revision,
+                        after_period: after,
+                        credit: amount,
+                        source,
+                    },
+                    ctx,
+                )?,
+                None => Executor::new(store).execute(
+                    &RecordVatCarryIn {
+                        after_period: after,
+                        credit: amount,
+                        source,
+                    },
+                    ctx,
+                )?,
+            };
+            Ok(format_outcome_as(&outcome, json, |revision| {
+                format!("crédit de TVA repris (révision {revision})")
+            }))
+        }
+        VatCreditCommand::Rm => {
+            let Some(existing) = vat_carry_in(store.connection())? else {
+                return Err(CliError::Domain("aucun crédit de TVA repris".into()));
+            };
+            let outcome = Executor::new(store).execute(
+                &DeleteVatCarryIn {
+                    revision: existing.revision,
+                },
+                ctx,
+            )?;
+            Ok(format_outcome_as(&outcome, json, |()| {
+                "crédit de TVA repris oublié".into()
+            }))
         }
     }
 }

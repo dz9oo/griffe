@@ -789,6 +789,83 @@ fn society_duty_is_acompte_json_on_an_empty_vault_has_the_path() {
 }
 
 #[test]
+fn society_vat_credit_seeds_the_next_ca3() {
+    let db = temp_db("society-vat-credit");
+    provision(&db);
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "company",
+            "set-profile",
+            "--name",
+            "Lumen Conseil",
+            "--legal-form",
+            "SASU",
+            "--siren",
+            "552100554",
+            "--street",
+            "18 rue des Ateliers",
+            "--postal-code",
+            "69003",
+            "--city",
+            "Lyon",
+            "--country",
+            "FR",
+            "--fiscal-year-end",
+            "30/09",
+            "--vat-regime",
+            "real_normal_monthly",
+        ])
+        .assert()
+        .success();
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "society",
+            "vat-credit",
+            "set",
+            "--after",
+            "2026-08",
+            "--amount",
+            "324.00",
+        ])
+        .assert()
+        .success();
+    let show = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--json", "society", "vat-credit", "show"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let value: serde_json::Value = serde_json::from_slice(&show).unwrap();
+    assert_eq!(value["after_period"], "2026-08");
+    assert_eq!(value["credit"], 32400);
+    let duty = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "--json",
+            "society",
+            "duty",
+            "ca3",
+            "--period",
+            "2026-09",
+            "--today",
+            "2026-09-08",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let duty: serde_json::Value = serde_json::from_slice(&duty).unwrap();
+    let boxes = duty["boxes"].as_array().expect("boxes");
+    let case25 = boxes.iter().find(|b| b["case"] == "25").expect("case 25");
+    assert_eq!(case25["amount"], 32400);
+}
+
+#[test]
 fn society_filed_marks_the_current_is_acompte() {
     let db = temp_db("society-filed");
     provision(&db);

@@ -1378,6 +1378,91 @@ async fn filing_september_ca3_does_not_clear_august() {
 }
 
 #[tokio::test]
+async fn a_vat_carry_in_posted_from_the_letter_fills_case_25() {
+    let db_path = test_db_path("letter-vat-carry");
+    let state = unlocked_state(&db_path)
+        .await
+        .with_today(time::macros::date!(2026 - 09 - 08));
+    {
+        let mut store =
+            Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &freeflow_core::company::SetCompanyProfile {
+                        name: "Lumen Conseil".into(),
+                        legal_form: "SASU".into(),
+                        siren: freeflow_core::domain::Siren::parse("552100554").unwrap(),
+                        vat_number: None,
+                        address: freeflow_core::domain::Address {
+                            street: "18 rue des Ateliers".into(),
+                            postal_code: "69003".into(),
+                            city: "Lyon".into(),
+                            country: "FR".into(),
+                        },
+                        share_capital: Some(Money::from_cents(100_000)),
+                        rcs_city: Some("Lyon".into()),
+                        iban: None,
+                        fiscal_year_end: Some(
+                            freeflow_core::domain::FiscalYearEnd::new(9, 30).unwrap(),
+                        ),
+                        vat_regime: Some(freeflow_core::domain::VatRegime::RealNormalMonthly),
+                        director_monthly_gross: Some(Money::from_cents(300_000)),
+                        director_charge_ratio_bps: None,
+                        president_name: Some("Nicolas Lumen".into()),
+                        sole_shareholder_name: Some("Nicolas Lumen".into()),
+                        sole_shareholder_address: Some("18 rue des Ateliers, 69003 Lyon".into()),
+                        share_count: Some(1000),
+                    },
+                    &human_ctx(),
+                )
+                .unwrap(),
+        );
+    }
+    let router = freeflow_web::router(state);
+
+    let letter = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/societe/impots/ca3/2026-09")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(letter.contains("Crédit déjà déclaré"), "{letter}");
+    assert!(letter.contains("vat-credit"), "{letter}");
+
+    let posted = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/societe/impots/ca3/2026-09/vat-credit")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from("after_period=2026-08&credit=324.00"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(posted.status(), StatusCode::OK);
+    let body = body_text(posted).await;
+    assert!(
+        body.contains("324,00") || body.contains("324.00"),
+        "case 25 après reprise : {body}"
+    );
+    assert!(
+        body.contains("Crédit de TVA antérieur") || body.contains("25"),
+        "{body}"
+    );
+}
+
+#[tokio::test]
 async fn a_duty_letter_does_not_squeeze_steps_into_a_date_column() {
     let state = unlocked_state(&test_db_path("letter-is-measure"))
         .await

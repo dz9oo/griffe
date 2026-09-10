@@ -10,8 +10,8 @@ use freeflow_core::society::{
     AmountBasis, AmountStory, BeatKind, BeatWhen, BoxCoverage, BoxRole, ClosingBeat, ClosingStory,
     ConversationBar, DividendClosed, DividendDoor, Duty, DutyBriefing, Expect, FormBox,
     IdentityCard, IdentityShort, Landscape, PayYourself, SocietyHome, StatementMove,
-    StatementReading, UnknownReason, WaiverReason, closing_story, duty_briefing, pay_yourself,
-    society_duties, society_home, society_identity, statement_moves,
+    StatementReading, UnknownReason, VatCarryInRecord, WaiverReason, closing_story, duty_briefing,
+    pay_yourself, society_duties, society_home, society_identity, statement_moves, vat_carry_in,
 };
 use freeflow_core::store::Store;
 use maud::{Markup, PreEscaped, html};
@@ -520,17 +520,77 @@ fn duty_list_line(d: &Duty, today: Date) -> String {
 /// # Errors
 ///
 /// Lecture du coffre, ou démarche interne (`ApprovalMeeting`).
+#[derive(Clone)]
+pub struct VatCreditForm {
+    pub after_period: String,
+    pub credit: String,
+    pub revision: String,
+    pub after_error: Option<String>,
+    pub credit_error: Option<String>,
+    pub banner: Option<String>,
+}
+
+impl VatCreditForm {
+    fn from_record(record: Option<&VatCarryInRecord>, letter_period: &str) -> Self {
+        match record {
+            Some(r) => Self {
+                after_period: r.after_period.clone(),
+                credit: r.credit.to_decimal_string(),
+                revision: r.revision.to_string(),
+                after_error: None,
+                credit_error: None,
+                banner: None,
+            },
+            None => Self {
+                after_period: letter_period.to_string(),
+                credit: String::new(),
+                revision: String::new(),
+                after_error: None,
+                credit_error: None,
+                banner: None,
+            },
+        }
+    }
+}
+
+/// # Errors
+///
+/// Lecture du coffre, ou démarche interne (`ApprovalMeeting`).
 pub fn duty(
     store: &Store,
     today: Date,
     kind: FiscalDeadlineKind,
     period: Option<&str>,
 ) -> Result<Markup, AppError> {
-    let briefing = duty_briefing(store.connection(), kind, today, period)?;
-    Ok(duty_markup(&briefing, today))
+    duty_with_vat_form(store, today, kind, period, None)
 }
 
-fn duty_markup(b: &DutyBriefing, today: Date) -> Markup {
+/// # Errors
+///
+/// Lecture du coffre, ou démarche interne (`ApprovalMeeting`).
+pub fn duty_with_vat_form(
+    store: &Store,
+    today: Date,
+    kind: FiscalDeadlineKind,
+    period: Option<&str>,
+    form: Option<VatCreditForm>,
+) -> Result<Markup, AppError> {
+    let briefing = duty_briefing(store.connection(), kind, today, period)?;
+    let vat_form = if briefing.kind == FiscalDeadlineKind::Ca3 {
+        Some(match form {
+            Some(submitted) => submitted,
+            None => {
+                let record = vat_carry_in(store.connection())?;
+                VatCreditForm::from_record(record.as_ref(), &briefing.period_key)
+            }
+        })
+    } else {
+        None
+    };
+    Ok(duty_markup(&briefing, today, vat_form.as_ref()))
+}
+
+fn duty_markup(b: &DutyBriefing, today: Date, vat_form: Option<&VatCreditForm>) -> Markup {
     let title = duty_title(b);
     let lede = duty_lede(b.kind);
     let amount = amount_story_fr(&b.amount);
@@ -575,6 +635,38 @@ fn duty_markup(b: &DutyBriefing, today: Date) -> Markup {
                         p class="prose" style="color:var(--ink-2);font-size:14px" {
                             "Les montants manquent encore. Les cases sont déjà les bonnes."
                         }
+                    }
+                }
+            }
+            @if let Some(vat) = vat_form {
+                div class="block" {
+                    h3 { "Crédit déjà déclaré" }
+                    p class="prose" {
+                        "Case 27 de votre dernière CA3 déposée sur le site des impôts. Sans ce \
+                         chiffre, les cases partent de zéro."
+                    }
+                    @if let Some(banner) = &vat.banner {
+                        p class="prose" { (banner) }
+                    }
+                    form hx-post=(format!("{href}/vat-credit")) hx-target="#content" {
+                        (form::text(
+                            "after_period",
+                            "Période de cette CA3 (AAAA-MM)",
+                            &vat.after_period,
+                            vat.after_error.as_deref(),
+                        ))
+                        (form::field_help("Août 2026 → 2026-08. C'est le mois déclaré, pas le mois du dépôt."))
+                        (form::number(
+                            "credit",
+                            "Crédit à reporter, en euros",
+                            &vat.credit,
+                            "0.01",
+                            vat.credit_error.as_deref(),
+                        ))
+                        @if !vat.revision.is_empty() {
+                            input type="hidden" name="revision" value=(vat.revision);
+                        }
+                        button class="quiet" type="submit" { "Reprendre ce crédit" }
                     }
                 }
             }

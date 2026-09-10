@@ -57,7 +57,15 @@ pub fn render(store: &Store) -> Result<Markup, AppError> {
             @if status.declared_new_company {
                 div class="detail-note" { "Société nouvelle : pas de bilan à reprendre, les comptes partent de zéro. " button class="btn small" hx-post="/premiers-pas/nouvelle?undo=1" hx-target="#content" hx-swap="innerHTML" { "annuler ce choix" } }
             } @else if status.origin.is_done() {
-                div class="detail-note" { "Bilan d'ouverture repris : le point de départ est posé. " button class="btn small" hx-get="/cloture/opening" hx-target="#panel" hx-swap="innerHTML" { "le revoir" } }
+                div class="detail-note" {
+                    "Bilan d'ouverture repris : le point de départ est posé. "
+                    button class="btn small" hx-get="/cloture/opening" hx-target="#panel" hx-swap="innerHTML" { "le revoir" }
+                }
+                div class="detail-note" {
+                    "Si votre dernière CA3 portait un crédit (case 27), reprenez-le dans "
+                    a href="/societe/impots" hx-get="/societe/impots" hx-target="#content" hx-push-url="true" { "la lettre de TVA" }
+                    " — le bilan ne le contient pas."
+                }
             } @else {
                 div class="detail-note" {
                     strong { "La société existait déjà" } " (un cabinet tenait les comptes) : demandez-lui la "

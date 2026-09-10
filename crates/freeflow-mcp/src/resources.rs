@@ -41,6 +41,7 @@ const PEOPLE_URI: &str = "freeflow://people";
 const PEOPLE_DETAIL_PREFIX: &str = "freeflow://people/";
 const SOCIETY_URI: &str = "freeflow://society";
 const SOCIETY_DUTY_PREFIX: &str = "freeflow://society/duties/";
+const VAT_CARRY_URI: &str = "freeflow://vat-carry-in";
 const PAPERS_URI: &str = "freeflow://papers";
 const PAPERS_PERIOD_PREFIX: &str = "freeflow://papers/";
 
@@ -123,6 +124,12 @@ pub(crate) fn list() -> ListResourcesResult {
             .with_description(
                 "La société : identité courte, paysage, conversations, chapitres — même vue que \
                  society.show.",
+            )
+            .with_mime_type("application/json"),
+        Resource::new(VAT_CARRY_URI, "vat-carry-in")
+            .with_description(
+                "Crédit de TVA à reporter (case 27 de la dernière CA3 déjà déposée), ou null — \
+                 même vue que society.vat_credit.",
             )
             .with_mime_type("application/json"),
         Resource::new(PAPERS_URI, "papers")
@@ -466,6 +473,12 @@ pub(crate) fn read(store: &Store, uri: &str) -> Result<ReadResourceResult, McpEr
                 .map(|a| freeflow_core::fixed_assets::asset_json(a, fy))
                 .collect::<Vec<_>>(),
         );
+    }
+
+    if uri == VAT_CARRY_URI {
+        let carry = freeflow_core::society::vat_carry_in(store.connection())
+            .map_err(|e| McpError::resource_not_found(e.to_string(), None))?;
+        return json_contents(uri, carry);
     }
 
     if uri == OPENING_BALANCE_URI {

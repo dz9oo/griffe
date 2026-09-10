@@ -14,7 +14,9 @@ use crate::layout::{ViewId, view_head};
 use crate::views::form;
 
 mod letter;
-pub use letter::{closing, duties, duty, identity, pay, piece, statement};
+pub use letter::{
+    VatCreditForm, closing, duties, duty, duty_with_vat_form, identity, pay, piece, statement,
+};
 
 pub const VAT_REGIME_OPTIONS: [(&str, &str); 5] = [
     ("", "— à choisir —"),

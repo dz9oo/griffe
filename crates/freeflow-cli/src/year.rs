@@ -795,9 +795,11 @@ fn cli_hint(checklist: &ClosingChecklist, step: &ClosingStep) -> Option<String> 
                 "freeflow year render {period} efi-notice --out … ; year render {period} liasse --out …"
             )
         }
-        ClosingStepKey::Vat => "freeflow fiscal calendar (CA3/CA12 à venir) ; company \
-                                set-profile --vat-regime … si le régime manque"
-            .to_string(),
+        ClosingStepKey::Vat => {
+            "freeflow society vat-credit set --after AAAA-MM --amount … ; fiscal calendar ; \
+             company set-profile --vat-regime … si le régime manque"
+                .to_string()
+        }
         ClosingStepKey::Das2 => match step.status {
             StepStatus::Warning => "freeflow expense edit <RÉF> --supplier <nom>".to_string(),
             _ => return None,

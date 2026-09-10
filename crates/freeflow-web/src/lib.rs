@@ -186,6 +186,14 @@ pub fn router(state: AppState) -> Router {
             "/societe/impots/{kind}/{period}/unfiled",
             post(handlers::societe_duty_unfiled_at),
         )
+        .route(
+            "/societe/impots/{kind}/vat-credit",
+            post(handlers::societe_vat_credit),
+        )
+        .route(
+            "/societe/impots/{kind}/{period}/vat-credit",
+            post(handlers::societe_vat_credit_at),
+        )
         .route("/societe/cloture", get(handlers::societe_closing))
         .route("/societe/releve", get(handlers::societe_statement))
         .route("/societe/identite", get(handlers::societe_identity))

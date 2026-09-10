@@ -5,10 +5,15 @@
 //! français. `today` est un argument d'adaptateur, jamais lu ici.
 
 mod filings;
+mod vat_carry;
 
 pub use filings::{
     DutyFiling, DutyFilingError, MarkCatchUpFiled, MarkDutyFiled, RetractDutyFiled, filing_for,
     list_filings,
+};
+pub use vat_carry::{
+    DeleteVatCarryIn, RecordVatCarryIn, UpdateVatCarryIn, VatCarryInError, VatCarryInRecord,
+    parse_after_period, vat_carry_in,
 };
 
 use rusqlite::Connection;
@@ -27,7 +32,7 @@ use crate::domain::{
     add_months, sub_months,
 };
 use crate::fiscal::{
-    DAS2_THRESHOLD, DIVIDEND_INCOME_TAX_BPS, FiscalDeadline, FiscalDeadlineKind,
+    Ca3Periodicity, DAS2_THRESHOLD, DIVIDEND_INCOME_TAX_BPS, FiscalDeadline, FiscalDeadlineKind,
     IS_ACOMPTE_DISPENSATION, VatFilingScheme, ca3_filings_in_range, ca3_period_key,
     dividend_social_charges_bps, fiscal_calendar, next_cfe, next_is_acompte,
     simplified_regime_applies_to,
@@ -1057,6 +1062,18 @@ pub fn duty_briefing(
             reason: UnknownReason::PeriodNotInVault,
         };
     }
+    if kind == FiscalDeadlineKind::Ca3
+        && coverage == BoxCoverage::Complete
+        && let Some(net) = boxes
+            .iter()
+            .find(|b| b.case == "27" || b.case == "28")
+            .and_then(|b| b.amount)
+    {
+        amount = AmountStory::Due {
+            amount: net,
+            basis: AmountBasis::VatForPeriod,
+        };
+    }
     let filed_on =
         resolved
             .as_ref()
@@ -1214,22 +1231,88 @@ fn is_acompte_boxes(amount: &AmountStory) -> (Vec<FormBox>, BoxCoverage) {
     )
 }
 
+fn ca3_periodicity(conn: &Connection) -> Result<Ca3Periodicity, AppError> {
+    let profile = company_profile(conn)?;
+    Ok(
+        Ca3Periodicity::from_regime(profile.as_ref().and_then(|p| p.vat_regime))
+            .unwrap_or(Ca3Periodicity::Monthly),
+    )
+}
+
+fn previous_ca3_period_key(period_key: &str, periodicity: Ca3Periodicity) -> Option<String> {
+    let start = parse_year_month(period_key)?;
+    let prev_start = match periodicity {
+        Ca3Periodicity::Monthly => start.pred(),
+        Ca3Periodicity::Quarterly => start.pred().pred().pred(),
+    };
+    Some(ca3_period_key(prev_start))
+}
+
+fn ca3_bounds_for(period_key: &str, periodicity: Ca3Periodicity) -> Result<(Date, Date), AppError> {
+    let start = parse_year_month(period_key)
+        .ok_or_else(|| AppError::Domain(format!("période CA3 invalide : {period_key}")))?;
+    let end = match periodicity {
+        Ca3Periodicity::Monthly => start,
+        Ca3Periodicity::Quarterly => start.succ().succ(),
+    };
+    Ok((start.first_day(), end.last_day()))
+}
+
+/// Case 25 de `period_key` : crédit ancré après la période précédente, ou chaîne dérivée
+/// jusqu'à ce point (line 27 de P−1).
+fn ca3_prior_credit(
+    conn: &Connection,
+    period_key: &str,
+    periodicity: Ca3Periodicity,
+) -> Result<Money, AppError> {
+    let carry = vat_carry_in(conn)?;
+    let opens_on = opening_balance(conn)?.map(|o| o.balance.opens_on);
+    let mut between: Vec<(Date, Date)> = Vec::new();
+    let mut key = period_key.to_string();
+    for _ in 0..24 {
+        let Some(prev) = previous_ca3_period_key(&key, periodicity) else {
+            break;
+        };
+        if carry.as_ref().is_some_and(|c| c.after_period == prev) {
+            return fold_carried_credit(
+                conn,
+                carry.as_ref().map_or(Money::ZERO, |c| c.credit),
+                &between,
+            );
+        }
+        let (start, end) = ca3_bounds_for(&prev, periodicity)?;
+        if opens_on.is_some_and(|o| start < o) {
+            return fold_carried_credit(conn, Money::ZERO, &between);
+        }
+        between.push((start, end));
+        key = prev;
+    }
+    fold_carried_credit(conn, Money::ZERO, &between)
+}
+
+fn fold_carried_credit(
+    conn: &Connection,
+    mut credit: Money,
+    between: &[(Date, Date)],
+) -> Result<Money, AppError> {
+    for &(start, end) in between.iter().rev() {
+        let vat = vat_due_for_period(conn, start, end)?;
+        let net = vat.due - credit;
+        credit = if net.is_negative() { -net } else { Money::ZERO };
+    }
+    Ok(credit)
+}
+
 fn ca3_period_bounds(
     conn: &Connection,
     today: Date,
     period_key: &str,
 ) -> Result<(Date, Date), AppError> {
-    let profile = company_profile(conn)?;
-    let periodicity =
-        crate::fiscal::Ca3Periodicity::from_regime(profile.as_ref().and_then(|p| p.vat_regime))
-            .unwrap_or(crate::fiscal::Ca3Periodicity::Monthly);
-    if let Some(start) = parse_year_month(period_key) {
-        let end = match periodicity {
-            crate::fiscal::Ca3Periodicity::Monthly => start,
-            crate::fiscal::Ca3Periodicity::Quarterly => start.succ().succ(),
-        };
-        return Ok((start.first_day(), end.last_day()));
+    let periodicity = ca3_periodicity(conn)?;
+    if parse_year_month(period_key).is_some() {
+        return ca3_bounds_for(period_key, periodicity);
     }
+    let profile = company_profile(conn)?;
     let day = profile
         .as_ref()
         .map_or(crate::domain::Ca3FilingRule::EARLIEST_DAY, |p| {
@@ -1277,15 +1360,8 @@ fn ca3_boxes(
         ));
     }
     let vat = vat_due_for_period(conn, period_start, period_end)?;
-    let prev_end = period_start.previous_day().unwrap_or(period_start);
-    let prev_start = crate::domain::Month::new(prev_end.year(), u8::from(prev_end.month()))
-        .map_or(prev_end, crate::domain::Month::first_day);
-    let prior_due = vat_due_for_period(conn, prev_start, prev_end)?.due;
-    let prior_credit = if prior_due.is_negative() {
-        -prior_due
-    } else {
-        Money::ZERO
-    };
+    let periodicity = ca3_periodicity(conn)?;
+    let prior_credit = ca3_prior_credit(conn, period_key, periodicity)?;
     let mut boxes = vec![ca3_box("02", Some(vat.taxable_ht), BoxRole::Fill)];
     let vat_20 = vat
         .collected_by_rate
@@ -2417,6 +2493,128 @@ mod tests {
         );
         assert!(briefing.boxes.iter().all(|b| b.amount.is_none()));
         assert!(briefing.boxes.iter().any(|b| b.case == "08"));
+    }
+
+    #[test]
+    fn a_vat_carry_in_seeds_the_next_ca3_credit_box() {
+        let mut store = test_store("vat-carry-seed");
+        set_monthly_profile(&mut store);
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &RecordVatCarryIn {
+                        after_period: "2026-08".into(),
+                        credit: Money::from_cents(32_400),
+                        source: Some("CA3 août".into()),
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        let today = date(2026, TimeMonth::September, 8);
+        let september = duty_briefing(
+            store.connection(),
+            FiscalDeadlineKind::Ca3,
+            today,
+            Some("2026-09"),
+        )
+        .unwrap();
+        assert_eq!(september.coverage, BoxCoverage::Complete);
+        let sept_25 = september
+            .boxes
+            .iter()
+            .find(|x| x.case == "25")
+            .expect("case 25");
+        let sept_27 = september
+            .boxes
+            .iter()
+            .find(|x| x.case == "27")
+            .expect("case 27");
+        assert_eq!(sept_25.amount, Some(Money::from_cents(32_400)));
+        assert_eq!(
+            sept_27.amount,
+            Some(Money::from_cents(32_400)),
+            "sans fait en septembre, le crédit se reporte"
+        );
+        assert!(
+            september.boxes.iter().all(|b| b.case != "28"),
+            "rien à reverser : {:?}",
+            september.boxes
+        );
+
+        let august = duty_briefing(
+            store.connection(),
+            FiscalDeadlineKind::Ca3,
+            today,
+            Some("2026-08"),
+        )
+        .unwrap();
+        assert!(
+            august
+                .boxes
+                .iter()
+                .all(|b| b.case != "25" || b.amount != Some(Money::from_cents(32_400))),
+            "août est la période déjà déposée, pas celle qui reçoit le crédit : {:?}",
+            august.boxes
+        );
+    }
+
+    #[test]
+    fn a_vat_carry_in_chains_into_the_following_period() {
+        let mut store = test_store("vat-carry-chain");
+        set_monthly_profile(&mut store);
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &RecordVatCarryIn {
+                        after_period: "2026-08".into(),
+                        credit: Money::from_cents(32_400),
+                        source: None,
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &RecordExpense {
+                        label: "hébergement".into(),
+                        category: ExpenseCategory::Software,
+                        amount: Money::from_cents(12_000),
+                        vat_rate: VatRate::Standard,
+                        vat_deductible: Money::from_cents(2_000),
+                        incurred_on: date(2026, TimeMonth::September, 12),
+                        receipt_hash: None,
+                        receipt_filename: None,
+                        bank_transaction_id: None,
+                        supplier: None,
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        let october = duty_briefing(
+            store.connection(),
+            FiscalDeadlineKind::Ca3,
+            date(2026, TimeMonth::November, 5),
+            Some("2026-10"),
+        )
+        .unwrap();
+        let box_of = |case: &str| {
+            october
+                .boxes
+                .iter()
+                .find(|b| b.case == case)
+                .unwrap_or_else(|| panic!("case {case}"))
+        };
+        assert_eq!(
+            box_of("25").amount,
+            Some(Money::from_cents(34_400)),
+            "324 € repris + 20 € de septembre : {:?}",
+            october.boxes
+        );
+        assert_eq!(box_of("27").amount, Some(Money::from_cents(34_400)));
     }
 
     #[test]

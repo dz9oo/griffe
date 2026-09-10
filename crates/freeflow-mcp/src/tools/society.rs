@@ -2,10 +2,12 @@
 
 use freeflow_core::app::Executor;
 use freeflow_core::clock::today_local;
+use freeflow_core::domain::Money;
 use freeflow_core::fiscal::FiscalDeadlineKind;
 use freeflow_core::society::{
-    MarkDutyFiled, RetractDutyFiled, closing_story, duty_briefing, pay_yourself, society_duties,
-    society_home, society_identity, statement_moves,
+    DeleteVatCarryIn, MarkDutyFiled, RecordVatCarryIn, RetractDutyFiled, UpdateVatCarryIn,
+    closing_story, duty_briefing, pay_yourself, society_duties, society_home, society_identity,
+    statement_moves, vat_carry_in,
 };
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
@@ -251,4 +253,111 @@ impl FreeflowServer {
             Err(e) => err_text(e.to_string()),
         }
     }
+
+    /// Crédit de TVA à reporter (case 27 de la dernière CA3 déjà déposée), ou null.
+    #[tool(
+        name = "society.vat_credit",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    async fn society_vat_credit_tool(&self) -> CallToolResult {
+        let store = self.store.lock().await;
+        match vat_carry_in(store.connection()) {
+            Ok(record) => ok_json(record),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
+    /// Enregistrer ou remplacer le crédit de TVA à reporter.
+    #[tool(
+        name = "society.set_vat_credit",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false
+        )
+    )]
+    async fn society_set_vat_credit_tool(
+        &self,
+        Parameters(args): Parameters<SetVatCreditArgs>,
+    ) -> CallToolResult {
+        let mut store = self.store.lock().await;
+        let existing = match vat_carry_in(store.connection()) {
+            Ok(existing) => existing,
+            Err(e) => return err_text(e.to_string()),
+        };
+        let credit = Money::from_cents(args.credit_cents);
+        let ctx = self.ctx(args.dry_run);
+        let result = match existing {
+            Some(existing) => Executor::new(&mut store).execute(
+                &UpdateVatCarryIn {
+                    revision: existing.revision,
+                    after_period: args.after_period,
+                    credit,
+                    source: args.source,
+                },
+                &ctx,
+            ),
+            None => Executor::new(&mut store).execute(
+                &RecordVatCarryIn {
+                    after_period: args.after_period,
+                    credit,
+                    source: args.source,
+                },
+                &ctx,
+            ),
+        };
+        match result {
+            Ok(outcome) => ok_json(outcome_json(&outcome)),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
+    /// Oublier le crédit de TVA repris.
+    #[tool(
+        name = "society.delete_vat_credit",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false
+        )
+    )]
+    async fn society_delete_vat_credit_tool(
+        &self,
+        Parameters(args): Parameters<DeleteVatCreditArgs>,
+    ) -> CallToolResult {
+        let mut store = self.store.lock().await;
+        let Some(existing) = (match vat_carry_in(store.connection()) {
+            Ok(existing) => existing,
+            Err(e) => return err_text(e.to_string()),
+        }) else {
+            return err_text("aucun crédit de TVA repris");
+        };
+        let cmd = DeleteVatCarryIn {
+            revision: existing.revision,
+        };
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
+            Ok(outcome) => ok_json(outcome_json(&outcome)),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct SetVatCreditArgs {
+    /// Période `AAAA-MM` de la dernière CA3 déjà déposée auprès de l'administration.
+    after_period: String,
+    /// Case 27, en centimes.
+    credit_cents: i64,
+    /// Provenance libre.
+    source: Option<String>,
+    /// `true` : montre ce qui serait fait, n'écrit rien.
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct DeleteVatCreditArgs {
+    /// `true` : montre ce qui serait fait, n'écrit rien.
+    #[serde(default)]
+    dry_run: bool,
 }

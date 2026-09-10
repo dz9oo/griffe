@@ -18,10 +18,13 @@ use crate::layout::{self, ViewId};
 use crate::state::AppState;
 use crate::views;
 use freeflow_core::app::Executor;
-use freeflow_core::domain::parse_date;
+use freeflow_core::domain::{Money, parse_date};
 use freeflow_core::fiscal::FiscalDeadlineKind;
 use freeflow_core::setup::vault_started_on;
-use freeflow_core::society::{MarkCatchUpFiled, MarkDutyFiled, RetractDutyFiled, duty_briefing};
+use freeflow_core::society::{
+    MarkCatchUpFiled, MarkDutyFiled, RecordVatCarryIn, RetractDutyFiled, UpdateVatCarryIn,
+    duty_briefing, vat_carry_in,
+};
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct FiledForm {
@@ -303,6 +306,135 @@ pub async fn societe_duty_unfiled_at(
     Path((kind, period)): Path<(String, String)>,
 ) -> Response {
     retract_duty_filed(&state, headers, kind, Some(period)).await
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct VatCreditPosted {
+    #[serde(default)]
+    after_period: String,
+    #[serde(default)]
+    credit: String,
+    #[serde(default)]
+    revision: String,
+}
+
+pub async fn societe_vat_credit(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(kind): Path<String>,
+    form: Result<Form<VatCreditPosted>, FormRejection>,
+) -> Response {
+    save_vat_credit(&state, headers, kind, None, form).await
+}
+
+pub async fn societe_vat_credit_at(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((kind, period)): Path<(String, String)>,
+    form: Result<Form<VatCreditPosted>, FormRejection>,
+) -> Response {
+    save_vat_credit(&state, headers, kind, Some(period), form).await
+}
+
+async fn save_vat_credit(
+    state: &AppState,
+    headers: HeaderMap,
+    kind: String,
+    period: Option<String>,
+    form: Result<Form<VatCreditPosted>, FormRejection>,
+) -> Response {
+    let Some(kind) = parse_external_kind(&kind) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let posted = form.map_or_else(|_| VatCreditPosted::default(), |Form(f)| f);
+    let mut vat_form = views::societe::VatCreditForm {
+        after_period: posted.after_period.clone(),
+        credit: posted.credit.clone(),
+        revision: posted.revision.clone(),
+        after_error: None,
+        credit_error: None,
+        banner: None,
+    };
+    let credit = match Money::parse_decimal(posted.credit.trim()) {
+        Ok(c) => c,
+        Err(e) => {
+            vat_form.credit_error = Some(e.to_string());
+            return letter(state, headers, ViewId::Societe, {
+                let period = period.clone();
+                let vat_form = vat_form.clone();
+                move |store, today| {
+                    views::societe::duty_with_vat_form(
+                        store,
+                        today,
+                        kind,
+                        period.as_deref(),
+                        Some(vat_form),
+                    )
+                }
+            })
+            .await
+            .into_response();
+        }
+    };
+    let period_owned = period.clone();
+    let after = posted.after_period.clone();
+    let source = Some("lettre de TVA".to_string());
+    let result = state
+        .with_store_mut(|store| {
+            let outcome = match vat_carry_in(store.connection())? {
+                Some(existing) => Executor::new(store).execute(
+                    &UpdateVatCarryIn {
+                        revision: existing.revision,
+                        after_period: after,
+                        credit,
+                        source,
+                    },
+                    &AppState::human_ctx(),
+                )?,
+                None => Executor::new(store).execute(
+                    &RecordVatCarryIn {
+                        after_period: after,
+                        credit,
+                        source,
+                    },
+                    &AppState::human_ctx(),
+                )?,
+            };
+            Ok::<_, freeflow_core::app::AppError>(outcome)
+        })
+        .await;
+    match result {
+        Some(Err(e)) => {
+            vat_form.banner = Some(e.to_string());
+            letter(state, headers, ViewId::Societe, {
+                let vat_form = vat_form.clone();
+                move |store, today| {
+                    views::societe::duty_with_vat_form(
+                        store,
+                        today,
+                        kind,
+                        period.as_deref(),
+                        Some(vat_form),
+                    )
+                }
+            })
+            .await
+            .into_response()
+        }
+        Some(Ok(_)) | None => {
+            let mut response = letter(state, headers, ViewId::Societe, move |store, today| {
+                views::societe::duty(store, today, kind, period_owned.as_deref())
+            })
+            .await
+            .into_response();
+            if result.is_some() {
+                response
+                    .headers_mut()
+                    .insert("HX-Trigger", HeaderValue::from_static("freeflow:saved"));
+            }
+            response
+        }
+    }
 }
 
 async fn retract_duty_filed(

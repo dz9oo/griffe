@@ -185,6 +185,9 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "society.identity",
         "society.mark_duty_filed",
         "society.retract_duty_filed",
+        "society.vat_credit",
+        "society.set_vat_credit",
+        "society.delete_vat_credit",
         "papers.list",
         "papers.show",
         "papers.add",
@@ -238,6 +241,7 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "society.closing",
         "society.statement",
         "society.identity",
+        "society.vat_credit",
         "papers.list",
         "papers.show",
         "papers.checklist",
@@ -264,6 +268,7 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "mission.time.delete",
         "fiscal.delete_year",
         "fiscal.delete_asset",
+        "society.delete_vat_credit",
         "papers.purge",
     ] {
         let ann = by_name(destructive).annotations.as_ref().unwrap();

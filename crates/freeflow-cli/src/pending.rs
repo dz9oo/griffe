@@ -21,7 +21,10 @@ use freeflow_core::opening_balance::{
 };
 use freeflow_core::papers::PurgePaper;
 use freeflow_core::prospection::{DeleteInteraction, DeleteOpportunity};
-use freeflow_core::society::{MarkCatchUpFiled, MarkDutyFiled, RetractDutyFiled};
+use freeflow_core::society::{
+    DeleteVatCarryIn, MarkCatchUpFiled, MarkDutyFiled, RecordVatCarryIn, RetractDutyFiled,
+    UpdateVatCarryIn,
+};
 use freeflow_core::store::Store;
 
 use crate::error::CliError;
@@ -233,6 +236,15 @@ pub fn confirm(store: &mut Store, id: PendingActionId, json: bool) -> Result<Str
         Ok(format_outcome(&outcome, json))
     } else if action.command_name == RetractDutyFiled::NAME {
         let outcome = Executor::new(store).confirm::<RetractDutyFiled>(id)?;
+        Ok(format_outcome(&outcome, json))
+    } else if action.command_name == RecordVatCarryIn::NAME {
+        let outcome = Executor::new(store).confirm::<RecordVatCarryIn>(id)?;
+        Ok(format_outcome(&outcome, json))
+    } else if action.command_name == UpdateVatCarryIn::NAME {
+        let outcome = Executor::new(store).confirm::<UpdateVatCarryIn>(id)?;
+        Ok(format_outcome(&outcome, json))
+    } else if action.command_name == DeleteVatCarryIn::NAME {
+        let outcome = Executor::new(store).confirm::<DeleteVatCarryIn>(id)?;
         Ok(format_outcome(&outcome, json))
     } else if action.command_name == PurgePaper::NAME {
         let outcome = Executor::new(store).confirm::<PurgePaper>(id)?;
