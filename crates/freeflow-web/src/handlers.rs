@@ -22,8 +22,7 @@ use freeflow_core::domain::{Money, parse_date};
 use freeflow_core::fiscal::FiscalDeadlineKind;
 use freeflow_core::setup::vault_started_on;
 use freeflow_core::society::{
-    MarkCatchUpFiled, MarkDutyFiled, RecordVatCarryIn, RetractDutyFiled, UpdateVatCarryIn,
-    duty_briefing, vat_carry_in,
+    MarkCatchUpFiled, MarkDutyFiled, RecordVatCarryIn, RetractDutyFiled, duty_briefing,
 };
 
 #[derive(Debug, Default, Deserialize)]
@@ -381,45 +380,43 @@ async fn save_vat_credit(
     let source = Some("lettre de TVA".to_string());
     let result = state
         .with_store_mut(|store| {
-            let outcome = match vat_carry_in(store.connection())? {
-                Some(existing) => Executor::new(store).execute(
-                    &UpdateVatCarryIn {
-                        revision: existing.revision,
-                        after_period: after,
-                        credit,
-                        source,
-                    },
-                    &AppState::human_ctx(),
-                )?,
-                None => Executor::new(store).execute(
-                    &RecordVatCarryIn {
-                        after_period: after,
-                        credit,
-                        source,
-                    },
-                    &AppState::human_ctx(),
-                )?,
-            };
+            let outcome = Executor::new(store).execute(
+                &RecordVatCarryIn {
+                    after_period: after,
+                    credit,
+                    source,
+                },
+                &AppState::human_ctx(),
+            )?;
             Ok::<_, freeflow_core::app::AppError>(outcome)
         })
         .await;
     match result {
         Some(Err(e)) => {
-            vat_form.banner = Some(e.to_string());
-            letter(state, headers, ViewId::Societe, {
-                let vat_form = vat_form.clone();
-                move |store, today| {
-                    views::societe::duty_with_vat_form(
-                        store,
-                        today,
-                        kind,
-                        period.as_deref(),
-                        Some(vat_form),
-                    )
-                }
-            })
-            .await
-            .into_response()
+            let msg = e.to_string();
+            if msg.contains("figé") || msg.contains("existe déjà") {
+                letter(state, headers, ViewId::Societe, move |store, today| {
+                    views::societe::duty(store, today, kind, period.as_deref())
+                })
+                .await
+                .into_response()
+            } else {
+                vat_form.banner = Some(msg);
+                letter(state, headers, ViewId::Societe, {
+                    let vat_form = vat_form.clone();
+                    move |store, today| {
+                        views::societe::duty_with_vat_form(
+                            store,
+                            today,
+                            kind,
+                            period.as_deref(),
+                            Some(vat_form),
+                        )
+                    }
+                })
+                .await
+                .into_response()
+            }
         }
         Some(Ok(_)) | None => {
             let mut response = letter(state, headers, ViewId::Societe, move |store, today| {

@@ -1,8 +1,9 @@
 //! Crédit de TVA à reporter (case 27 de la dernière CA3 déjà déposée).
 //!
 //! Un fait administratif, pas un solde de bilan : il ancre la case 25 de la période
-//! suivante, puis la chaîne se dérive des factures et dépenses du coffre. Mutable sous
-//! révision optimiste ; un agent propose, un humain confirme.
+//! suivante, puis la chaîne se dérive des factures et dépenses du coffre. Saisi une
+//! seule fois ; ensuite figé — recoller le stock, c'est réécrire une CA3 déjà déposée.
+//! Un agent propose, un humain confirme.
 
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -18,7 +19,10 @@ pub enum VatCarryInError {
     #[error("aucun crédit de TVA repris")]
     NotFound,
 
-    #[error("un crédit de TVA repris existe déjà (après {0}) : modifiez-le plutôt")]
+    #[error(
+        "un crédit de TVA repris existe déjà (après {0}) : il est figé. La suite se déclare \
+         période par période, à partir des factures et des dépenses"
+    )]
     AlreadyRecorded(String),
 
     #[error("période invalide {0:?} : attendu AAAA-MM (mois de la dernière CA3 déjà déposée)")]
@@ -26,6 +30,12 @@ pub enum VatCarryInError {
 
     #[error("le crédit à reporter ne peut pas être négatif")]
     NegativeCredit,
+
+    #[error(
+        "le crédit de TVA repris est figé : on ne le recollera pas. La suite se déclare sur \
+         chaque CA3, à partir des factures et des dépenses"
+    )]
+    Immutable,
 }
 
 impl From<VatCarryInError> for AppError {
@@ -80,13 +90,8 @@ fn require_credit(credit: Money) -> Result<(), AppError> {
     Ok(())
 }
 
-fn require_revision(conn: &Connection, expected: i64) -> Result<i64, AppError> {
-    let current = crate::app::revision::current_revision(conn, "vat_carry_in", "1")?
-        .ok_or(VatCarryInError::NotFound)?;
-    crate::app::revision::require_revision(current, expected, "crédit de TVA", "1")
-}
-
-/// Enregistre le crédit à reporter — une seule fois ; ensuite [`UpdateVatCarryIn`].
+/// Enregistre le crédit à reporter — une seule fois. Ensuite il est figé
+/// ([`VatCarryInError::Immutable`]).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecordVatCarryIn {
     pub after_period: String,
@@ -125,7 +130,8 @@ impl Command for RecordVatCarryIn {
     }
 }
 
-/// Remplace le crédit repris en état complet.
+/// Conservé pour les actions en attente antérieures : le crédit repris est figé, [`apply`]
+/// refuse toujours.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateVatCarryIn {
     pub revision: i64,
@@ -143,33 +149,13 @@ impl Command for UpdateVatCarryIn {
         true
     }
 
-    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
-        let month = parse_after_period(&self.after_period)?;
-        require_credit(self.credit)?;
-        let new_revision = require_revision(conn, self.revision)?;
-        let changed = conn.execute(
-            "UPDATE vat_carry_in
-             SET after_period = ?1, credit_cents = ?2, source = ?3, revision = ?4
-             WHERE id = 1 AND revision = ?5",
-            params![
-                period_key(month),
-                self.credit.cents(),
-                self.source,
-                new_revision,
-                self.revision,
-            ],
-        )?;
-        if changed == 0 {
-            return Err(AppError::Conflict {
-                entity: "crédit de TVA",
-                id: "1".to_string(),
-            });
-        }
-        Ok(new_revision)
+    fn apply(&self, _conn: &Connection) -> Result<Self::Output, AppError> {
+        Err(VatCarryInError::Immutable.into())
     }
 }
 
-/// Oublie le crédit repris.
+/// Conservé pour les actions en attente antérieures : le crédit repris est figé, [`apply`]
+/// refuse toujours.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeleteVatCarryIn {
     pub revision: i64,
@@ -183,19 +169,8 @@ impl Command for DeleteVatCarryIn {
         true
     }
 
-    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
-        require_revision(conn, self.revision)?;
-        let deleted = conn.execute(
-            "DELETE FROM vat_carry_in WHERE id = 1 AND revision = ?1",
-            [self.revision],
-        )?;
-        if deleted == 0 {
-            return Err(AppError::Conflict {
-                entity: "crédit de TVA",
-                id: "1".to_string(),
-            });
-        }
-        Ok(())
+    fn apply(&self, _conn: &Connection) -> Result<Self::Output, AppError> {
+        Err(VatCarryInError::Immutable.into())
     }
 }
 
@@ -352,45 +327,40 @@ mod tests {
     }
 
     #[test]
-    fn update_replaces_the_credit_and_delete_clears_it() {
-        let mut store = test_store("update");
+    fn a_recorded_credit_is_frozen() {
+        let mut store = test_store("frozen");
         applied(
             Executor::new(&mut store)
                 .execute(
                     &RecordVatCarryIn {
-                        after_period: "2026-07".into(),
-                        credit: Money::from_cents(10_000),
+                        after_period: "2026-08".into(),
+                        credit: Money::from_cents(32_400),
                         source: None,
                     },
                     &human(),
                 )
                 .unwrap(),
         );
-        assert_eq!(
-            applied(
-                Executor::new(&mut store)
-                    .execute(
-                        &UpdateVatCarryIn {
-                            revision: 1,
-                            after_period: "2026-08".into(),
-                            credit: Money::from_cents(32_400),
-                            source: Some("corrigé".into()),
-                        },
-                        &human(),
-                    )
-                    .unwrap()
-            ),
-            2
-        );
+        let update = Executor::new(&mut store)
+            .execute(
+                &UpdateVatCarryIn {
+                    revision: 1,
+                    after_period: "2026-07".into(),
+                    credit: Money::from_cents(10_000),
+                    source: Some("corrigé".into()),
+                },
+                &human(),
+            )
+            .unwrap_err();
+        assert!(update.to_string().contains("figé"), "{update}");
+        let delete = Executor::new(&mut store)
+            .execute(&DeleteVatCarryIn { revision: 1 }, &human())
+            .unwrap_err();
+        assert!(delete.to_string().contains("figé"), "{delete}");
         let rec = vat_carry_in(store.connection()).unwrap().unwrap();
         assert_eq!(rec.after_period, "2026-08");
         assert_eq!(rec.credit, Money::from_cents(32_400));
-        applied(
-            Executor::new(&mut store)
-                .execute(&DeleteVatCarryIn { revision: 2 }, &human())
-                .unwrap(),
-        );
-        assert!(vat_carry_in(store.connection()).unwrap().is_none());
+        assert_eq!(rec.revision, 1);
     }
 
     #[test]

@@ -5,9 +5,9 @@ use freeflow_core::clock::today_local;
 use freeflow_core::domain::Money;
 use freeflow_core::fiscal::FiscalDeadlineKind;
 use freeflow_core::society::{
-    DeleteVatCarryIn, MarkDutyFiled, RecordVatCarryIn, RetractDutyFiled, UpdateVatCarryIn,
-    closing_story, duty_briefing, pay_yourself, society_duties, society_home, society_identity,
-    statement_moves, vat_carry_in,
+    DeleteVatCarryIn, MarkDutyFiled, RecordVatCarryIn, RetractDutyFiled, closing_story,
+    duty_briefing, pay_yourself, society_duties, society_home, society_identity, statement_moves,
+    vat_carry_in,
 };
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
@@ -267,7 +267,7 @@ impl FreeflowServer {
         }
     }
 
-    /// Enregistrer ou remplacer le crédit de TVA à reporter.
+    /// Enregistrer le crédit de TVA à reporter — une seule fois ; ensuite il est figé.
     #[tool(
         name = "society.set_vat_credit",
         annotations(
@@ -281,38 +281,22 @@ impl FreeflowServer {
         Parameters(args): Parameters<SetVatCreditArgs>,
     ) -> CallToolResult {
         let mut store = self.store.lock().await;
-        let existing = match vat_carry_in(store.connection()) {
-            Ok(existing) => existing,
-            Err(e) => return err_text(e.to_string()),
-        };
         let credit = Money::from_cents(args.credit_cents);
-        let ctx = self.ctx(args.dry_run);
-        let result = match existing {
-            Some(existing) => Executor::new(&mut store).execute(
-                &UpdateVatCarryIn {
-                    revision: existing.revision,
-                    after_period: args.after_period,
-                    credit,
-                    source: args.source,
-                },
-                &ctx,
-            ),
-            None => Executor::new(&mut store).execute(
-                &RecordVatCarryIn {
-                    after_period: args.after_period,
-                    credit,
-                    source: args.source,
-                },
-                &ctx,
-            ),
-        };
+        let result = Executor::new(&mut store).execute(
+            &RecordVatCarryIn {
+                after_period: args.after_period,
+                credit,
+                source: args.source,
+            },
+            &self.ctx(args.dry_run),
+        );
         match result {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
             Err(e) => err_text(e.to_string()),
         }
     }
 
-    /// Oublier le crédit de TVA repris.
+    /// Refusé : le crédit repris est figé.
     #[tool(
         name = "society.delete_vat_credit",
         annotations(

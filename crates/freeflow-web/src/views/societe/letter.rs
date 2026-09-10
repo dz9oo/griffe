@@ -648,25 +648,28 @@ fn duty_markup(b: &DutyBriefing, today: Date, vat_form: Option<&VatCreditForm>) 
                     @if let Some(banner) = &vat.banner {
                         p class="prose" { (banner) }
                     }
-                    form hx-post=(format!("{href}/vat-credit")) hx-target="#content" {
-                        (form::text(
-                            "after_period",
-                            "Période de cette CA3 (AAAA-MM)",
-                            &vat.after_period,
-                            vat.after_error.as_deref(),
-                        ))
-                        (form::field_help("Août 2026 → 2026-08. C'est le mois déclaré, pas le mois du dépôt."))
-                        (form::number(
-                            "credit",
-                            "Crédit à reporter, en euros",
-                            &vat.credit,
-                            "0.01",
-                            vat.credit_error.as_deref(),
-                        ))
-                        @if !vat.revision.is_empty() {
-                            input type="hidden" name="revision" value=(vat.revision);
+                    @if vat.revision.is_empty() {
+                        form hx-post=(format!("{href}/vat-credit")) hx-target="#content" {
+                            (form::text(
+                                "after_period",
+                                "Période de cette CA3 (AAAA-MM)",
+                                &vat.after_period,
+                                vat.after_error.as_deref(),
+                            ))
+                            (form::field_help("Août 2026 → 2026-08. C'est le mois déclaré, pas le mois du dépôt."))
+                            (form::number(
+                                "credit",
+                                "Crédit à reporter, en euros",
+                                &vat.credit,
+                                "0.01",
+                                vat.credit_error.as_deref(),
+                            ))
+                            button class="quiet" type="submit" { "Reprendre ce crédit" }
                         }
-                        button class="quiet" type="submit" { "Reprendre ce crédit" }
+                    } @else {
+                        p class="prose" {
+                            "Après " (vat.after_period) " : " (vat.credit) " € à reporter. Figé."
+                        }
                     }
                 }
             }

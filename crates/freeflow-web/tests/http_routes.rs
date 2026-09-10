@@ -1456,10 +1456,31 @@ async fn a_vat_carry_in_posted_from_the_letter_fills_case_25() {
         body.contains("324,00") || body.contains("324.00"),
         "case 25 après reprise : {body}"
     );
+    assert!(body.contains("Figé"), "{body}");
     assert!(
-        body.contains("Crédit de TVA antérieur") || body.contains("25"),
-        "{body}"
+        !body.contains("Reprendre ce crédit"),
+        "plus de formulaire : {body}"
     );
+
+    let again = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/societe/impots/ca3/2026-09/vat-credit")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from("after_period=2026-08&credit=100.00"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(again.status(), StatusCode::OK);
+    let again_body = body_text(again).await;
+    assert!(
+        again_body.contains("324,00") || again_body.contains("324.00"),
+        "le 100 € n'écrase pas : {again_body}"
+    );
+    assert!(!again_body.contains("100,00"), "{again_body}");
 }
 
 #[tokio::test]

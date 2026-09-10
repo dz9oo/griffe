@@ -863,6 +863,25 @@ fn society_vat_credit_seeds_the_next_ca3() {
     let boxes = duty["boxes"].as_array().expect("boxes");
     let case25 = boxes.iter().find(|b| b["case"] == "25").expect("case 25");
     assert_eq!(case25["amount"], 32400);
+    let again = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "society",
+            "vat-credit",
+            "set",
+            "--after",
+            "2026-08",
+            "--amount",
+            "100.00",
+        ])
+        .output()
+        .unwrap();
+    assert!(!again.status.success(), "le crédit repris est figé");
+    let stderr = String::from_utf8_lossy(&again.stderr);
+    assert!(
+        stderr.contains("figé") || stderr.contains("existe déjà"),
+        "{stderr}"
+    );
 }
 
 #[test]

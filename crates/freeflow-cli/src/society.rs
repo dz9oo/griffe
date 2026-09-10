@@ -9,9 +9,9 @@ use freeflow_core::society::{
     AmountBasis, AmountStory, BeatKind, BeatWhen, BoxCoverage, BoxRole, ClosingStory,
     DeleteVatCarryIn, DepositPlace, DividendClosed, DividendDoor, Duty, DutyBriefing, DutyFiling,
     Expect, FormBox, IdentityCard, MarkDutyFiled, PayYourself, RecordVatCarryIn, RetractDutyFiled,
-    SocietyHome, StatementMove, StatementReading, UnknownReason, UpdateVatCarryIn,
-    VatCarryInRecord, WaiverReason, closing_story, duty_briefing, pay_yourself, society_duties,
-    society_home, society_identity, statement_moves, vat_carry_in,
+    SocietyHome, StatementMove, StatementReading, UnknownReason, VatCarryInRecord, WaiverReason,
+    closing_story, duty_briefing, pay_yourself, society_duties, society_home, society_identity,
+    statement_moves, vat_carry_in,
 };
 use freeflow_core::store::Store;
 use time::Date;
@@ -504,7 +504,7 @@ pub enum SocietyCommand {
 pub enum VatCreditCommand {
     /// Afficher le crédit repris, s'il est enregistré.
     Show,
-    /// Enregistrer ou remplacer : période de la dernière CA3 (`AAAA-MM`) et case 27.
+    /// Enregistrer le crédit repris — une seule fois ; ensuite il est figé.
     Set {
         /// Période de la dernière CA3 déjà déposée (`AAAA-MM`).
         #[arg(long)]
@@ -516,7 +516,7 @@ pub enum VatCreditCommand {
         #[arg(long)]
         source: Option<String>,
     },
-    /// Oublier le crédit repris.
+    /// Refusé : le crédit repris est figé.
     Rm,
 }
 
@@ -650,25 +650,14 @@ fn run_vat_credit(
             amount,
             source,
         } => {
-            let outcome = match vat_carry_in(store.connection())? {
-                Some(existing) => Executor::new(store).execute(
-                    &UpdateVatCarryIn {
-                        revision: existing.revision,
-                        after_period: after,
-                        credit: amount,
-                        source,
-                    },
-                    ctx,
-                )?,
-                None => Executor::new(store).execute(
-                    &RecordVatCarryIn {
-                        after_period: after,
-                        credit: amount,
-                        source,
-                    },
-                    ctx,
-                )?,
-            };
+            let outcome = Executor::new(store).execute(
+                &RecordVatCarryIn {
+                    after_period: after,
+                    credit: amount,
+                    source,
+                },
+                ctx,
+            )?;
             Ok(format_outcome_as(&outcome, json, |revision| {
                 format!("crédit de TVA repris (révision {revision})")
             }))
