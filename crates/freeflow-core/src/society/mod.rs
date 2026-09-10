@@ -6,6 +6,7 @@
 
 mod filings;
 mod vat_carry;
+mod vat_refund;
 
 pub use filings::{
     DutyFiling, DutyFilingError, MarkCatchUpFiled, MarkDutyFiled, RetractDutyFiled, filing_for,
@@ -14,6 +15,10 @@ pub use filings::{
 pub use vat_carry::{
     DeleteVatCarryIn, RecordVatCarryIn, UpdateVatCarryIn, VatCarryInError, VatCarryInRecord,
     parse_after_period, vat_carry_in,
+};
+pub use vat_refund::{
+    RequestVatRefund, RetractVatRefund, VatRefundError, VatRefundRecord, VatRefundStatus,
+    vat_refund_for,
 };
 
 use rusqlite::Connection;
@@ -815,6 +820,7 @@ pub enum AmountStory {
 pub enum AmountBasis {
     QuarterOfPriorIs,
     VatForPeriod,
+    VatCredit,
     VatInstalment,
     Ca12Net,
     SnapshotIs,
@@ -902,6 +908,7 @@ pub struct DutyBriefing {
     pub coverage: BoxCoverage,
     pub vat_scheme: VatFilingScheme,
     pub catch_up: bool,
+    pub vat_refund: Option<VatRefundStatus>,
 }
 
 struct BriefingMeta {
@@ -1062,18 +1069,24 @@ pub fn duty_briefing(
             reason: UnknownReason::PeriodNotInVault,
         };
     }
-    if kind == FiscalDeadlineKind::Ca3
-        && coverage == BoxCoverage::Complete
-        && let Some(net) = boxes
-            .iter()
-            .find(|b| b.case == "27" || b.case == "28")
-            .and_then(|b| b.amount)
-    {
-        amount = AmountStory::Due {
-            amount: net,
-            basis: AmountBasis::VatForPeriod,
-        };
+    if kind == FiscalDeadlineKind::Ca3 && coverage == BoxCoverage::Complete {
+        if let Some(due) = boxes.iter().find(|b| b.case == "28").and_then(|b| b.amount) {
+            amount = AmountStory::Due {
+                amount: due,
+                basis: AmountBasis::VatForPeriod,
+            };
+        } else if let Some(credit) = boxes.iter().find(|b| b.case == "25").and_then(|b| b.amount) {
+            amount = AmountStory::Due {
+                amount: credit,
+                basis: AmountBasis::VatCredit,
+            };
+        }
     }
+    let vat_refund = if kind == FiscalDeadlineKind::Ca3 {
+        vat_refund::status_for_boxes(conn, &period_key, coverage, &boxes)?
+    } else {
+        None
+    };
     let filed_on =
         resolved
             .as_ref()
@@ -1097,6 +1110,7 @@ pub fn duty_briefing(
         coverage,
         vat_scheme,
         catch_up: resolved.as_ref().is_some_and(|d| d.catch_up),
+        vat_refund,
     })
 }
 
@@ -1231,7 +1245,10 @@ fn is_acompte_boxes(amount: &AmountStory) -> (Vec<FormBox>, BoxCoverage) {
     )
 }
 
-fn ca3_periodicity(conn: &Connection) -> Result<Ca3Periodicity, AppError> {
+/// # Errors
+///
+/// Lecture du profil.
+pub(super) fn ca3_periodicity(conn: &Connection) -> Result<Ca3Periodicity, AppError> {
     let profile = company_profile(conn)?;
     Ok(
         Ca3Periodicity::from_regime(profile.as_ref().and_then(|p| p.vat_regime))
@@ -1258,8 +1275,8 @@ fn ca3_bounds_for(period_key: &str, periodicity: Ca3Periodicity) -> Result<(Date
     Ok((start.first_day(), end.last_day()))
 }
 
-/// Case 25 de `period_key` : crédit ancré après la période précédente, ou chaîne dérivée
-/// jusqu'à ce point (line 27 de P−1).
+/// Case 22 de `period_key` : crédit ancré après la période précédente, ou chaîne dérivée
+/// jusqu'à ce point (ligne 27 de P−1).
 fn ca3_prior_credit(
     conn: &Connection,
     period_key: &str,
@@ -1267,7 +1284,7 @@ fn ca3_prior_credit(
 ) -> Result<Money, AppError> {
     let carry = vat_carry_in(conn)?;
     let opens_on = opening_balance(conn)?.map(|o| o.balance.opens_on);
-    let mut between: Vec<(Date, Date)> = Vec::new();
+    let mut between: Vec<(Date, Date, String)> = Vec::new();
     let mut key = period_key.to_string();
     for _ in 0..24 {
         let Some(prev) = previous_ca3_period_key(&key, periodicity) else {
@@ -1284,7 +1301,7 @@ fn ca3_prior_credit(
         if opens_on.is_some_and(|o| start < o) {
             return fold_carried_credit(conn, Money::ZERO, &between);
         }
-        between.push((start, end));
+        between.push((start, end, prev.clone()));
         key = prev;
     }
     fold_carried_credit(conn, Money::ZERO, &between)
@@ -1293,12 +1310,18 @@ fn ca3_prior_credit(
 fn fold_carried_credit(
     conn: &Connection,
     mut credit: Money,
-    between: &[(Date, Date)],
+    between: &[(Date, Date, String)],
 ) -> Result<Money, AppError> {
-    for &(start, end) in between.iter().rev() {
-        let vat = vat_due_for_period(conn, start, end)?;
+    for (start, end, period_key) in between.iter().rev() {
+        let vat = vat_due_for_period(conn, *start, *end)?;
         let net = vat.due - credit;
-        credit = if net.is_negative() { -net } else { Money::ZERO };
+        credit = if net.cents() >= 0 {
+            Money::ZERO
+        } else {
+            let period_credit = -net;
+            let refund = vat_refund_for(conn, period_key)?.map_or(Money::ZERO, |r| r.amount);
+            period_credit - refund
+        };
     }
     Ok(credit)
 }
@@ -1341,7 +1364,10 @@ fn parse_year_month(key: &str) -> Option<Month> {
     Month::new(year, month).ok()
 }
 
-fn ca3_boxes(
+/// # Errors
+///
+/// Période illisible, ou lecture des factures / dépenses / crédit repris.
+pub(super) fn ca3_boxes(
     conn: &Connection,
     today: Date,
     period_key: &str,
@@ -1381,13 +1407,23 @@ fn ca3_boxes(
     }
     boxes.push(ca3_box("20", Some(vat.deductible_other), BoxRole::Fill));
     if !prior_credit.is_zero() {
-        boxes.push(ca3_box("25", Some(prior_credit), BoxRole::Fill));
+        boxes.push(ca3_box("22", Some(prior_credit), BoxRole::Fill));
     }
     let net = vat.due - prior_credit;
     if net.cents() >= 0 {
         boxes.push(ca3_box("28", Some(net), BoxRole::Fill));
     } else {
-        boxes.push(ca3_box("27", Some(-net), BoxRole::Fill));
+        let period_credit = -net;
+        boxes.push(ca3_box("25", Some(period_credit), BoxRole::Fill));
+        if let Some(refund) = vat_refund_for(conn, period_key)? {
+            boxes.push(ca3_box("26", Some(refund.amount), BoxRole::Fill));
+            let remainder = period_credit - refund.amount;
+            if remainder.cents() > 0 {
+                boxes.push(ca3_box("27", Some(remainder), BoxRole::Fill));
+            }
+        } else {
+            boxes.push(ca3_box("27", Some(period_credit), BoxRole::Fill));
+        }
     }
     Ok((boxes, BoxCoverage::Complete))
 }
@@ -2520,6 +2556,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(september.coverage, BoxCoverage::Complete);
+        let sept_22 = september
+            .boxes
+            .iter()
+            .find(|x| x.case == "22")
+            .expect("case 22");
         let sept_25 = september
             .boxes
             .iter()
@@ -2530,11 +2571,17 @@ mod tests {
             .iter()
             .find(|x| x.case == "27")
             .expect("case 27");
+        assert_eq!(sept_22.amount, Some(Money::from_cents(32_400)));
         assert_eq!(sept_25.amount, Some(Money::from_cents(32_400)));
         assert_eq!(
             sept_27.amount,
             Some(Money::from_cents(32_400)),
             "sans fait en septembre, le crédit se reporte"
+        );
+        assert!(
+            september.boxes.iter().all(|b| b.case != "26"),
+            "pas de 26 : {:?}",
+            september.boxes
         );
         assert!(
             september.boxes.iter().all(|b| b.case != "28"),
@@ -2609,11 +2656,12 @@ mod tests {
                 .unwrap_or_else(|| panic!("case {case}"))
         };
         assert_eq!(
-            box_of("25").amount,
+            box_of("22").amount,
             Some(Money::from_cents(34_400)),
             "324 € repris + 20 € de septembre : {:?}",
             october.boxes
         );
+        assert_eq!(box_of("25").amount, Some(Money::from_cents(34_400)));
         assert_eq!(box_of("27").amount, Some(Money::from_cents(34_400)));
     }
 
