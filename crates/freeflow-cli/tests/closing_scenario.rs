@@ -495,7 +495,9 @@ fn a_preexisting_sasu_closes_two_exercises_alone_from_the_cli() {
     assert_eq!(step(&ready, "corporate_tax")["due_on"], "2027-01-15");
     // Lot 41 : la TVA de l'exercice (aucune facture : crédit, CA3 « néant » à déposer quand
     // même) et la DAS2 (720 € au cabinet : sous le seuil de 2 400 €, rien à déclarer).
-    assert_eq!(step(&ready, "vat")["status"], "info");
+    // Bilan d'ouverture sans crédit repris (case 22) : avertissement — les CA3 partiraient
+    // de zéro (`vat_carry_in`).
+    assert_eq!(step(&ready, "vat")["status"], "warning");
     assert!(
         step(&ready, "vat")["detail"]
             .as_str()

@@ -145,7 +145,10 @@ implémentation.
   CA12 annuelle (ou CA12 E pour un exercice décalé), en tenant compte de la suppression de ce
   régime pour les exercices ouverts à compter du 1er janvier 2027 (loi de finances pour 2025),
   après quoi il bascule en CA3 trimestrielle. `freeflow company show` affiche la règle de
-  télédéclaration dérivée du profil (`vat_filing`).
+  télédéclaration dérivée du profil (`vat_filing`). Un crédit de TVA se demande depuis
+  la lettre (case 26, formulaire 3519 recopié sur le site) : sous 760 € en cours d'année
+  il reste à reporter ; en décembre, 150 € suffisent. Le grand livre ne liquide pas la
+  TVA — un virement DGFiP d'un crédit né ici n'a pas de 445670 débiteur.
 - Prévisionnel de trésorerie sur 12 mois (factures émises non payées + missions signées non
   facturées + pipeline pondéré − charges connues).
 - **Règlement d'un compte de bilan depuis le relevé** (lot 37) : un mouvement du relevé n'est pas
@@ -728,7 +731,8 @@ existe.
 - **Grand livre dérivé, pas une comptabilité tenue** : une dépense non rapprochée d'un débit du
   relevé est réputée payée à sa date (le 401 n'apparaît que pour les dépenses rapprochées),
   la rémunération du dirigeant est réputée due et non décaissée (aucun fait de paie), la TVA n'est
-  jamais liquidée (445660/445710 restent bruts au bilan), pas de cession d'immobilisation, de
+  jamais liquidée (445660/445710 restent bruts au bilan ; un crédit né ici n'a pas de
+  445670 débiteur), pas de cession d'immobilisation, de
   provision ni de régularisation ; lettrage et devise du FEC restent vides. Un exercice qui suit
   un exercice **non** clos dans l'application n'a pas d'à-nouveaux. L'expert-comptable reste
   maître des écritures définitives et du bilan déposé.
@@ -848,6 +852,9 @@ existe.
       Le jour. Lot 49 : mât / gestes / mois. Lot 50 : Les affaires (liste + dossier). Reste le
       lot 51 (la société) — orientation [`docs/atelier-design.md`](docs/atelier-design.md),
       maquette [`docs/mockups/atelier-app.html`](docs/mockups/atelier-app.html).
+- [x] Remboursement de crédit de TVA (case 26 / 3519) : versement depuis la lettre,
+      seuils 760 € en cours d'année / 150 € en décembre, chaîne Cerfa 22/25/26/27/28 —
+      voir « Dépenses & obligations fiscales ».
 - [ ] Internationalisation de l'interface (actuellement en français uniquement).
 
 ## Licence

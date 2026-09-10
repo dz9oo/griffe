@@ -1,6 +1,6 @@
 //! Crédit de TVA à reporter (case 27 de la dernière CA3 déjà déposée).
 //!
-//! Un fait administratif, pas un solde de bilan : il ancre la case 25 de la période
+//! Un fait administratif, pas un solde de bilan : il ancre la case 22 de la période
 //! suivante, puis la chaîne se dérive des factures et dépenses du coffre. Saisi une
 //! seule fois ; ensuite figé — recoller le stock, c'est réécrire une CA3 déjà déposée.
 //! Un agent propose, un humain confirme.
