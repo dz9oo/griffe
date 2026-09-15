@@ -37,9 +37,10 @@ use crate::closing::{ClosingStage, ClosingStepKey, StepStatus, closing_checklist
 use crate::company::company_profile;
 use crate::day::cash_in_bank;
 use crate::domain::{
-    BankTransaction, BankTransactionId, Ca3FilingRule, FiscalYearEnd, Money, Month, Side, VatRate,
-    VatRegime, add_months, sub_months,
+    BankTransaction, BankTransactionId, Ca3FilingRule, ExpensePaidBy, FiscalYearEnd, Money, Month,
+    Side, VatRate, VatRegime, add_months, sub_months,
 };
+use crate::expenses::list_expenses;
 use crate::fiscal::{
     Ca3Periodicity, DAS2_THRESHOLD, DIVIDEND_INCOME_TAX_BPS, FiscalDeadline, FiscalDeadlineKind,
     IS_ACOMPTE_DISPENSATION, VatFilingScheme, ca3_filings_in_range, ca3_period_key,
@@ -427,6 +428,130 @@ pub struct IdentityShort {
     pub days_to_year_end: Option<i64>,
 }
 
+/// Solde entre l'associé et la société (compte 455 dérivé).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CurrentAccountBalance {
+    CompanyOwes { amount: Money },
+    YouOwe { amount: Money },
+    Clear,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CurrentAccountMoveKind {
+    Opening,
+    Advanced,
+    Taken,
+    Brought,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CurrentAccountMove {
+    pub kind: CurrentAccountMoveKind,
+    #[serde(default, with = "crate::domain::serde_date::date::option")]
+    pub on: Option<Date>,
+    pub label: String,
+    pub amount: Money,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CurrentAccount {
+    pub balance: CurrentAccountBalance,
+    /// Signé : positif = la société devait à l'ouverture.
+    pub opening: Money,
+    pub advanced: Money,
+    pub taken: Money,
+    pub brought: Money,
+    pub moves: Vec<CurrentAccountMove>,
+}
+
+/// Compte courant d'associé dérivé : ouverture 455 + avances + apports − prises, jusqu'à `today`.
+///
+/// # Errors
+pub fn current_account(conn: &Connection, today: Date) -> Result<CurrentAccount, AppError> {
+    let opening_rec = opening_balance(conn)?;
+    let mut opening = Money::ZERO;
+    let mut moves = Vec::new();
+    if let Some(rec) = &opening_rec {
+        for line in &rec.balance.lines {
+            if !line.account.starts_with("455") {
+                continue;
+            }
+            // Crédit 455 = la société doit. `signed()` est négatif au crédit.
+            opening += -line.signed();
+            moves.push(CurrentAccountMove {
+                kind: CurrentAccountMoveKind::Opening,
+                on: Some(rec.balance.opens_on),
+                label: line.label.clone(),
+                amount: line.amount,
+            });
+        }
+    }
+
+    let mut advanced = Money::ZERO;
+    for expense in list_expenses(conn)? {
+        if expense.paid_by != ExpensePaidBy::Associate || expense.incurred_on > today {
+            continue;
+        }
+        advanced += expense.amount;
+        moves.push(CurrentAccountMove {
+            kind: CurrentAccountMoveKind::Advanced,
+            on: Some(expense.incurred_on),
+            label: expense.label,
+            amount: expense.amount,
+        });
+    }
+
+    let mut taken = Money::ZERO;
+    let mut brought = Money::ZERO;
+    for tx in list_bank_transactions(conn)? {
+        if tx.occurred_on > today {
+            continue;
+        }
+        let Some(account) = tx.settlement_account.as_ref() else {
+            continue;
+        };
+        if !account.as_str().starts_with("455") {
+            continue;
+        }
+        let amount = Money::from_cents(tx.amount_cents.abs());
+        if tx.is_debit() {
+            taken += amount;
+            moves.push(CurrentAccountMove {
+                kind: CurrentAccountMoveKind::Taken,
+                on: Some(tx.occurred_on),
+                label: tx.description,
+                amount,
+            });
+        } else {
+            brought += amount;
+            moves.push(CurrentAccountMove {
+                kind: CurrentAccountMoveKind::Brought,
+                on: Some(tx.occurred_on),
+                label: tx.description,
+                amount,
+            });
+        }
+    }
+
+    moves.sort_by_key(|m| (m.on, m.kind as u8));
+    let owed = opening + advanced + brought - taken;
+    let balance = match owed.cents().cmp(&0) {
+        std::cmp::Ordering::Greater => CurrentAccountBalance::CompanyOwes { amount: owed },
+        std::cmp::Ordering::Less => CurrentAccountBalance::YouOwe { amount: -owed },
+        std::cmp::Ordering::Equal => CurrentAccountBalance::Clear,
+    };
+    Ok(CurrentAccount {
+        balance,
+        opening,
+        advanced,
+        taken,
+        brought,
+        moves,
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SocietyHome {
     pub identity: IdentityShort,
@@ -437,6 +562,7 @@ pub struct SocietyHome {
     pub closing: ClosingCue,
     pub unmatched: u32,
     pub vat_position: Option<VatPosition>,
+    pub current_account: CurrentAccount,
 }
 
 /// Crédit ou due de TVA que l'indépendant lit — le 27 / 28 dérivé, jamais l'ancre brute.
@@ -486,6 +612,7 @@ pub fn society_home(conn: &Connection, today: Date) -> Result<SocietyHome, AppEr
         closing,
         unmatched,
         vat_position: vat_position(conn, today)?,
+        current_account: current_account(conn, today)?,
     })
 }
 
@@ -1847,12 +1974,15 @@ mod tests {
 
     use super::*;
     use crate::app::{Actor, ExecutionContext, Executor, Outcome};
-    use crate::billing::{EmitInvoice, ImportBankTransactions, ParsedTransaction};
+    use crate::billing::{
+        EmitInvoice, ImportBankTransactions, ParsedTransaction, SettleBankTransaction,
+        list_bank_transactions,
+    };
     use crate::clients::CreateClient;
     use crate::company::SetCompanyProfile;
     use crate::domain::{
-        Address, ExpenseCategory, InvoiceLine, OpeningBalanceLine, Probability, Siren, VatRate,
-        VatRegime,
+        Address, ExpenseCategory, ExpensePaidBy, InvoiceLine, OpeningBalanceLine, Probability,
+        SettlementAccount, Siren, VatRate, VatRegime,
     };
     use crate::expenses::RecordExpense;
     use crate::fiscal::FiscalDeadlineKind;
@@ -2994,5 +3124,113 @@ mod tests {
                 .all(|d| d.filed_on.is_some()),
             "plus rien à rattraper : {duties:?}"
         );
+    }
+
+    #[test]
+    fn empty_vault_current_account_is_clear() {
+        let store = test_store("current-clear");
+        let acc = current_account(store.connection(), today()).unwrap();
+        assert_eq!(acc.balance, CurrentAccountBalance::Clear);
+        assert_eq!(acc.opening, Money::ZERO);
+        assert_eq!(acc.advanced, Money::ZERO);
+        assert!(acc.moves.is_empty());
+    }
+
+    #[test]
+    fn opening_plus_advance_minus_withdrawal_is_what_the_company_owes() {
+        let mut store = test_store("current-604");
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &RecordOpeningBalance {
+                        opens_on: date(2026, TimeMonth::January, 1),
+                        source: None,
+                        lines: vec![
+                            "101000:Capital:C:1000.00".parse().unwrap(),
+                            "455000:Compte courant:C:500.00".parse().unwrap(),
+                            "512000:Banque:D:1500.00".parse().unwrap(),
+                        ],
+                        tax_losses: Money::ZERO,
+                        prior_corporate_tax: None,
+                        prior_vat_due: None,
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &RecordExpense {
+                        label: "CFE 2025".into(),
+                        category: ExpenseCategory::Taxes,
+                        amount: Money::from_cents(20_400),
+                        vat_rate: VatRate::Zero,
+                        vat_deductible: Money::ZERO,
+                        incurred_on: date(2026, TimeMonth::January, 15),
+                        receipt_hash: None,
+                        receipt_filename: None,
+                        bank_transaction_id: None,
+                        supplier: None,
+                        paid_by: ExpensePaidBy::Associate,
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &ImportBankTransactions {
+                        transactions: vec![ParsedTransaction {
+                            occurred_on: date(2026, TimeMonth::January, 20),
+                            amount_cents: -10_000,
+                            description: "VIR ASSOCIE".into(),
+                            fitid: None,
+                        }],
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        let tx = list_bank_transactions(store.connection())
+            .unwrap()
+            .into_iter()
+            .find(|t| t.amount_cents == -10_000)
+            .unwrap();
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &SettleBankTransaction {
+                        transaction_id: tx.id,
+                        account: "455000".parse::<SettlementAccount>().unwrap(),
+                        label: None,
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+
+        let acc = current_account(store.connection(), date(2026, TimeMonth::January, 31)).unwrap();
+        assert_eq!(acc.opening, Money::from_cents(50_000));
+        assert_eq!(acc.advanced, Money::from_cents(20_400));
+        assert_eq!(acc.taken, Money::from_cents(10_000));
+        assert_eq!(acc.brought, Money::ZERO);
+        assert_eq!(
+            acc.balance,
+            CurrentAccountBalance::CompanyOwes {
+                amount: Money::from_cents(60_400)
+            }
+        );
+
+        let before =
+            current_account(store.connection(), date(2026, TimeMonth::January, 10)).unwrap();
+        assert_eq!(
+            before.balance,
+            CurrentAccountBalance::CompanyOwes {
+                amount: Money::from_cents(50_000)
+            }
+        );
+        assert_eq!(before.advanced, Money::ZERO);
     }
 }
