@@ -4414,7 +4414,7 @@ async fn expense_reconciliation_through_the_panel() {
         .await
         .unwrap();
     let detail_body = body_text(detail).await;
-    assert!(detail_body.contains("rapprochée"));
+    assert!(detail_body.contains("au relevé"), "{detail_body}");
     assert!(detail_body.contains("défaire le rapprochement"));
     let response = router
         .clone()
