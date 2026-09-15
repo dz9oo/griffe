@@ -8,11 +8,11 @@ use freeflow_core::fiscal::FiscalDeadlineKind;
 use freeflow_core::papers::papers_checklist;
 use freeflow_core::society::{
     AmountBasis, AmountStory, BeatKind, BeatWhen, BoxCoverage, BoxRole, ClosingBeat, ClosingStory,
-    ConversationBar, DividendClosed, DividendDoor, Duty, DutyBriefing, Expect, FormBox,
-    IdentityCard, IdentityShort, Landscape, PayYourself, SocietyHome, StatementMove,
-    StatementReading, UnknownReason, VatCarryInRecord, VatPosition, VatRefundStatus, WaiverReason,
-    closing_story, duty_briefing, pay_yourself, society_duties, society_home, society_identity,
-    statement_moves, vat_carry_in,
+    ConversationBar, CurrentAccount, CurrentAccountBalance, DividendClosed, DividendDoor, Duty,
+    DutyBriefing, Expect, FormBox, IdentityCard, IdentityShort, Landscape, PayYourself,
+    SocietyHome, StatementMove, StatementReading, UnknownReason, VatCarryInRecord, VatPosition,
+    VatRefundStatus, WaiverReason, closing_story, current_account, duty_briefing, pay_yourself,
+    society_duties, society_home, society_identity, statement_moves, vat_carry_in,
 };
 use freeflow_core::store::Store;
 use maud::{Markup, PreEscaped, html};
@@ -85,13 +85,22 @@ fn papers_chapter_sub(store: &Store, today: Date) -> String {
 fn home_markup(home: &SocietyHome, today: Date, papers_sub: &str) -> Markup {
     let title = home.identity.name.as_deref().unwrap_or("La société.");
     let lede = identity_lede(&home.identity);
-    let pay_sub = if home.pay.possible.is_zero() {
-        "Rien à sortir ce mois-ci sans casser la piste.".to_string()
+    let pay_runway = if home.pay.possible.is_zero() {
+        "rien à sortir ce mois-ci sans casser la piste".to_string()
     } else {
         format!(
             "{} possibles ce mois-ci sans casser la piste",
             home.pay.possible
         )
+    };
+    let pay_sub = match &home.current_account.balance {
+        CurrentAccountBalance::CompanyOwes { amount } => {
+            format!("La société te doit {amount} · {pay_runway}")
+        }
+        CurrentAccountBalance::YouOwe { amount } => {
+            format!("Tu dois {amount} à la société · {pay_runway}")
+        }
+        CurrentAccountBalance::Clear => pay_runway,
     };
     let taxes_sub = match &home.next_duty {
         Some(d) => {
@@ -145,6 +154,7 @@ fn home_markup(home: &SocietyHome, today: Date, papers_sub: &str) -> Markup {
             @if let Some(text) = landscape_prose(&home.landscape, home.vat_position.as_ref()) {
                 p class="prose" { (text) }
             }
+            (current_account_block(&home.current_account, false))
             @if !home.conversations.bars.iter().all(|b| b.count == 0) {
                 div class="block" {
                     h3 { "Les conversations, cette année" }
@@ -158,6 +168,53 @@ fn home_markup(home: &SocietyHome, today: Date, papers_sub: &str) -> Markup {
                 (chapter_link("/societe/releve", "Le relevé", &releve_sub))
                 (chapter_link("/societe/identite", "L'identité", &identite_sub))
                 (chapter_link("/societe/papiers", "Les papiers", papers_sub))
+            }
+        }
+    }
+}
+
+fn current_account_block(acc: &CurrentAccount, with_moves: bool) -> Markup {
+    let headline = match &acc.balance {
+        CurrentAccountBalance::CompanyOwes { amount } => {
+            html! { strong { (amount) } " — la société te doit cette somme." }
+        }
+        CurrentAccountBalance::YouOwe { amount } => {
+            html! { strong { (amount) } " — tu dois cette somme à la société." }
+        }
+        CurrentAccountBalance::Clear => html! { "Rien entre toi et la société." },
+    };
+    let mut bits = Vec::new();
+    if !acc.opening.is_zero() {
+        bits.push(format!("{} repris du cabinet", acc.opening));
+    }
+    if !acc.advanced.is_zero() {
+        bits.push(format!("{} avancés de ta poche", acc.advanced));
+    }
+    if !acc.taken.is_zero() {
+        bits.push(format!("{} pris sur le compte de la société", acc.taken));
+    }
+    if !acc.brought.is_zero() {
+        bits.push(format!("{} mis sur le compte de la société", acc.brought));
+    }
+    html! {
+        div class="block" {
+            h3 { "Entre toi et la société" }
+            p { (headline) }
+            @if !bits.is_empty() {
+                p class="lede" { (bits.join(" · ")) }
+            }
+            @if with_moves {
+                @for m in &acc.moves {
+                    p {
+                        (match m.kind {
+                            freeflow_core::society::CurrentAccountMoveKind::Opening => "Au départ",
+                            freeflow_core::society::CurrentAccountMoveKind::Advanced => "Avancé",
+                            freeflow_core::society::CurrentAccountMoveKind::Taken => "Pris",
+                            freeflow_core::society::CurrentAccountMoveKind::Brought => "Apporté",
+                        })
+                        " · " (m.label) " · " (m.amount)
+                    }
+                }
             }
         }
     }
@@ -335,10 +392,11 @@ fn conversation_bars(bars: &[ConversationBar]) -> Markup {
 
 pub fn pay(store: &Store, today: Date) -> Result<Markup, AppError> {
     let pay = pay_yourself(store.connection(), today)?;
-    Ok(pay_markup(&pay))
+    let acc = current_account(store.connection(), today)?;
+    Ok(pay_markup(&pay, &acc))
 }
 
-fn pay_markup(pay: &PayYourself) -> Markup {
+fn pay_markup(pay: &PayYourself, acc: &CurrentAccount) -> Markup {
     let salary_on = !matches!(pay.dividend, DividendDoor::Open { .. });
     let dividend_body = match &pay.dividend {
         DividendDoor::Closed {
@@ -372,6 +430,7 @@ fn pay_markup(pay: &PayYourself) -> Markup {
             (back())
             h1 { "Te payer." }
             p class="lede" { "La question n'est pas « salaire ou dividendes ». C'est : de l'argent sur ton compte, sans casser la société." }
+            (current_account_block(acc, true))
             div class="block" {
                 h3 { "Ce mois-ci" }
                 p {
@@ -990,7 +1049,7 @@ fn duty_why(kind: FiscalDeadlineKind) -> &'static str {
             "La régularisation annuelle de TVA du réel simplifié, avant le passage en CA3 trimestrielle."
         }
         FiscalDeadlineKind::Cfe => {
-            "L'avis arrive par la poste et dans l'espace professionnel. On paie ce qui est écrit dessus."
+            "L'avis arrive par la poste et dans l'espace professionnel. On paie ce qui est écrit dessus. Si tu l'as payée depuis un compte perso, note-la comme une dépense payée par toi — ça n'apparaît pas sur le relevé de la société."
         }
         FiscalDeadlineKind::Liasse => {
             "Les tableaux 2065 et 2033 se saisissent en ligne, régime simplifié, sans partenaire EDI."
@@ -1232,7 +1291,9 @@ fn reading_actions(m: &StatementMove) -> Markup {
         }
         form hx-post=(settle) hx-target="#panel" hx-swap="innerHTML" {
             input type="hidden" name="account" value="455000";
-            button class="quiet" type="submit" { "C'est moi que je me paie" }
+            button class="quiet" type="submit" {
+                @if m.amount.cents() < 0 { "C'est pour moi." } @else { "C'est moi qui apporte." }
+            }
         }
     }
 }

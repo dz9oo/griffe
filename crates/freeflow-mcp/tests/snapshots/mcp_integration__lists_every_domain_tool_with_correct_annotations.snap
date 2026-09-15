@@ -1,6 +1,5 @@
 ---
 source: crates/freeflow-mcp/tests/mcp_integration.rs
-assertion_line: 281
 expression: "json!({\n    \"tool_names\": names, \"invoice_emit_input_schema\":\n    by_name(\"invoice.emit\").input_schema,\n})"
 ---
 {
@@ -170,6 +169,7 @@ expression: "json!({\n    \"tool_names\": names, \"invoice_emit_input_schema\":\
     "setup.declare_new_company",
     "setup.status",
     "society.closing",
+    "society.current_account",
     "society.delete_vat_credit",
     "society.duties",
     "society.duty",

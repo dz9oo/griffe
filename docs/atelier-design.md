@@ -75,7 +75,7 @@ On parle comme on parlerait à voix haute.
 | Pipeline pondéré | Une seule conversation derrière Camille |
 | Trésorerie prévisionnelle | Piste (en mois) |
 | Rapprochement | Ranger le relevé |
-| Écriture, OD, 401 | C’est le règlement d’une dette / une dépense / moi que je me paie |
+| Écriture, OD, 401 | C’est le règlement d’une dette / une dépense / *C’est pour moi* / *C’est moi qui apporte* |
 | Salaire vs dividendes (jargon) | Te payer — de l’argent sur ton compte, sans casser la société |
 
 Un **geste** a un verbe : *Écrire à Camille*, *Ranger le relevé*, *Savoir pour la TVA*.

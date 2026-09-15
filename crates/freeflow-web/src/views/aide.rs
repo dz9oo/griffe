@@ -106,6 +106,7 @@ const CFE: Recipe = Recipe {
     steps: &[
         "Le jour la fera apparaître le moment venu.",
         "Ouvrez la lettre : elle dit où aller, pas combien — ça, c'est l'avis.",
+        "Si tu l'as payée depuis un compte perso, note-la comme une dépense payée par toi.",
     ],
     does_not: Some("FreeFlow ne connaît pas le montant de l'avis."),
     href: Some("/societe/impots/cfe"),

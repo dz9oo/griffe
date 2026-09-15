@@ -48,6 +48,14 @@ fn saved() -> Response {
     response
 }
 
+fn saved_panel(markup: maud::Markup) -> Response {
+    let mut response = Html(markup.into_string()).into_response();
+    response
+        .headers_mut()
+        .insert("HX-Trigger", HeaderValue::from_static("freeflow:saved"));
+    response
+}
+
 async fn execute<C: freeflow_core::app::Command>(
     state: &AppState,
     cmd: C,
@@ -94,6 +102,7 @@ pub struct ExpenseForm {
     /// Débit du relevé que la dépense créée paie (création seulement, lot 33) — l'équivalent
     /// de `expense record --transaction`.
     bank_transaction_id: Option<String>,
+    paid_by: Option<String>,
 }
 
 /// Fichier reçu dans le champ `receipt` du formulaire, tel quel, avant archivage.
@@ -148,6 +157,7 @@ async fn read_multipart_form(
             "bank_transaction_id" => {
                 form.bank_transaction_id = Some(value).filter(|v| !v.is_empty());
             }
+            "paid_by" => form.paid_by = Some(value).filter(|v| !v.is_empty()),
             // Un champ inconnu est une soumission forgée ou un formulaire d'une autre version :
             // ignoré, les validations de champ feront le reste.
             _ => {}
@@ -188,6 +198,7 @@ impl From<&ExpenseForm> for ExpenseFormValues {
             current_receipt: f.current_receipt.clone(),
             bank_transaction_id: f.bank_transaction_id.clone(),
             bank_transaction_note: None,
+            paid_by: f.paid_by.clone().unwrap_or_default(),
         }
     }
 }
@@ -424,6 +435,26 @@ pub async fn create(State(state): State<AppState>, multipart: Multipart) -> Resp
         .as_deref()
         .zip(receipt_hash.as_deref())
         .map(|(f, h)| (f.to_string(), h.to_string()));
+    let paid_by = if bank_transaction_id.is_some() {
+        freeflow_core::domain::ExpensePaidBy::Company
+    } else {
+        match form.paid_by.as_deref() {
+            Some("me") => freeflow_core::domain::ExpensePaidBy::Associate,
+            Some("company") => freeflow_core::domain::ExpensePaidBy::Company,
+            _ => {
+                let errors = ExpenseFormErrors {
+                    paid_by: Some(
+                        "Dis qui a payé. Si ça n'est pas sur le relevé de la société, c'est probablement toi."
+                            .into(),
+                    ),
+                    ..Default::default()
+                };
+                let values = create_form_values(&state, &form).await;
+                return Html(views::depenses::new_panel(&values, &errors).into_string())
+                    .into_response();
+            }
+        }
+    };
     let cmd = expenses::RecordExpense {
         label: parsed.label,
         category: parsed.category,
@@ -435,7 +466,7 @@ pub async fn create(State(state): State<AppState>, multipart: Multipart) -> Resp
         receipt_filename,
         bank_transaction_id,
         supplier: parsed.supplier,
-        paid_by: freeflow_core::domain::ExpensePaidBy::Company,
+        paid_by,
     };
     match execute(&state, cmd).await {
         None => locked_fragment().into_response(),
@@ -453,7 +484,11 @@ pub async fn create(State(state): State<AppState>, multipart: Multipart) -> Resp
                     })
                     .await;
             }
-            saved()
+            if paid_by == freeflow_core::domain::ExpensePaidBy::Associate {
+                saved_panel(views::depenses::advanced_panel(parsed.amount))
+            } else {
+                saved()
+            }
         }
         Some(Ok(_)) => saved(),
         Some(Err(e)) => {
@@ -584,7 +619,10 @@ pub async fn update(
         receipt_hash,
         receipt_filename,
         supplier: parsed.supplier,
-        paid_by: freeflow_core::domain::ExpensePaidBy::Company,
+        paid_by: match form.paid_by.as_deref() {
+            Some("me") => freeflow_core::domain::ExpensePaidBy::Associate,
+            _ => freeflow_core::domain::ExpensePaidBy::Company,
+        },
     };
     match execute(&state, cmd).await {
         None => locked_fragment().into_response(),

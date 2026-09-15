@@ -20,8 +20,8 @@
 use freeflow_core::app::AppError;
 use freeflow_core::billing::{list_bank_transactions, unmatched_debits};
 use freeflow_core::domain::{
-    BankTransaction, DEFAULT_DURATION_MONTHS, Expense, ExpenseCategory, ExpenseId, FixedAsset,
-    Money, SMALL_EQUIPMENT_THRESHOLD, VatRate, format_date,
+    BankTransaction, DEFAULT_DURATION_MONTHS, Expense, ExpenseCategory, ExpenseId, ExpensePaidBy,
+    FixedAsset, Money, SMALL_EQUIPMENT_THRESHOLD, VatRate, format_date,
 };
 use freeflow_core::expenses::{ExpenseDetail, expense_detail, list_expenses, reconciled_debits};
 use freeflow_core::fixed_assets::{expense_net, list_fixed_assets, should_be_immobilized};
@@ -108,6 +108,8 @@ pub struct ExpenseFormValues {
     /// caché, et son résumé pour l'aide du formulaire.
     pub bank_transaction_id: Option<String>,
     pub bank_transaction_note: Option<String>,
+    /// `company` / `me` / vide (création sans relevé : obligatoire).
+    pub paid_by: String,
 }
 
 impl From<&Expense> for ExpenseFormValues {
@@ -123,6 +125,10 @@ impl From<&Expense> for ExpenseFormValues {
             current_receipt: e.receipt_filename.clone(),
             bank_transaction_id: None,
             bank_transaction_note: None,
+            paid_by: match e.paid_by {
+                ExpensePaidBy::Associate => "me".into(),
+                ExpensePaidBy::Company => "company".into(),
+            },
         }
     }
 }
@@ -153,6 +159,7 @@ pub fn form_values_from_debit(tx: &BankTransaction) -> ExpenseFormValues {
         current_receipt: None,
         bank_transaction_id: Some(tx.id.to_string()),
         bank_transaction_note: Some(debit_summary(tx)),
+        paid_by: "company".into(),
     }
 }
 
@@ -162,6 +169,7 @@ pub struct ExpenseFormErrors {
     pub amount: Option<String>,
     pub vat_deductible: Option<String>,
     pub incurred_on: Option<String>,
+    pub paid_by: Option<String>,
     pub banner: Option<String>,
     pub conflict: Option<(String, String)>,
 }
@@ -209,10 +217,41 @@ fn expense_form(
                     (form::file("receipt", "Justificatif", RECEIPT_ACCEPT))
                     (form::field_help("Facture fournisseur, ticket, note de frais — archivé à côté du coffre avec son hash d'intégrité SHA-256."))
                 }
+                @if values.bank_transaction_id.is_none() {
+                    fieldset class="field" {
+                        legend { "Cette dépense, qui l'a payée ?" }
+                        @if let Some(msg) = &errors.paid_by {
+                            (form::error_banner(msg))
+                        }
+                        label class="field-checkbox" {
+                            input name="paid_by" type="radio" value="company" checked[values.paid_by == "company"];
+                            span { "La société — je la vois (ou je la verrai) au relevé" }
+                        }
+                        (form::field_help("Sans ligne au relevé, FreeFlow fera comme si la banque avait payé ce jour-là. Si tu l'as payée de ta poche, choisis plutôt Moi."))
+                        label class="field-checkbox" {
+                            input name="paid_by" type="radio" value="me" checked[values.paid_by == "me"];
+                            span { "Moi — depuis un compte perso, le mien ou celui du foyer" }
+                        }
+                        (form::field_help("C'est une charge de la société. Comme c'est toi qui as payé, la société te doit ce montant. La banque de la société ne bougera pas."))
+                    }
+                }
                 (form::actions(if revision.is_some() { "Enregistrer" } else { "Enregistrer la dépense" }))
             }
         }
     }
+}
+
+pub fn advanced_panel(amount: Money) -> Markup {
+    panel::sheet(
+        "Avancée par toi",
+        html! {
+            p {
+                "La société te doit " strong { (amount) }
+                ". La banque n'a pas bougé. Tu te feras rembourser plus tard par un virement, "
+                em { "C'est pour moi." }
+            }
+        },
+    )
 }
 
 pub fn new_panel(values: &ExpenseFormValues, errors: &ExpenseFormErrors) -> Markup {
@@ -263,9 +302,11 @@ pub fn detail_panel(
             }
             dt { "Relevé bancaire" }
             @if let Some(tx) = &detail.bank_transaction {
-                dd { span class="badge ok" { "rapprochée" } " " (debit_summary(tx)) }
+                dd { span class="badge ok" { "au relevé" } " " (debit_summary(tx)) }
+            } @else if expense.paid_by == ExpensePaidBy::Associate {
+                dd { "avancée par toi — la société te doit " (expense.amount) }
             } @else {
-                dd { "non rapprochée — réputée payée à sa date dans le grand livre" }
+                dd { "la société, pas encore au relevé" }
             }
             @if let Some(asset) = asset {
                 dt { "Immobilisation" }
@@ -306,7 +347,7 @@ pub fn detail_panel(
             }
             @if detail.bank_transaction.is_some() {
                 button class="btn" hx-post=(format!("/depenses/{}/unreconcile", expense.id)) hx-target="#panel" hx-swap="innerHTML" { "défaire le rapprochement" }
-            } @else {
+            } @else if expense.paid_by != ExpensePaidBy::Associate {
                 button class="btn" hx-get=(format!("/depenses/{}/reconcile", expense.id)) hx-target="#panel" hx-swap="innerHTML" { "rapprocher d'un débit" }
             }
             button class="btn danger" hx-get=(format!("/depenses/{}/delete", expense.id)) hx-target="#panel" hx-swap="innerHTML" { "supprimer" }

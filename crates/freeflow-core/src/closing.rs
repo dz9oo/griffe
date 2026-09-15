@@ -1637,6 +1637,12 @@ pub const GLOSSARY: &[GlossaryEntry] = &[
                   compte « banque » du bilan égal à votre vrai solde.",
     },
     GlossaryEntry {
+        term: "Compte courant",
+        meaning: "Tu as payé une facture de la société avec ton argent (ou celui du foyer). \
+                  La société te doit cette somme. Ce n'est pas de l'argent sur son compte \
+                  en banque. Pour te rembourser, un virement depuis le relevé : C'est pour moi.",
+    },
+    GlossaryEntry {
         term: "Justificatif",
         meaning: "La pièce (facture, ticket, relevé) qui prouve une dépense. Sans elle, la \
                   dépense et sa TVA ne sont pas déductibles en cas de contrôle. FreeFlow \
@@ -1822,6 +1828,7 @@ mod tests {
         for word in [
             "Bilan d'ouverture",
             "Rapprochement bancaire",
+            "Compte courant",
             "Affectation du résultat",
             "Approbation des comptes",
             "Liasse fiscale",

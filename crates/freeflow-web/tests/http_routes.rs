@@ -962,6 +962,7 @@ async fn la_societe_shows_the_landscape_chapters_and_a_closed_dividend() {
     assert!(home.contains("data-view=\"societe\""), "{home}");
     assert!(home.contains("class=\"landscape\""), "paysage : {home}");
     assert!(home.contains("Te payer"), "{home}");
+    assert!(home.contains("Entre toi et la société"), "{home}");
     assert!(home.contains("/societe/payer"), "{home}");
     assert!(home.contains("Les papiers"), "{home}");
     assert!(home.contains("/societe/papiers"), "{home}");
@@ -1013,6 +1014,10 @@ async fn la_societe_shows_the_landscape_chapters_and_a_closed_dividend() {
         "Leroy = dette : {releve}"
     );
     assert!(!releve.contains("freeflow "), "{releve}");
+    assert!(
+        !releve.to_lowercase().contains("c'est moi que je me paie"),
+        "{releve}"
+    );
 
     let old = body_text(
         router
@@ -6535,4 +6540,81 @@ async fn exporting_the_control_pack_from_the_window_writes_a_readable_inventory(
         "{papiers}"
     );
     assert!(!papiers.contains("freeflow "), "{papiers}");
+}
+
+#[tokio::test]
+async fn creating_an_expense_without_payer_or_statement_is_refused() {
+    let db_path = test_db_path("expense-payer-required");
+    let state = unlocked_state(&db_path).await;
+    let router = freeflow_web::router(state);
+    let (content_type, body) = multipart_form(
+        &[
+            ("label", "CFE 2025"),
+            ("category", "taxes"),
+            ("amount", "204.00"),
+            ("vat_rate", "zero"),
+            ("vat_deductible", "0.00"),
+            ("incurred_on", "2026-01-15"),
+        ],
+        None,
+    );
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/depenses")
+                .header("content-type", content_type)
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response.headers().get("HX-Trigger").is_none());
+    let body = body_text(response).await;
+    assert!(body.contains("Dis qui a payé"), "{body}");
+    let store = Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    assert!(
+        freeflow_core::expenses::list_expenses(store.connection())
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn creating_an_associate_paid_expense_keeps_the_panel() {
+    let db_path = test_db_path("expense-associate");
+    let state = unlocked_state(&db_path).await;
+    let router = freeflow_web::router(state);
+    let (content_type, body) = multipart_form(
+        &[
+            ("label", "CFE 2025"),
+            ("category", "taxes"),
+            ("amount", "204.00"),
+            ("vat_rate", "zero"),
+            ("vat_deductible", "0.00"),
+            ("incurred_on", "2026-01-15"),
+            ("paid_by", "me"),
+        ],
+        None,
+    );
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/depenses")
+                .header("content-type", content_type)
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("HX-Trigger").unwrap(),
+        "freeflow:saved"
+    );
+    let body = body_text(response).await;
+    assert!(body.contains("La société te doit"), "{body}");
+    assert!(body.contains("204"), "{body}");
 }
