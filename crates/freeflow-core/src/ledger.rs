@@ -82,9 +82,9 @@ use crate::billing::{compute_totals, list_bank_transactions, list_invoices, list
 use crate::clients::list_clients;
 use crate::company::{CompanyProfile, company_profile};
 use crate::domain::{
-    BankTransaction, Client, ClientId, Expense, ExpenseCategory, ExpenseId, FiscalYear,
-    FiscalYearEnd, FixedAsset, Invoice, InvoiceId, Money, OpeningBalance, Payment, PaymentMethod,
-    format_date,
+    BankTransaction, Client, ClientId, Expense, ExpenseCategory, ExpenseId, ExpensePaidBy,
+    FiscalYear, FiscalYearEnd, FixedAsset, Invoice, InvoiceId, Money, OpeningBalance, Payment,
+    PaymentMethod, format_date,
 };
 use crate::expenses::list_expenses;
 use crate::fiscal_year::{FiscalYearRecord, fiscal_year_ending_in, list_fiscal_years};
@@ -694,7 +694,10 @@ impl Facts<'_> {
             );
             let charge = expense.amount - expense.vat_deductible;
             let debit = debits.get(&expense.id).copied();
-            let paid_through = debit.map_or(accounts::BANK, |_| accounts::SUPPLIERS);
+            let paid_through = match expense.paid_by {
+                ExpensePaidBy::Associate => accounts::SHAREHOLDER_ACCOUNT,
+                ExpensePaidBy::Company => debit.map_or(accounts::BANK, |_| accounts::SUPPLIERS),
+            };
             // Lot 42 : une dépense immobilisée entre à l'actif (2xx) au lieu du compte de charge.
             let debit_account = immobilized.get(&expense.id).map_or_else(
                 || charge_account(expense.category),
@@ -2646,6 +2649,66 @@ mod tests {
             Money::from_cents(80_000)
         );
         assert_eq!(sheet.liability(LiabilityRubric::Result), Money::ZERO);
+    }
+
+    #[test]
+    fn an_associate_paid_tax_credits_the_shareholder_account_not_the_bank() {
+        let p = profile(None, None);
+        let mut cfe = expense(20_400, 0, date(2026, TimeMonth::January, 15));
+        cfe.category = ExpenseCategory::Taxes;
+        cfe.vat_rate = VatRate::Zero;
+        cfe.paid_by = ExpensePaidBy::Associate;
+        cfe.label = "CFE 2025".into();
+        let opening = OpeningBalance {
+            opens_on: date(2026, TimeMonth::January, 1),
+            source: None,
+            lines: vec![
+                "101000:Capital:C:1000.00".parse().unwrap(),
+                "512000:Banque:D:1000.00".parse().unwrap(),
+            ],
+            tax_losses: Money::ZERO,
+        };
+        let ledger = Ledger::build(facts(
+            &p,
+            FiscalYear::calendar(2026),
+            &[],
+            &[cfe.clone()],
+            Some(OpeningLines::from_opening_balance(&opening)),
+        ))
+        .unwrap();
+
+        let purchases: Vec<&LedgerEntry> = ledger
+            .entries
+            .iter()
+            .filter(|e| e.journal == Journal::Purchases)
+            .collect();
+        assert_eq!(purchases.len(), 1);
+        let piece = &purchases[0];
+        assert!(piece.piece_ref.starts_with("DEP-"));
+        assert!(
+            ledger
+                .entries
+                .iter()
+                .filter(|e| e.journal == Journal::Bank)
+                .all(|e| e.piece_ref != piece.piece_ref),
+            "pas de BQ pour une avance"
+        );
+        let of = |n: &str| {
+            ledger
+                .trial_balance()
+                .rows
+                .iter()
+                .find(|r| r.account.number == n)
+                .map(|r| r.balance)
+        };
+        assert_eq!(of("635000"), Some(Money::from_cents(20_400)));
+        assert_eq!(of("455000"), Some(Money::from_cents(-20_400)));
+        assert_eq!(of("512000"), Some(Money::from_cents(100_000)));
+        let sheet = ledger.balance_sheet();
+        assert_eq!(
+            sheet.shareholder_current_accounts,
+            Money::from_cents(20_400)
+        );
     }
 
     // --- Rapprochement bancaire des dépenses (lot 33). ---

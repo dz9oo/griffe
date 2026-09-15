@@ -1511,4 +1511,21 @@ mod tests {
             "{err}"
         );
     }
+
+    #[test]
+    fn associate_advances_are_not_cash_burn() {
+        let mut store = test_store("associate-burn");
+        record(&mut store, &cfe_advance());
+        let inputs = crate::forecast::build_forecast_inputs(
+            store.connection(),
+            date(2026, Month::January, 31),
+            Money::ZERO,
+        )
+        .unwrap();
+        assert_eq!(
+            inputs.monthly_known_expenses,
+            Money::ZERO,
+            "une CFE payée de la poche n'est pas un décaissement"
+        );
+    }
 }

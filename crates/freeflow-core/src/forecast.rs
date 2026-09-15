@@ -13,7 +13,7 @@ use time::Date;
 
 use crate::app::AppError;
 use crate::billing::{aged_balance, compute_totals, list_invoices};
-use crate::domain::{Money, Month};
+use crate::domain::{ExpensePaidBy, Money, Month};
 use crate::expenses::expenses_between;
 use crate::missions::{BillingSchedule, billing_schedule, list_active_missions};
 use crate::prospection::weighted_pipeline;
@@ -177,7 +177,11 @@ pub fn build_forecast_inputs(
         .fold(month_of(today), |m, _| m.pred())
         .first_day();
     let recent_expenses = expenses_between(conn, history_start, today)?;
-    let total_recent: Money = recent_expenses.iter().map(|e| e.amount).sum();
+    let total_recent: Money = recent_expenses
+        .iter()
+        .filter(|e| e.paid_by != ExpensePaidBy::Associate)
+        .map(|e| e.amount)
+        .sum();
     let monthly_known_expenses = total_recent.divide_by_days(f64::from(EXPENSE_HISTORY_MONTHS));
 
     Ok(ForecastInputs {
