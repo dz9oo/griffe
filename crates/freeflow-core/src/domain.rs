@@ -33,7 +33,9 @@ pub use calendar::{
     next_french_business_day_on_or_after,
 };
 pub use client::{Address, Client, Contact};
-pub use expense::{Expense, ExpenseCategory, UnknownExpenseCategory};
+pub use expense::{
+    Expense, ExpenseCategory, ExpensePaidBy, UnknownExpenseCategory, UnknownExpensePaidBy,
+};
 pub use follow_up::{
     CadenceStep, EmlDraft, FollowUpCursor, FollowUpEvent, FollowUpFact, FollowUpKind,
     FollowUpSubject, INVOICE_CADENCE, InvalidEmail, PROSPECT_CADENCE, SnoozePreset,

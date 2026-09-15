@@ -1266,6 +1266,7 @@ mod tests {
                         receipt_filename: None,
                         bank_transaction_id: None,
                         supplier: Some("Cabinet Leroy".into()),
+                        paid_by: crate::domain::ExpensePaidBy::Company,
                     },
                     &human(),
                 )

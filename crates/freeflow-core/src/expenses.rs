@@ -41,7 +41,8 @@ use time::format_description::well_known::Rfc3339;
 use crate::app::{AppError, Command};
 use crate::billing;
 use crate::domain::{
-    self, BankTransaction, BankTransactionId, Expense, ExpenseCategory, ExpenseId, Money, VatRate,
+    self, BankTransaction, BankTransactionId, Expense, ExpenseCategory, ExpenseId, ExpensePaidBy,
+    Money, VatRate,
 };
 
 fn conv_err(e: impl std::error::Error + Send + Sync + 'static) -> rusqlite::Error {
@@ -119,6 +120,20 @@ pub enum ExpensesError {
          de l'immobilisation — supprimez d'abord l'immobilisation pour la modifier ou la supprimer"
     )]
     Immobilized(ExpenseId),
+
+    #[error(
+        "une dépense avancée par l'associé n'est pas un paiement du relevé : elle n'apparaît pas \
+         sur le compte de la société"
+    )]
+    PaidByAssociateNotABankPayment,
+
+    #[error(
+        "cette dépense a été avancée par l'associé : elle n'est pas sur le relevé de la société"
+    )]
+    ExpenseAdvancedByAssociate(ExpenseId),
+
+    #[error("cette dépense est rapprochée d'un débit du relevé : elle a été payée par la société")]
+    PaidByLockedWhenReconciled(ExpenseId),
 }
 
 impl From<ExpensesError> for AppError {
@@ -262,23 +277,28 @@ pub struct RecordExpense {
     /// Bénéficiaire (honoraires : le cabinet, l'avocat…), pour la DAS2 (lot 41).
     #[serde(default)]
     pub supplier: Option<String>,
+    /// Qui a payé (lot 63). Défaut `Company` : audit antérieur et CLI sans `--paid-by`.
+    #[serde(default)]
+    pub paid_by: ExpensePaidBy,
 }
 
 impl Command for RecordExpense {
     type Output = ExpenseId;
     const NAME: &'static str = "expenses.record";
 
-    /// Créer une dépense est un geste ordinaire ; la rapprocher d'un débit du relevé est un
-    /// acte de rapprochement bancaire, derrière la même barrière que
-    /// `billing::ReconcileTransaction` : un agent le propose, un humain le confirme.
+    /// Créer une dépense est un geste ordinaire ; la rapprocher d'un débit du relevé, ou
+    /// l'enregistrer comme avance de l'associé (lot 63), est derrière confirmation humaine.
     fn requires_confirmation(&self) -> bool {
-        self.bank_transaction_id.is_some()
+        self.bank_transaction_id.is_some() || self.paid_by == ExpensePaidBy::Associate
     }
 
     fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
         ensure_vat_within_amount(self.vat_deductible, self.amount, self.vat_rate)?;
         ensure_outside_closed_fiscal_year(conn, self.incurred_on)?;
         ensure_not_before_opening_balance(conn, self.incurred_on)?;
+        if self.paid_by == ExpensePaidBy::Associate && self.bank_transaction_id.is_some() {
+            return Err(ExpensesError::PaidByAssociateNotABankPayment.into());
+        }
         if let Some(transaction_id) = self.bank_transaction_id {
             rapprochable_debit(conn, transaction_id, self.amount)?;
         }
@@ -293,6 +313,7 @@ impl Command for RecordExpense {
             receipt_hash: self.receipt_hash.clone(),
             receipt_filename: self.receipt_filename.clone(),
             supplier: self.supplier.clone(),
+            paid_by: self.paid_by,
             created_at: OffsetDateTime::now_utc(),
             revision: 1,
         };
@@ -326,6 +347,9 @@ impl Command for ReconcileExpense {
     fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
         let expense = expense_by_id(conn, self.expense_id)?
             .ok_or(ExpensesError::NotFound(self.expense_id))?;
+        if expense.paid_by == ExpensePaidBy::Associate {
+            return Err(ExpensesError::ExpenseAdvancedByAssociate(self.expense_id).into());
+        }
         if billing::bank_transaction_for_expense(conn, self.expense_id)?.is_some() {
             return Err(ExpensesError::ExpenseAlreadyReconciled(self.expense_id).into());
         }
@@ -358,12 +382,18 @@ pub struct UpdateExpense {
     pub receipt_filename: Option<String>,
     #[serde(default)]
     pub supplier: Option<String>,
+    #[serde(default)]
+    pub paid_by: ExpensePaidBy,
 }
 
 impl Command for UpdateExpense {
     /// La révision résultante.
     type Output = i64;
     const NAME: &'static str = "expenses.update";
+
+    fn requires_confirmation(&self) -> bool {
+        self.paid_by == ExpensePaidBy::Associate
+    }
 
     fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
         ensure_vat_within_amount(self.vat_deductible, self.amount, self.vat_rate)?;
@@ -375,11 +405,13 @@ impl Command for UpdateExpense {
         // Seule la nouvelle date compte ici : une dépense saisie avant que le bilan
         // d'ouverture existe doit rester corrigeable (vers une date valide).
         ensure_not_before_opening_balance(conn, self.incurred_on)?;
+        let reconciled = billing::bank_transaction_for_expense(conn, self.id)?.is_some();
         // Une dépense rapprochée garde le montant de son débit : le relevé fait foi (lot 33).
-        if self.amount != current.amount
-            && billing::bank_transaction_for_expense(conn, self.id)?.is_some()
-        {
+        if self.amount != current.amount && reconciled {
             return Err(ExpensesError::ReconciledAmountLocked(self.id).into());
+        }
+        if self.paid_by != ExpensePaidBy::Company && reconciled {
+            return Err(ExpensesError::PaidByLockedWhenReconciled(self.id).into());
         }
         // Une dépense immobilisée (lot 42) a donné sa base amortissable : montant et TVA figés.
         if (self.amount != current.amount || self.vat_deductible != current.vat_deductible)
@@ -392,7 +424,7 @@ impl Command for UpdateExpense {
             "UPDATE expenses
                 SET label = ?1, category = ?2, amount_cents = ?3, vat_rate = ?4,
                     vat_deductible_cents = ?5, incurred_on = ?6, receipt_hash = ?7,
-                    receipt_filename = ?8, revision = ?9, supplier = ?12
+                    receipt_filename = ?8, revision = ?9, supplier = ?12, paid_by = ?13
               WHERE id = ?10 AND revision = ?11",
             params![
                 self.label,
@@ -407,6 +439,7 @@ impl Command for UpdateExpense {
                 self.id.to_string(),
                 self.revision,
                 self.supplier,
+                self.paid_by.as_str(),
             ],
         )?;
         Ok(new_revision)
@@ -494,8 +527,8 @@ fn insert_expense(conn: &Connection, expense: &Expense) -> Result<(), AppError> 
     conn.execute(
         "INSERT INTO expenses
             (id, label, category, amount_cents, vat_rate, vat_deductible_cents, incurred_on,
-             receipt_hash, receipt_filename, created_at, revision, supplier)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+             receipt_hash, receipt_filename, created_at, revision, supplier, paid_by)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         params![
             expense.id.to_string(),
             expense.label,
@@ -509,6 +542,7 @@ fn insert_expense(conn: &Connection, expense: &Expense) -> Result<(), AppError> 
             expense.created_at.format(&Rfc3339)?,
             expense.revision,
             expense.supplier,
+            expense.paid_by.as_str(),
         ],
     )?;
     Ok(())
@@ -530,6 +564,7 @@ fn row_to_expense(row: &Row) -> rusqlite::Result<Expense> {
         receipt_hash: row.get("receipt_hash")?,
         receipt_filename: row.get("receipt_filename")?,
         supplier: row.get("supplier")?,
+        paid_by: row.get::<_, String>("paid_by")?.parse().map_err(conv_err)?,
         created_at: OffsetDateTime::parse(&created_at, &Rfc3339).map_err(conv_err)?,
         revision: row.get("revision")?,
     })
@@ -692,6 +727,7 @@ mod tests {
             receipt_filename: Some("facture.pdf".to_string()),
             supplier: None,
             bank_transaction_id: None,
+            paid_by: ExpensePaidBy::Company,
         }
     }
 
@@ -836,6 +872,7 @@ mod tests {
             receipt_hash: expense.receipt_hash.clone(),
             receipt_filename: expense.receipt_filename.clone(),
             supplier: None,
+            paid_by: expense.paid_by,
         }
     }
 
@@ -1340,6 +1377,137 @@ mod tests {
             .unwrap_err();
         assert!(
             err.to_string().contains("antérieure au bilan d'ouverture"),
+            "{err}"
+        );
+    }
+
+    fn cfe_advance() -> RecordExpense {
+        RecordExpense {
+            label: "CFE 2025".to_string(),
+            category: ExpenseCategory::Taxes,
+            amount: Money::from_cents(20_400),
+            vat_rate: VatRate::Zero,
+            vat_deductible: Money::ZERO,
+            incurred_on: date(2026, Month::January, 15),
+            receipt_hash: None,
+            receipt_filename: None,
+            supplier: None,
+            bank_transaction_id: None,
+            paid_by: ExpensePaidBy::Associate,
+        }
+    }
+
+    #[test]
+    fn an_associate_paid_expense_is_stored_and_not_a_bank_payment() {
+        let mut store = test_store("associate-paid");
+        let id = record(&mut store, &cfe_advance());
+        let got = expense_by_id(store.connection(), id).unwrap().unwrap();
+        assert_eq!(got.paid_by, ExpensePaidBy::Associate);
+        assert_eq!(got.amount, Money::from_cents(20_400));
+        assert_eq!(got.category, ExpenseCategory::Taxes);
+    }
+
+    #[test]
+    fn associate_and_a_bank_debit_together_are_refused() {
+        let mut store = test_store("associate-and-debit");
+        let tx = import_transaction(&mut store, date(2026, Month::January, 15), -20_400);
+        let mut cmd = cfe_advance();
+        cmd.bank_transaction_id = Some(tx);
+        let err = Executor::new(&mut store)
+            .execute(&cmd, &human_ctx())
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("pas sur le relevé")
+                || err.to_string().contains("avancée par l'associé"),
+            "{err}"
+        );
+        assert!(list_expenses(store.connection()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn reconciling_an_associate_paid_expense_is_refused() {
+        let mut store = test_store("reconcile-associate");
+        let id = record(&mut store, &cfe_advance());
+        let tx = import_transaction(&mut store, date(2026, Month::January, 15), -20_400);
+        let err = Executor::new(&mut store)
+            .execute(
+                &ReconcileExpense {
+                    transaction_id: tx,
+                    expense_id: id,
+                },
+                &human_ctx(),
+            )
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("avancée par l'associé")
+                || err.to_string().contains("pas sur le relevé"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn an_agent_recording_an_associate_advance_only_deposits_a_pending_action() {
+        let mut store = test_store("agent-associate");
+        let outcome = Executor::new(&mut store)
+            .execute(
+                &cfe_advance(),
+                &ExecutionContext::new(
+                    Actor::Agent {
+                        session: "sess-test".into(),
+                    },
+                    false,
+                ),
+            )
+            .unwrap();
+        assert!(matches!(outcome, Outcome::PendingConfirmation(_)));
+        assert!(list_expenses(store.connection()).unwrap().is_empty());
+        assert!(cfe_advance().requires_confirmation());
+        assert!(
+            !sample().requires_confirmation(),
+            "sans avance ni débit, créer une dépense reste un geste ordinaire"
+        );
+    }
+
+    #[test]
+    fn omitted_paid_by_deserializes_as_company() {
+        let mut value = serde_json::to_value(sample()).unwrap();
+        value.as_object_mut().expect("object").remove("paid_by");
+        let cmd: RecordExpense = serde_json::from_value(value).unwrap();
+        assert_eq!(cmd.paid_by, ExpensePaidBy::Company);
+    }
+
+    #[test]
+    fn flipping_company_to_associate_is_allowed_until_reconciled() {
+        let mut store = test_store("flip-paid-by");
+        let id = record(&mut store, &sample());
+        let current = expense_by_id(store.connection(), id).unwrap().unwrap();
+        let mut update = update_from(&current);
+        update.paid_by = ExpensePaidBy::Associate;
+        Executor::new(&mut store)
+            .execute(&update, &human_ctx())
+            .unwrap();
+        let reread = expense_by_id(store.connection(), id).unwrap().unwrap();
+        assert_eq!(reread.paid_by, ExpensePaidBy::Associate);
+
+        let tx = import_transaction(&mut store, date(2026, Month::September, 7), -12_000);
+        let company = record(&mut store, &sample());
+        Executor::new(&mut store)
+            .execute(
+                &ReconcileExpense {
+                    transaction_id: tx,
+                    expense_id: company,
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+        let reconciled = expense_by_id(store.connection(), company).unwrap().unwrap();
+        let mut locked = update_from(&reconciled);
+        locked.paid_by = ExpensePaidBy::Associate;
+        let err = Executor::new(&mut store)
+            .execute(&locked, &human_ctx())
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("rapprochée") || err.to_string().contains("relevé"),
             "{err}"
         );
     }

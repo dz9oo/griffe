@@ -786,6 +786,7 @@ mod tests {
                     receipt_filename: None,
                     supplier: None,
                     bank_transaction_id: None,
+                    paid_by: crate::domain::ExpensePaidBy::Company,
                 },
                 &human(),
             )

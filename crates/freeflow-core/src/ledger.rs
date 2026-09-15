@@ -1942,6 +1942,7 @@ mod tests {
             receipt_hash: None,
             receipt_filename: None,
             supplier: None,
+            paid_by: crate::domain::ExpensePaidBy::Company,
             created_at: OffsetDateTime::UNIX_EPOCH,
             revision: 1,
         }

@@ -675,6 +675,7 @@ mod tests {
             receipt_filename: None,
             supplier: None,
             bank_transaction_id: None,
+            paid_by: crate::domain::ExpensePaidBy::Company,
         };
         let crate::app::Outcome::Applied(id) = Executor::new(store)
             .execute(&cmd, &ExecutionContext::new(Actor::Human, false))

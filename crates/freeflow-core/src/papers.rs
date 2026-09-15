@@ -1270,6 +1270,7 @@ mod tests {
                     receipt_filename: Some("hebergement.pdf".into()),
                     supplier: None,
                     bank_transaction_id: None,
+                    paid_by: crate::domain::ExpensePaidBy::Company,
                 },
                 &human(),
             )

@@ -537,6 +537,7 @@ mod tests {
             receipt_filename: None,
             bank_transaction_id: None,
             supplier: None,
+            paid_by: crate::domain::ExpensePaidBy::Company,
         };
         match Executor::new(store).execute(&cmd, &human()).unwrap() {
             Outcome::Applied(id) => id,
@@ -623,6 +624,7 @@ mod tests {
             receipt_hash: None,
             receipt_filename: None,
             supplier: None,
+            paid_by: crate::domain::ExpensePaidBy::Company,
             revision: current.revision,
         };
         let err = Executor::new(&mut store)

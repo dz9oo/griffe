@@ -86,6 +86,42 @@ impl std::str::FromStr for ExpenseCategory {
     }
 }
 
+/// Qui a payé la dépense (lot 63). `Company` : la société (relevé, ou réputée payée à la date).
+/// `Associate` : l'associé (ou le foyer) depuis un compte perso — crédit 455, la banque ne bouge
+/// pas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ExpensePaidBy {
+    #[default]
+    Company,
+    Associate,
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+#[error("payeur de dépense inconnu : {0}")]
+pub struct UnknownExpensePaidBy(pub String);
+
+impl ExpensePaidBy {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Company => "company",
+            Self::Associate => "associate",
+        }
+    }
+}
+
+impl std::str::FromStr for ExpensePaidBy {
+    type Err = UnknownExpensePaidBy;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "company" => Ok(Self::Company),
+            "associate" => Ok(Self::Associate),
+            other => Err(UnknownExpensePaidBy(other.to_string())),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Expense {
     pub id: ExpenseId,
@@ -112,10 +148,29 @@ pub struct Expense {
     /// Facultatif ; le parcours signale des honoraires sans bénéficiaire.
     #[serde(default)]
     pub supplier: Option<String>,
+    /// Qui a payé (lot 63). Défaut `Company` : les dépenses antérieures restent réputées payées
+    /// par la banque.
+    #[serde(default)]
+    pub paid_by: ExpensePaidBy,
     #[serde(with = "crate::domain::serde_date::datetime")]
     pub created_at: OffsetDateTime,
     /// Révision optimiste (lot 21) — voir `crate::app::revision`. La colonne SQL existait depuis
     /// la migration `0008` (posée par anticipation) ; elle n'est lue et écrite que depuis que
     /// `UpdateExpense`/`DeleteExpense` existent.
     pub revision: i64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn paid_by_round_trips_through_its_text_form() {
+        assert_eq!("company".parse(), Ok(ExpensePaidBy::Company));
+        assert_eq!("associate".parse(), Ok(ExpensePaidBy::Associate));
+        assert_eq!(ExpensePaidBy::Company.as_str(), "company");
+        assert_eq!(ExpensePaidBy::Associate.as_str(), "associate");
+        assert_eq!(ExpensePaidBy::default(), ExpensePaidBy::Company);
+        assert!("bank".parse::<ExpensePaidBy>().is_err());
+    }
 }
