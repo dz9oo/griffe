@@ -7,8 +7,8 @@ use freeflow_core::fiscal::FiscalDeadlineKind;
 use freeflow_core::society::{
     DeleteVatCarryIn, MarkDutyFiled, RecordVatCarryIn, RecordVatReversal, RequestVatRefund,
     RetractDutyFiled, RetractVatRefund, RetractVatReversal, VatRefundStatus, closing_story,
-    duty_briefing, pay_yourself, society_duties, society_home, society_identity, statement_moves,
-    vat_carry_in,
+    current_account, duty_briefing, pay_yourself, society_duties, society_home, society_identity,
+    statement_moves, vat_carry_in,
 };
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
@@ -87,6 +87,26 @@ impl FreeflowServer {
         let store = self.store.lock().await;
         match pay_yourself(store.connection(), today) {
             Ok(pay) => ok_json(pay),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
+    /// Entre toi et la société : ce que la société te doit (avances, apports, prises).
+    #[tool(
+        name = "society.current_account",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    async fn society_current_account_tool(
+        &self,
+        Parameters(args): Parameters<TodayArgs>,
+    ) -> CallToolResult {
+        let today = match today_or(args.today) {
+            Ok(d) => d,
+            Err(e) => return err_text(e),
+        };
+        let store = self.store.lock().await;
+        match current_account(store.connection(), today) {
+            Ok(acc) => ok_json(acc),
             Err(e) => err_text(e.to_string()),
         }
     }

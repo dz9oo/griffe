@@ -12,7 +12,7 @@
 
 use freeflow_core::app::Executor;
 use freeflow_core::billing::bank_transaction_by_id;
-use freeflow_core::domain::{BankTransactionId, ExpenseCategory, Money, VatRate};
+use freeflow_core::domain::{BankTransactionId, ExpenseCategory, ExpensePaidBy, Money, VatRate};
 use freeflow_core::expenses::{self, expense_by_id, expense_detail, list_expenses};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
@@ -44,6 +44,10 @@ pub(crate) struct RecordExpenseArgs {
     /// Bénéficiaire (fournisseur) — pour les honoraires, le nom qui cumule sur la DAS2
     /// (seuil 2 400 € par bénéficiaire et par année civile).
     supplier: Option<String>,
+    /// `company` (défaut) ou `associate` (payée depuis un compte perso). Incompatible avec
+    /// `bank_transaction_id`.
+    #[serde(default)]
+    paid_by: Option<String>,
     #[serde(default)]
     dry_run: bool,
 }
@@ -150,6 +154,16 @@ impl FreeflowServer {
                 );
             }
         };
+        let paid_by = match args.paid_by.as_deref() {
+            None | Some("") | Some("company") => ExpensePaidBy::Company,
+            Some("associate") => ExpensePaidBy::Associate,
+            Some(other) => return err_text(format!("paid_by inconnu : {other}")),
+        };
+        if paid_by == ExpensePaidBy::Associate && bank_transaction_id.is_some() {
+            return err_text(
+                "paid_by associate est incompatible avec bank_transaction_id".to_string(),
+            );
+        }
         let cmd = expenses::RecordExpense {
             label: args.label,
             category,
@@ -161,6 +175,7 @@ impl FreeflowServer {
             receipt_filename: None,
             supplier: args.supplier,
             bank_transaction_id,
+            paid_by,
         };
         match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
@@ -279,6 +294,7 @@ impl FreeflowServer {
             } else {
                 args.supplier.or(current.supplier)
             },
+            paid_by: current.paid_by,
         };
         match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),

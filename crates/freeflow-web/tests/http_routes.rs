@@ -2094,6 +2094,7 @@ async fn every_screen_renders_successfully_against_a_freshly_seeded_vault() {
                     receipt_filename: None,
                     supplier: None,
                     bank_transaction_id: None,
+                    paid_by: freeflow_core::domain::ExpensePaidBy::Company,
                 },
                 &human_ctx(),
             )

@@ -435,6 +435,7 @@ pub async fn create(State(state): State<AppState>, multipart: Multipart) -> Resp
         receipt_filename,
         bank_transaction_id,
         supplier: parsed.supplier,
+        paid_by: freeflow_core::domain::ExpensePaidBy::Company,
     };
     match execute(&state, cmd).await {
         None => locked_fragment().into_response(),
@@ -583,6 +584,7 @@ pub async fn update(
         receipt_hash,
         receipt_filename,
         supplier: parsed.supplier,
+        paid_by: freeflow_core::domain::ExpensePaidBy::Company,
     };
     match execute(&state, cmd).await {
         None => locked_fragment().into_response(),

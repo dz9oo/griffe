@@ -2230,6 +2230,7 @@ async fn setup_status_and_receipt_attachment_over_mcp() {
                 receipt_filename: None,
                 supplier: None,
                 bank_transaction_id: None,
+                paid_by: freeflow_core::domain::ExpensePaidBy::Company,
             },
             &ExecutionContext::new(Actor::Human, false),
         )

@@ -40,6 +40,7 @@ const DAY_MONTH_PREFIX: &str = "freeflow://day/month/";
 const PEOPLE_URI: &str = "freeflow://people";
 const PEOPLE_DETAIL_PREFIX: &str = "freeflow://people/";
 const SOCIETY_URI: &str = "freeflow://society";
+const SOCIETY_CURRENT_ACCOUNT_URI: &str = "freeflow://society/current-account";
 const SOCIETY_DUTY_PREFIX: &str = "freeflow://society/duties/";
 const VAT_CARRY_URI: &str = "freeflow://vat-carry-in";
 const PAPERS_URI: &str = "freeflow://papers";
@@ -124,6 +125,12 @@ pub(crate) fn list() -> ListResourcesResult {
             .with_description(
                 "La société : identité courte, paysage, conversations, chapitres — même vue que \
                  society.show.",
+            )
+            .with_mime_type("application/json"),
+        Resource::new(SOCIETY_CURRENT_ACCOUNT_URI, "society-current-account")
+            .with_description(
+                "Entre toi et la société : ce que la société te doit — même vue que \
+                 society.current_account.",
             )
             .with_mime_type("application/json"),
         Resource::new(VAT_CARRY_URI, "vat-carry-in")
@@ -400,6 +407,12 @@ pub(crate) fn read(store: &Store, uri: &str) -> Result<ReadResourceResult, McpEr
         let home = freeflow_core::society::society_home(store.connection(), today)
             .map_err(|e| McpError::resource_not_found(e.to_string(), None))?;
         return json_contents(uri, home);
+    }
+    if uri == SOCIETY_CURRENT_ACCOUNT_URI {
+        let today = freeflow_core::clock::today_local();
+        let acc = freeflow_core::society::current_account(store.connection(), today)
+            .map_err(|e| McpError::resource_not_found(e.to_string(), None))?;
+        return json_contents(uri, acc);
     }
     if let Some(kind_raw) = uri.strip_prefix(SOCIETY_DUTY_PREFIX) {
         let kind = freeflow_core::fiscal::FiscalDeadlineKind::parse(kind_raw).ok_or_else(|| {

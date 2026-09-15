@@ -7,11 +7,12 @@ use freeflow_core::domain::{Money, format_date};
 use freeflow_core::fiscal::{FiscalDeadlineKind, VatFilingScheme};
 use freeflow_core::society::{
     AmountBasis, AmountStory, BeatKind, BeatWhen, BoxCoverage, BoxRole, ClosingStory,
-    DeleteVatCarryIn, DepositPlace, DividendClosed, DividendDoor, Duty, DutyBriefing, DutyFiling,
-    Expect, FormBox, IdentityCard, MarkDutyFiled, PayYourself, RecordVatCarryIn, RecordVatReversal,
-    RequestVatRefund, RetractDutyFiled, RetractVatRefund, RetractVatReversal, SocietyHome,
-    StatementMove, StatementReading, UnknownReason, VatCarryInRecord, VatPosition, VatRefundRecord,
-    VatRefundStatus, VatReversalRecord, WaiverReason, closing_story, duty_briefing, pay_yourself,
+    CurrentAccount, CurrentAccountBalance, DeleteVatCarryIn, DepositPlace, DividendClosed,
+    DividendDoor, Duty, DutyBriefing, DutyFiling, Expect, FormBox, IdentityCard, MarkDutyFiled,
+    PayYourself, RecordVatCarryIn, RecordVatReversal, RequestVatRefund, RetractDutyFiled,
+    RetractVatRefund, RetractVatReversal, SocietyHome, StatementMove, StatementReading,
+    UnknownReason, VatCarryInRecord, VatPosition, VatRefundRecord, VatRefundStatus,
+    VatReversalRecord, WaiverReason, closing_story, current_account, duty_briefing, pay_yourself,
     society_duties, society_home, society_identity, statement_moves, vat_carry_in,
 };
 use freeflow_core::store::Store;
@@ -21,6 +22,38 @@ use crate::error::CliError;
 use crate::output::{HumanRender, format_json, format_outcome_as, format_value, key_values};
 use crate::parsers::{parse_date, parse_money};
 use crate::table;
+
+impl HumanRender for CurrentAccount {
+    fn render_human(&self) -> String {
+        let headline = match &self.balance {
+            CurrentAccountBalance::CompanyOwes { amount } => {
+                format!("La société te doit {amount}.")
+            }
+            CurrentAccountBalance::YouOwe { amount } => {
+                format!("Tu dois {amount} à la société.")
+            }
+            CurrentAccountBalance::Clear => "Rien entre toi et la société.".into(),
+        };
+        let mut pairs = Vec::new();
+        if !self.opening.is_zero() {
+            pairs.push(("repris du cabinet", self.opening.to_string()));
+        }
+        if !self.advanced.is_zero() {
+            pairs.push(("avancés de ta poche", self.advanced.to_string()));
+        }
+        if !self.taken.is_zero() {
+            pairs.push(("pris sur le compte de la société", self.taken.to_string()));
+        }
+        if !self.brought.is_zero() {
+            pairs.push(("mis sur le compte de la société", self.brought.to_string()));
+        }
+        if pairs.is_empty() {
+            headline
+        } else {
+            format!("{headline}\n{}", key_values(&pairs))
+        }
+    }
+}
 
 impl HumanRender for PayYourself {
     fn render_human(&self) -> String {
@@ -70,6 +103,18 @@ impl HumanRender for SocietyHome {
         }
         let mut pairs = vec![
             ("banque", self.landscape.bank.to_string()),
+            (
+                "entre toi et la société",
+                match &self.current_account.balance {
+                    CurrentAccountBalance::CompanyOwes { amount } => {
+                        format!("la société te doit {amount}")
+                    }
+                    CurrentAccountBalance::YouOwe { amount } => {
+                        format!("tu dois {amount} à la société")
+                    }
+                    CurrentAccountBalance::Clear => "rien".into(),
+                },
+            ),
             ("possible", format!("{} ce mois-ci", self.pay.possible)),
             (
                 "relevé",
@@ -465,6 +510,11 @@ pub enum SocietyCommand {
         #[arg(long, value_parser = parse_date)]
         today: Option<Date>,
     },
+    /// Entre toi et la société : ce que la société te doit (compte courant).
+    CurrentAccount {
+        #[arg(long, value_parser = parse_date)]
+        today: Option<Date>,
+    },
     /// Ce que tu dois à l'État : dates, montants, où déposer.
     Duties {
         #[arg(long, value_parser = parse_date)]
@@ -605,7 +655,17 @@ pub fn run(
         SocietyCommand::Pay { today } => {
             let today = today.unwrap_or_else(today_local);
             let pay = pay_yourself(store.connection(), today)?;
-            Ok(format_value(&pay, json))
+            if json {
+                Ok(format_value(&pay, true))
+            } else {
+                let acc = current_account(store.connection(), today)?;
+                Ok(format!("{}\n\n{}", acc.render_human(), pay.render_human()))
+            }
+        }
+        SocietyCommand::CurrentAccount { today } => {
+            let today = today.unwrap_or_else(today_local);
+            let acc = current_account(store.connection(), today)?;
+            Ok(format_value(&acc, json))
         }
         SocietyCommand::Duties { today } => {
             let today = today.unwrap_or_else(today_local);

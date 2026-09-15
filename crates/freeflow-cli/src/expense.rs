@@ -4,10 +4,12 @@
 
 use std::path::PathBuf;
 
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, ValueEnum};
 use freeflow_core::app::{ExecutionContext, Executor};
 use freeflow_core::billing::bank_transaction_by_id;
-use freeflow_core::domain::{BankTransactionId, Expense, ExpenseCategory, Money, VatRate};
+use freeflow_core::domain::{
+    BankTransactionId, Expense, ExpenseCategory, ExpensePaidBy, Money, VatRate,
+};
 use freeflow_core::expenses::{
     self, expense_by_id, expense_detail, hash_receipt, list_expenses, reconciled_debits,
 };
@@ -43,6 +45,10 @@ impl HumanRender for freeflow_core::expenses::ExpenseDetail {
                     (None, Some(hash)) => hash[..hash.len().min(12)].to_string(),
                     _ => "aucun".to_string(),
                 },
+            ),
+            (
+                "payée par",
+                paid_by_label(&self.expense, self.bank_transaction.is_some()),
             ),
             (
                 "relevé",
@@ -97,6 +103,25 @@ pub struct RecordArgs {
     /// créée rapprochée, au montant exact du débit.
     #[arg(long, value_parser = clap::value_parser!(BankTransactionId))]
     transaction: Option<BankTransactionId>,
+    /// Qui a payé : `company` (la société, défaut) ou `me` (compte perso — la société te doit
+    /// cette somme, la banque ne bouge pas). Incompatible avec `--transaction`.
+    #[arg(long, value_enum, default_value_t = PaidByArg::Company, conflicts_with = "transaction")]
+    paid_by: PaidByArg,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum PaidByArg {
+    Company,
+    Me,
+}
+
+impl PaidByArg {
+    fn to_domain(self) -> ExpensePaidBy {
+        match self {
+            Self::Company => ExpensePaidBy::Company,
+            Self::Me => ExpensePaidBy::Associate,
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -176,6 +201,9 @@ pub struct EditArgs {
     /// Détache le justificatif de la dépense (sans supprimer le fichier archivé).
     #[arg(long)]
     clear_receipt: bool,
+    /// Qui a payé : `company` ou `me` (compte perso). Inchangé si omis.
+    #[arg(long, value_enum)]
+    paid_by: Option<PaidByArg>,
 }
 
 /// Lit `receipt` et l'archive **chiffré** dans `<coffre>.receipts/` (lot 39 —
@@ -257,6 +285,7 @@ pub fn run(
                 receipt_filename,
                 bank_transaction_id: args.transaction,
                 supplier: args.supplier,
+                paid_by: args.paid_by.to_domain(),
             };
             let outcome = Executor::new(store).execute(&command, ctx)?;
             if let (freeflow_core::app::Outcome::Applied(id), Some((filename, hash))) =
@@ -330,6 +359,7 @@ pub fn run(
                 } else {
                     args.supplier.or(current.supplier)
                 },
+                paid_by: args.paid_by.map_or(current.paid_by, PaidByArg::to_domain),
             };
             let outcome = Executor::new(store).execute(&command, ctx)?;
             if new_receipt && let Some((filename, hash)) = captured_receipt {
@@ -430,6 +460,14 @@ pub fn run(
     Ok(output)
 }
 
+fn paid_by_label(expense: &Expense, reconciled: bool) -> String {
+    match expense.paid_by {
+        ExpensePaidBy::Associate => "toi".into(),
+        ExpensePaidBy::Company if reconciled => "au relevé".into(),
+        ExpensePaidBy::Company => "la société, pas au relevé".into(),
+    }
+}
+
 fn expense_or_not_found(
     store: &Store,
     id: freeflow_core::domain::ExpenseId,
@@ -460,6 +498,7 @@ fn expense_table(
                 } else {
                     "—".to_string()
                 },
+                paid_by_label(e, reconciled.contains_key(&e.id)),
                 reconciled.get(&e.id).map_or_else(
                     || "—".to_string(),
                     |t| freeflow_core::domain::format_date(t.occurred_on),
@@ -476,6 +515,7 @@ fn expense_table(
             "montant ttc",
             "tva déductible",
             "justificatif",
+            "payée par",
             "relevé",
         ],
         &rows,
