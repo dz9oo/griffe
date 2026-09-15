@@ -8,11 +8,11 @@ use freeflow_core::fiscal::{FiscalDeadlineKind, VatFilingScheme};
 use freeflow_core::society::{
     AmountBasis, AmountStory, BeatKind, BeatWhen, BoxCoverage, BoxRole, ClosingStory,
     DeleteVatCarryIn, DepositPlace, DividendClosed, DividendDoor, Duty, DutyBriefing, DutyFiling,
-    Expect, FormBox, IdentityCard, MarkDutyFiled, PayYourself, RecordVatCarryIn, RequestVatRefund,
-    RetractDutyFiled, RetractVatRefund, SocietyHome, StatementMove, StatementReading,
-    UnknownReason, VatCarryInRecord, VatRefundRecord, VatRefundStatus, WaiverReason, closing_story,
-    duty_briefing, pay_yourself, society_duties, society_home, society_identity, statement_moves,
-    vat_carry_in,
+    Expect, FormBox, IdentityCard, MarkDutyFiled, PayYourself, RecordVatCarryIn, RecordVatReversal,
+    RequestVatRefund, RetractDutyFiled, RetractVatRefund, RetractVatReversal, SocietyHome,
+    StatementMove, StatementReading, UnknownReason, VatCarryInRecord, VatPosition, VatRefundRecord,
+    VatRefundStatus, VatReversalRecord, WaiverReason, closing_story, duty_briefing, pay_yourself,
+    society_duties, society_home, society_identity, statement_moves, vat_carry_in,
 };
 use freeflow_core::store::Store;
 use time::Date;
@@ -68,7 +68,7 @@ impl HumanRender for SocietyHome {
             out.push_str(name);
             out.push('\n');
         }
-        out.push_str(&key_values(&[
+        let mut pairs = vec![
             ("banque", self.landscape.bank.to_string()),
             ("possible", format!("{} ce mois-ci", self.pay.possible)),
             (
@@ -79,7 +79,17 @@ impl HumanRender for SocietyHome {
                     n => format!("{n} mouvements sans lecture"),
                 },
             ),
-        ]));
+        ];
+        match &self.vat_position {
+            Some(VatPosition::Credit { amount }) => {
+                pairs.push(("TVA", format!("l'État vous doit {amount}")));
+            }
+            Some(VatPosition::Due { amount }) => {
+                pairs.push(("TVA", format!("à payer {amount}")));
+            }
+            None => {}
+        }
+        out.push_str(&key_values(&pairs));
         if let Some(d) = &self.next_duty {
             out.push('\n');
             out.push_str(&duty_line(d));
@@ -258,6 +268,7 @@ pub(crate) fn box_label(form: &str, case: &str) -> &'static str {
         ("3310-CA3", "09") => "TVA brute 5,5 %",
         ("3310-CA3", "19") => "TVA déductible, immobilisations",
         ("3310-CA3", "20") => "TVA déductible, autres biens et services",
+        ("3310-CA3", "15") => "TVA trop déduite, à rendre",
         ("3310-CA3", "22") => "crédit reporté",
         ("3310-CA3", "25") => "crédit de cette période",
         ("3310-CA3", "26") => "à vous verser",
@@ -505,6 +516,9 @@ pub enum SocietyCommand {
     /// Demander le versement d'un crédit de TVA (case 26), ou l'annuler.
     #[command(subcommand)]
     VatRefund(VatRefundCommand),
+    /// Rendre une TVA trop déduite (case 15), ou l'annuler.
+    #[command(subcommand)]
+    VatReversal(VatReversalCommand),
 }
 
 #[derive(Debug, Subcommand)]
@@ -539,6 +553,25 @@ pub enum VatRefundCommand {
         today: Option<Date>,
     },
     /// Annuler la demande (si la CA3 n'est pas encore marquée déposée).
+    Retract {
+        period: String,
+        #[arg(long, value_parser = parse_date)]
+        today: Option<Date>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum VatReversalCommand {
+    /// Enregistrer le montant à rendre sur la CA3 de la période.
+    Record {
+        /// Période CA3 `AAAA-MM`.
+        period: String,
+        #[arg(long, value_parser = parse_money)]
+        amount: Money,
+        #[arg(long, value_parser = parse_date)]
+        today: Option<Date>,
+    },
+    /// Annuler (si la CA3 n'est pas encore marquée déposée).
     Retract {
         period: String,
         #[arg(long, value_parser = parse_date)]
@@ -640,6 +673,7 @@ pub fn run(
         }
         SocietyCommand::VatCredit(cmd) => run_vat_credit(cmd, store, ctx, json),
         SocietyCommand::VatRefund(cmd) => run_vat_refund(cmd, store, ctx, json),
+        SocietyCommand::VatReversal(cmd) => run_vat_reversal(cmd, store, ctx, json),
     }
 }
 
@@ -663,6 +697,16 @@ impl HumanRender for VatRefundRecord {
             ("période", self.period_key.clone()),
             ("versement", self.amount.to_string()),
             ("demandé le", format_date(self.requested_on)),
+        ])
+    }
+}
+
+impl HumanRender for VatReversalRecord {
+    fn render_human(&self) -> String {
+        key_values(&[
+            ("période", self.period_key.clone()),
+            ("rendu", self.amount.to_string()),
+            ("enregistré le", format_date(self.recorded_on)),
         ])
     }
 }
@@ -772,6 +816,58 @@ fn run_vat_refund(
             )?;
             Ok(format_outcome_as(&outcome, json, |()| {
                 "demande de versement retirée".into()
+            }))
+        }
+    }
+}
+
+fn run_vat_reversal(
+    cmd: VatReversalCommand,
+    store: &mut Store,
+    ctx: &ExecutionContext,
+    json: bool,
+) -> Result<String, CliError> {
+    match cmd {
+        VatReversalCommand::Record {
+            period,
+            amount,
+            today,
+        } => {
+            let today = today.unwrap_or_else(today_local);
+            let briefing = duty_briefing(
+                store.connection(),
+                FiscalDeadlineKind::Ca3,
+                today,
+                Some(&period),
+            )?;
+            let outcome = Executor::new(store).execute(
+                &RecordVatReversal {
+                    period_key: briefing.period_key,
+                    amount,
+                    recorded_on: today,
+                },
+                ctx,
+            )?;
+            Ok(format_outcome_as(&outcome, json, |r| {
+                format!("TVA trop déduite enregistrée ({})", r.amount)
+            }))
+        }
+        VatReversalCommand::Retract { period, today } => {
+            let today = today.unwrap_or_else(today_local);
+            let briefing = duty_briefing(
+                store.connection(),
+                FiscalDeadlineKind::Ca3,
+                today,
+                Some(&period),
+            )?;
+            let outcome = Executor::new(store).execute(
+                &RetractVatReversal {
+                    period_key: briefing.period_key,
+                },
+                ctx,
+            )?;
+            Ok(format_outcome_as(&outcome, json, |()| {
+                "TVA trop déduite retirée".into()
             }))
         }
     }

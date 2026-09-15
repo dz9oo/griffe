@@ -10,7 +10,7 @@ use freeflow_core::society::{
     AmountBasis, AmountStory, BeatKind, BeatWhen, BoxCoverage, BoxRole, ClosingBeat, ClosingStory,
     ConversationBar, DividendClosed, DividendDoor, Duty, DutyBriefing, Expect, FormBox,
     IdentityCard, IdentityShort, Landscape, PayYourself, SocietyHome, StatementMove,
-    StatementReading, UnknownReason, VatCarryInRecord, VatRefundStatus, WaiverReason,
+    StatementReading, UnknownReason, VatCarryInRecord, VatPosition, VatRefundStatus, WaiverReason,
     closing_story, duty_briefing, pay_yourself, society_duties, society_home, society_identity,
     statement_moves, vat_carry_in,
 };
@@ -100,13 +100,22 @@ fn home_markup(home: &SocietyHome, today: Date, papers_sub: &str) -> Markup {
                 .filter(|m| *m != Money::ZERO)
                 .map(|m| format!(" · {m}"))
                 .unwrap_or_default();
+            let vat = match &home.vat_position {
+                Some(VatPosition::Credit { amount }) => format!("{amount} de crédit · "),
+                Some(VatPosition::Due { amount }) => format!("{amount} à payer · "),
+                None => String::new(),
+            };
             format!(
-                "{} le {}{amount}",
+                "{vat}{} le {}{amount}",
                 duty_occurrence_fr(d.kind, d.vat_scheme, &d.period_key, d.due_on),
                 format_date_fr(d.due_on)
             )
         }
-        None => "Aucune échéance dans l'horizon.".to_string(),
+        None => match &home.vat_position {
+            Some(VatPosition::Credit { amount }) => format!("{amount} de crédit"),
+            Some(VatPosition::Due { amount }) => format!("{amount} à payer"),
+            None => "Aucune échéance dans l'horizon.".to_string(),
+        },
     };
     let closing_sub = match (home.closing.days_left, home.closing.unmatched) {
         (Some(days), 0) => format!("Dans {days} jours"),
@@ -126,7 +135,6 @@ fn home_markup(home: &SocietyHome, today: Date, papers_sub: &str) -> Markup {
         (Some(form), None) => form.to_string(),
         _ => "à renseigner".into(),
     };
-    let prose = landscape_prose(&home.landscape);
 
     html! {
         div class="letter" data-view=(ViewId::Societe.slug()) {
@@ -134,7 +142,7 @@ fn home_markup(home: &SocietyHome, today: Date, papers_sub: &str) -> Markup {
             h1 { (title) }
             p class="lede" { (lede) }
             (landscape_figure(&home.landscape))
-            @if let Some(text) = prose {
+            @if let Some(text) = landscape_prose(&home.landscape, home.vat_position.as_ref()) {
                 p class="prose" { (text) }
             }
             @if !home.conversations.bars.iter().all(|b| b.count == 0) {
@@ -179,18 +187,40 @@ fn identity_lede(id: &IdentityShort) -> String {
     }
 }
 
-fn landscape_prose(land: &Landscape) -> Option<String> {
-    if land.points.len() < 2 {
+fn landscape_prose(land: &Landscape, vat: Option<&VatPosition>) -> Option<String> {
+    if land.points.len() < 2 && vat.is_none() {
         return None;
     }
-    let mut text = format!("{} aujourd'hui.", land.bank);
+    let mut text = if land.points.len() < 2 {
+        String::new()
+    } else {
+        format!("{} aujourd'hui.", land.bank)
+    };
     if let Some(e) = &land.expected {
+        if !text.is_empty() {
+            text.push(' ');
+        }
         text.push_str(&format!(
-            " La ligne pointillée, c'est si {} verse les {}.",
+            "La ligne pointillée, c'est si {} verse les {}.",
             e.party, e.amount
         ));
     }
-    Some(text)
+    match vat {
+        Some(VatPosition::Credit { amount }) => {
+            if !text.is_empty() {
+                text.push(' ');
+            }
+            text.push_str(&format!("L'État vous doit {amount} de TVA."));
+        }
+        Some(VatPosition::Due { amount }) => {
+            if !text.is_empty() {
+                text.push(' ');
+            }
+            text.push_str(&format!("TVA à payer : {amount}."));
+        }
+        None => {}
+    }
+    if text.is_empty() { None } else { Some(text) }
 }
 
 fn landscape_figure(land: &Landscape) -> Markup {
@@ -637,6 +667,7 @@ fn duty_markup(b: &DutyBriefing, today: Date, vat_form: Option<&VatCreditForm>) 
                             "Les montants manquent encore. Les cases sont déjà les bonnes."
                         }
                     }
+                    (vat_reversal_fr(b, &href))
                     (vat_refund_fr(b, &href))
                 }
             }
@@ -670,7 +701,7 @@ fn duty_markup(b: &DutyBriefing, today: Date, vat_form: Option<&VatCreditForm>) 
                         }
                     } @else {
                         p class="prose" {
-                            "Après " (vat.after_period) " : " (vat.credit) " € à reporter. Figé."
+                            "Déjà déclaré jusqu'à " (vat.after_period) " : " (vat.credit) " €. Figé."
                         }
                     }
                 }
@@ -689,6 +720,9 @@ fn duty_markup(b: &DutyBriefing, today: Date, vat_form: Option<&VatCreditForm>) 
                         }
                         @if b.kind == FiscalDeadlineKind::Ca3 {
                             " — 3310-CA3"
+                            @if b.vat_reversal.is_some() || (b.coverage == BoxCoverage::Complete && b.filed_on.is_none()) {
+                                " — case 15 (code 0600), cadre de correspondance"
+                            }
                             @if matches!(
                                 b.vat_refund,
                                 Some(VatRefundStatus::Offered { .. } | VatRefundStatus::Requested { .. })
@@ -747,6 +781,59 @@ fn duty_markup(b: &DutyBriefing, today: Date, vat_form: Option<&VatCreditForm>) 
                 }
             }
         }
+    }
+}
+
+fn vat_reversal_fr(b: &DutyBriefing, href: &str) -> Markup {
+    if b.kind != FiscalDeadlineKind::Ca3 || b.coverage != BoxCoverage::Complete {
+        return html! {};
+    }
+    let reversal = format!("{href}/vat-reversal");
+    let retract = format!("{href}/vat-reversal/retract");
+    match (b.vat_reversal, b.filed_on) {
+        (None, None) => html! {
+            details {
+                summary class="prose" style="color:var(--ink-2);font-size:14px" {
+                    "Vous aviez trop récupéré ?"
+                }
+                p class="prose" {
+                    "Une facture déjà déclarée était trop haute. Dites l'écart, arrondi à l'euro. \
+                     On le met dans la bonne case, le crédit baisse. On ne rouvre pas celle d'avant."
+                }
+                form hx-post=(reversal.as_str()) hx-target="#content" {
+                    (form::number(
+                        "amount",
+                        "Trop récupéré, en euros",
+                        "",
+                        "0.01",
+                        None,
+                    ))
+                    button class="quiet" type="submit" { "Je rends cette TVA à l'État" }
+                }
+            }
+        },
+        (Some(amount), None) => {
+            let remainder = b
+                .boxes
+                .iter()
+                .find(|bx| bx.case == "27")
+                .and_then(|bx| bx.amount);
+            html! {
+                p class="prose" {
+                    (amount) " rendus."
+                    @if let Some(remainder) = remainder {
+                        " Il reste " (remainder) " de crédit."
+                    }
+                }
+                form hx-post=(retract.as_str()) hx-target="#content" {
+                    button class="quiet" type="submit" { "Finalement, je n'avais pas trop déduit" }
+                }
+            }
+        }
+        (Some(amount), Some(_)) => html! {
+            p class="prose" { (amount) " rendus à l'État." }
+        },
+        (None, Some(_)) => html! {},
     }
 }
 
@@ -832,6 +919,7 @@ fn box_label_fr(b: &FormBox) -> &'static str {
         ("3310-CA3", "09") => "TVA brute 5,5 %",
         ("3310-CA3", "19") => "TVA déductible, immobilisations",
         ("3310-CA3", "20") => "TVA déductible, autres biens et services",
+        ("3310-CA3", "15") => "TVA trop déduite, à rendre",
         ("3310-CA3", "22") => "Crédit reporté",
         ("3310-CA3", "25") => "Crédit de cette période",
         ("3310-CA3", "26") => "À vous verser",

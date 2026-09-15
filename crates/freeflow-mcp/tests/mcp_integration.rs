@@ -2589,3 +2589,114 @@ async fn requesting_a_vat_refund_over_mcp_needs_a_human_before_case_26_appears()
 
     client.cancel().await.unwrap();
 }
+
+#[tokio::test]
+async fn recording_a_vat_reversal_over_mcp_needs_a_human_before_case_15_appears() {
+    use freeflow_core::app::{Actor, ExecutionContext};
+    use freeflow_core::domain::{Address, FiscalYearEnd, Money, Siren, VatRegime};
+    use freeflow_core::society::{RecordVatCarryIn, RecordVatReversal};
+
+    let db_path = test_db_path("vat-reversal-mcp");
+    let mut store = Store::create(&db_path, &Passphrase::from("s3cret")).unwrap();
+    let human = ExecutionContext::new(Actor::Human, false);
+    Executor::new(&mut store)
+        .execute(
+            &freeflow_core::company::SetCompanyProfile {
+                name: "Lumen Conseil".into(),
+                legal_form: "SASU".into(),
+                siren: Siren::parse("552100554").unwrap(),
+                vat_number: None,
+                address: Address {
+                    street: "18 rue des Ateliers".into(),
+                    postal_code: "69003".into(),
+                    city: "Lyon".into(),
+                    country: "FR".into(),
+                },
+                share_capital: Some(Money::from_cents(100_000)),
+                rcs_city: Some("Lyon".into()),
+                iban: None,
+                fiscal_year_end: Some(FiscalYearEnd::new(9, 30).unwrap()),
+                vat_regime: Some(VatRegime::RealNormalMonthly),
+                director_monthly_gross: None,
+                director_charge_ratio_bps: None,
+                president_name: None,
+                sole_shareholder_name: None,
+                sole_shareholder_address: None,
+                share_count: None,
+            },
+            &human,
+        )
+        .unwrap();
+    Executor::new(&mut store)
+        .execute(
+            &RecordVatCarryIn {
+                after_period: "2026-08".into(),
+                credit: Money::from_cents(32_400),
+                source: Some("CA3 août".into()),
+            },
+            &human,
+        )
+        .unwrap();
+    let client = spawn_client(store).await;
+
+    let proposed = json_of(
+        &call(
+            &client,
+            "society.record_vat_reversal",
+            json!({
+                "period": "2026-09",
+                "amount_cents": 500,
+                "today": "2026-09-15",
+            }),
+        )
+        .await,
+    );
+    assert_eq!(proposed["status"], "pending_confirmation");
+    let pending_id = proposed["pending_action_id"].as_str().unwrap().to_string();
+
+    let pending = json_of(&call(&client, "pending.list", json!(null)).await);
+    assert!(
+        pending.as_array().unwrap().iter().any(|a| {
+            a["id"] == pending_id && a["command_name"] == "society.record_vat_reversal"
+        }),
+        "pending.list doit porter society.record_vat_reversal : {pending}"
+    );
+
+    let duty = json_of(
+        &call(
+            &client,
+            "society.duty",
+            json!({"kind": "ca3", "period": "2026-09", "today": "2026-09-15"}),
+        )
+        .await,
+    );
+    let boxes = duty["boxes"].as_array().expect("boxes");
+    assert!(
+        boxes.iter().all(|b| b["case"] != "15"),
+        "pas de case 15 tant que ce n'est pas confirmé : {boxes:?}"
+    );
+
+    let mut confirming =
+        Store::open_with_passphrase(&db_path, &Passphrase::from("s3cret")).unwrap();
+    let confirmed = Executor::new(&mut confirming)
+        .confirm::<RecordVatReversal>(pending_id.parse().unwrap())
+        .unwrap();
+    assert!(matches!(confirmed, Outcome::Applied(_)));
+    drop(confirming);
+
+    let after = json_of(
+        &call(
+            &client,
+            "society.duty",
+            json!({"kind": "ca3", "period": "2026-09", "today": "2026-09-15"}),
+        )
+        .await,
+    );
+    let boxes = after["boxes"].as_array().unwrap();
+    let case15 = boxes.iter().find(|b| b["case"] == "15").expect("case 15");
+    assert_eq!(case15["amount"], 500);
+    let case25 = boxes.iter().find(|b| b["case"] == "25").expect("case 25");
+    assert_eq!(case25["amount"], 31900);
+
+    client.cancel().await.unwrap();
+}

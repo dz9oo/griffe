@@ -147,7 +147,9 @@ implémentation.
   après quoi il bascule en CA3 trimestrielle. `freeflow company show` affiche la règle de
   télédéclaration dérivée du profil (`vat_filing`). Un crédit de TVA se demande depuis
   la lettre (case 26, formulaire 3519 recopié sur le site) : sous 760 € en cours d'année
-  il reste à reporter ; en décembre, 150 € suffisent. Le grand livre ne liquide pas la
+  il reste à reporter ; en décembre, 150 € suffisent. Une TVA trop déduite sur une
+  déclaration déjà déposée se rend sur la suivante (case 15) : le crédit baisse, l'ancre
+  reprise à l'arrivée ne se recollera pas. Le grand livre ne liquide pas la
   TVA — un virement DGFiP d'un crédit né ici n'a pas de 445670 débiteur.
 - Prévisionnel de trésorerie sur 12 mois (factures émises non payées + missions signées non
   facturées + pipeline pondéré − charges connues).
@@ -855,6 +857,8 @@ existe.
 - [x] Remboursement de crédit de TVA (case 26 / 3519) : versement depuis la lettre,
       seuils 760 € en cours d'année / 150 € en décembre, chaîne Cerfa 22/25/26/27/28 —
       voir « Dépenses & obligations fiscales ».
+- [x] TVA trop déduite (case 15) : rendu sur la déclaration ouverte, crédit affiché
+      partout = le vrai, `vat_carry_in` figé.
 - [ ] Internationalisation de l'interface (actuellement en français uniquement).
 
 ## Licence

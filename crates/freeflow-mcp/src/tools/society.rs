@@ -5,9 +5,10 @@ use freeflow_core::clock::today_local;
 use freeflow_core::domain::Money;
 use freeflow_core::fiscal::FiscalDeadlineKind;
 use freeflow_core::society::{
-    DeleteVatCarryIn, MarkDutyFiled, RecordVatCarryIn, RequestVatRefund, RetractDutyFiled,
-    RetractVatRefund, VatRefundStatus, closing_story, duty_briefing, pay_yourself, society_duties,
-    society_home, society_identity, statement_moves, vat_carry_in,
+    DeleteVatCarryIn, MarkDutyFiled, RecordVatCarryIn, RecordVatReversal, RequestVatRefund,
+    RetractDutyFiled, RetractVatRefund, RetractVatReversal, VatRefundStatus, closing_story,
+    duty_briefing, pay_yourself, society_duties, society_home, society_identity, statement_moves,
+    vat_carry_in,
 };
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
@@ -405,6 +406,80 @@ impl FreeflowServer {
             Err(e) => err_text(e.to_string()),
         }
     }
+
+    /// Enregistrer une TVA trop déduite à reverser (case 15). Confirmation humaine requise.
+    #[tool(
+        name = "society.record_vat_reversal",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false
+        )
+    )]
+    async fn society_record_vat_reversal(
+        &self,
+        Parameters(args): Parameters<RecordVatReversalArgs>,
+    ) -> CallToolResult {
+        let today = match today_or(args.today) {
+            Ok(d) => d,
+            Err(e) => return err_text(e),
+        };
+        let mut store = self.store.lock().await;
+        let briefing = match duty_briefing(
+            store.connection(),
+            FiscalDeadlineKind::Ca3,
+            today,
+            Some(&args.period),
+        ) {
+            Ok(b) => b,
+            Err(e) => return err_text(e.to_string()),
+        };
+        let cmd = RecordVatReversal {
+            period_key: briefing.period_key,
+            amount: Money::from_cents(args.amount_cents),
+            recorded_on: today,
+        };
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
+            Ok(outcome) => ok_json(outcome_json(&outcome)),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
+    /// Retirer une TVA trop déduite. Confirmation humaine requise.
+    #[tool(
+        name = "society.retract_vat_reversal",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false
+        )
+    )]
+    async fn society_retract_vat_reversal(
+        &self,
+        Parameters(args): Parameters<RetractVatReversalArgs>,
+    ) -> CallToolResult {
+        let today = match today_or(args.today) {
+            Ok(d) => d,
+            Err(e) => return err_text(e),
+        };
+        let mut store = self.store.lock().await;
+        let briefing = match duty_briefing(
+            store.connection(),
+            FiscalDeadlineKind::Ca3,
+            today,
+            Some(&args.period),
+        ) {
+            Ok(b) => b,
+            Err(e) => return err_text(e.to_string()),
+        };
+        let cmd = RetractVatReversal {
+            period_key: briefing.period_key,
+        };
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
+            Ok(outcome) => ok_json(outcome_json(&outcome)),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -442,6 +517,30 @@ pub(crate) struct RequestVatRefundArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct RetractVatRefundArgs {
+    /// Période CA3 `AAAA-MM`.
+    period: String,
+    /// Date `AAAA-MM-JJ`. Défaut : aujourd'hui (heure locale).
+    today: Option<String>,
+    /// `true` : montre ce qui serait fait, n'écrit rien.
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct RecordVatReversalArgs {
+    /// Période CA3 `AAAA-MM`.
+    period: String,
+    /// Case 15, en centimes.
+    amount_cents: i64,
+    /// Date `AAAA-MM-JJ`. Défaut : aujourd'hui (heure locale).
+    today: Option<String>,
+    /// `true` : montre ce qui serait fait, n'écrit rien.
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct RetractVatReversalArgs {
     /// Période CA3 `AAAA-MM`.
     period: String,
     /// Date `AAAA-MM-JJ`. Défaut : aujourd'hui (heure locale).

@@ -22,8 +22,8 @@ use freeflow_core::domain::{Money, parse_date};
 use freeflow_core::fiscal::FiscalDeadlineKind;
 use freeflow_core::setup::vault_started_on;
 use freeflow_core::society::{
-    MarkCatchUpFiled, MarkDutyFiled, RecordVatCarryIn, RequestVatRefund, RetractDutyFiled,
-    RetractVatRefund, VatRefundStatus, duty_briefing,
+    MarkCatchUpFiled, MarkDutyFiled, RecordVatCarryIn, RecordVatReversal, RequestVatRefund,
+    RetractDutyFiled, RetractVatRefund, RetractVatReversal, VatRefundStatus, duty_briefing,
 };
 
 #[derive(Debug, Default, Deserialize)]
@@ -449,6 +449,130 @@ async fn retract_vat_refund(
             let briefing = duty_briefing(store.connection(), kind, today, period_owned.as_deref())?;
             Executor::new(store).execute(
                 &RetractVatRefund {
+                    period_key: briefing.period_key,
+                },
+                &AppState::human_ctx(),
+            )?;
+            Ok::<_, freeflow_core::app::AppError>(())
+        })
+        .await;
+    if let Some(Err(e)) = result {
+        return respond(headers, ViewId::Societe, error_markup(ViewId::Societe, e))
+            .await
+            .into_response();
+    }
+    let mut response = letter(state, headers, ViewId::Societe, move |store, today| {
+        views::societe::duty(store, today, kind, period.as_deref())
+    })
+    .await
+    .into_response();
+    response
+        .headers_mut()
+        .insert("HX-Trigger", HeaderValue::from_static("freeflow:saved"));
+    response
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct VatReversalPosted {
+    #[serde(default)]
+    amount: String,
+}
+
+pub async fn societe_vat_reversal(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(kind): Path<String>,
+    form: Result<Form<VatReversalPosted>, FormRejection>,
+) -> Response {
+    record_vat_reversal(&state, headers, kind, None, form).await
+}
+
+pub async fn societe_vat_reversal_at(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((kind, period)): Path<(String, String)>,
+    form: Result<Form<VatReversalPosted>, FormRejection>,
+) -> Response {
+    record_vat_reversal(&state, headers, kind, Some(period), form).await
+}
+
+pub async fn societe_vat_reversal_retract(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(kind): Path<String>,
+) -> Response {
+    retract_vat_reversal(&state, headers, kind, None).await
+}
+
+pub async fn societe_vat_reversal_retract_at(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((kind, period)): Path<(String, String)>,
+) -> Response {
+    retract_vat_reversal(&state, headers, kind, Some(period)).await
+}
+
+async fn record_vat_reversal(
+    state: &AppState,
+    headers: HeaderMap,
+    kind: String,
+    period: Option<String>,
+    form: Result<Form<VatReversalPosted>, FormRejection>,
+) -> Response {
+    let Some(kind) = parse_external_kind(&kind) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let posted = form.map_or_else(|_| VatReversalPosted::default(), |Form(f)| f);
+    let today = state.today();
+    let period_owned = period.clone();
+    let result = state
+        .with_store_mut(|store| {
+            let briefing = duty_briefing(store.connection(), kind, today, period_owned.as_deref())?;
+            let amount = Money::parse_decimal(posted.amount.trim())
+                .map_err(|e| freeflow_core::app::AppError::Domain(e.to_string()))?;
+            Executor::new(store).execute(
+                &RecordVatReversal {
+                    period_key: briefing.period_key,
+                    amount,
+                    recorded_on: today,
+                },
+                &AppState::human_ctx(),
+            )?;
+            Ok::<_, freeflow_core::app::AppError>(())
+        })
+        .await;
+    if let Some(Err(e)) = result {
+        return respond(headers, ViewId::Societe, error_markup(ViewId::Societe, e))
+            .await
+            .into_response();
+    }
+    let mut response = letter(state, headers, ViewId::Societe, move |store, today| {
+        views::societe::duty(store, today, kind, period.as_deref())
+    })
+    .await
+    .into_response();
+    response
+        .headers_mut()
+        .insert("HX-Trigger", HeaderValue::from_static("freeflow:saved"));
+    response
+}
+
+async fn retract_vat_reversal(
+    state: &AppState,
+    headers: HeaderMap,
+    kind: String,
+    period: Option<String>,
+) -> Response {
+    let Some(kind) = parse_external_kind(&kind) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let today = state.today();
+    let period_owned = period.clone();
+    let result = state
+        .with_store_mut(|store| {
+            let briefing = duty_briefing(store.connection(), kind, today, period_owned.as_deref())?;
+            Executor::new(store).execute(
+                &RetractVatReversal {
                     period_key: briefing.period_key,
                 },
                 &AppState::human_ctx(),

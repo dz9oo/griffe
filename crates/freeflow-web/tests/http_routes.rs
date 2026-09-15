@@ -1495,6 +1495,147 @@ async fn a_vat_carry_in_posted_from_the_letter_fills_case_25() {
     assert!(!again_body.contains("100,00"), "{again_body}");
 }
 
+#[tokio::test]
+async fn letter_vat_reversal_drops_september_to_319() {
+    let db_path = test_db_path("letter-vat-reversal");
+    let state = unlocked_state(&db_path)
+        .await
+        .with_today(time::macros::date!(2026 - 09 - 15));
+    {
+        let mut store =
+            Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &freeflow_core::company::SetCompanyProfile {
+                        name: "Lumen Conseil".into(),
+                        legal_form: "SASU".into(),
+                        siren: freeflow_core::domain::Siren::parse("552100554").unwrap(),
+                        vat_number: None,
+                        address: freeflow_core::domain::Address {
+                            street: "18 rue des Ateliers".into(),
+                            postal_code: "69003".into(),
+                            city: "Lyon".into(),
+                            country: "FR".into(),
+                        },
+                        share_capital: Some(Money::from_cents(100_000)),
+                        rcs_city: Some("Lyon".into()),
+                        iban: None,
+                        fiscal_year_end: Some(
+                            freeflow_core::domain::FiscalYearEnd::new(9, 30).unwrap(),
+                        ),
+                        vat_regime: Some(freeflow_core::domain::VatRegime::RealNormalMonthly),
+                        director_monthly_gross: Some(Money::from_cents(300_000)),
+                        director_charge_ratio_bps: None,
+                        president_name: Some("Nicolas Lumen".into()),
+                        sole_shareholder_name: Some("Nicolas Lumen".into()),
+                        sole_shareholder_address: Some("18 rue des Ateliers, 69003 Lyon".into()),
+                        share_count: Some(1000),
+                    },
+                    &human_ctx(),
+                )
+                .unwrap(),
+        );
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &freeflow_core::society::RecordVatCarryIn {
+                        after_period: "2026-08".into(),
+                        credit: Money::from_cents(32_400),
+                        source: Some("CA3 août".into()),
+                    },
+                    &human_ctx(),
+                )
+                .unwrap(),
+        );
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &freeflow_core::society::MarkDutyFiled {
+                        kind: freeflow_core::fiscal::FiscalDeadlineKind::Ca3,
+                        period_key: "2026-08".into(),
+                        due_on: time::macros::date!(2026 - 09 - 21),
+                        filed_on: time::macros::date!(2026 - 09 - 08),
+                    },
+                    &human_ctx(),
+                )
+                .unwrap(),
+        );
+    }
+    let router = freeflow_web::router(state);
+
+    let letter = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/societe/impots/ca3/2026-09")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(letter.contains("trop récupéré"), "{letter}");
+    assert!(!letter.contains("ligne 15"), "{letter}");
+    let site = letter.find("Sur le site").expect("Sur le site");
+    assert!(
+        !letter[..site].contains("0600"),
+        "0600 hors Sur le site : {letter}"
+    );
+    assert!(!letter.contains("freeflow "), "{letter}");
+
+    let posted = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/societe/impots/ca3/2026-09/vat-reversal")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from("amount=5.00"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(posted.status(), StatusCode::OK);
+    let trigger = posted.headers().get("HX-Trigger").cloned();
+    assert_eq!(
+        trigger.as_ref().map(|v| v.as_bytes()),
+        Some(b"freeflow:saved" as &[u8])
+    );
+    let body = body_text(posted).await;
+    assert!(body.contains("5,00") || body.contains("5.00"), "{body}");
+    assert!(body.contains("319,00") || body.contains("319.00"), "{body}");
+    assert!(body.contains("rendus"), "{body}");
+    let site = body.find("Sur le site").expect("Sur le site");
+    assert!(
+        !body[..site].contains("0600"),
+        "0600 hors Sur le site : {body}"
+    );
+    assert!(!body.contains("ligne 15"), "{body}");
+    assert!(!body.contains("freeflow "), "{body}");
+
+    let home = body_text(
+        router
+            .oneshot(
+                Request::builder()
+                    .uri("/societe")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        home.contains("319,00") || home.contains("319.00") || home.contains("319"),
+        "La société montre 319 : {home}"
+    );
+    assert!(home.contains("TVA"), "{home}");
+}
+
 fn assert_3519_only_after_sur_le_site(html: &str) {
     let Some(idx) = html.find("Sur le site") else {
         assert!(

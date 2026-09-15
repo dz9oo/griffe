@@ -91,6 +91,7 @@ const IMPOTS: Recipe = Recipe {
         "Quand une échéance approche, un geste apparaît sur Le jour.",
         "La lettre dit le montant et le chemin sur le site. On prépare, on ne transmet pas.",
         "Si l'État vous doit de la TVA, la lettre dit si on peut la récupérer, ou s'il faut attendre la fin d'année.",
+        "Une facture déjà déclarée était trop haute : on rend l'écart sur la déclaration d'à présent, le crédit baisse.",
     ],
     does_not: Some("FreeFlow ne télétransmet rien."),
     href: Some("/societe/impots"),

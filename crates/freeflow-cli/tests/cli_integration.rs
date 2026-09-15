@@ -1015,6 +1015,134 @@ fn society_vat_refund_on_december_clears_january() {
 }
 
 #[test]
+fn society_vat_reversal_drops_september_credit_to_319() {
+    let db = temp_db("society-vat-reversal");
+    provision(&db);
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "company",
+            "set-profile",
+            "--name",
+            "Lumen Conseil",
+            "--legal-form",
+            "SASU",
+            "--siren",
+            "552100554",
+            "--street",
+            "18 rue des Ateliers",
+            "--postal-code",
+            "69003",
+            "--city",
+            "Lyon",
+            "--country",
+            "FR",
+            "--fiscal-year-end",
+            "30/09",
+            "--vat-regime",
+            "real_normal_monthly",
+        ])
+        .assert()
+        .success();
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "society",
+            "vat-credit",
+            "set",
+            "--after",
+            "2026-08",
+            "--amount",
+            "324.00",
+        ])
+        .assert()
+        .success();
+    freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "society",
+            "vat-reversal",
+            "record",
+            "2026-09",
+            "--amount",
+            "5.00",
+            "--today",
+            "2026-09-15",
+        ])
+        .assert()
+        .success();
+
+    let duty = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "--json",
+            "society",
+            "duty",
+            "ca3",
+            "--period",
+            "2026-09",
+            "--today",
+            "2026-09-15",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let duty: serde_json::Value = serde_json::from_slice(&duty).unwrap();
+    let boxes = duty["boxes"].as_array().expect("boxes");
+    let case15 = boxes.iter().find(|b| b["case"] == "15").expect("case 15");
+    assert_eq!(case15["amount"], 500);
+    let case22 = boxes.iter().find(|b| b["case"] == "22").expect("case 22");
+    assert_eq!(case22["amount"], 32400);
+    let case25 = boxes.iter().find(|b| b["case"] == "25").expect("case 25");
+    assert_eq!(case25["amount"], 31900);
+    let case27 = boxes.iter().find(|b| b["case"] == "27").expect("case 27");
+    assert_eq!(case27["amount"], 31900);
+
+    let shown = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args(["--json", "society", "show", "--today", "2026-10-08"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let shown: serde_json::Value = serde_json::from_slice(&shown).unwrap();
+    assert_eq!(shown["vat_position"]["kind"], "credit");
+    assert_eq!(shown["vat_position"]["amount"], 31900);
+
+    let october = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .args([
+            "--json",
+            "society",
+            "duty",
+            "ca3",
+            "--period",
+            "2026-10",
+            "--today",
+            "2026-10-08",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let october: serde_json::Value = serde_json::from_slice(&october).unwrap();
+    let oct_boxes = october["boxes"].as_array().expect("boxes");
+    assert!(
+        oct_boxes.iter().all(|b| b["case"] != "15"),
+        "pas de case 15 en octobre : {oct_boxes:?}"
+    );
+    let oct22 = oct_boxes
+        .iter()
+        .find(|b| b["case"] == "22")
+        .expect("case 22");
+    assert_eq!(oct22["amount"], 31900);
+}
+
+#[test]
 fn society_filed_marks_the_current_is_acompte() {
     let db = temp_db("society-filed");
     provision(&db);

@@ -75,5 +75,7 @@ pub fn migrations() -> Migrations<'static> {
             .down(include_str!("migrations/0028_vat_carry_in_down.sql")),
         M::up(include_str!("migrations/0029_vat_refunds_up.sql"))
             .down(include_str!("migrations/0029_vat_refunds_down.sql")),
+        M::up(include_str!("migrations/0030_vat_reversals_up.sql"))
+            .down(include_str!("migrations/0030_vat_reversals_down.sql")),
     ])
 }

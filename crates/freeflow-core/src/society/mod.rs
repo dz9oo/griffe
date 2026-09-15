@@ -7,6 +7,7 @@
 mod filings;
 mod vat_carry;
 mod vat_refund;
+mod vat_reversal;
 
 pub use filings::{
     DutyFiling, DutyFilingError, MarkCatchUpFiled, MarkDutyFiled, RetractDutyFiled, filing_for,
@@ -19,6 +20,9 @@ pub use vat_carry::{
 pub use vat_refund::{
     RequestVatRefund, RetractVatRefund, VatRefundError, VatRefundRecord, VatRefundStatus,
     vat_refund_for,
+};
+pub use vat_reversal::{
+    RecordVatReversal, RetractVatReversal, VatReversalError, VatReversalRecord, vat_reversal_for,
 };
 
 use rusqlite::Connection;
@@ -33,8 +37,8 @@ use crate::closing::{ClosingStage, ClosingStepKey, StepStatus, closing_checklist
 use crate::company::company_profile;
 use crate::day::cash_in_bank;
 use crate::domain::{
-    BankTransaction, BankTransactionId, FiscalYearEnd, Money, Month, Side, VatRate, VatRegime,
-    add_months, sub_months,
+    BankTransaction, BankTransactionId, Ca3FilingRule, FiscalYearEnd, Money, Month, Side, VatRate,
+    VatRegime, add_months, sub_months,
 };
 use crate::fiscal::{
     Ca3Periodicity, DAS2_THRESHOLD, DIVIDEND_INCOME_TAX_BPS, FiscalDeadline, FiscalDeadlineKind,
@@ -432,6 +436,15 @@ pub struct SocietyHome {
     pub next_duty: Option<Duty>,
     pub closing: ClosingCue,
     pub unmatched: u32,
+    pub vat_position: Option<VatPosition>,
+}
+
+/// Crédit ou due de TVA que l'indépendant lit — le 27 / 28 dérivé, jamais l'ancre brute.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum VatPosition {
+    Credit { amount: Money },
+    Due { amount: Money },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -472,7 +485,55 @@ pub fn society_home(conn: &Connection, today: Date) -> Result<SocietyHome, AppEr
             .find(|d| d.filed_on.is_none() && !d.catch_up),
         closing,
         unmatched,
+        vat_position: vat_position(conn, today)?,
     })
+}
+
+/// Crédit (27) ou due (28) de la prochaine CA3 non déposée. `None` si néant, incomplet, ou pas de CA3.
+///
+/// # Errors
+///
+/// Lecture du calendrier, des cases, ou du coffre.
+pub fn vat_position(conn: &Connection, today: Date) -> Result<Option<VatPosition>, AppError> {
+    let periodicity = ca3_periodicity(conn)?;
+    let profile = company_profile(conn)?;
+    let day = profile.as_ref().map_or(Ca3FilingRule::EARLIEST_DAY, |p| {
+        Ca3FilingRule::derive(&p.legal_form, &p.name, p.siren, &p.address.postal_code).day
+    });
+    let mut cursor = today;
+    for _ in 0..24 {
+        let filing = crate::fiscal::next_ca3_filing(cursor, periodicity, day);
+        let period_key = ca3_period_key(filing.period_start);
+        if filing_for(conn, FiscalDeadlineKind::Ca3, &period_key)?.is_some() {
+            cursor = filing
+                .due_on
+                .checked_add(time::Duration::days(1))
+                .unwrap_or(filing.due_on);
+            continue;
+        }
+        let (boxes, coverage) = ca3_boxes(conn, today, &period_key)?;
+        if coverage != BoxCoverage::Complete {
+            return Ok(None);
+        }
+        if let Some(amount) = boxes
+            .iter()
+            .find(|b| b.case == "27")
+            .and_then(|b| b.amount)
+            .filter(|a| !a.is_zero())
+        {
+            return Ok(Some(VatPosition::Credit { amount }));
+        }
+        if let Some(amount) = boxes
+            .iter()
+            .find(|b| b.case == "28")
+            .and_then(|b| b.amount)
+            .filter(|a| !a.is_zero())
+        {
+            return Ok(Some(VatPosition::Due { amount }));
+        }
+        return Ok(None);
+    }
+    Ok(None)
 }
 
 fn unmatched_count(conn: &Connection) -> Result<u32, AppError> {
@@ -909,6 +970,9 @@ pub struct DutyBriefing {
     pub vat_scheme: VatFilingScheme,
     pub catch_up: bool,
     pub vat_refund: Option<VatRefundStatus>,
+    /// Montant de la case 15 s'il y a un fait, sinon `None`.
+    #[serde(default)]
+    pub vat_reversal: Option<Money>,
 }
 
 struct BriefingMeta {
@@ -1087,6 +1151,11 @@ pub fn duty_briefing(
     } else {
         None
     };
+    let vat_reversal = if kind == FiscalDeadlineKind::Ca3 {
+        vat_reversal_for(conn, &period_key)?.map(|r| r.amount)
+    } else {
+        None
+    };
     let filed_on =
         resolved
             .as_ref()
@@ -1111,6 +1180,7 @@ pub fn duty_briefing(
         vat_scheme,
         catch_up: resolved.as_ref().is_some_and(|d| d.catch_up),
         vat_refund,
+        vat_reversal,
     })
 }
 
@@ -1314,7 +1384,8 @@ fn fold_carried_credit(
 ) -> Result<Money, AppError> {
     for (start, end, period_key) in between.iter().rev() {
         let vat = vat_due_for_period(conn, *start, *end)?;
-        let net = vat.due - credit;
+        let reversal = vat_reversal_for(conn, period_key)?.map_or(Money::ZERO, |r| r.amount);
+        let net = vat.due + reversal - credit;
         credit = if net.cents() >= 0 {
             Money::ZERO
         } else {
@@ -1402,6 +1473,10 @@ pub(super) fn ca3_boxes(
             boxes.push(ca3_box(case, Some(line.vat_amount), BoxRole::Fill));
         }
     }
+    let reversal = vat_reversal_for(conn, period_key)?.map_or(Money::ZERO, |r| r.amount);
+    if !reversal.is_zero() {
+        boxes.push(ca3_box("15", Some(reversal), BoxRole::Fill));
+    }
     if !vat.deductible_assets.is_zero() {
         boxes.push(ca3_box("19", Some(vat.deductible_assets), BoxRole::Fill));
     }
@@ -1409,7 +1484,7 @@ pub(super) fn ca3_boxes(
     if !prior_credit.is_zero() {
         boxes.push(ca3_box("22", Some(prior_credit), BoxRole::Fill));
     }
-    let net = vat.due - prior_credit;
+    let net = vat.due + reversal - prior_credit;
     if net.cents() >= 0 {
         boxes.push(ca3_box("28", Some(net), BoxRole::Fill));
     } else {
