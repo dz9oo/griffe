@@ -4103,6 +4103,7 @@ async fn expense_lifecycle_through_the_panel() {
             ("vat_rate", "standard"),
             ("vat_deductible", "20.00"),
             ("incurred_on", "2026-09-05"),
+            ("paid_by", "company"),
         ],
         Some(("", b"")),
     );
@@ -4508,6 +4509,7 @@ async fn a_receipt_uploaded_from_the_panel_is_archived_like_the_cli_does() {
             ("vat_rate", "standard"),
             ("vat_deductible", "50.00"),
             ("incurred_on", "2026-09-05"),
+            ("paid_by", "company"),
         ],
         // Un nom venu du navigateur ne doit pas pouvoir sortir de `receipts/`.
         Some(("../../facture-ecran.pdf", content)),
@@ -5864,6 +5866,7 @@ async fn receipts_are_encrypted_beside_the_vault_and_attachable_after_approval()
             ("vat_rate", "standard"),
             ("vat_deductible", "100.00"),
             ("incurred_on", "2026-03-05"),
+            ("paid_by", "company"),
         ],
         Some(("facture-cabinet.pdf", b"%PDF-1.4 facture du cabinet")),
     );
