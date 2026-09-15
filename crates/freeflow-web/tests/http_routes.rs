@@ -10,8 +10,9 @@ use axum::http::{Request, StatusCode};
 use freeflow_core::app::{Actor, ExecutionContext, Executor};
 use freeflow_core::clients::{CreateClient, list_clients};
 use freeflow_core::domain::{ClientId, MissionId, Money, OpportunityId, Probability};
+use freeflow_core::expenses::RecordExpense;
 use freeflow_core::missions::CreateMission;
-use freeflow_core::prospection::{CreateOpportunity, list_opportunities};
+use freeflow_core::prospection::{CreateOpportunity, CreateProspect, list_opportunities};
 use freeflow_core::store::{Passphrase, Store};
 use freeflow_web::AppState;
 use http_body_util::BodyExt;
@@ -792,7 +793,11 @@ async fn les_affaires_lists_three_chapters_and_opens_a_dossier() {
     assert!(list.contains("data-view=\"affaires\""), "{list}");
     assert!(list.contains("En conversation"), "{list}");
     assert!(list.contains("En mission"), "{list}");
-    assert!(list.contains("Fournisseurs"), "{list}");
+    assert!(list.contains("Chez qui ça sort"), "{list}");
+    assert!(
+        !list.contains("Fournisseurs"),
+        "plus un chapitre Fournisseurs : {list}"
+    );
     assert!(list.contains("Camille"), "{list}");
     assert!(list.contains("Nouvelle conversation"), "{list}");
     assert!(!list.contains("freeflow "), "{list}");
@@ -866,6 +871,118 @@ async fn les_affaires_lists_three_chapters_and_opens_a_dossier() {
     )
     .await;
     assert!(old.contains("data-view=\"affaires\""), "{old}");
+}
+
+#[tokio::test]
+async fn les_affaires_qualifies_amounts_and_opens_an_outgoing_dossier() {
+    let db_path = test_db_path("letter-outgoing");
+    let mut store = Store::create(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    Executor::new(&mut store)
+        .execute(
+            &CreateProspect {
+                prospect_name: "Mairie de Lewarde".into(),
+                address: None,
+                representative: None,
+                email: None,
+                phone: None,
+                name: "Atelier patrimoine".into(),
+                amount: Money::from_cents(400_000),
+                probability: Probability::new(50).unwrap(),
+                next_action_at: time::macros::date!(2026 - 10 - 01),
+                source: None,
+            },
+            &human_ctx(),
+        )
+        .unwrap();
+    Executor::new(&mut store)
+        .execute(
+            &RecordExpense {
+                label: "Abonnement mars".into(),
+                category: freeflow_core::domain::ExpenseCategory::Software,
+                amount: Money::from_cents(20_000),
+                vat_rate: freeflow_core::domain::VatRate::Zero,
+                vat_deductible: Money::ZERO,
+                incurred_on: time::macros::date!(2026 - 03 - 01),
+                receipt_hash: None,
+                receipt_filename: None,
+                bank_transaction_id: None,
+                supplier: Some("Tiime".into()),
+                paid_by: freeflow_core::domain::ExpensePaidBy::Company,
+            },
+            &human_ctx(),
+        )
+        .unwrap();
+    drop(store);
+
+    let state = AppState::new(db_path.clone());
+    state
+        .unlock(&Passphrase::from(PASSPHRASE), false)
+        .await
+        .unwrap();
+    let state = state.with_today(time::macros::date!(2026 - 09 - 05));
+    let router = freeflow_web::router(state);
+
+    let list = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(list.contains("Chez qui ça sort"), "{list}");
+    assert!(!list.contains("Fournisseurs"), "{list}");
+    assert!(
+        list.contains("autour de") && list.contains("Mairie de Lewarde"),
+        "l'enveloppe se dit : {list}"
+    );
+    assert!(
+        list.contains("Tiime") && list.contains("versés"),
+        "le versé se dit : {list}"
+    );
+
+    let tiime = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Tiime")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(tiime.contains("Les notes"), "{tiime}");
+    assert!(tiime.contains("Abonnement mars"), "{tiime}");
+    assert!(tiime.contains("versés"), "{tiime}");
+    assert!(tiime.contains("pas de justificatif"), "{tiime}");
+    assert!(tiime.contains("Joindre"), "{tiime}");
+    assert!(
+        !tiime.contains(">fournisseur<") && !tiime.contains(" · fournisseur"),
+        "pas un type d'entité : {tiime}"
+    );
+
+    let mairie = body_text(
+        router
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Mairie%20de%20Lewarde")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(mairie.contains("autour de"), "{mairie}");
+    assert!(mairie.contains("Pas de devis posé"), "{mairie}");
 }
 
 #[tokio::test]

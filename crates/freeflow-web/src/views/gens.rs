@@ -3,13 +3,14 @@
 
 use freeflow_core::app::AppError;
 use freeflow_core::domain::{
-    FollowUpSubject, InteractionKind, SnoozePreset, format_date, format_date_fr, snooze_date,
+    ExpensePaidBy, FollowUpSubject, InteractionKind, SnoozePreset, format_date, format_date_fr,
+    snooze_date,
 };
 use freeflow_core::follow_up::{FollowUpCard, card_for, follow_up_sender};
 use freeflow_core::people::{
-    CurrentSituation, HistoryEvent, HistoryKind, MissionShape, Paper, PaperKind, PaperStatus,
-    PeopleList, PersonAction, PersonChapter, PersonCue, PersonDossier, PersonFigure, PersonRow,
-    people_list, person,
+    CurrentSituation, HistoryEvent, HistoryKind, MissionShape, OutgoingCadence, OutgoingChapter,
+    OutgoingNote, Paper, PaperKind, PaperStatus, PeopleList, PersonAction, PersonCue,
+    PersonDossier, PersonFigure, PersonRow, people_list, person,
 };
 use freeflow_core::store::Store;
 use maud::{Markup, html};
@@ -64,13 +65,13 @@ pub fn list_markup(list: &PeopleList, today: Date, flash: Option<&str>) -> Marku
             }
             (chapter("En conversation", &list.conversations, "Aucune conversation ouverte."))
             (chapter("En mission", &list.missions, "Aucune mission en cours."))
-            (chapter("Fournisseurs", &list.suppliers, "Les bénéficiaires d'une dépense apparaîtront ici."))
+            (chapter("Chez qui ça sort", &list.outgoing, "Personne pour l'instant. Une dépense à un nom apparaîtra ici."))
         }
     }
 }
 
 fn list_title(list: &PeopleList) -> String {
-    let n = list.conversations.len() + list.missions.len() + list.suppliers.len();
+    let n = list.conversations.len() + list.missions.len() + list.outgoing.len();
     match n {
         0 => "Les affaires.".into(),
         1 => "Un nom.".into(),
@@ -123,6 +124,8 @@ fn row_link(row: &PersonRow) -> Markup {
 fn figure_fr(figure: &PersonFigure) -> String {
     match figure {
         PersonFigure::Money { amount } => amount.to_string(),
+        PersonFigure::Around { amount } => format!("autour de {amount}"),
+        PersonFigure::Spent { amount } => format!("{amount} versés"),
         PersonFigure::Days { days } => {
             if (days.fract()).abs() < 0.05 {
                 format!("{} j", *days as i64)
@@ -154,6 +157,9 @@ fn cue_fr(cue: &PersonCue) -> String {
         }
         PersonCue::OpeningDebt => "dette reprise au bilan".into(),
         PersonCue::MatchingDebit => "un débit correspond".into(),
+        PersonCue::CadenceMonthly => "tous les mois".into(),
+        PersonCue::LastNote { on } => format!("dernière note en {}", month_name(*on)),
+        PersonCue::QuietSince { on } => format!("plus rien depuis {}", month_name(*on)),
     }
 }
 
@@ -170,7 +176,7 @@ pub fn dossier_markup(dossier: &PersonDossier, today: Date, flash: Option<&str>)
                 "← Les affaires"
             }
             div class="who" { (dossier.name) }
-            p class="co" { (subtitle(dossier)) }
+            p class="co" { (subtitle(dossier, today)) }
             @if let Some(msg) = flash {
                 p class="mast-note" role="status" { (msg) }
             }
@@ -185,6 +191,16 @@ pub fn dossier_markup(dossier: &PersonDossier, today: Date, flash: Option<&str>)
                 div class="block" {
                     h3 { "En cours" }
                     p { (body) }
+                }
+            }
+            @if let Some(outgoing) = &dossier.outgoing {
+                div class="block" {
+                    h3 { "Les notes" }
+                    ul class="hist notes" {
+                        @for note in &outgoing.notes {
+                            (note_item(note, &href))
+                        }
+                    }
                 }
             }
             @if let Some(project) = &dossier.project {
@@ -220,7 +236,10 @@ pub fn dossier_markup(dossier: &PersonDossier, today: Date, flash: Option<&str>)
     }
 }
 
-fn subtitle(d: &PersonDossier) -> String {
+fn subtitle(d: &PersonDossier, today: Date) -> String {
+    if let Some(outgoing) = &d.outgoing {
+        return outgoing_subtitle(outgoing, today);
+    }
     let mut parts = Vec::new();
     if d.contact_name.as_ref().is_some_and(|c| c != &d.party) {
         parts.push(d.party.clone());
@@ -238,13 +257,30 @@ fn subtitle(d: &PersonDossier) -> String {
                 as_days(project.days_this_month)
             ));
         }
-    } else if d.chapter == PersonChapter::Supplier {
-        parts.push("fournisseur".into());
     }
     parts.join(" · ")
 }
 
-fn month_year(on: Date) -> String {
+fn outgoing_subtitle(outgoing: &OutgoingChapter, today: Date) -> String {
+    let mut parts = Vec::new();
+    if outgoing.opening_debt {
+        parts.push("depuis la reprise".into());
+        parts.push("une dette encore ouverte".into());
+        return parts.join(" · ");
+    }
+    parts.push(format!("depuis {}", month_year(outgoing.since)));
+    match outgoing.cadence {
+        OutgoingCadence::Monthly => parts.push("tous les mois".into()),
+        OutgoingCadence::Once | OutgoingCadence::Occasional => {
+            if (today - outgoing.last_on).whole_days() > 90 {
+                parts.push(format!("plus rien depuis {}", month_name(outgoing.last_on)));
+            }
+        }
+    }
+    parts.join(" · ")
+}
+
+fn month_name(on: Date) -> &'static str {
     const MONTHS: [&str; 12] = [
         "janvier",
         "février",
@@ -259,11 +295,14 @@ fn month_year(on: Date) -> String {
         "novembre",
         "décembre",
     ];
-    let m = MONTHS
+    MONTHS
         .get(usize::from(u8::from(on.month()).saturating_sub(1)))
         .copied()
-        .unwrap_or("");
-    format!("{m} {}", on.year())
+        .unwrap_or("")
+}
+
+fn month_year(on: Date) -> String {
+    format!("{} {}", month_name(on), on.year())
 }
 
 fn as_days(days: f64) -> String {
@@ -283,22 +322,8 @@ fn shape_fr(shape: MissionShape) -> &'static str {
 }
 
 fn current_paragraph(current: &CurrentSituation, dossier: &PersonDossier) -> Option<String> {
-    if dossier.chapter == PersonChapter::Supplier {
-        let mut parts = Vec::new();
-        if let Some(amount) = current.amount {
-            if current.opening_debt {
-                parts.push(format!("{amount} repris en dette."));
-            } else {
-                parts.push(format!("{amount}."));
-            }
-        }
-        if current.matching_debit {
-            parts.push("Un débit du relevé correspond au centime. Le ranger comme règlement — pas comme une nouvelle charge.".into());
-        }
-        if parts.is_empty() {
-            return None;
-        }
-        return Some(parts.join(" "));
+    if let Some(outgoing) = &dossier.outgoing {
+        return Some(outgoing_paragraph(outgoing, current));
     }
     let mut sentences = Vec::new();
     if let Some(quote) = &current.quote {
@@ -331,6 +356,9 @@ fn current_paragraph(current: &CurrentSituation, dossier: &PersonDossier) -> Opt
             .map(|a| format!(", autour de {a}"))
             .unwrap_or_default();
         sentences.push(format!("{name}{amount}."));
+        if current.quote.is_none() && current.amount.is_some_and(|a| a.cents() != 0) {
+            sentences.push("Pas de devis posé.".into());
+        }
     }
     if let Some(PersonCue::FollowUpDue { today: true, .. }) = &current.follow_up {
         sentences.push("À relancer aujourd'hui.".into());
@@ -343,6 +371,89 @@ fn current_paragraph(current: &CurrentSituation, dossier: &PersonDossier) -> Opt
     } else {
         Some(sentences.join(" "))
     }
+}
+
+fn outgoing_paragraph(outgoing: &OutgoingChapter, current: &CurrentSituation) -> String {
+    let mut parts = Vec::new();
+    if let Some(owed) = outgoing.owed {
+        if current.opening_debt {
+            parts.push(format!("{owed} repris en dette."));
+        } else {
+            parts.push(format!("{owed} encore à ranger."));
+        }
+    } else {
+        let mut sentence = format!(
+            "{} versés depuis {}.",
+            outgoing.total_paid,
+            month_year(outgoing.since)
+        );
+        if matches!(outgoing.cadence, OutgoingCadence::Monthly) {
+            sentence = format!(
+                "{} versés depuis {}, tous les mois.",
+                outgoing.total_paid,
+                month_year(outgoing.since)
+            );
+        }
+        parts.push(sentence);
+        parts.push("Rien à ranger.".into());
+        parts.push(format!(
+            "Dernière note le {}.",
+            format_date_fr(outgoing.last_on)
+        ));
+    }
+    if current.matching_debit {
+        parts.push("Un débit du relevé correspond au centime. Le ranger comme règlement — pas comme une nouvelle charge.".into());
+    }
+    parts.join(" ")
+}
+
+fn note_item(note: &OutgoingNote, dossier_href: &str) -> Markup {
+    let paid = match note.paid_by {
+        ExpensePaidBy::Associate => " · avancé par toi",
+        ExpensePaidBy::Company => "",
+    };
+    let phrase = format!("{} · {}{paid}", note.label, note.amount);
+    let receipt_href = format!("/depenses/{}/receipt", note.expense_id);
+    let join_href = format!("{dossier_href}/notes/{}/receipt", note.expense_id);
+    html! {
+        li {
+            span class="when" { (short_date(note.on)) }
+            div {
+                span { (phrase) }
+                @if note.receipt_filename.is_some() {
+                    details class="letter-fold" {
+                        summary { "Ouvrir" }
+                        @if is_image_receipt(note.receipt_filename.as_deref()) {
+                            img class="note-receipt" src=(receipt_href) alt=(note.label);
+                        } @else {
+                            object class="note-receipt" data=(receipt_href) type="application/pdf" {
+                                a href=(receipt_href) target="_blank" { "Ouvrir le papier" }
+                            }
+                        }
+                    }
+                } @else {
+                    p class="mast-note" { "pas de justificatif." }
+                    form class="note-join" hx-encoding="multipart/form-data"
+                         hx-post=(join_href) hx-target="#content" {
+                        input type="hidden" name="revision" value=(note.revision);
+                        (form::file("receipt", "Joindre", ".pdf,.png,.jpg,.jpeg,.webp"));
+                        button class="quiet" type="submit" { "Joindre" }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn is_image_receipt(filename: Option<&str>) -> bool {
+    filename
+        .and_then(|n| n.rsplit('.').next())
+        .is_some_and(|ext| {
+            matches!(
+                ext.to_ascii_lowercase().as_str(),
+                "png" | "jpg" | "jpeg" | "webp"
+            )
+        })
 }
 
 fn project_paragraph(

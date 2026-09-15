@@ -26,7 +26,7 @@ pub(crate) struct TodayArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct ShowArgs {
-    /// Nom, préfixe d'UUID, UUID (fiche, opportunité, mission, devis, facture) ou fournisseur.
+    /// Nom, préfixe d'UUID, UUID (fiche, opportunité, mission, devis, facture) ou nom chez qui ça sort.
     reference: String,
     /// Date `AAAA-MM-JJ`. Défaut : aujourd'hui (heure locale).
     today: Option<String>,
@@ -34,7 +34,7 @@ pub(crate) struct ShowArgs {
 
 #[tool_router(router = people_router, vis = "pub(crate)")]
 impl FreeflowServer {
-    /// Les affaires : trois chapitres (en conversation, en mission, fournisseurs). Faits typés,
+    /// Les affaires : trois chapitres (en conversation, en mission, chez qui ça sort). Faits typés,
     /// sans phrase française.
     #[tool(
         name = "people.list",

@@ -4,8 +4,8 @@ use clap::Subcommand;
 use freeflow_core::clock::today_local;
 use freeflow_core::domain::format_date;
 use freeflow_core::people::{
-    HistoryKind, PaperKind, PaperStatus, PeopleList, PersonAction, PersonChapter, PersonCue,
-    PersonDossier, PersonFigure, PersonRow, people_list, person,
+    HistoryKind, OutgoingCadence, PaperKind, PaperStatus, PeopleList, PersonAction, PersonChapter,
+    PersonCue, PersonDossier, PersonFigure, PersonRow, people_list, person,
 };
 use freeflow_core::store::Store;
 use time::Date;
@@ -25,8 +25,8 @@ impl HumanRender for PeopleList {
         out.push_str(&chapter_table(&self.conversations));
         out.push_str("\nEn mission\n");
         out.push_str(&chapter_table(&self.missions));
-        out.push_str("\nFournisseurs\n");
-        out.push_str(&chapter_table(&self.suppliers));
+        out.push_str("\nChez qui ça sort\n");
+        out.push_str(&chapter_table(&self.outgoing));
         out
     }
 }
@@ -51,6 +51,8 @@ fn chapter_table(rows: &[PersonRow]) -> String {
 fn figure_fr(figure: Option<&PersonFigure>) -> String {
     match figure {
         Some(PersonFigure::Money { amount }) => amount.to_string(),
+        Some(PersonFigure::Around { amount }) => format!("autour de {amount}"),
+        Some(PersonFigure::Spent { amount }) => format!("{amount} versés"),
         Some(PersonFigure::Days { days }) => format!("{days} j"),
         None => String::new(),
     }
@@ -74,6 +76,9 @@ fn cue_fr(cue: &PersonCue) -> String {
         }
         PersonCue::OpeningDebt => "dette reprise au bilan".into(),
         PersonCue::MatchingDebit => "un débit correspond".into(),
+        PersonCue::CadenceMonthly => "tous les mois".into(),
+        PersonCue::LastNote { on } => format!("dernière note le {}", format_date(*on)),
+        PersonCue::QuietSince { on } => format!("plus rien depuis {}", format_date(*on)),
     }
 }
 
@@ -122,6 +127,27 @@ impl HumanRender for PersonDossier {
                 ));
             }
         }
+        if let Some(outgoing) = &self.outgoing {
+            out.push_str(&format!(
+                "\nnotes : {} depuis {} · {}\n",
+                outgoing.total_paid,
+                format_date(outgoing.since),
+                cadence_fr(outgoing.cadence)
+            ));
+            for note in &outgoing.notes {
+                let receipt = if note.receipt_filename.is_some() {
+                    " · justificatif"
+                } else {
+                    " · pas de justificatif"
+                };
+                out.push_str(&format!(
+                    "  {} — {} · {}{receipt}\n",
+                    format_date(note.on),
+                    note.label,
+                    note.amount
+                ));
+            }
+        }
         if !self.actions.is_empty() {
             let acts = self
                 .actions
@@ -135,11 +161,19 @@ impl HumanRender for PersonDossier {
     }
 }
 
+fn cadence_fr(cadence: OutgoingCadence) -> &'static str {
+    match cadence {
+        OutgoingCadence::Monthly => "tous les mois",
+        OutgoingCadence::Once => "une fois",
+        OutgoingCadence::Occasional => "de temps en temps",
+    }
+}
+
 fn chapter_fr(chapter: PersonChapter) -> &'static str {
     match chapter {
         PersonChapter::Conversation => "en conversation",
         PersonChapter::Mission => "en mission",
-        PersonChapter::Supplier => "fournisseur",
+        PersonChapter::Outgoing => "chez qui ça sort",
     }
 }
 
@@ -208,7 +242,7 @@ fn action_fr(action: &PersonAction) -> &'static str {
 
 #[derive(Debug, Subcommand)]
 pub enum PeopleCommand {
-    /// Liste unique : en conversation, en mission, fournisseurs.
+    /// Liste unique : en conversation, en mission, chez qui ça sort.
     List {
         #[arg(long, value_parser = parse_date)]
         today: Option<Date>,

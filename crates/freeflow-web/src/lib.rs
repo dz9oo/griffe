@@ -82,6 +82,10 @@ fn people_routes() -> Router<AppState> {
         )
         .route("/{reference}/reporter", post(gens::snooze))
         .route("/{reference}/devis", get(gens::quote_panel))
+        .route(
+            "/{reference}/notes/{expense_id}/receipt",
+            post(gens::attach_note).layer(depenses::body_limit()),
+        )
 }
 
 pub fn router(state: AppState) -> Router {

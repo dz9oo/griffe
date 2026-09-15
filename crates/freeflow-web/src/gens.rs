@@ -1,11 +1,14 @@
 //! Routes de la pièce Les affaires : liste, dossier, nouvelle conversation, lettre, rencontre.
 
 use axum::Form;
-use axum::extract::{Path, State};
+use axum::extract::{Multipart, Path, State};
 use axum::http::{HeaderMap, HeaderValue};
 use axum::response::{Html, IntoResponse, Response};
 use freeflow_core::app::{AppError, Executor, Outcome};
-use freeflow_core::domain::{InteractionKind, Money, Probability, format_date, parse_date};
+use freeflow_core::domain::{
+    ExpenseId, InteractionKind, Money, Probability, format_date, parse_date,
+};
+use freeflow_core::expenses::{AttachReceipt, expense_by_id};
 use freeflow_core::follow_up::{MarkFollowUpSent, PrepareFollowUp, SnoozeFollowUp};
 use freeflow_core::people::person;
 use freeflow_core::prospection::{CreateProspect, LogInteraction};
@@ -468,5 +471,112 @@ pub async fn quote_panel(
             Html(views::devis::new_panel(&values, &QuoteFormErrors::default()).into_string())
         }
         _ => Html(html! { div class="empty-state" { "personne introuvable" } }.into_string()),
+    }
+}
+
+/// Joint un justificatif à une note de la chemise, sans quitter le dossier.
+pub async fn attach_note(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((reference, expense_id)): Path<(String, String)>,
+    mut multipart: Multipart,
+) -> Response {
+    let today = state.today();
+    let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
+        return page(&headers, gens::not_found(&reference, today)).into_response();
+    };
+    let Some(id) = expense_id.parse::<ExpenseId>().ok() else {
+        return page(
+            &headers,
+            gens::dossier_markup(&dossier, today, Some("cette note est introuvable")),
+        )
+        .into_response();
+    };
+    let mut revision: Option<i64> = None;
+    let mut filename = String::new();
+    let mut content: Vec<u8> = Vec::new();
+    while let Ok(Some(field)) = multipart.next_field().await {
+        let name = field.name().unwrap_or_default().to_string();
+        if name == "receipt" {
+            filename = field.file_name().unwrap_or_default().to_string();
+            if let Ok(bytes) = field.bytes().await {
+                content = bytes.to_vec();
+            }
+            continue;
+        }
+        if name == "revision"
+            && let Ok(value) = field.text().await
+        {
+            revision = value.parse().ok();
+        }
+    }
+    if filename.is_empty() || content.is_empty() {
+        return page(
+            &headers,
+            gens::dossier_markup(&dossier, today, Some("choisissez un papier à joindre")),
+        )
+        .into_response();
+    }
+    let Some(rev) = revision else {
+        return page(
+            &headers,
+            gens::dossier_markup(&dossier, today, Some("la note a changé, rechargez")),
+        )
+        .into_response();
+    };
+    let original = filename
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or("justificatif")
+        .to_string();
+    let archived = state
+        .with_store(
+            |store| -> Result<freeflow_core::receipts::ArchivedReceipt, String> {
+                let Some(expense) = expense_by_id(store.connection(), id).ok().flatten() else {
+                    return Err("cette note est introuvable".into());
+                };
+                if expense.supplier.as_deref() != Some(dossier.name.as_str()) {
+                    return Err("cette note n'appartient pas à ce dossier".into());
+                }
+                freeflow_core::receipts::archive(store, &original, &content)
+                    .map_err(|e| e.to_string())
+            },
+        )
+        .await;
+    let archived = match archived {
+        None => return locked(&headers).into_response(),
+        Some(Err(msg)) => {
+            return page(&headers, gens::dossier_markup(&dossier, today, Some(&msg)))
+                .into_response();
+        }
+        Some(Ok(a)) => a,
+    };
+    let cmd = AttachReceipt {
+        id,
+        revision: rev,
+        receipt_hash: archived.hash,
+        receipt_filename: archived.filename,
+    };
+    let result = state
+        .with_store_mut(|store| Executor::new(store).execute(&cmd, &AppState::human_ctx()))
+        .await;
+    match result {
+        None => locked(&headers).into_response(),
+        Some(Err(e)) => page(
+            &headers,
+            gens::dossier_markup(&dossier, today, Some(&e.to_string())),
+        )
+        .into_response(),
+        Some(Ok(_)) => {
+            let content = state
+                .with_store(|store| {
+                    gens::dossier_page(store, &reference, today).unwrap_or_else(
+                        |err| html! { div class="empty-state" { (err.to_string()) } },
+                    )
+                })
+                .await
+                .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
+            page(&headers, content).into_response()
+        }
     }
 }

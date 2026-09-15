@@ -99,7 +99,7 @@ enum TopCommand {
     /// Le jour : mât, gestes, mois.
     #[command(subcommand)]
     Day(day::DayCommand),
-    /// Les affaires : conversations, missions, fournisseurs.
+    /// Les affaires : conversations, missions, chez qui ça sort.
     #[command(subcommand)]
     People(people::PeopleCommand),
     /// La société : paysage, se payer, impôts, clôture, relevé, identité.

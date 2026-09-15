@@ -1209,7 +1209,7 @@ fn people_list_json_on_an_empty_vault_has_three_empty_chapters() {
         "{value}"
     );
     assert!(value["missions"].as_array().unwrap().is_empty(), "{value}");
-    assert!(value["suppliers"].as_array().unwrap().is_empty(), "{value}");
+    assert!(value["outgoing"].as_array().unwrap().is_empty(), "{value}");
 }
 
 #[test]

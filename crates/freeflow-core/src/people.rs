@@ -14,12 +14,14 @@ use time::Date;
 use uuid::Uuid;
 
 use crate::app::AppError;
-use crate::billing::{aged_balance, invoice_by_id, list_invoices, unmatched_debits};
+use crate::billing::{
+    aged_balance, invoice_by_id, list_bank_transactions, list_invoices, unmatched_debits,
+};
 use crate::clients::{client_by_id, list_clients, list_contacts};
 use crate::domain::{
-    Client, ClientId, FollowUpFact, FollowUpSubject, InteractionId, InteractionKind, Invoice,
-    InvoiceId, Milestone, Mission, MissionId, MissionKind, Money, Opportunity, OpportunityId,
-    Quote, QuoteId, QuoteStatus,
+    BankTransaction, Client, ClientId, Expense, ExpenseId, ExpensePaidBy, FollowUpFact,
+    FollowUpSubject, InteractionId, InteractionKind, Invoice, InvoiceId, Milestone, Mission,
+    MissionId, MissionKind, Money, Opportunity, OpportunityId, Quote, QuoteId, QuoteStatus,
 };
 use crate::expenses::list_expenses;
 use crate::follow_up::{CardStatus, FollowUpCard, events_for, follow_up_board};
@@ -71,7 +73,8 @@ impl PersonKey {
 pub enum PersonChapter {
     Conversation,
     Mission,
-    Supplier,
+    /// Chez qui l'argent est déjà sorti — une dépense à un nom, pas une dette.
+    Outgoing,
 }
 
 /// Forme d'une mission, sans les montants — la fenêtre dit « régie » / « forfait ».
@@ -123,14 +126,74 @@ pub enum PersonCue {
     },
     OpeningDebt,
     MatchingDebit,
+    /// Rythme mensuel des notes (écart médian 25–40 jours, au moins trois notes).
+    CadenceMonthly,
+    LastNote {
+        #[serde(with = "crate::domain::serde_date::date")]
+        on: Date,
+    },
+    QuietSince {
+        #[serde(with = "crate::domain::serde_date::date")]
+        on: Date,
+    },
 }
 
-/// Chiffre à droite d'une ligne : un montant, ou des jours.
+/// Chiffre à droite d'une ligne : un montant, une enveloppe, ce qui a été versé, ou des jours.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PersonFigure {
-    Money { amount: Money },
-    Days { days: f64 },
+    /// Devis net, facture à encaisser, ou dette encore ouverte.
+    Money {
+        amount: Money,
+    },
+    /// Montant d'opportunité, pas encore un devis.
+    Around {
+        amount: Money,
+    },
+    /// Total TTC des notes — l'argent est parti.
+    Spent {
+        amount: Money,
+    },
+    Days {
+        days: f64,
+    },
+}
+
+/// Rythme des notes d'une chemise « chez qui ça sort ». La fenêtre rédige ; `Occasional` se tait.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutgoingCadence {
+    Monthly,
+    Once,
+    Occasional,
+}
+
+/// Une note : une dépense nommée, avec son justificatif s'il y en a un.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OutgoingNote {
+    pub expense_id: ExpenseId,
+    pub revision: i64,
+    #[serde(with = "crate::domain::serde_date::date")]
+    pub on: Date,
+    pub label: String,
+    pub amount: Money,
+    pub paid_by: ExpensePaidBy,
+    pub receipt_filename: Option<String>,
+}
+
+/// Histoire d'une chemise : depuis quand, le rythme, le total, les notes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OutgoingChapter {
+    #[serde(with = "crate::domain::serde_date::date")]
+    pub since: Date,
+    pub cadence: OutgoingCadence,
+    pub total_paid: Money,
+    #[serde(with = "crate::domain::serde_date::date")]
+    pub last_on: Date,
+    pub owed: Option<Money>,
+    pub opening_debt: bool,
+    pub matching_debit: bool,
+    pub notes: Vec<OutgoingNote>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -149,13 +212,13 @@ pub struct PersonRow {
 pub struct PeopleList {
     pub conversations: Vec<PersonRow>,
     pub missions: Vec<PersonRow>,
-    pub suppliers: Vec<PersonRow>,
+    pub outgoing: Vec<PersonRow>,
 }
 
 impl PeopleList {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.conversations.is_empty() && self.missions.is_empty() && self.suppliers.is_empty()
+        self.conversations.is_empty() && self.missions.is_empty() && self.outgoing.is_empty()
     }
 }
 
@@ -276,6 +339,7 @@ pub struct PersonDossier {
     pub history: Vec<HistoryEvent>,
     pub actions: Vec<PersonAction>,
     pub follow_up_subject: Option<FollowUpSubject>,
+    pub outgoing: Option<OutgoingChapter>,
 }
 
 /// Liste unique, trois chapitres. Un client en mission n'apparaît pas aussi en conversation.
@@ -449,6 +513,28 @@ fn supplier_names(conn: &Connection) -> Result<Vec<String>, AppError> {
     Ok(names.into_iter().collect())
 }
 
+fn cadence_of(dates: &[Date]) -> OutgoingCadence {
+    if dates.len() <= 1 {
+        return OutgoingCadence::Once;
+    }
+    if dates.len() < 3 {
+        return OutgoingCadence::Occasional;
+    }
+    let mut sorted = dates.to_vec();
+    sorted.sort_unstable();
+    let mut gaps: Vec<i64> = sorted
+        .windows(2)
+        .map(|w| (w[1] - w[0]).whole_days())
+        .collect();
+    gaps.sort_unstable();
+    let median = gaps[gaps.len() / 2];
+    if (25..=40).contains(&median) {
+        OutgoingCadence::Monthly
+    } else {
+        OutgoingCadence::Occasional
+    }
+}
+
 fn quote_net(quote: &Quote) -> Money {
     priced_lines(&quote.lines, quote.discount)
         .into_iter()
@@ -468,9 +554,11 @@ struct Snapshot {
     quotes: Vec<Quote>,
     invoices: Vec<Invoice>,
     aged: Vec<crate::billing::AgedInvoice>,
-    expenses: Vec<crate::domain::Expense>,
-    unmatched: Vec<crate::domain::BankTransaction>,
+    expenses: Vec<Expense>,
+    unmatched: Vec<BankTransaction>,
+    bank: Vec<BankTransaction>,
     opening_class4: Vec<(String, Money)>,
+    opening_opens_on: Option<Date>,
     follow_ups: Vec<FollowUpCard>,
     prospect_ids: HashSet<ClientId>,
 }
@@ -493,21 +581,25 @@ impl Snapshot {
         let aged = aged_balance(conn, today)?;
         let expenses = list_expenses(conn)?;
         let unmatched = unmatched_debits(conn)?;
-        let opening_class4 = match opening_balance(conn)? {
-            Some(record) => record
-                .balance
-                .lines
-                .iter()
-                .filter(|l| {
-                    l.account.starts_with("40")
-                        || l.account.starts_with("42")
-                        || l.account.starts_with("43")
-                        || l.account.starts_with("444")
-                        || l.account.starts_with("4455")
-                })
-                .map(|l| (l.label.clone(), l.amount))
-                .collect(),
-            None => Vec::new(),
+        let bank = list_bank_transactions(conn)?;
+        let (opening_class4, opening_opens_on) = match opening_balance(conn)? {
+            Some(record) => {
+                let lines = record
+                    .balance
+                    .lines
+                    .iter()
+                    .filter(|l| {
+                        l.account.starts_with("40")
+                            || l.account.starts_with("42")
+                            || l.account.starts_with("43")
+                            || l.account.starts_with("444")
+                            || l.account.starts_with("4455")
+                    })
+                    .map(|l| (l.label.clone(), l.amount))
+                    .collect();
+                (lines, Some(record.balance.opens_on))
+            }
+            None => (Vec::new(), None),
         };
         let follow_ups = follow_up_board(conn, today)?;
         Ok(Self {
@@ -520,7 +612,9 @@ impl Snapshot {
             aged,
             expenses,
             unmatched,
+            bank,
             opening_class4,
+            opening_opens_on,
             follow_ups,
             prospect_ids,
         })
@@ -575,27 +669,35 @@ impl Snapshot {
             .chain(missions.iter())
             .map(|r| normalize(&r.party))
             .collect();
-        let mut suppliers = Vec::new();
-        let mut by_supplier: BTreeMap<String, Vec<&crate::domain::Expense>> = BTreeMap::new();
+        let mut by_name: BTreeMap<String, Vec<&Expense>> = BTreeMap::new();
         for expense in &self.expenses {
             if let Some(supplier) = expense.supplier.as_ref().filter(|s| !s.is_empty()) {
                 if listed_names.contains(&normalize(supplier)) {
                     continue;
                 }
-                by_supplier
-                    .entry(supplier.clone())
-                    .or_default()
-                    .push(expense);
+                by_name.entry(supplier.clone()).or_default().push(expense);
             }
         }
-        for (name, items) in by_supplier {
-            suppliers.push(self.supplier_row(&name, &items));
-        }
+        let mut outgoing: Vec<(bool, Date, PersonRow)> = by_name
+            .iter()
+            .map(|(name, items)| {
+                let facts = self.outgoing_facts(name, items, today);
+                let debt = facts.owed.is_some();
+                let last_on = facts.last_on;
+                (debt, last_on, Self::row_from_outgoing(name, &facts, today))
+            })
+            .collect();
+        outgoing.sort_by(|a, b| {
+            b.0.cmp(&a.0)
+                .then_with(|| b.1.cmp(&a.1))
+                .then_with(|| a.2.name.cmp(&b.2.name))
+        });
+        let outgoing: Vec<PersonRow> = outgoing.into_iter().map(|(_, _, row)| row).collect();
 
         PeopleList {
             conversations,
             missions,
-            suppliers,
+            outgoing,
         }
     }
 
@@ -604,7 +706,8 @@ impl Snapshot {
         let name = self.display_name(opp.client_id);
         let quote = self.latest_quote(opp.client_id);
         let mut cues = Vec::new();
-        let mut figure = Some(PersonFigure::Money { amount: opp.amount });
+        let mut figure =
+            (opp.amount.cents() != 0).then_some(PersonFigure::Around { amount: opp.amount });
         if let Some(q) = quote.filter(|q| q.status == QuoteStatus::Sent) {
             cues.push(PersonCue::QuoteSent {
                 on: q.created_at.date(),
@@ -700,36 +803,122 @@ impl Snapshot {
         }
     }
 
-    fn supplier_row(&self, name: &str, items: &[&crate::domain::Expense]) -> PersonRow {
-        let total: Money = items.iter().map(|e| e.amount).sum();
+    fn row_from_outgoing(name: &str, facts: &OutgoingChapter, today: Date) -> PersonRow {
         let mut cues = Vec::new();
-        let amounts: HashSet<i64> = items.iter().map(|e| e.amount.cents()).collect();
-        if self
-            .opening_class4
-            .iter()
-            .any(|(_, amt)| amounts.contains(&amt.cents()))
-        {
+        if facts.opening_debt {
             cues.push(PersonCue::OpeningDebt);
         }
-        if self
-            .unmatched
-            .iter()
-            .any(|t| t.is_debit() && amounts.contains(&t.amount_cents.saturating_neg()))
-        {
+        if facts.matching_debit {
             cues.push(PersonCue::MatchingDebit);
         }
+        if facts.owed.is_none() {
+            match facts.cadence {
+                OutgoingCadence::Monthly => {
+                    cues.push(PersonCue::CadenceMonthly);
+                    cues.push(PersonCue::LastNote { on: facts.last_on });
+                }
+                OutgoingCadence::Once | OutgoingCadence::Occasional => {
+                    if (today - facts.last_on).whole_days() > 90 {
+                        cues.push(PersonCue::QuietSince { on: facts.last_on });
+                    }
+                }
+            }
+        }
+        let figure = Some(match facts.owed {
+            Some(amount) => PersonFigure::Money { amount },
+            None => PersonFigure::Spent {
+                amount: facts.total_paid,
+            },
+        });
         PersonRow {
             key: PersonKey::Supplier {
                 name: name.to_string(),
             },
             name: name.to_string(),
             party: name.to_string(),
-            chapter: PersonChapter::Supplier,
-            figure: Some(PersonFigure::Money { amount: total }),
+            chapter: PersonChapter::Outgoing,
+            figure,
             cues,
             client_id: None,
             opportunity_id: None,
         }
+    }
+
+    fn outgoing_facts(&self, name: &str, items: &[&Expense], today: Date) -> OutgoingChapter {
+        let total_paid: Money = items.iter().map(|e| e.amount).sum();
+        let expense_amounts: HashSet<i64> = items.iter().map(|e| e.amount.cents()).collect();
+        let opening_lines = self.opening_lines_for(name);
+        let opening_amounts: HashSet<i64> = opening_lines.iter().map(|amt| amt.cents()).collect();
+        let covered = self.bank.iter().any(|t| {
+            t.is_debit()
+                && t.is_matched()
+                && opening_amounts.contains(&t.amount_cents.saturating_neg())
+        });
+        let opening_debt = !opening_lines.is_empty() && !covered;
+        let matching: Vec<&BankTransaction> = self
+            .unmatched
+            .iter()
+            .filter(|t| t.is_debit() && expense_amounts.contains(&t.amount_cents.saturating_neg()))
+            .collect();
+        let matching_debit = !matching.is_empty();
+        let owed = if matching_debit {
+            Some(
+                matching
+                    .iter()
+                    .map(|t| Money::from_cents(t.amount_cents.saturating_neg()))
+                    .sum(),
+            )
+        } else if opening_debt {
+            Some(opening_lines.iter().copied().sum())
+        } else {
+            None
+        };
+        let mut notes: Vec<OutgoingNote> = items
+            .iter()
+            .map(|e| OutgoingNote {
+                expense_id: e.id,
+                revision: e.revision,
+                on: e.incurred_on,
+                label: e.label.clone(),
+                amount: e.amount,
+                paid_by: e.paid_by,
+                receipt_filename: e.receipt_filename.clone(),
+            })
+            .collect();
+        notes.sort_by(|a, b| b.on.cmp(&a.on).then_with(|| a.label.cmp(&b.label)));
+        let last_on = notes.first().map_or_else(
+            || items.iter().map(|e| e.incurred_on).max().unwrap_or(today),
+            |n| n.on,
+        );
+        let min_on = items.iter().map(|e| e.incurred_on).min().unwrap_or(today);
+        let since = if opening_debt {
+            self.opening_opens_on.unwrap_or(min_on)
+        } else {
+            min_on
+        };
+        let dates: Vec<Date> = items.iter().map(|e| e.incurred_on).collect();
+        OutgoingChapter {
+            since,
+            cadence: cadence_of(&dates),
+            total_paid,
+            last_on,
+            owed,
+            opening_debt,
+            matching_debit,
+            notes,
+        }
+    }
+
+    fn opening_lines_for(&self, name: &str) -> Vec<Money> {
+        let needle = normalize(name);
+        self.opening_class4
+            .iter()
+            .filter(|(label, _)| {
+                let l = normalize(label);
+                l == needle || (!needle.is_empty() && (l.contains(&needle) || needle.contains(&l)))
+            })
+            .map(|(_, amt)| *amt)
+            .collect()
     }
 
     fn latest_quote(&self, client_id: ClientId) -> Option<Quote> {
@@ -755,7 +944,7 @@ impl Snapshot {
     fn dossier(&self, key: &PersonKey, today: Date) -> Option<PersonDossier> {
         match key {
             PersonKey::Client { id } => self.client_dossier(*id, today),
-            PersonKey::Supplier { name } => self.supplier_dossier(name),
+            PersonKey::Supplier { name } => self.supplier_dossier(name, today),
         }
     }
 
@@ -873,11 +1062,12 @@ impl Snapshot {
             history: Vec::new(),
             actions,
             follow_up_subject: follow_subject,
+            outgoing: None,
         })
     }
 
-    fn supplier_dossier(&self, name: &str) -> Option<PersonDossier> {
-        let items: Vec<&crate::domain::Expense> = self
+    fn supplier_dossier(&self, name: &str, today: Date) -> Option<PersonDossier> {
+        let items: Vec<&Expense> = self
             .expenses
             .iter()
             .filter(|e| e.supplier.as_deref() == Some(name))
@@ -885,16 +1075,15 @@ impl Snapshot {
         if items.is_empty() {
             return None;
         }
-        let row = self.supplier_row(name, &items);
-        let opening_debt = row.cues.iter().any(|c| matches!(c, PersonCue::OpeningDebt));
-        let matching_debit = row
-            .cues
-            .iter()
-            .any(|c| matches!(c, PersonCue::MatchingDebit));
+        let facts = self.outgoing_facts(name, &items, today);
         let mut actions = Vec::new();
-        if matching_debit {
+        if facts.matching_debit {
             actions.push(PersonAction::FileStatement);
         }
+        let amount = match facts.owed {
+            Some(owed) => Some(owed),
+            None => Some(facts.total_paid),
+        };
         Some(PersonDossier {
             key: PersonKey::Supplier {
                 name: name.to_string(),
@@ -903,21 +1092,18 @@ impl Snapshot {
             party: name.to_string(),
             contact_name: None,
             not_yet_client: false,
-            chapter: PersonChapter::Supplier,
-            since: items.iter().map(|e| e.incurred_on).min(),
+            chapter: PersonChapter::Outgoing,
+            since: Some(facts.since),
             current: CurrentSituation {
                 opportunity_id: None,
                 opportunity_name: None,
-                amount: row.figure.and_then(|f| match f {
-                    PersonFigure::Money { amount } => Some(amount),
-                    PersonFigure::Days { .. } => None,
-                }),
+                amount,
                 quote: None,
                 invoice: None,
                 follow_up: None,
                 last_interaction: None,
-                opening_debt,
-                matching_debit,
+                opening_debt: facts.opening_debt,
+                matching_debit: facts.matching_debit,
                 nothing_scheduled: false,
             },
             project: None,
@@ -925,6 +1111,7 @@ impl Snapshot {
             history: Vec::new(),
             actions,
             follow_up_subject: None,
+            outgoing: Some(facts),
         })
     }
 
@@ -1473,7 +1660,7 @@ mod tests {
         assert!(list.is_empty());
         assert!(list.conversations.is_empty());
         assert!(list.missions.is_empty());
-        assert!(list.suppliers.is_empty());
+        assert!(list.outgoing.is_empty());
     }
 
     #[test]
@@ -1526,6 +1713,12 @@ mod tests {
             "Martin n'est pas dû aujourd'hui : {:?}",
             martin.cues
         );
+        match &martin.figure {
+            Some(PersonFigure::Around { amount }) => {
+                assert_eq!(*amount, Money::from_cents(1_200_000));
+            }
+            other => panic!("enveloppe sans devis, pas un montant nu : {other:?}"),
+        }
 
         assert_eq!(list.missions.len(), 2, "{:?}", list.missions);
         let atlas = list
@@ -1566,9 +1759,10 @@ mod tests {
             hume.cues
         );
 
-        assert_eq!(list.suppliers.len(), 1, "{:?}", list.suppliers);
-        let leroy = &list.suppliers[0];
+        assert_eq!(list.outgoing.len(), 1, "{:?}", list.outgoing);
+        let leroy = &list.outgoing[0];
         assert_eq!(leroy.name, "Cabinet Leroy");
+        assert_eq!(leroy.chapter, PersonChapter::Outgoing);
         assert!(
             leroy
                 .cues
@@ -1585,6 +1779,12 @@ mod tests {
             "{:?}",
             leroy.cues
         );
+        match &leroy.figure {
+            Some(PersonFigure::Money { amount }) => {
+                assert_eq!(*amount, Money::from_cents(120_000));
+            }
+            other => panic!("dette encore ouverte : {other:?}"),
+        }
     }
 
     #[test]
@@ -1683,6 +1883,246 @@ mod tests {
                 .unwrap()
                 .label,
             "maquettes"
+        );
+    }
+
+    fn record_named_expense(
+        store: &mut Store,
+        label: &str,
+        supplier: &str,
+        cents: i64,
+        on: Date,
+        paid_by: crate::domain::ExpensePaidBy,
+        receipt_filename: Option<&str>,
+    ) {
+        applied(
+            Executor::new(store)
+                .execute(
+                    &RecordExpense {
+                        label: label.into(),
+                        category: crate::domain::ExpenseCategory::Software,
+                        amount: Money::from_cents(cents),
+                        vat_rate: VatRate::Zero,
+                        vat_deductible: Money::ZERO,
+                        incurred_on: on,
+                        receipt_hash: receipt_filename.map(|_| "abc".into()),
+                        receipt_filename: receipt_filename.map(str::to_string),
+                        bank_transaction_id: None,
+                        supplier: Some(supplier.into()),
+                        paid_by,
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+    }
+
+    #[test]
+    fn a_paid_vendor_is_spent_not_owed_and_lists_its_notes() {
+        let mut store = test_store("tiime");
+        record_named_expense(
+            &mut store,
+            "Abonnement mars",
+            "Tiime",
+            2_000,
+            date(2026, TimeMonth::January, 1),
+            crate::domain::ExpensePaidBy::Company,
+            Some("facture-mars.pdf"),
+        );
+        record_named_expense(
+            &mut store,
+            "Abonnement février",
+            "Tiime",
+            2_000,
+            date(2026, TimeMonth::February, 1),
+            crate::domain::ExpensePaidBy::Company,
+            None,
+        );
+        record_named_expense(
+            &mut store,
+            "Abonnement mars bis",
+            "Tiime",
+            2_000,
+            date(2026, TimeMonth::March, 1),
+            crate::domain::ExpensePaidBy::Associate,
+            None,
+        );
+
+        let list = people_list(store.connection(), today()).unwrap();
+        assert_eq!(list.outgoing.len(), 1, "{:?}", list.outgoing);
+        let tiime = &list.outgoing[0];
+        assert_eq!(tiime.name, "Tiime");
+        match &tiime.figure {
+            Some(PersonFigure::Spent { amount }) => {
+                assert_eq!(*amount, Money::from_cents(6_000));
+            }
+            other => panic!("payé, pas une dette : {other:?}"),
+        }
+        assert!(
+            tiime
+                .cues
+                .iter()
+                .any(|c| matches!(c, PersonCue::CadenceMonthly)),
+            "{:?}",
+            tiime.cues
+        );
+        assert!(
+            tiime.cues.iter().any(|c| matches!(
+                c,
+                PersonCue::LastNote { on } if *on == date(2026, TimeMonth::March, 1)
+            )),
+            "{:?}",
+            tiime.cues
+        );
+        assert!(
+            !tiime
+                .cues
+                .iter()
+                .any(|c| matches!(c, PersonCue::OpeningDebt | PersonCue::MatchingDebit)),
+            "{:?}",
+            tiime.cues
+        );
+
+        let dossier = person(store.connection(), "Tiime", today()).unwrap();
+        assert_eq!(dossier.chapter, PersonChapter::Outgoing);
+        let outgoing = dossier.outgoing.as_ref().expect("chemise");
+        assert_eq!(outgoing.total_paid, Money::from_cents(6_000));
+        assert_eq!(outgoing.cadence, OutgoingCadence::Monthly);
+        assert!(outgoing.owed.is_none());
+        assert_eq!(outgoing.notes.len(), 3);
+        assert_eq!(outgoing.notes[0].label, "Abonnement mars bis");
+        assert_eq!(
+            outgoing.notes[0].paid_by,
+            crate::domain::ExpensePaidBy::Associate
+        );
+        assert_eq!(
+            outgoing.notes[2].receipt_filename.as_deref(),
+            Some("facture-mars.pdf")
+        );
+        assert_eq!(outgoing.since, date(2026, TimeMonth::January, 1));
+    }
+
+    #[test]
+    fn a_quiet_vendor_has_quiet_since_not_a_debt() {
+        let mut store = test_store("numbr");
+        record_named_expense(
+            &mut store,
+            "Honoraires 2025",
+            "Numbr Hauts de France",
+            180_000,
+            date(2026, TimeMonth::January, 12),
+            crate::domain::ExpensePaidBy::Company,
+            None,
+        );
+        let list = people_list(store.connection(), today()).unwrap();
+        let numbr = list
+            .outgoing
+            .iter()
+            .find(|r| r.name.contains("Numbr"))
+            .expect("Numbr");
+        match &numbr.figure {
+            Some(PersonFigure::Spent { amount }) => {
+                assert_eq!(*amount, Money::from_cents(180_000));
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(
+            numbr.cues.iter().any(|c| matches!(
+                c,
+                PersonCue::QuietSince { on } if *on == date(2026, TimeMonth::January, 12)
+            )),
+            "{:?}",
+            numbr.cues
+        );
+    }
+
+    #[test]
+    fn opening_debt_clears_once_the_debit_is_filed() {
+        let mut store = test_store("leroy-settled");
+        seed_people(&mut store);
+        let before = people_list(store.connection(), today()).unwrap();
+        assert!(
+            before.outgoing[0]
+                .cues
+                .iter()
+                .any(|c| matches!(c, PersonCue::OpeningDebt)),
+            "{:?}",
+            before.outgoing[0].cues
+        );
+
+        let tx = crate::billing::list_bank_transactions(store.connection()).unwrap()[0].id;
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &crate::billing::SettleBankTransaction {
+                        transaction_id: tx,
+                        account: "401000".parse().unwrap(),
+                        label: None,
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+
+        let after = people_list(store.connection(), today()).unwrap();
+        let leroy = after
+            .outgoing
+            .iter()
+            .find(|r| r.name.contains("Leroy"))
+            .expect("Leroy reste");
+        assert!(
+            !leroy
+                .cues
+                .iter()
+                .any(|c| matches!(c, PersonCue::OpeningDebt | PersonCue::MatchingDebit)),
+            "la dette ne survit pas au rangement : {:?}",
+            leroy.cues
+        );
+        match &leroy.figure {
+            Some(PersonFigure::Spent { amount }) => {
+                assert_eq!(*amount, Money::from_cents(120_000));
+            }
+            other => panic!("après rangement, versé : {other:?}"),
+        }
+    }
+
+    #[test]
+    fn outgoing_puts_an_open_debt_ahead_of_a_quiet_vendor() {
+        let mut store = test_store("order");
+        seed_people(&mut store);
+        record_named_expense(
+            &mut store,
+            "Abonnement",
+            "Tiime",
+            2_000,
+            date(2026, TimeMonth::March, 1),
+            crate::domain::ExpensePaidBy::Company,
+            None,
+        );
+        let list = people_list(store.connection(), today()).unwrap();
+        let names: Vec<&str> = list.outgoing.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, vec!["Cabinet Leroy", "Tiime"], "{names:?}");
+    }
+
+    #[test]
+    fn leroy_dossier_carries_the_note_and_the_opening_debt() {
+        let mut store = test_store("leroy-dossier");
+        seed_people(&mut store);
+        let dossier = person(store.connection(), "Cabinet Leroy", today()).unwrap();
+        assert_eq!(dossier.chapter, PersonChapter::Outgoing);
+        assert!(dossier.current.opening_debt);
+        assert!(dossier.current.matching_debit);
+        let outgoing = dossier.outgoing.as_ref().expect("chemise");
+        assert_eq!(outgoing.owed, Some(Money::from_cents(120_000)));
+        assert_eq!(outgoing.notes.len(), 1);
+        assert_eq!(outgoing.notes[0].label, "honoraires clôture");
+        assert!(
+            dossier
+                .actions
+                .iter()
+                .any(|a| matches!(a, PersonAction::FileStatement)),
+            "{:?}",
+            dossier.actions
         );
     }
 }

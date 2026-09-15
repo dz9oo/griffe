@@ -117,7 +117,7 @@ pub(crate) fn list() -> ListResourcesResult {
             .with_mime_type("application/json"),
         Resource::new(PEOPLE_URI, "people")
             .with_description(
-                "Les affaires : trois chapitres (en conversation, en mission, fournisseurs) — même \
+                "Les affaires : trois chapitres (en conversation, en mission, chez qui ça sort) — même \
                  vue que people.list.",
             )
             .with_mime_type("application/json"),
