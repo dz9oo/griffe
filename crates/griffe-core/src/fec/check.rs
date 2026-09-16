@@ -629,8 +629,8 @@ mod tests {
     use crate::company::CompanyProfile;
     use crate::domain::{
         Address, Client, ClientId, Expense, ExpenseCategory, FiscalYear, FiscalYearEnd, Invoice,
-        InvoiceId, InvoiceLine, InvoiceStatus, Money, Payment, PaymentId, PaymentMethod, Siren,
-        VatRate,
+        InvoiceId, InvoiceLine, InvoiceOrigin, InvoiceStatus, Money, Payment, PaymentId,
+        PaymentMethod, Siren, VatRate,
     };
     use time::{Date, Month, OffsetDateTime};
 
@@ -868,6 +868,7 @@ mod tests {
                     vat_rate: VatRate::Standard,
                 }],
                 status: InvoiceStatus::Issued,
+                origin: InvoiceOrigin::Issued,
                 issued_on: date(2026, Month::March, 10),
                 due_on: date(2026, Month::March, 10),
                 previous_hash: None,

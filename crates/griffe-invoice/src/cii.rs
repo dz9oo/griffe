@@ -391,7 +391,7 @@ fn write_trade_settlement(
 
 #[cfg(test)]
 mod tests {
-    use griffe_core::domain::{ClientId, InvoiceId, InvoiceStatus, Siren};
+    use griffe_core::domain::{ClientId, InvoiceId, InvoiceOrigin, InvoiceStatus, Siren};
     use time::{Date, Month};
 
     use super::*;
@@ -447,6 +447,7 @@ mod tests {
             mission_id: None,
             lines,
             status: InvoiceStatus::Issued,
+            origin: InvoiceOrigin::Issued,
             issued_on: date(2026, Month::September, 30),
             due_on: date(2026, Month::October, 30),
             previous_hash: None,

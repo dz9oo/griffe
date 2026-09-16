@@ -1861,7 +1861,8 @@ pub fn ledger_ending_in(
 mod tests {
     use super::*;
     use crate::domain::{
-        Address, BankTransactionId, FiscalYearId, InvoiceLine, InvoiceStatus, Siren, VatRate,
+        Address, BankTransactionId, FiscalYearId, InvoiceLine, InvoiceOrigin, InvoiceStatus, Siren,
+        VatRate,
     };
     use proptest::prelude::*;
     use time::Month as TimeMonth;
@@ -1925,6 +1926,7 @@ mod tests {
                 vat_rate: VatRate::Standard,
             }],
             status: InvoiceStatus::Issued,
+            origin: InvoiceOrigin::Issued,
             issued_on,
             due_on: issued_on,
             previous_hash: None,

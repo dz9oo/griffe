@@ -274,7 +274,7 @@ mod tests {
     use crate::billing::{EmitInvoice, IssueCreditNote, RecordPayment, VoidPayment};
     use crate::company::SetCompanyProfile;
     use crate::domain::{
-        Address, ClientId, InvoiceId, InvoiceLine, InvoiceStatus, PaymentId, VatRate,
+        Address, ClientId, InvoiceId, InvoiceLine, InvoiceOrigin, InvoiceStatus, PaymentId, VatRate,
     };
     use crate::domain::{ExpenseCategory, FiscalYearEnd, PaymentMethod};
     use crate::expenses::RecordExpense;
@@ -356,6 +356,7 @@ mod tests {
             mission_id: None,
             lines,
             status: InvoiceStatus::Issued,
+            origin: InvoiceOrigin::Issued,
             issued_on,
             due_on: issued_on,
             previous_hash: None,

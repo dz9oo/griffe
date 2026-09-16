@@ -6,8 +6,8 @@ use time::Date;
 
 use crate::app::{AppError, Command};
 use crate::domain::{
-    BankTransactionId, ClientId, Invoice, InvoiceId, InvoiceLine, InvoiceStatus, MissionId, Money,
-    Payment, PaymentId, PaymentMethod,
+    BankTransactionId, ClientId, Invoice, InvoiceId, InvoiceLine, InvoiceOrigin, InvoiceStatus,
+    MissionId, Money, Payment, PaymentId, PaymentMethod,
 };
 
 use super::error::BillingError;
@@ -71,6 +71,7 @@ impl Command for EmitInvoice {
             mission_id: self.mission_id,
             lines: self.lines.clone(),
             status: InvoiceStatus::Issued,
+            origin: InvoiceOrigin::Issued,
             issued_on: self.issued_on,
             due_on,
             previous_hash,
@@ -142,6 +143,7 @@ impl Command for IssueCreditNote {
             mission_id: original.mission_id,
             lines: negated_lines,
             status: InvoiceStatus::Issued,
+            origin: InvoiceOrigin::Issued,
             issued_on: self.issued_on,
             due_on: self.issued_on,
             previous_hash,
