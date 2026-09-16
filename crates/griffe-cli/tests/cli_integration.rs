@@ -3793,9 +3793,7 @@ fn setup_status_lists_what_is_missing_then_goes_green() {
         .args(["company", "show"])
         .assert()
         .success()
-        .stdout(predicate::str::contains(
-            "Président           : Léa Martin",
-        ))
+        .stdout(predicate::str::contains("Président           : Léa Martin"))
         .stdout(predicate::str::contains(
             "Associé unique      : Léa Martin, 12 rue de la Paix, 75002 Paris",
         ))
