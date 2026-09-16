@@ -51,7 +51,7 @@ site-check:
 
 # Traces perso / MIT projet / journal de lots dans le corpus public.
 hygiene-check:
-    ! git grep -n 'Lumen Conseil' -- ':!docs/superpowers' ':!justfile'
+    ! git grep -n 'Nicolas Collier Conseil' -- ':!docs/superpowers' ':!justfile'
     ! git grep -n 'virements Collier' -- ':!docs/superpowers' ':!justfile'
     ! git grep -n '/home/nicolas/Work' -- ':!docs/superpowers' ':!justfile'
     ! git grep -n 'licence MIT\|license MIT' -- README.md site/index.html AGENTS.md CONTRIBUTING.md
