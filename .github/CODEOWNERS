@@ -1,0 +1,17 @@
+/crates/griffe-core/src/accounting.rs    @dz9oo
+/crates/griffe-core/src/fiscal.rs        @dz9oo
+/crates/griffe-core/src/fiscal_year.rs   @dz9oo
+/crates/griffe-core/src/ledger.rs        @dz9oo
+/crates/griffe-core/src/fec/             @dz9oo
+/crates/griffe-core/src/closing.rs       @dz9oo
+/crates/griffe-core/src/opening_balance.rs @dz9oo
+/crates/griffe-core/src/opening_balance/ @dz9oo
+/crates/griffe-core/src/fixed_assets.rs  @dz9oo
+/crates/griffe-core/src/domain/vat.rs    @dz9oo
+/crates/griffe-core/src/domain/vat_filing.rs @dz9oo
+/crates/griffe-core/src/domain/period.rs @dz9oo
+/crates/griffe-core/src/domain/asset.rs  @dz9oo
+/crates/griffe-core/src/society/         @dz9oo
+/crates/griffe-docs/                     @dz9oo
+/crates/griffe-invoice/                  @dz9oo
+/docs/legal.md                          @dz9oo

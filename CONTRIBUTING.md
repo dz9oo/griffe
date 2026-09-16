@@ -13,6 +13,9 @@ Nix fournit Rust (voir `rust-toolchain.toml`), `cargo-nextest`, `typst`,
 `just check` vert. Pour un changement de schéma ou de crate visible par Nix :
 `nix flake check` après `git add` (Nix ne voit que l’index).
 
+Avant un dépôt public : `just hygiene-check` (traces perso, MIT projet).
+Pas dans `just check`.
+
 ## Patch
 
 Une intention par PR. L’UI est en français. Le métier va dans `griffe-core`,

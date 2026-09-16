@@ -1,0 +1,23 @@
+name: Atelier
+description: Un écran, une phrase ou un geste de la fenêtre qui grince.
+labels: [atelier]
+body:
+  - type: dropdown
+    id: piece
+    attributes:
+      label: Pièce
+      description: Où ça se passe dans la fenêtre.
+      options:
+        - Jour
+        - Affaires
+        - Société
+        - autre
+    validations:
+      required: true
+  - type: textarea
+    id: grince
+    attributes:
+      label: Ce qui grince
+      description: Ce que tu voyais, ce que tu attendais.
+    validations:
+      required: true

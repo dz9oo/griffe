@@ -1,0 +1,32 @@
+name: Fiscal
+description: Un calcul de TVA, d’IS, de liasse, de FEC ou un document Cerfa qui te paraît faux.
+labels: [fiscal]
+body:
+  - type: textarea
+    id: griffe
+    attributes:
+      label: Ce que Griffe calcule
+      description: Le chiffre ou le libellé produit, et où tu le vois.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Ce que tu crois juste
+      description: Ce que tu attendais à la place.
+    validations:
+      required: true
+  - type: textarea
+    id: source
+    attributes:
+      label: Source (BOFIP, CGI, Cerfa)
+      description: Lien ou extrait de la source primaire, pas un souvenir.
+    validations:
+      required: true
+  - type: input
+    id: montant
+    attributes:
+      label: Montant
+      description: Le chiffre que tu attends, posé à la main.
+    validations:
+      required: true

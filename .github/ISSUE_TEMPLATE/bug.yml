@@ -1,0 +1,27 @@
+name: Bug
+description: Un comportement inattendu, un crash, un calcul faux hors fiscal.
+labels: [bug]
+body:
+  - type: textarea
+    id: repro
+    attributes:
+      label: Repro
+      description: Étapes pour reproduire, ce que tu voyais, ce que tu attendais.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Sortie de `griffe --version`, ou hash de commit.
+      placeholder: griffe --version
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      description: Système où ça se produit.
+      placeholder: Debian 12, macOS 15, …
+    validations:
+      required: true
