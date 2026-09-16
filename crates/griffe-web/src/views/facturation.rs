@@ -64,7 +64,7 @@ pub fn list_fragment(store: &Store, today: Date) -> Result<Markup, AppError> {
             }
             @if invoices.is_empty() {
                 div class="empty-state" {
-                    "aucune facture émise — l'émission d'une facture (Factur-X) se fait pour l'instant depuis la console de l'onglet « console » (tapez « aide ») ou par un agent ; elle apparaîtra ici"
+                    "aucune facture dans le coffre — posez celle née dans votre plateforme depuis le dossier, dans Les affaires"
                 }
             } @else {
                 div class="panel bordered" style="padding:0" {

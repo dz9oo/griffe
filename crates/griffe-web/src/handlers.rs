@@ -774,7 +774,13 @@ pub async fn missions(State(state): State<AppState>, headers: HeaderMap) -> Html
 }
 
 pub async fn facturation(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
-    letter(&state, headers, ViewId::Gens, views::gens::render).await
+    letter(
+        &state,
+        headers,
+        ViewId::Facturation,
+        views::facturation::list_fragment,
+    )
+    .await
 }
 
 pub async fn clients(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
