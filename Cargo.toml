@@ -14,7 +14,7 @@ members = [
 version = "0.1.0"
 edition = "2024"
 publish = false
-license = "MIT"
+license = "LicenseRef-PolyForm-Shield-1.0.0"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

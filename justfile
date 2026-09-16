@@ -46,3 +46,5 @@ site-check:
     grep -q 'Le jour' site/index.html
     grep -q 'Les affaires' site/index.html
     grep -q 'La société' site/index.html
+    ! grep -E 'licence MIT|license MIT' site/index.html
+    grep -q 'PolyForm Shield' site/index.html

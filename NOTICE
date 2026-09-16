@@ -1,0 +1,19 @@
+Required Notice: Copyright 2026 Nicolas Collier (https://nicolascollier.dev)
+Licensor Line of Business: Griffe
+
+Le code de Griffe est sous PolyForm Shield 1.0.0 (voir LICENSE).
+Tu peux le lire, le modifier, t’en servir pour ta propre activité.
+Tu ne peux pas vendre Griffe, le proposer en service hébergé, ni le
+présenter comme un substitut, sans accord.
+
+« Griffe » désigne ce projet. Un fork se renomme.
+
+Tiers
+-----
+Polices Newsreader (Production Type) et Source Sans 3 (Adobe,
+reserved font name « Source ») : SIL Open Font License 1.1.
+Textes : crates/griffe-web/assets/fonts/OFL-newsreader.txt
+         crates/griffe-web/assets/fonts/OFL-source-sans-3.txt
+
+Schémas XML EN 16931 vendorisés : European Union Public Licence
+1.2 — crates/griffe-invoice/spec/EUPL-1.2-LICENSE.txt

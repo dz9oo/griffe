@@ -1,5 +1,5 @@
 {
-  description = "FreeFlow — gestion pour indépendant (backend Rust, coque Tauri, CLI, MCP)";
+  description = "Griffe — gestion pour un indépendant en SASU/EURL à l'IS (Rust, Tauri, CLI, MCP)";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
