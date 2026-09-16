@@ -1,9 +1,7 @@
 # Activer GitHub Pages → Source = GitHub Actions, une fois le dépôt public.
 name: pages
 on:
-  push:
-    branches: [master]
-    paths: ["site/**", ".github/workflows/pages.yml"]
+  workflow_dispatch:
 permissions:
   contents: read
   pages: write
