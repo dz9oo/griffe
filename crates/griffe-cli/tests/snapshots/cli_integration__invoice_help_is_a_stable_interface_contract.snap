@@ -2,12 +2,13 @@
 source: crates/griffe-cli/tests/cli_integration.rs
 expression: "String::from_utf8(output.stdout).unwrap()"
 ---
-Facturation : émission, avoir, vérification de la chaîne, balance âgée
+Facturation : émission, import, avoir, vérification de la chaîne, balance âgée
 
 Usage: griffe invoice [OPTIONS] <COMMAND>
 
 Commands:
   emit          Émet une facture — nécessite confirmation humaine quand `--actor agent:...`
+  import        Enregistre une facture née ailleurs (PA, outil tiers) — conserve son numéro, archive le fichier. Nécessite confirmation humaine quand `--actor agent:...`
   credit-note   Émet un avoir annulant intégralement une facture — même exigence de confirmation
   verify-chain  Revérifie la chaîne de hash de toutes les factures
   aged-balance  Balance âgée à une date donnée

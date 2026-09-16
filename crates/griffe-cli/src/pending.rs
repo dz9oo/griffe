@@ -7,8 +7,9 @@
 use clap::Subcommand;
 use griffe_core::app::{self, Actor, Command, ExecutionContext, Executor, PendingActionId};
 use griffe_core::billing::{
-    DeleteBankTransaction, EmitInvoice, IssueCreditNote, ReconcileTransaction, RecordPayment,
-    SettleBankTransaction, UnreconcileTransaction, UnsettleBankTransaction, VoidPayment,
+    DeleteBankTransaction, EmitInvoice, ImportIssuedInvoice, IssueCreditNote, ReconcileTransaction,
+    RecordPayment, SettleBankTransaction, UnreconcileTransaction, UnsettleBankTransaction,
+    VoidPayment,
 };
 use griffe_core::clients::{DeleteClient, DeleteContact};
 use griffe_core::expenses::{DeleteExpense, ReconcileExpense, RecordExpense, UpdateExpense};
@@ -113,6 +114,12 @@ pub fn confirm(store: &mut Store, id: PendingActionId, json: bool) -> Result<Str
             _ => None,
         };
         Ok(crate::papers::append_capture_note(rendered, json, note))
+    } else if action.command_name == ImportIssuedInvoice::NAME {
+        // Confirm n'a plus les octets du PDF : pas d'archive ici.
+        // `capture_invoice` fabriquerait un Factur-X Issued — interdit.
+        // L'humain repose le papier via `papers archive` ou la fenêtre.
+        let outcome = Executor::new(store).confirm::<ImportIssuedInvoice>(id)?;
+        Ok(format_outcome(&outcome, json))
     } else if action.command_name == IssueCreditNote::NAME {
         let outcome = Executor::new(store).confirm::<IssueCreditNote>(id)?;
         let rendered = format_outcome(&outcome, json);

@@ -12,6 +12,19 @@ use predicates::prelude::*;
 mod common;
 use common::{create_client, freeflow, json_result, passphrase_file, provision, temp_db};
 
+fn papers_of_kind(db: &Path, kind: &str) -> serde_json::Value {
+    json_result(
+        &freeflow()
+            .env("FREEFLOW_DB", db)
+            .args(["--json", "papers", "list", "--kind", kind])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    )
+}
+
 #[test]
 fn golden_path_from_prospection_to_paid_invoice() {
     let db = temp_db("golden-path");
@@ -1216,6 +1229,43 @@ fn people_list_json_on_an_empty_vault_has_three_empty_chapters() {
 fn top_level_help_is_a_stable_interface_contract() {
     let output = freeflow().arg("--help").output().unwrap();
     insta::assert_snapshot!(String::from_utf8(output.stdout).unwrap());
+}
+
+#[test]
+fn invoice_import_keeps_the_tiime_number_and_archives_the_file() {
+    let db = temp_db("invoice-import");
+    provision(&db);
+    let client_id = create_client(&db, "Camille");
+    let pdf = db.parent().unwrap().join("FAC-2026-0042.pdf");
+    std::fs::write(&pdf, b"%PDF-1.7 camille").unwrap();
+    let lines = r#"[{"description":"Mission Camille","quantity":1,"unit_price":500000,"vat_rate":"Standard"}]"#;
+    let out = json_result(
+        &freeflow()
+            .env("FREEFLOW_DB", &db)
+            .args([
+                "--json",
+                "invoice",
+                "import",
+                "--file",
+                pdf.to_str().unwrap(),
+                "--client",
+                &client_id,
+                "--number",
+                "FAC-2026-0042",
+                "--lines",
+                lines,
+                "--issued-on",
+                "2026-09-16",
+            ])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert_eq!(out["result"]["number"], "FAC-2026-0042");
+    let papers = papers_of_kind(&db, "issued_invoice");
+    assert_eq!(papers[0]["origin"], "imported");
 }
 
 #[test]

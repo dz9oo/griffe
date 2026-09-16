@@ -117,7 +117,7 @@ enum TopCommand {
     /// Devis : création, révision, envoi, acceptation.
     #[command(subcommand)]
     Quote(quote::QuoteCommand),
-    /// Facturation : émission, avoir, vérification de la chaîne, balance âgée.
+    /// Facturation : émission, import, avoir, vérification de la chaîne, balance âgée.
     #[command(subcommand)]
     Invoice(invoice::InvoiceCommand),
     /// Encaissements.
