@@ -1,7 +1,8 @@
 //! `freeflow papers list|show|add|rm|checklist|export` — Les papiers. Les helpers
-//! [`capture_invoice`], [`capture_year`], [`capture_bank_statement`],
-//! [`capture_expense_receipt`] et [`write_control_pack`] sont publics : la fenêtre et le
-//! serveur MCP les appellent, jamais depuis un `Command::apply`.
+//! [`capture_invoice`], [`capture_imported_invoice`], [`capture_year`],
+//! [`capture_bank_statement`], [`capture_expense_receipt`] et [`write_control_pack`]
+//! sont publics : la fenêtre et le serveur MCP les appellent, jamais depuis un
+//! `Command::apply`.
 
 use std::path::{Path, PathBuf};
 
@@ -11,15 +12,16 @@ use griffe_core::clock::today_local;
 use griffe_core::closing::StepStatus;
 use griffe_core::company::company_profile;
 use griffe_core::domain::{
-    ExpenseId, FiscalYearEnd, FiscalYearId, InvoiceId, PaperKind, PaperOrigin, format_date,
+    ExpenseId, FiscalYearEnd, FiscalYearId, InvoiceId, InvoiceOrigin, PaperKind, PaperOrigin,
+    format_date,
 };
 use griffe_core::expenses::{expense_by_id, hash_receipt};
 use griffe_core::fec::build_fec;
 use griffe_core::fiscal_year::fiscal_year_ending_in;
 use griffe_core::papers::{
     ArchivePaper, ControlPackItem, NewPaper, Paper, PaperFilter, PapersChecklist, PurgePaper,
-    archive_paper, control_pack_manifest, issued_paper, list_papers, mime_from_name, paper_by_id,
-    papers_checklist,
+    archive_paper, control_pack_manifest, invoice_paper, issued_paper, list_papers, mime_from_name,
+    paper_by_id, papers_checklist,
 };
 use griffe_core::store::Store;
 use time::Date;
@@ -460,7 +462,9 @@ fn take_paper(outcome: Outcome<Paper>) -> Result<Option<Paper>, CliError> {
 }
 
 /// Rend le Factur-X et l'archive une fois. No-op si `(IssuedInvoice|CreditNote, invoice_id)`
-/// existe. Échec de rendu (profil manquant, Typst) : `Ok(None)`, jamais un rollback de l'émission.
+/// existe, ou si la facture est `Imported` (le PDF de la PA est collé par
+/// [`capture_imported_invoice`], jamais un original `Issued` fabriqué ici). Échec de rendu
+/// (profil manquant, Typst) : `Ok(None)`, jamais un rollback de l'émission.
 ///
 /// # Errors
 ///
@@ -475,6 +479,9 @@ pub fn capture_invoice(
     }
     let invoice = griffe_core::billing::invoice_by_id(store.connection(), invoice_id)?
         .ok_or_else(|| CliError::Domain(format!("facture introuvable : {invoice_id}")))?;
+    if invoice.origin == InvoiceOrigin::Imported {
+        return Ok(None);
+    }
     let kind = if invoice.credited_invoice_id.is_some() {
         PaperKind::CreditNote
     } else {
@@ -509,6 +516,49 @@ pub fn capture_invoice(
         idempotency_key: Some(format!("papers:{kind}:{invoice_id}")),
     };
     take_paper(archive_paper(store, spec, &pdf, ctx)?)
+}
+
+/// Archive le PDF d'une facture née ailleurs (`PaperOrigin::Imported`). Dry-run : pas d'IO.
+///
+/// # Errors
+///
+/// Facture introuvable, ou erreur d'index / d'IO.
+pub fn capture_imported_invoice(
+    store: &mut Store,
+    ctx: &ExecutionContext,
+    invoice_id: InvoiceId,
+    original_name: &str,
+    bytes: &[u8],
+) -> Result<Option<Paper>, CliError> {
+    if ctx.dry_run {
+        return Ok(None);
+    }
+    let invoice = griffe_core::billing::invoice_by_id(store.connection(), invoice_id)?
+        .ok_or_else(|| CliError::Domain(format!("facture introuvable : {invoice_id}")))?;
+    let kind = if invoice.credited_invoice_id.is_some() {
+        PaperKind::CreditNote
+    } else {
+        PaperKind::IssuedInvoice
+    };
+    if let Some(existing) = invoice_paper(store.connection(), invoice_id, kind)? {
+        return Ok(Some(existing));
+    }
+    let period = paper_period(store, invoice.issued_on)?;
+    let spec = NewPaper {
+        kind,
+        origin: PaperOrigin::Imported,
+        original_name: original_name.to_string(),
+        mime: mime_from_name(original_name),
+        period: Some(period),
+        issued_on: Some(invoice.issued_on),
+        client_id: Some(invoice.client_id),
+        invoice_id: Some(invoice.id),
+        expense_id: None,
+        fiscal_year_id: None,
+        note: None,
+        idempotency_key: Some(format!("papers:imported:{kind}:{invoice_id}")),
+    };
+    take_paper(archive_paper(store, spec, bytes, ctx)?)
 }
 
 fn year_doc_kind(kind: PaperKind) -> Option<crate::year::DocKind> {

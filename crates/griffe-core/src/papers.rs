@@ -295,6 +295,29 @@ pub fn issued_paper(
     .map_err(AppError::from)
 }
 
+/// Papier courant (Issued *ou* Imported) pour cette facture et cette nature.
+///
+/// # Errors
+///
+/// Erreur de lecture SQLite.
+pub fn invoice_paper(
+    conn: &Connection,
+    invoice_id: InvoiceId,
+    kind: PaperKind,
+) -> Result<Option<Paper>, AppError> {
+    conn.query_row(
+        &format!(
+            "{PAPER_SELECT}
+             WHERE invoice_id = ?1 AND kind = ?2 AND superseded_by IS NULL
+             AND origin IN ('issued', 'imported')"
+        ),
+        params![invoice_id.to_string(), kind.as_str()],
+        row_to_paper,
+    )
+    .optional()
+    .map_err(AppError::from)
+}
+
 fn year_end_of(conn: &Connection, paper: &Paper) -> Result<Option<Date>, AppError> {
     if let Some(id) = paper.fiscal_year_id
         && let Some(year) = crate::fiscal_year::fiscal_year_by_id(conn, id)?
@@ -590,7 +613,7 @@ pub fn papers_checklist(
         } else {
             PaperKind::IssuedInvoice
         };
-        let paper = issued_paper(conn, invoice.id, kind)?;
+        let paper = invoice_paper(conn, invoice.id, kind)?;
         items.push(item(
             kind,
             paper.as_ref().map(|p| p.id),
@@ -1308,6 +1331,81 @@ mod tests {
             }),
             "un justificatif déjà sur la dépense compte sans ligne papers : {empty_identity:?}"
         );
+    }
+
+    #[test]
+    fn an_imported_invoice_paper_closes_the_checklist() {
+        let mut store = test_store("imported-checklist");
+        let client_id = match Executor::new(&mut store)
+            .execute(
+                &crate::clients::CreateClient {
+                    name: "Camille".into(),
+                    siren: None,
+                    vat_number: None,
+                    address: None,
+                },
+                &human(),
+            )
+            .unwrap()
+        {
+            Outcome::Applied(id) => id,
+            other => panic!("attendu Applied, obtenu {other:?}"),
+        };
+        let invoice_id = match Executor::new(&mut store)
+            .execute(
+                &crate::billing::ImportIssuedInvoice {
+                    number: "FAC-2026-0042".into(),
+                    client_id,
+                    mission_id: None,
+                    lines: vec![crate::domain::InvoiceLine {
+                        description: "Mission Camille".into(),
+                        quantity: 1.0,
+                        unit_price: crate::domain::Money::from_cents(500_000),
+                        vat_rate: crate::domain::VatRate::Standard,
+                    }],
+                    issued_on: d(2026, 9, 16),
+                    payment_terms_days: 30,
+                    credited_invoice_id: None,
+                },
+                &human(),
+            )
+            .unwrap()
+        {
+            Outcome::Applied(emitted) => emitted.id,
+            other => panic!("attendu Applied, obtenu {other:?}"),
+        };
+        let paper = applied(
+            archive_paper(
+                &mut store,
+                NewPaper {
+                    kind: PaperKind::IssuedInvoice,
+                    origin: PaperOrigin::Imported,
+                    original_name: "FAC-2026-0042.pdf".into(),
+                    mime: "application/pdf".into(),
+                    period: Some(2026),
+                    issued_on: Some(d(2026, 9, 16)),
+                    client_id: Some(client_id),
+                    invoice_id: Some(invoice_id),
+                    expense_id: None,
+                    fiscal_year_id: None,
+                    note: None,
+                    idempotency_key: Some(format!("papers:imported:issued_invoice:{invoice_id}")),
+                },
+                b"%PDF-1.7 imported",
+                &human(),
+            )
+            .unwrap(),
+        );
+        assert_eq!(paper.origin, PaperOrigin::Imported);
+
+        let checklist = papers_checklist(store.connection(), 2026, d(2026, 9, 16)).unwrap();
+        let item = checklist
+            .items
+            .iter()
+            .find(|i| i.kind == PaperKind::IssuedInvoice)
+            .unwrap_or_else(|| panic!("item facture émise attendu : {checklist:?}"));
+        assert_eq!(item.status, StepStatus::Done, "{item:?}");
+        assert_eq!(item.paper_id, Some(paper.id));
     }
 
     fn spec(
