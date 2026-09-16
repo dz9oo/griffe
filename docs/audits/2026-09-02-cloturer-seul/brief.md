@@ -6,7 +6,7 @@ processus lourd à la fois, et les binaires sont à jour du dernier commit) :
   CLI      : /path/to/griffe/target/debug/freeflow
   Web dev  : /path/to/griffe/target/debug/freeflow-web-dev  (FREEFLOW_DB=<coffre> FREEFLOW_WEB_ADDR=127.0.0.1:<port>)
   MCP      : /path/to/griffe/target/debug/freeflow-mcp
-Dossier de travail : /tmp/audit-scratch/c78c8997-393d-495f-9bc6-d37410073603/scratchpad/audit
+Dossier de travail : /tmp/audit-scratch
   - passphrase : pass.txt (mode 0600) → `freeflow --db <ton-coffre>.db --passphrase-file pass.txt ...`
   - crée TON PROPRE coffre (ex. ec.db / freelance.db / rust.db), ne touche pas à ceux des autres.
   - n'utilise jamais --remember (trousseau OS réel de la machine).
