@@ -12,9 +12,9 @@ mod row;
 mod totals;
 
 pub use commands::{
-    DeleteBankTransaction, EmitInvoice, EmittedInvoice, ImportBankTransactions, IssueCreditNote,
-    ReconcileTransaction, RecordPayment, SettleBankTransaction, UnreconcileTransaction,
-    UnsettleBankTransaction, VoidPayment,
+    DeleteBankTransaction, EmitInvoice, EmittedInvoice, ImportBankTransactions,
+    ImportIssuedInvoice, IssueCreditNote, ReconcileTransaction, RecordPayment,
+    SettleBankTransaction, UnreconcileTransaction, UnsettleBankTransaction, VoidPayment,
 };
 pub use error::BillingError;
 pub use import::{
@@ -23,8 +23,9 @@ pub use import::{
 };
 pub use queries::{
     AgedInvoice, AgingBucket, ChainStatus, aged_balance, bank_transaction_by_id, invoice_by_id,
-    list_bank_transactions, list_invoices, list_payments, new_transactions_among, paid_amount,
-    payment_by_id, payments_for_invoice, unmatched_debits, verify_chain,
+    invoice_by_number, list_bank_transactions, list_invoices, list_payments,
+    new_transactions_among, paid_amount, payment_by_id, payments_for_invoice, unmatched_debits,
+    verify_chain,
 };
 pub(crate) use row::{
     bank_transaction_for_expense, clear_transaction_match, mark_transaction_matched_expense,
@@ -37,7 +38,7 @@ mod tests {
 
     use super::*;
     use crate::app::{Actor, AppError, ExecutionContext, Executor, Outcome};
-    use crate::domain::{ClientId, InvoiceLine, Money, PaymentMethod, VatRate};
+    use crate::domain::{ClientId, InvoiceLine, InvoiceOrigin, Money, PaymentMethod, VatRate};
     use crate::store::{Passphrase, Store};
 
     fn date(year: i32, month: Month, day: u8) -> Date {
@@ -1028,5 +1029,220 @@ mod tests {
             )
             .unwrap();
         assert_eq!(list_bank_transactions(store.connection()).unwrap().len(), 3);
+    }
+
+    fn camille_line() -> InvoiceLine {
+        InvoiceLine {
+            description: "Mission Camille".into(),
+            quantity: 1.0,
+            unit_price: Money::from_cents(500_000),
+            vat_rate: VatRate::Standard,
+        }
+    }
+
+    fn import_cmd(client_id: ClientId) -> ImportIssuedInvoice {
+        ImportIssuedInvoice {
+            number: "FAC-2026-0042".into(),
+            client_id,
+            mission_id: None,
+            lines: vec![camille_line()],
+            issued_on: date(2026, Month::September, 16),
+            payment_terms_days: 30,
+            credited_invoice_id: None,
+        }
+    }
+
+    #[test]
+    fn importing_a_tiime_invoice_keeps_its_number_and_does_not_allocate_fa() {
+        let (mut store, client_id) = test_store("import-tiime");
+        let Outcome::Applied(emitted) = Executor::new(&mut store)
+            .execute(&import_cmd(client_id), &human_ctx())
+            .unwrap()
+        else {
+            panic!("expected Applied")
+        };
+        assert_eq!(emitted.number, "FAC-2026-0042");
+        let got = invoice_by_id(store.connection(), emitted.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.origin, InvoiceOrigin::Imported);
+        assert_eq!(got.due_on, date(2026, Month::October, 16));
+        let totals = compute_totals(&got.lines);
+        // à la main : 5 000,00 HT × 20 % = 1 000,00 TVA ; TTC 6 000,00
+        assert_eq!(totals.subtotal_ht, Money::from_cents(500_000));
+        assert_eq!(totals.total_vat, Money::from_cents(100_000));
+        assert_eq!(totals.total_ttc, Money::from_cents(600_000));
+        let seq: i64 = store
+            .connection()
+            .query_row("SELECT COUNT(*) FROM invoice_sequences", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(seq, 0, "l'import ne doit pas toucher invoice_sequences");
+        let fa: i64 = store
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM invoices WHERE number LIKE 'FA-%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(fa, 0);
+    }
+
+    #[test]
+    fn reimporting_the_same_number_is_a_clear_error() {
+        let (mut store, client_id) = test_store("import-dup");
+        Executor::new(&mut store)
+            .execute(&import_cmd(client_id), &human_ctx())
+            .unwrap();
+        let err = Executor::new(&mut store)
+            .execute(&import_cmd(client_id), &human_ctx())
+            .unwrap_err();
+        assert!(matches!(err, AppError::Domain(msg) if msg.contains("FAC-2026-0042")));
+        let count: i64 = store
+            .connection()
+            .query_row("SELECT COUNT(*) FROM invoices", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn an_agent_importing_only_deposits_a_pending_action() {
+        let (mut store, client_id) = test_store("import-agent");
+        let agent = ExecutionContext::new(
+            Actor::Agent {
+                session: "s".into(),
+            },
+            false,
+        );
+        let outcome = Executor::new(&mut store)
+            .execute(&import_cmd(client_id), &agent)
+            .unwrap();
+        assert!(matches!(outcome, Outcome::PendingConfirmation(_)));
+        let count: i64 = store
+            .connection()
+            .query_row("SELECT COUNT(*) FROM invoices", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn emit_invoice_still_allocates_fa_on_a_fresh_vault() {
+        let (mut store, client_id) = test_store("emit-untouched");
+        let emitted = emit(&mut store, client_id, date(2026, Month::September, 1));
+        assert_eq!(emitted.number, "FA-2026-0001");
+    }
+
+    #[test]
+    fn mixing_import_then_emit_is_a_documented_footgun_not_a_sql_abort() {
+        let (mut store, client_id) = test_store("mix-footgun");
+        Executor::new(&mut store)
+            .execute(&import_cmd(client_id), &human_ctx())
+            .unwrap();
+        let emitted = emit(&mut store, client_id, date(2026, Month::September, 20));
+        assert_eq!(emitted.number, "FA-2026-0001");
+    }
+
+    #[test]
+    fn imported_invoice_reconciles_like_any_other() {
+        let (mut store, client_id) = test_store("import-recon");
+        let Outcome::Applied(inv) = Executor::new(&mut store)
+            .execute(&import_cmd(client_id), &human_ctx())
+            .unwrap()
+        else {
+            panic!("applied")
+        };
+        let tx = ImportBankTransactions {
+            transactions: vec![ParsedTransaction {
+                occurred_on: date(2026, Month::September, 20),
+                amount_cents: 600_000,
+                description: "CAMILLE".into(),
+                fitid: None,
+            }],
+        };
+        Executor::new(&mut store)
+            .execute(&tx, &human_ctx())
+            .unwrap();
+        let bank_id = list_bank_transactions(store.connection()).unwrap()[0].id;
+        Executor::new(&mut store)
+            .execute(
+                &ReconcileTransaction {
+                    transaction_id: bank_id,
+                    invoice_id: inv.id,
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+        let aged = aged_balance(store.connection(), date(2026, Month::September, 21)).unwrap();
+        assert!(aged.iter().all(|a| a.invoice_id != inv.id));
+    }
+
+    #[test]
+    fn issue_credit_note_on_an_imported_invoice_is_refused() {
+        let (mut store, client_id) = test_store("no-fa-credit");
+        let Outcome::Applied(inv) = Executor::new(&mut store)
+            .execute(&import_cmd(client_id), &human_ctx())
+            .unwrap()
+        else {
+            panic!("applied")
+        };
+        let err = Executor::new(&mut store)
+            .execute(
+                &IssueCreditNote {
+                    invoice_id: inv.id,
+                    issued_on: date(2026, Month::September, 17),
+                },
+                &human_ctx(),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(err, AppError::Domain(msg) if msg.contains("née ailleurs") || msg.contains("import"))
+        );
+        let seq: i64 = store
+            .connection()
+            .query_row("SELECT COUNT(*) FROM invoice_sequences", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(seq, 0);
+    }
+
+    #[test]
+    fn importing_a_credit_note_uses_the_foreign_number() {
+        let (mut store, client_id) = test_store("import-avoir");
+        let Outcome::Applied(inv) = Executor::new(&mut store)
+            .execute(&import_cmd(client_id), &human_ctx())
+            .unwrap()
+        else {
+            panic!("applied")
+        };
+        let avoir = ImportIssuedInvoice {
+            number: "AV-2026-0003".into(),
+            client_id,
+            mission_id: None,
+            lines: vec![InvoiceLine {
+                description: "Mission Camille".into(),
+                quantity: -1.0,
+                unit_price: Money::from_cents(500_000),
+                vat_rate: VatRate::Standard,
+            }],
+            issued_on: date(2026, Month::September, 17),
+            payment_terms_days: 0,
+            credited_invoice_id: Some(inv.id),
+        };
+        let Outcome::Applied(cn) = Executor::new(&mut store)
+            .execute(&avoir, &human_ctx())
+            .unwrap()
+        else {
+            panic!("applied")
+        };
+        assert_eq!(cn.number, "AV-2026-0003");
+        let got = invoice_by_id(store.connection(), cn.id).unwrap().unwrap();
+        assert_eq!(got.credited_invoice_id, Some(inv.id));
+        assert_eq!(got.origin, InvoiceOrigin::Imported);
+        let totals = compute_totals(&got.lines);
+        assert_eq!(totals.total_ttc, Money::from_cents(-600_000));
+        let seq: i64 = store
+            .connection()
+            .query_row("SELECT COUNT(*) FROM invoice_sequences", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(seq, 0);
     }
 }

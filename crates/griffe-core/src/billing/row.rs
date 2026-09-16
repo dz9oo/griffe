@@ -136,6 +136,24 @@ pub(super) fn invoice_by_id(conn: &Connection, id: InvoiceId) -> Result<Option<I
     Ok(Some(invoice))
 }
 
+pub(super) fn invoice_by_number(
+    conn: &Connection,
+    number: &str,
+) -> Result<Option<Invoice>, AppError> {
+    let Some(mut invoice) = conn
+        .query_row(
+            "SELECT * FROM invoices WHERE number = ?1",
+            [number],
+            row_to_invoice_without_lines,
+        )
+        .optional()?
+    else {
+        return Ok(None);
+    };
+    invoice.lines = lines_for_invoice(conn, invoice.id)?;
+    Ok(Some(invoice))
+}
+
 /// Toutes les factures, dans l'ordre de la chaîne (celui de leur émission).
 pub(super) fn all_invoices(conn: &Connection) -> Result<Vec<Invoice>, AppError> {
     let mut stmt = conn.prepare("SELECT * FROM invoices ORDER BY sequence ASC")?;
