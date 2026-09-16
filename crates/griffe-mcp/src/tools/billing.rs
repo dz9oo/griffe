@@ -1,7 +1,8 @@
 //! Outils `invoice.*`, `payment.*`, `bank.*` — miroir de `freeflow invoice/payment/bank ...`
-//! (CLI, lot 7). `invoice.emit` et `invoice.credit_note` sont marqués `destructive_hint` : la
-//! politique de confirmation (lot 2) dépose une `PendingAction` plutôt que d'appliquer l'effet
-//! quand l'acteur est un agent — ce que ces outils sont, systématiquement.
+//! (CLI, lot 7). `invoice.emit`, `invoice.import` et `invoice.credit_note` sont marqués
+//! `destructive_hint` : la politique de confirmation (lot 2) dépose une `PendingAction` plutôt
+//! que d'appliquer l'effet quand l'acteur est un agent — ce que ces outils sont,
+//! systématiquement.
 //!
 //! Lot 22 : `payment.list`/`payment.void` et `bank.list`/`bank.unreconcile` (corrections
 //! d'encaissement, contre-écriture), et remboursement de la dette `dry_run` des cinq outils
@@ -12,7 +13,8 @@ use griffe_core::billing::{
     self, aged_balance, list_bank_transactions, list_payments, verify_chain,
 };
 use griffe_core::domain::{
-    BankTransactionId, ClientId, InvoiceId, InvoiceLine, MissionId, Money, PaymentId, PaymentMethod,
+    BankTransactionId, ClientId, InvoiceId, InvoiceLine, InvoiceOrigin, MissionId, Money,
+    PaymentId, PaymentMethod,
 };
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
@@ -34,6 +36,31 @@ pub(crate) struct EmitInvoiceArgs {
     issued_on: String,
     /// Délai de paiement en jours (défaut : 30).
     payment_terms_days: Option<u32>,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct ImportIssuedInvoiceArgs {
+    number: String,
+    client_id: String,
+    mission_id: Option<String>,
+    /// Lignes de facture, au format JSON. Ex. :
+    /// `[{"description":"Mission Camille","quantity":1,"unit_price":500000,"vat_rate":"Standard"}]`
+    lines_json: String,
+    issued_on: String,
+    /// Délai de paiement en jours (défaut : 30).
+    payment_terms_days: Option<u32>,
+    /// Facture d'origine si l'import est un avoir né ailleurs (`InvoiceId`).
+    credits: Option<String>,
+    /// Chemin local du PDF — lu pour vérifier qu'il existe ; l'archive n'est pas faite ici.
+    path: Option<String>,
+    /// Octets du PDF encodés en base64. Même lecture de validation que `path`.
+    content_base64: Option<String>,
+    /// Nom d'origine (défaut : nom du `path`, sinon `facture.pdf`). Conservé pour
+    /// l'agent ; l'archive n'est pas faite ici (pending sans octets).
+    #[allow(dead_code)]
+    original_name: Option<String>,
     #[serde(default)]
     dry_run: bool,
 }
@@ -179,6 +206,66 @@ impl FreeflowServer {
         }
     }
 
+    /// Enregistre une facture de vente née ailleurs (PA, outil tiers) en conservant son numéro.
+    /// Nécessite confirmation humaine — l'appel dépose une action en attente, il n'applique
+    /// jamais l'import directement. `path` / `content_base64` sont lus pour valider le fichier
+    /// s'ils sont fournis ; l'archive du papier se fait après confirmation (fenêtre / papers),
+    /// pas ici : le pending n'emporte pas les octets.
+    #[tool(
+        name = "invoice.import",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false
+        )
+    )]
+    async fn invoice_import(
+        &self,
+        Parameters(args): Parameters<ImportIssuedInvoiceArgs>,
+    ) -> CallToolResult {
+        if let Some(path) = &args.path
+            && let Err(e) = std::fs::read(path)
+        {
+            return err_text(format!("lecture de {path} impossible : {e}"));
+        }
+        if let Some(b64) = &args.content_base64 {
+            use base64::Engine as _;
+            let _bytes = ok_or_return!(
+                "content_base64",
+                base64::engine::general_purpose::STANDARD.decode(b64.trim())
+            );
+        }
+        let client_id: ClientId = ok_or_return!("client_id", args.client_id.parse());
+        let mission_id: Option<MissionId> = match &args.mission_id {
+            Some(s) => Some(ok_or_return!("mission_id", s.parse())),
+            None => None,
+        };
+        let credited_invoice_id: Option<InvoiceId> = match &args.credits {
+            Some(s) => Some(ok_or_return!("credits", s.parse())),
+            None => None,
+        };
+        let lines: Vec<InvoiceLine> =
+            ok_or_return!("lines_json", serde_json::from_str(&args.lines_json));
+        let issued_on = ok_or_return!(
+            "issued_on",
+            griffe_core::domain::parse_date(&args.issued_on)
+        );
+        let cmd = billing::ImportIssuedInvoice {
+            number: args.number,
+            client_id,
+            mission_id,
+            lines,
+            issued_on,
+            payment_terms_days: args.payment_terms_days.unwrap_or(30),
+            credited_invoice_id,
+        };
+        let mut store = self.store.lock().await;
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
+            Ok(outcome) => ok_json(outcome_json(&outcome)),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
     /// Émet un avoir annulant intégralement une facture. Même exigence de confirmation que
     /// `invoice.emit`.
     #[tool(
@@ -232,6 +319,11 @@ impl FreeflowServer {
             Ok(None) => return err_text(format!("facture introuvable : {invoice_id}")),
             Err(e) => return err_text(e.to_string()),
         };
+        if invoice.origin == InvoiceOrigin::Imported {
+            return err_text(
+                "cette facture est née ailleurs : ouvrez le papier importé, ne la re-rendez pas",
+            );
+        }
         let client = match griffe_core::clients::client_by_id(store.connection(), invoice.client_id)
         {
             Ok(Some(client)) => client,
