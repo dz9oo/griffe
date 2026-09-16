@@ -52,14 +52,14 @@
         # (`*.xlsx`) ; lot 48 : les woff2 vendorisés de la lettre. On complète le filtre plutôt
         # que de perdre le cache incrémental d'un `src = ./.` non filtré.
         nonRustAssets =
-          path: _type: builtins.match ".*\\.(sql|typst|css|js|json|png|html|csv|ofx|txt|woff2|xlsx)$" path != null;
+          path: _type: builtins.match ".*\\.(sql|typst|css|js|json|png|html|csv|ofx|txt|woff2|xlsx|svg)$" path != null;
         src = lib.cleanSourceWith {
           src = craneLib.path ./.;
           filter = path: type: (craneLib.filterCargoSources path type) || (nonRustAssets path type);
         };
 
         commonArgs = {
-          pname = "freeflow";
+          pname = "griffe";
           version = "0.1.0";
           inherit src;
           strictDeps = true;
@@ -74,31 +74,31 @@
 
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;
 
-        freeflow = craneLib.buildPackage (commonArgs // {
+        griffe = craneLib.buildPackage (commonArgs // {
           inherit cargoArtifacts;
           doCheck = false; # les tests tournent via `just test` (cargo-nextest), pas au build Nix.
         });
       in
       {
-        packages.default = freeflow;
+        packages.default = griffe;
 
         checks = {
-          inherit freeflow;
+          inherit griffe;
 
-          freeflow-clippy = craneLib.cargoClippy (commonArgs // {
+          griffe-clippy = craneLib.cargoClippy (commonArgs // {
             inherit cargoArtifacts;
             cargoClippyExtraArgs = "--workspace --all-targets -- -D warnings";
           });
 
-          freeflow-fmt = craneLib.cargoFmt {
-            pname = "freeflow";
+          griffe-fmt = craneLib.cargoFmt {
+            pname = "griffe";
             version = "0.1.0";
             inherit src;
           };
         };
 
         devShells.default = pkgs.mkShell {
-          inputsFrom = [ freeflow ];
+          inputsFrom = [ griffe ];
 
           packages = with pkgs; [
             rustToolchain
@@ -116,7 +116,7 @@
           ] ++ linuxNativeDeps ++ darwinNativeDeps;
 
           shellHook = ''
-            echo "freeflow · $(rustc --version)"
+            echo "griffe · $(rustc --version)"
           '';
 
           RUST_BACKTRACE = "1";

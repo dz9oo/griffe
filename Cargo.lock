@@ -1553,127 +1553,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "freeflow-cli"
-version = "0.1.0"
-dependencies = [
- "assert_cmd",
- "clap",
- "freeflow-core",
- "freeflow-docs",
- "freeflow-invoice",
- "insta",
- "predicates",
- "rpassword",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
- "time",
-]
-
-[[package]]
-name = "freeflow-core"
-version = "0.1.0"
-dependencies = [
- "argon2",
- "calamine",
- "chacha20poly1305",
- "dirs",
- "encoding_rs",
- "hex",
- "keyring",
- "proptest",
- "rand 0.10.2",
- "rusqlite",
- "rusqlite_migration",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "subtle",
- "thiserror 2.0.20",
- "time",
- "uuid",
- "zeroize",
-]
-
-[[package]]
-name = "freeflow-desktop"
-version = "0.1.0"
-dependencies = [
- "axum",
- "freeflow-core",
- "freeflow-web",
- "http",
- "http-body-util",
- "tauri",
- "tauri-build",
- "tower",
-]
-
-[[package]]
-name = "freeflow-docs"
-version = "0.1.0"
-dependencies = [
- "freeflow-core",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.20",
- "time",
-]
-
-[[package]]
-name = "freeflow-invoice"
-version = "0.1.0"
-dependencies = [
- "freeflow-core",
- "quick-xml 0.42.0",
- "tempfile",
- "thiserror 2.0.20",
- "time",
- "uuid",
-]
-
-[[package]]
-name = "freeflow-mcp"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "freeflow-cli",
- "freeflow-core",
- "freeflow-docs",
- "freeflow-invoice",
- "insta",
- "rmcp",
- "schemars 1.2.2",
- "serde",
- "serde_json",
- "time",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "freeflow-web"
-version = "0.1.0"
-dependencies = [
- "axum",
- "base64 0.22.1",
- "freeflow-cli",
- "freeflow-core",
- "freeflow-docs",
- "http-body-util",
- "maud",
- "serde",
- "serde_json",
- "shell-words",
- "time",
- "tokio",
- "tower",
- "tower-http",
- "uuid",
-]
-
-[[package]]
 name = "futures"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2012,6 +1891,127 @@ dependencies = [
  "glib-sys",
  "libc",
  "system-deps",
+]
+
+[[package]]
+name = "griffe-cli"
+version = "0.1.0"
+dependencies = [
+ "assert_cmd",
+ "clap",
+ "griffe-core",
+ "griffe-docs",
+ "griffe-invoice",
+ "insta",
+ "predicates",
+ "rpassword",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "time",
+]
+
+[[package]]
+name = "griffe-core"
+version = "0.1.0"
+dependencies = [
+ "argon2",
+ "calamine",
+ "chacha20poly1305",
+ "dirs",
+ "encoding_rs",
+ "hex",
+ "keyring",
+ "proptest",
+ "rand 0.10.2",
+ "rusqlite",
+ "rusqlite_migration",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "subtle",
+ "thiserror 2.0.20",
+ "time",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
+name = "griffe-desktop"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "griffe-core",
+ "griffe-web",
+ "http",
+ "http-body-util",
+ "tauri",
+ "tauri-build",
+ "tower",
+]
+
+[[package]]
+name = "griffe-docs"
+version = "0.1.0"
+dependencies = [
+ "griffe-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "time",
+]
+
+[[package]]
+name = "griffe-invoice"
+version = "0.1.0"
+dependencies = [
+ "griffe-core",
+ "quick-xml 0.42.0",
+ "tempfile",
+ "thiserror 2.0.20",
+ "time",
+ "uuid",
+]
+
+[[package]]
+name = "griffe-mcp"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "griffe-cli",
+ "griffe-core",
+ "griffe-docs",
+ "griffe-invoice",
+ "insta",
+ "rmcp",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "time",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "griffe-web"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "griffe-cli",
+ "griffe-core",
+ "griffe-docs",
+ "http-body-util",
+ "maud",
+ "serde",
+ "serde_json",
+ "shell-words",
+ "time",
+ "tokio",
+ "tower",
+ "tower-http",
+ "uuid",
 ]
 
 [[package]]

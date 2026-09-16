@@ -1,0 +1,42 @@
+---
+source: crates/griffe-cli/tests/cli_integration.rs
+expression: "String::from_utf8(output.stdout).unwrap()"
+---
+Les papiers : originaux et copies de travail du coffre, classés par nature et durée
+
+Usage: griffe papers [OPTIONS] <COMMAND>
+
+Commands:
+  list       Liste les pièces du coffre (hors remplacées)
+  show       Affiche une pièce (UUID, préfixe, ou nom de fichier d'origine)
+  add        Dépose un fichier au coffre (statuts, Kbis, avis, contrat…) — chiffré comme un justificatif. Un scan est une copie de travail ; un original né ici se fige à l'émission
+  rm         Purge une pièce dont le délai de conservation est échu. Un agent propose, un humain confirme. Les statuts et le Kbis ne se purgent pas tant que la société existe
+  checklist  Checklist de conservation d'un exercice : originaux figés, pièces manquantes
+  export     Écrit le dossier d'un contrôle en clair (inventaire + originaux). Le dossier doit être neuf — on n'écrase jamais. Ces fichiers ne sont plus chiffrés
+  help       Print this message or the help of the given subcommand(s)
+
+Options:
+      --db <DB>
+          Chemin du coffre chiffré. Sinon, lu depuis `FREEFLOW_DB`
+      --json
+          Imprime le résultat en JSON plutôt qu'en texte lisible — le contrat que consomme un agent
+      --actor <ACTOR>
+          Qui déclenche la commande : `human` (défaut), `system`, ou `agent:<session>` [default: human]
+      --dry-run
+          N'écrit rien : montre ce qui serait fait
+      --no-color
+          Désactive la coloration (déjà minimale) de la sortie humaine
+      --passphrase-file <PASSPHRASE_FILE>
+          Lit la passphrase dans ce fichier (refusé si son mode est plus ouvert que 0600)
+      --passphrase-command <PASSPHRASE_COMMAND>
+          Exécute cette commande et prend sa sortie standard comme passphrase — ex. `pass show freeflow`, `op read op://Perso/freeflow/passphrase`
+      --passphrase-stdin
+          Lit la passphrase sur l'entrée standard (une ligne)
+      --non-interactive
+          N'invite jamais au terminal : échoue proprement si aucune source non interactive n'a fourni de passphrase, plutôt que de bloquer en attente d'une frappe
+      --remember
+          Met la clé en cache dans le trousseau OS pour les appels suivants (jamais automatique)
+      --ttl <TTL>
+          Durée de la session mise en cache (défaut 12h). Implique `--remember`
+  -h, --help
+          Print help

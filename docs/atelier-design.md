@@ -14,7 +14,7 @@ est la source**. Ce document est ce qu’on applique à la fenêtre lundi. Le c�
 Un indépendant en SASU (puis EURL) n’ouvre pas une compta. Il se demande
 **quoi faire maintenant**, **si l’argent tiendra**, **qui relancer**, **s’il peut se payer**.
 
-FreeFlow est une **lettre du matin**, pas un dashboard. Trois pièces, pas dix onglets.
+Griffe est une **lettre du matin**, pas un dashboard. Trois pièces, pas dix onglets.
 Les documents n’ont pas d’écran : les **personnes** oui. La société porte l’argent,
 se payer, clore, l’identité.
 
@@ -39,7 +39,7 @@ La console, le journal d’audit, les slugs d’URL peuvent rester. Ils ne sont 
 | **Les affaires** | Avec qui j’en suis ? | Un CRM + un module devis + un module missions |
 | **La société** | Est-ce que ça tient, et que dois-je à l’État ? | « La maison », ni un écran Paramètres |
 
-Chrome : `FreeFlow` (italique, serif) à gauche · les trois mots à droite.
+Chrome : `Griffe` (italique, serif) à gauche · les trois mots à droite.
 La pièce active = un soulignement encre, pas un onglet teinté.
 
 Pas d’autre item de nav. Console : `⌘K` / `Ctrl+K`, ou une route non liée.
@@ -112,7 +112,7 @@ en inversant ces variables.
 Maquette : Newsreader (titres, chiffres du calendrier, italiques) + Source Sans 3 (UI).
 **Invariant produit : aucune connexion sortante.** Pas de Google Fonts dans la fenêtre.
 
-À faire : vendoriser les woff2 (OFL) dans `crates/freeflow-web/assets/fonts/`
+À faire : vendoriser les woff2 (OFL) dans `crates/griffe-web/assets/fonts/`
 et les déclarer en `@font-face`. Replis : `Liberation Serif` / `Noto Serif` et
 `Adwaita Sans` / `Noto Sans`.
 
@@ -120,7 +120,7 @@ et les déclarer en `@font-face`. Replis : `Liberation Serif` / `Noto Serif` et
 - Lede : serif 20px, ink-2, max 52ch (voix éditoriale, plus courte que le corps)
 - UI : sans 15–16px
 - Dates kicker : sans 11–12px, uppercase, letter-spacing 0.2em
-- Marque : serif italic 22px, « FreeFlow »
+- Marque : serif italic 22px, « Griffe »
 
 Chiffres d’argent : sans, tabular si disponible. Pas de mono type console sur Le jour.
 
@@ -194,7 +194,7 @@ File dérivée de ce qui existe déjà, fusionnée, **un verbe par ligne** :
 Trois à cinq, pas vingt. Le reste vit dans le mois. Déplier un geste (pas un panneau
 latéral) : les boutons de la chose (ouvrir le dossier, le brouillon, plus tard).
 
-Le `.eml` ne change pas (lot 47). FreeFlow n’envoie pas.
+Le `.eml` ne change pas (lot 47). Griffe n’envoie pas.
 
 ### Le mois
 
@@ -259,7 +259,7 @@ query nouvelle, pure, à tests chiffrés à la main — pas un calcul dans la fe
 
 ## 9. Cœur vs fenêtre
 
-Thèse Studio : **aucune règle métier dans `freeflow-web`.**
+Thèse Studio : **aucune règle métier dans `griffe-web`.**
 
 Queries nouvelles (cœur), consommées par les trois façades ensuite :
 
@@ -307,12 +307,12 @@ thème sombre Atelier, i18n, console en nav, EDI.
 
 Fenêtre, pas une refonte du domaine d’abord :
 
-- `crates/freeflow-web/assets/app.css` — tokens, chrome, lettre, mois
-- `crates/freeflow-web/assets/fonts/` — woff2 vendorisés
-- `crates/freeflow-web/src/layout.rs` — trois pièces, plus PRIMARY/MORE à 10 onglets
-- `crates/freeflow-web/src/views/` — `jour`, `gens`, `societe` ; les vues actuelles
+- `crates/griffe-web/assets/app.css` — tokens, chrome, lettre, mois
+- `crates/griffe-web/assets/fonts/` — woff2 vendorisés
+- `crates/griffe-web/src/layout.rs` — trois pièces, plus PRIMARY/MORE à 10 onglets
+- `crates/griffe-web/src/views/` — `jour`, `gens`, `societe` ; les vues actuelles
   se vident ou redirigent au fil des lots 49–51
-- `crates/freeflow-web/tests/http_routes.rs` — titres français, mât, trois liens de nav
+- `crates/griffe-web/tests/http_routes.rs` — titres français, mât, trois liens de nav
 
 Cœur, lots 49–51 :
 

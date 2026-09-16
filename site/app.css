@@ -1,0 +1,231 @@
+/* Landing Griffe — mêmes tokens que l’app, polices vendorisées, pas de CDN. */
+
+@font-face {
+  font-family: "Newsreader";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("./fonts/newsreader-latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Newsreader";
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url("./fonts/newsreader-latin-400-italic.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Source Sans 3";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("./fonts/source-sans-3-latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Source Sans 3";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("./fonts/source-sans-3-latin-600-normal.woff2") format("woff2");
+}
+
+:root {
+  color-scheme: light;
+  --paper: #f1ebe0;
+  --paper-2: #e8e0d2;
+  --ink: #1c1814;
+  --ink-2: #6a635a;
+  --rule: #d0c6b4;
+  --seal: #9f3218;
+  --seal-soft: #f0d8cf;
+  --serif: "Newsreader", "Liberation Serif", "Noto Serif", serif;
+  --sans: "Source Sans 3", "Adwaita Sans", "Noto Sans", sans-serif;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: var(--sans);
+  background: radial-gradient(ellipse at top, #f7f1e6, #f1ebe0 55%);
+  color: var(--ink);
+  font-size: 16px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+.letter {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 40px;
+}
+
+.kicker {
+  font-family: var(--sans);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  margin-bottom: 28px;
+}
+
+.wordmark {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  text-decoration: none;
+  color: var(--ink);
+  margin-bottom: 36px;
+  line-height: 1;
+}
+
+.wordmark .word {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 22px;
+  letter-spacing: -0.03em;
+}
+
+.wordmark .paraphe {
+  display: block;
+  width: 72px;
+  height: 12px;
+  color: var(--seal);
+  margin-top: 2px;
+}
+
+.wordmark .paraphe svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+h1 {
+  font-family: var(--serif);
+  font-weight: 400;
+  font-size: clamp(36px, 6vw, 58px);
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+  color: var(--ink);
+  margin-bottom: 18px;
+}
+
+.lede {
+  font-family: var(--serif);
+  font-size: 20px;
+  line-height: 1.45;
+  color: var(--ink-2);
+  max-width: 52ch;
+  margin-bottom: 28px;
+}
+
+.btn {
+  display: inline-block;
+  font-family: var(--sans);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-decoration: none;
+  background: var(--seal);
+  color: var(--paper);
+  padding: 12px 22px;
+  border: none;
+  margin-bottom: 40px;
+}
+
+.btn:hover,
+.btn:focus-visible {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+.shot {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--rule);
+  margin: 0 0 48px;
+}
+
+.pieces {
+  display: flex;
+  flex-direction: column;
+  gap: 40px;
+  margin-bottom: 56px;
+}
+
+.piece h2 {
+  font-family: var(--serif);
+  font-weight: 400;
+  font-size: 28px;
+  letter-spacing: -0.02em;
+  margin-bottom: 8px;
+}
+
+.piece p {
+  font-family: var(--sans);
+  font-size: 16px;
+  color: var(--ink-2);
+  margin-bottom: 16px;
+}
+
+.piece .shot {
+  margin-bottom: 0;
+}
+
+.chez-toi {
+  border-top: 1px solid var(--rule);
+  padding-top: 32px;
+  margin-bottom: 56px;
+}
+
+.chez-toi h2 {
+  font-family: var(--serif);
+  font-weight: 400;
+  font-size: 22px;
+  margin-bottom: 12px;
+}
+
+.chez-toi p {
+  font-family: var(--serif);
+  font-size: 18px;
+  line-height: 1.5;
+  color: var(--ink-2);
+  max-width: 52ch;
+}
+
+.site-footer {
+  border-top: 1px solid var(--rule);
+  padding-top: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.site-footer a {
+  font-family: var(--sans);
+  font-size: 14px;
+  color: var(--ink-2);
+  text-decoration: none;
+}
+
+.site-footer a:hover,
+.site-footer a:focus-visible {
+  color: var(--seal);
+  box-shadow: inset 0 -1px 0 var(--seal);
+}
+
+.site-footer .paraphe {
+  display: block;
+  width: 72px;
+  height: 12px;
+  color: var(--seal);
+}
+
+.site-footer .paraphe svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}

@@ -1,0 +1,1237 @@
+//! Routes de l'écran `cloture` (lot 20) : clore un exercice, réviser l'affectation d'un
+//! projet, approuver, supprimer, et servir les documents de clôture. Même convention de
+//! réponse que les écrans des lots 15/16 (`200` vide + `HX-Trigger: griffe:saved` en succès,
+//! panneau re-rendu en échec) — voir le commentaire de module de `crate::clients`.
+//!
+//! Les documents (`GET /cloture/{id}/doc/{kind}`) sont la seule famille de routes du crate qui
+//! renvoie autre chose que du HTML : les octets du PDF (ou le JSON de liasse) rendus par
+//! `griffe-docs`, comme `freeflow year render` côté CLI — l'IO documentaire vit dans
+//! l'adaptateur, jamais dans le cœur.
+
+use axum::Form;
+use axum::extract::{Path, Query, State};
+use axum::http::{HeaderValue, header};
+use axum::response::{Html, IntoResponse, Response};
+use griffe_core::app::{AppError, Executor, Outcome};
+use griffe_core::domain::{FiscalYearId, Money, OpeningBalanceLine, format_date};
+use griffe_core::fiscal_year::{
+    self, ApproveFiscalYear, CloseFiscalYear, DeleteFiscalYear, FiscalYearRecord,
+    UpdateFiscalYearAppropriation,
+};
+use griffe_core::opening_balance::{
+    self, DeleteOpeningBalance, OpeningBalanceRecord, RecordOpeningBalance, UpdateOpeningBalance,
+};
+use maud::html;
+use serde::Deserialize;
+
+use crate::state::AppState;
+use crate::views;
+use crate::views::cloture::{
+    AmendFormValues, CloseFormErrors, CloseFormValues, OpeningFormErrors, OpeningFormValues,
+};
+
+fn locked_fragment() -> Html<String> {
+    Html(
+        html! { div class="empty-state" { "coffre verrouillé — rechargez la page" } }.into_string(),
+    )
+}
+
+fn message_fragment(message: &str) -> Html<String> {
+    Html(html! { div class="empty-state" { (message) } }.into_string())
+}
+
+fn saved() -> Response {
+    let mut response = Html(String::new()).into_response();
+    response
+        .headers_mut()
+        .insert("HX-Trigger", HeaderValue::from_static("griffe:saved"));
+    response
+}
+
+async fn execute<C: griffe_core::app::Command>(
+    state: &AppState,
+    cmd: C,
+) -> Option<Result<Outcome<C::Output>, AppError>> {
+    state
+        .with_store_mut(|store| Executor::new(store).execute(&cmd, &AppState::human_ctx()))
+        .await
+}
+
+fn error_banner(e: &AppError, reload_hx_get: &str) -> CloseFormErrors {
+    match e {
+        AppError::Conflict { .. } => CloseFormErrors {
+            conflict: Some((e.to_string(), reload_hx_get.to_string())),
+            ..Default::default()
+        },
+        other => CloseFormErrors {
+            banner: Some(views::errors::message(other)),
+            ..Default::default()
+        },
+    }
+}
+
+async fn current_record(
+    state: &AppState,
+    id: FiscalYearId,
+) -> Option<Result<Option<FiscalYearRecord>, AppError>> {
+    state
+        .with_store(|store| fiscal_year::fiscal_year_by_id(store.connection(), id))
+        .await
+}
+
+/// Un exercice est éditable s'il est en projet **et** sans successeur — la même règle que le
+/// cœur applique (`fiscal_year::require_editable`), relue ici pour piloter l'affichage des
+/// actions du panneau, jamais pour se substituer à la garde du cœur.
+fn is_editable(store: &griffe_core::store::Store, record: &FiscalYearRecord) -> bool {
+    if record.is_approved() {
+        return false;
+    }
+    fiscal_year::list_fiscal_years(store.connection())
+        .map(|years| !years.iter().any(|y| y.ends_on > record.ends_on))
+        .unwrap_or(false)
+}
+
+// -- Liste ---------------------------------------------------------------------------------
+
+pub async fn table(State(state): State<AppState>) -> Html<String> {
+    let today = state.today();
+    match state
+        .with_store(|store| views::cloture::list_fragment(store, today))
+        .await
+    {
+        None => locked_fragment(),
+        Some(Ok(markup)) => Html(markup.into_string()),
+        Some(Err(e)) => message_fragment(&e.to_string()),
+    }
+}
+
+// -- Clore ---------------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct CloseForm {
+    #[serde(default)]
+    starts_on: String,
+    #[serde(default)]
+    ends_on: String,
+    #[serde(default)]
+    legal_reserve: String,
+    #[serde(default)]
+    dividends: String,
+    /// Case « report en arrière » : présente (`on`) seulement si cochée.
+    #[serde(default)]
+    carry_back: Option<String>,
+    #[serde(default)]
+    non_deductible: String,
+}
+
+impl From<&CloseForm> for CloseFormValues {
+    fn from(f: &CloseForm) -> Self {
+        Self {
+            starts_on: f.starts_on.clone(),
+            ends_on: f.ends_on.clone(),
+            legal_reserve: f.legal_reserve.clone(),
+            dividends: f.dividends.clone(),
+            carry_back: f.carry_back.is_some(),
+            non_deductible: f.non_deductible.clone(),
+        }
+    }
+}
+
+fn parse_money_field(raw: &str, errors_slot: &mut Option<String>) -> Money {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Money::ZERO;
+    }
+    match Money::parse_decimal(trimmed) {
+        Ok(m) => m,
+        Err(e) => {
+            *errors_slot = Some(e.to_string());
+            Money::ZERO
+        }
+    }
+}
+
+struct ParsedCloseForm {
+    cmd: CloseFiscalYear,
+}
+
+fn parse_close_form(form: &CloseForm) -> Result<ParsedCloseForm, Box<CloseFormErrors>> {
+    let mut errors = CloseFormErrors::default();
+    let starts_on = match griffe_core::domain::parse_date(form.starts_on.trim()) {
+        Ok(d) => Some(d),
+        Err(_) => {
+            errors.starts_on = Some("date invalide (AAAA-MM-JJ)".to_string());
+            None
+        }
+    };
+    let ends_on = match griffe_core::domain::parse_date(form.ends_on.trim()) {
+        Ok(d) => Some(d),
+        Err(_) => {
+            errors.ends_on = Some("date invalide (AAAA-MM-JJ)".to_string());
+            None
+        }
+    };
+    let legal_reserve = parse_money_field(&form.legal_reserve, &mut errors.legal_reserve);
+    let dividends = parse_money_field(&form.dividends, &mut errors.dividends);
+    let non_deductible = parse_money_field(&form.non_deductible, &mut errors.non_deductible);
+
+    match (starts_on, ends_on) {
+        (Some(starts_on), Some(ends_on))
+            if errors.legal_reserve.is_none()
+                && errors.dividends.is_none()
+                && errors.non_deductible.is_none() =>
+        {
+            Ok(ParsedCloseForm {
+                cmd: CloseFiscalYear {
+                    starts_on,
+                    ends_on,
+                    legal_reserve,
+                    dividends,
+                    carry_back: form.carry_back.is_some(),
+                    today: None,
+                    non_deductible_expenses: non_deductible,
+                },
+            })
+        }
+        _ => Err(Box::new(errors)),
+    }
+}
+
+/// Pré-remplissage facultatif du formulaire de clôture — ce que le parcours de clôture
+/// (lot 34) propose : la période de l'exercice et la dotation minimale à la réserve légale.
+#[derive(Debug, Default, Deserialize)]
+pub struct NewCloseQuery {
+    #[serde(default)]
+    starts_on: Option<String>,
+    #[serde(default)]
+    ends_on: Option<String>,
+    #[serde(default)]
+    legal_reserve: Option<String>,
+}
+
+pub async fn new_panel(
+    State(state): State<AppState>,
+    Query(query): Query<NewCloseQuery>,
+) -> Html<String> {
+    let today = state.today();
+    let mut values = state
+        .with_store(|store| views::cloture::default_close_values(store, today))
+        .await
+        .unwrap_or_default();
+    if let Some(starts_on) = query.starts_on {
+        values.starts_on = starts_on;
+    }
+    if let Some(ends_on) = query.ends_on {
+        values.ends_on = ends_on;
+    }
+    if let Some(legal_reserve) = query.legal_reserve {
+        values.legal_reserve = legal_reserve;
+    }
+    Html(views::cloture::new_panel(&values, &CloseFormErrors::default()).into_string())
+}
+
+pub async fn create(State(state): State<AppState>, Form(form): Form<CloseForm>) -> Response {
+    let mut parsed = match parse_close_form(&form) {
+        Ok(p) => p,
+        Err(errors) => {
+            return Html(views::cloture::new_panel(&(&form).into(), &errors).into_string())
+                .into_response();
+        }
+    };
+    // La date du jour vient de cet adaptateur (lot 36) : le cœur refuse un exercice pas encore
+    // écoulé, et le refus s'affiche en bandeau comme n'importe quelle autre règle.
+    parsed.cmd.today = Some(state.today());
+    match execute(&state, parsed.cmd).await {
+        None => locked_fragment().into_response(),
+        Some(Ok(_)) => saved(),
+        Some(Err(e)) => {
+            let errors = error_banner(&e, "/cloture/new");
+            Html(views::cloture::new_panel(&(&form).into(), &errors).into_string()).into_response()
+        }
+    }
+}
+
+// -- Détail / révision d'affectation -------------------------------------------------------
+
+fn parse_id(raw: &str) -> Option<FiscalYearId> {
+    raw.parse().ok()
+}
+
+pub async fn show_panel(State(state): State<AppState>, Path(id): Path<String>) -> Html<String> {
+    let Some(id) = parse_id(&id) else {
+        return message_fragment("identifiant d'exercice invalide");
+    };
+    match state
+        .with_store(|store| {
+            fiscal_year::fiscal_year_by_id(store.connection(), id)
+                .map(|record| record.map(|r| (is_editable(store, &r), r)))
+        })
+        .await
+    {
+        None => locked_fragment(),
+        Some(Err(e)) => message_fragment(&e.to_string()),
+        Some(Ok(None)) => {
+            message_fragment("exercice introuvable — il a peut-être été supprimé entre-temps")
+        }
+        Some(Ok(Some((editable, record)))) => {
+            Html(views::cloture::detail_panel(&record, editable, None).into_string())
+        }
+    }
+}
+
+pub async fn edit_panel(State(state): State<AppState>, Path(id): Path<String>) -> Html<String> {
+    let Some(id) = parse_id(&id) else {
+        return message_fragment("identifiant d'exercice invalide");
+    };
+    match current_record(&state, id).await {
+        None => locked_fragment(),
+        Some(Err(e)) => message_fragment(&e.to_string()),
+        Some(Ok(None)) => message_fragment("exercice introuvable"),
+        Some(Ok(Some(record))) => Html(
+            views::cloture::edit_panel(
+                &record,
+                &AmendFormValues::from(&record),
+                &CloseFormErrors::default(),
+            )
+            .into_string(),
+        ),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AmendForm {
+    #[serde(default)]
+    revision: Option<String>,
+    #[serde(default)]
+    legal_reserve: String,
+    #[serde(default)]
+    dividends: String,
+}
+
+pub async fn update(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Form(form): Form<AmendForm>,
+) -> Response {
+    let Some(id) = parse_id(&id) else {
+        return message_fragment("identifiant d'exercice invalide").into_response();
+    };
+    let record = match current_record(&state, id).await {
+        None => return locked_fragment().into_response(),
+        Some(Err(e)) => return message_fragment(&e.to_string()).into_response(),
+        Some(Ok(None)) => return message_fragment("exercice introuvable").into_response(),
+        Some(Ok(Some(record))) => record,
+    };
+    let revision: i64 = form
+        .revision
+        .as_deref()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_default();
+
+    let mut errors = CloseFormErrors::default();
+    let legal_reserve = parse_money_field(&form.legal_reserve, &mut errors.legal_reserve);
+    let dividends = parse_money_field(&form.dividends, &mut errors.dividends);
+    let values = AmendFormValues {
+        legal_reserve: form.legal_reserve.clone(),
+        dividends: form.dividends.clone(),
+    };
+    if errors.legal_reserve.is_some() || errors.dividends.is_some() {
+        return Html(views::cloture::edit_panel(&record, &values, &errors).into_string())
+            .into_response();
+    }
+
+    let cmd = UpdateFiscalYearAppropriation {
+        id,
+        revision,
+        legal_reserve,
+        dividends,
+    };
+    match execute(&state, cmd).await {
+        None => locked_fragment().into_response(),
+        Some(Ok(_)) => saved(),
+        Some(Err(e)) => {
+            let errors = error_banner(&e, &format!("/cloture/{id}/edit"));
+            Html(views::cloture::edit_panel(&record, &values, &errors).into_string())
+                .into_response()
+        }
+    }
+}
+
+// -- Approbation / suppression -------------------------------------------------------------
+
+pub async fn approve_panel(State(state): State<AppState>, Path(id): Path<String>) -> Html<String> {
+    let Some(id) = parse_id(&id) else {
+        return message_fragment("identifiant d'exercice invalide");
+    };
+    match current_record(&state, id).await {
+        None => locked_fragment(),
+        Some(Err(e)) => message_fragment(&e.to_string()),
+        Some(Ok(None)) => message_fragment("exercice introuvable"),
+        Some(Ok(Some(record))) => {
+            Html(views::cloture::approve_panel(&record, state.today()).into_string())
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ApproveForm {
+    #[serde(default)]
+    approved_on: String,
+}
+
+pub async fn approve(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Form(form): Form<ApproveForm>,
+) -> Response {
+    let Some(id) = parse_id(&id) else {
+        return message_fragment("identifiant d'exercice invalide").into_response();
+    };
+    let Ok(approved_on) = griffe_core::domain::parse_date(form.approved_on.trim()) else {
+        return message_fragment("date d'AG invalide (AAAA-MM-JJ)").into_response();
+    };
+    // Révision relue au moment du clic, comme les transitions des lots 15/16.
+    let record = match current_record(&state, id).await {
+        None => return locked_fragment().into_response(),
+        Some(Err(e)) => return message_fragment(&e.to_string()).into_response(),
+        Some(Ok(None)) => return message_fragment("exercice introuvable").into_response(),
+        Some(Ok(Some(record))) => record,
+    };
+    let cmd = ApproveFiscalYear {
+        id,
+        revision: record.revision,
+        approved_on,
+        today: Some(state.today()),
+    };
+    // Sauvegarde préalable obligatoire (lot 36), comme `freeflow year approve` : l'approbation
+    // rend l'exercice immuable, la sauvegarde est le seul retour en arrière. Son échec abandonne
+    // l'approbation. IO d'adaptateur, jamais dans la commande.
+    let backup = match state
+        .with_store(|store| pre_approve_backup(store, record.ends_on.year()))
+        .await
+    {
+        None => return locked_fragment().into_response(),
+        Some(Err(message)) => {
+            return Html(views::cloture::detail_panel(&record, true, Some(&message)).into_string())
+                .into_response();
+        }
+        Some(Ok(path)) => path,
+    };
+    match execute(&state, cmd).await {
+        None => locked_fragment().into_response(),
+        Some(Ok(Outcome::Applied(approval))) => {
+            let period = record.ends_on.year();
+            let _ = state
+                .with_store_mut(|store| {
+                    griffe_cli::capture_year(store, &AppState::human_ctx(), period)
+                })
+                .await;
+            // Succès, mais avec quelque chose à dire (sauvegarde, retard) : le panneau reste
+            // ouvert sur ce compte rendu, et la liste se rafraîchit quand même.
+            let mut response = Html(
+                views::cloture::approved_panel(&record, &backup, approval.late_by_days)
+                    .into_string(),
+            )
+            .into_response();
+            response
+                .headers_mut()
+                .insert("HX-Trigger", HeaderValue::from_static("griffe:saved"));
+            response
+        }
+        Some(Ok(_)) => saved(),
+        Some(Err(e)) => {
+            Html(views::cloture::detail_panel(&record, true, Some(&e.to_string())).into_string())
+                .into_response()
+        }
+    }
+}
+
+/// `backups/pre-approve-<période>-<horodatage>.db` à côté du coffre — le même nom que la CLI,
+/// pour qu'un utilisateur retrouve ses sauvegardes au même endroit quel que soit l'adaptateur.
+fn pre_approve_backup(
+    store: &griffe_core::store::Store,
+    period: i32,
+) -> Result<std::path::PathBuf, String> {
+    let stamp = time::OffsetDateTime::now_utc()
+        .format(&time::macros::format_description!(
+            "[year][month][day]T[hour][minute][second]Z"
+        ))
+        .map_err(|e| e.to_string())?;
+    let backups = store.db_path().with_file_name("backups");
+    // Un nom neuf (même règle que la CLI) : `backup_to` refuse d'écraser.
+    let dest = (0u32..)
+        .map(|n| {
+            let suffix = if n == 0 {
+                String::new()
+            } else {
+                format!("-{n}")
+            };
+            backups.join(format!("pre-approve-{period}-{stamp}{suffix}.db"))
+        })
+        .find(|p| !p.exists() && !p.with_extension("db.kdf").exists())
+        .expect("un suffixe libre finit toujours par exister");
+    let failed = |e: &dyn std::fmt::Display| {
+        format!(
+            "sauvegarde préalable impossible ({}) : {e} — approbation abandonnée",
+            dest.display()
+        )
+    };
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| failed(&e))?;
+    }
+    store.backup_to(&dest).map_err(|e| failed(&e))?;
+    Ok(dest)
+}
+
+pub async fn delete_confirm_panel(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Html<String> {
+    let Some(id) = parse_id(&id) else {
+        return message_fragment("identifiant d'exercice invalide");
+    };
+    match current_record(&state, id).await {
+        None => locked_fragment(),
+        Some(Err(e)) => message_fragment(&e.to_string()),
+        Some(Ok(None)) => message_fragment("exercice introuvable"),
+        Some(Ok(Some(record))) => Html(views::cloture::delete_confirm_panel(&record).into_string()),
+    }
+}
+
+pub async fn delete(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let Some(id) = parse_id(&id) else {
+        return message_fragment("identifiant d'exercice invalide").into_response();
+    };
+    let record = match current_record(&state, id).await {
+        None => return locked_fragment().into_response(),
+        Some(Err(e)) => return message_fragment(&e.to_string()).into_response(),
+        Some(Ok(None)) => {
+            return message_fragment("exercice introuvable — déjà supprimé").into_response();
+        }
+        Some(Ok(Some(record))) => record,
+    };
+    let cmd = DeleteFiscalYear {
+        id,
+        revision: record.revision,
+    };
+    match execute(&state, cmd).await {
+        None => locked_fragment().into_response(),
+        Some(Ok(_)) => saved(),
+        Some(Err(e)) => {
+            Html(views::cloture::detail_panel(&record, true, Some(&e.to_string())).into_string())
+                .into_response()
+        }
+    }
+}
+
+// -- FEC (lot 28) ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct FecQuery {
+    /// Année civile de la clôture — même désignation que `year show` ; l'exercice n'a pas
+    /// besoin d'être clos.
+    pub period: i32,
+}
+
+/// `GET /cloture/fec?period=AAAA` : le Fichier des Écritures Comptables de l'exercice, en
+/// téléchargement sous son nom réglementaire. Construit et rendu par le cœur
+/// (`griffe_core::fec`), comme en CLI et via MCP.
+pub async fn fec(State(state): State<AppState>, Query(query): Query<FecQuery>) -> Response {
+    let built = state
+        .with_store(|store| griffe_core::fec::build_fec(store.connection(), query.period))
+        .await;
+    match built {
+        None => locked_fragment().into_response(),
+        Some(Err(e)) => message_fragment(&e.to_string()).into_response(),
+        Some(Ok(fec)) => document_response(
+            fec.render().into_bytes(),
+            "text/plain; charset=utf-8",
+            &fec.file_name(),
+        ),
+    }
+}
+
+/// `GET /cloture/fec/check?period=AAAA` : contrôle de structure du FEC généré, dans le panneau.
+pub async fn fec_check_panel(
+    State(state): State<AppState>,
+    Query(query): Query<FecQuery>,
+) -> Html<String> {
+    let built = state
+        .with_store(|store| griffe_core::fec::check_fec_of(store.connection(), query.period))
+        .await;
+    match built {
+        None => locked_fragment(),
+        Some(Err(e)) => message_fragment(&e.to_string()),
+        Some(Ok(check)) => {
+            Html(views::cloture::fec_check_panel(query.period, &check).into_string())
+        }
+    }
+}
+
+/// `GET /cloture/checklist?period=AAAA` : le parcours de clôture guidé de l'exercice
+/// (`griffe_core::closing`), dans le panneau — les étapes viennent du cœur, les boutons qui y
+/// répondent sont propres à cette façade (`views::cloture::checklist_panel`).
+pub async fn checklist_panel(
+    State(state): State<AppState>,
+    Query(query): Query<FecQuery>,
+) -> Html<String> {
+    let today = state.today();
+    let built = state
+        .with_store(|store| {
+            griffe_core::closing::closing_checklist(store.connection(), query.period, today)
+        })
+        .await;
+    match built {
+        None => locked_fragment(),
+        Some(Err(e)) => message_fragment(&e.to_string()),
+        Some(Ok(checklist)) => Html(views::cloture::checklist_panel(&checklist).into_string()),
+    }
+}
+
+/// `GET /cloture/balance?period=AAAA` : balance des comptes et bilan 2033-A dérivés du grand
+/// livre (`griffe_core::ledger`), dans le panneau — exercice clos ou non, comme le FEC.
+pub async fn balance_panel(
+    State(state): State<AppState>,
+    Query(query): Query<FecQuery>,
+) -> Html<String> {
+    let built = state
+        .with_store(|store| griffe_core::ledger::ledger_ending_in(store.connection(), query.period))
+        .await;
+    match built {
+        None => locked_fragment(),
+        Some(Err(e)) => message_fragment(&e.to_string()),
+        Some(Ok((_, ledger))) => Html(
+            views::cloture::balance_panel(
+                query.period,
+                &ledger.trial_balance(),
+                &ledger.balance_sheet(),
+            )
+            .into_string(),
+        ),
+    }
+}
+
+/// `GET /cloture/balance.pdf?period=AAAA` : le même bilan et la même balance en PDF
+/// (`griffe_docs::render_balance_sheet`), en téléchargement.
+pub async fn balance_pdf(State(state): State<AppState>, Query(query): Query<FecQuery>) -> Response {
+    let built = state
+        .with_store(|store| griffe_core::ledger::ledger_ending_in(store.connection(), query.period))
+        .await;
+    let (profile, ledger) = match built {
+        None => return locked_fragment().into_response(),
+        Some(Err(e)) => return message_fragment(&e.to_string()).into_response(),
+        Some(Ok(pair)) => pair,
+    };
+    match griffe_docs::render_balance_sheet(
+        &profile,
+        &ledger.balance_sheet(),
+        &ledger.trial_balance(),
+    ) {
+        Ok(pdf) => document_response(
+            pdf,
+            "application/pdf",
+            &format!("bilan-{}.pdf", ledger.exercise.end().year()),
+        ),
+        Err(e) => message_fragment(&e.to_string()).into_response(),
+    }
+}
+
+// -- Documents -----------------------------------------------------------------------------
+
+fn document_response(bytes: Vec<u8>, content_type: &'static str, filename: &str) -> Response {
+    let disposition = format!("attachment; filename=\"{filename}\"");
+    (
+        [
+            (header::CONTENT_TYPE, HeaderValue::from_static(content_type)),
+            (
+                header::CONTENT_DISPOSITION,
+                HeaderValue::from_str(&disposition)
+                    .unwrap_or_else(|_| HeaderValue::from_static("attachment")),
+            ),
+        ],
+        bytes,
+    )
+        .into_response()
+}
+
+pub async fn document(
+    State(state): State<AppState>,
+    Path((id, kind)): Path<(String, String)>,
+) -> Response {
+    let Some(id) = parse_id(&id) else {
+        return message_fragment("identifiant d'exercice invalide").into_response();
+    };
+    let loaded = state
+        .with_store(|store| -> Result<_, AppError> {
+            let record = fiscal_year::fiscal_year_by_id(store.connection(), id)?;
+            let profile = griffe_core::company::company_profile(store.connection())?;
+            let years = fiscal_year::list_fiscal_years(store.connection())?;
+            // Le bilan 2033-A de la liasse est dérivé du grand livre (lot 31).
+            let sheet = match (&record, &profile) {
+                (Some(r), Some(_)) => Some(griffe_core::ledger::build_ledger(
+                    store.connection(),
+                    r.period(),
+                )?),
+                _ => None,
+            };
+            Ok((record, profile, years, sheet))
+        })
+        .await;
+    let (record, profile, years, sheet) = match loaded {
+        None => return locked_fragment().into_response(),
+        Some(Err(e)) => return message_fragment(&e.to_string()).into_response(),
+        Some(Ok((None, _, _, _))) => {
+            return message_fragment("exercice introuvable").into_response();
+        }
+        Some(Ok((_, None, _, _))) => {
+            return message_fragment(
+                "aucun profil d'entreprise défini — configurez-le d'abord (console : `company \
+                 set-profile`)",
+            )
+            .into_response();
+        }
+        Some(Ok((Some(record), Some(profile), years, sheet))) => (record, profile, years, sheet),
+    };
+    let year_label = record.ends_on.year();
+    let result = match kind.as_str() {
+        "minutes" => {
+            let today = state.today();
+            griffe_docs::render_approval_minutes(&profile, &record, today).map(|pdf| {
+                document_response(pdf, "application/pdf", &format!("pv-{year_label}.pdf"))
+            })
+        }
+        "appropriation" => {
+            griffe_docs::render_appropriation_decision(&profile, &record).map(|pdf| {
+                document_response(
+                    pdf,
+                    "application/pdf",
+                    &format!("affectation-{year_label}.pdf"),
+                )
+            })
+        }
+        "synthesis" => {
+            let result = record.accounting_result();
+            let prior = years
+                .iter()
+                .filter(|y| y.ends_on < record.starts_on)
+                .max_by_key(|y| y.ends_on);
+            griffe_docs::render_synthesis(&profile, &result, prior).map(|pdf| {
+                document_response(
+                    pdf,
+                    "application/pdf",
+                    &format!("resultat-{year_label}.pdf"),
+                )
+            })
+        }
+        "liasse" => {
+            let export = griffe_docs::liasse_export(&profile, &record, sheet.as_ref());
+            return match serde_json::to_vec_pretty(&export) {
+                Ok(json) => document_response(
+                    json,
+                    "application/json",
+                    &format!("liasse-{year_label}.json"),
+                ),
+                Err(e) => message_fragment(&e.to_string()).into_response(),
+            };
+        }
+        "efi-notice" => {
+            let export = griffe_docs::liasse_export(&profile, &record, sheet.as_ref());
+            griffe_docs::render_efi_notice(&export).map(|pdf| {
+                document_response(
+                    pdf,
+                    "application/pdf",
+                    &format!("notice-efi-{year_label}.pdf"),
+                )
+            })
+        }
+        "inventory" => {
+            let Some(ledger) = sheet.as_ref() else {
+                return message_fragment(
+                    "le grand livre n'a pas pu être construit — renseignez d'abord le profil",
+                )
+                .into_response();
+            };
+            griffe_docs::render_inventory(&profile, &ledger.trial_balance()).map(|pdf| {
+                document_response(
+                    pdf,
+                    "application/pdf",
+                    &format!("inventaire-{year_label}.pdf"),
+                )
+            })
+        }
+        other => {
+            return message_fragment(&format!("document inconnu : {other}")).into_response();
+        }
+    };
+    match result {
+        Ok(response) => response,
+        Err(e) => message_fragment(&e.to_string()).into_response(),
+    }
+}
+
+// -- Bilan d'ouverture (lot 30) -------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct OpeningForm {
+    #[serde(default)]
+    revision: Option<String>,
+    #[serde(default)]
+    opens_on: String,
+    #[serde(default)]
+    source: String,
+    #[serde(default)]
+    lines: String,
+    #[serde(default)]
+    tax_losses: String,
+    #[serde(default)]
+    prior_is: String,
+    #[serde(default)]
+    prior_vat: String,
+}
+
+impl From<&OpeningForm> for OpeningFormValues {
+    fn from(f: &OpeningForm) -> Self {
+        Self {
+            opens_on: f.opens_on.clone(),
+            source: f.source.clone(),
+            lines: f.lines.clone(),
+            tax_losses: f.tax_losses.clone(),
+            prior_is: f.prior_is.clone(),
+            prior_vat: f.prior_vat.clone(),
+            import_note: None,
+        }
+    }
+}
+
+type OpeningState = Option<Result<Option<OpeningBalanceRecord>, AppError>>;
+
+async fn current_opening(state: &AppState) -> OpeningState {
+    state
+        .with_store(|store| opening_balance::opening_balance(store.connection()))
+        .await
+}
+
+/// La période du premier exercice clos, si un exercice existe : le bilan est alors figé — la
+/// même règle que le cœur (`opening_balance::require_no_fiscal_year`), relue pour l'affichage.
+fn frozen_by(store: &griffe_core::store::Store) -> Option<String> {
+    fiscal_year::list_fiscal_years(store.connection())
+        .ok()?
+        .first()
+        .map(|y| format!("{} → {}", format_date(y.starts_on), format_date(y.ends_on)))
+}
+
+pub async fn opening_panel(State(state): State<AppState>) -> Html<String> {
+    match state
+        .with_store(|store| {
+            opening_balance::opening_balance(store.connection())
+                .map(|record| record.map(|r| (frozen_by(store), r)))
+        })
+        .await
+    {
+        None => locked_fragment(),
+        Some(Err(e)) => message_fragment(&e.to_string()),
+        Some(Ok(None)) => Html(
+            views::cloture::opening_form_panel(
+                &OpeningFormValues::default(),
+                &OpeningFormErrors::default(),
+                None,
+            )
+            .into_string(),
+        ),
+        Some(Ok(Some((frozen, record)))) => {
+            Html(views::cloture::opening_detail_panel(&record, frozen.as_deref()).into_string())
+        }
+    }
+}
+
+pub async fn opening_edit_panel(State(state): State<AppState>) -> Html<String> {
+    match current_opening(&state).await {
+        None => locked_fragment(),
+        Some(Err(e)) => message_fragment(&e.to_string()),
+        Some(Ok(None)) => message_fragment("aucun bilan d'ouverture enregistré"),
+        Some(Ok(Some(record))) => Html(
+            views::cloture::opening_form_panel(
+                &OpeningFormValues::from(&record),
+                &OpeningFormErrors::default(),
+                Some(record.revision),
+            )
+            .into_string(),
+        ),
+    }
+}
+
+struct ParsedOpeningForm {
+    opens_on: time::Date,
+    source: Option<String>,
+    lines: Vec<OpeningBalanceLine>,
+    tax_losses: Money,
+    prior_corporate_tax: Option<Money>,
+    prior_vat_due: Option<Money>,
+}
+
+fn parse_opening_form(form: &OpeningForm) -> Result<ParsedOpeningForm, Box<OpeningFormErrors>> {
+    let mut errors = OpeningFormErrors::default();
+    let opens_on = match griffe_core::domain::parse_date(form.opens_on.trim()) {
+        Ok(d) => Some(d),
+        Err(_) => {
+            errors.opens_on = Some("date invalide (AAAA-MM-JJ)".to_string());
+            None
+        }
+    };
+    let mut lines = Vec::new();
+    for raw in form
+        .lines
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+    {
+        match raw.parse::<OpeningBalanceLine>() {
+            Ok(line) => lines.push(line),
+            Err(e) => {
+                errors.lines = Some(e.to_string());
+                break;
+            }
+        }
+    }
+    let source = form.source.trim();
+    let tax_losses = parse_money_field(&form.tax_losses, &mut errors.tax_losses);
+    let optional_money = |raw: &str, slot: &mut Option<String>| -> Option<Money> {
+        if raw.trim().is_empty() {
+            None
+        } else {
+            Some(parse_money_field(raw, slot))
+        }
+    };
+    let prior_corporate_tax = optional_money(&form.prior_is, &mut errors.tax_losses);
+    let prior_vat_due = optional_money(&form.prior_vat, &mut errors.tax_losses);
+    match opens_on {
+        Some(opens_on) if errors.lines.is_none() && errors.tax_losses.is_none() => {
+            Ok(ParsedOpeningForm {
+                opens_on,
+                source: (!source.is_empty()).then(|| source.to_string()),
+                lines,
+                tax_losses,
+                prior_corporate_tax,
+                prior_vat_due,
+            })
+        }
+        _ => Err(Box::new(errors)),
+    }
+}
+
+fn opening_error_banner(e: &AppError, reload_hx_get: &str) -> OpeningFormErrors {
+    match e {
+        AppError::Conflict { .. } => OpeningFormErrors {
+            conflict: Some((e.to_string(), reload_hx_get.to_string())),
+            ..Default::default()
+        },
+        other => OpeningFormErrors {
+            banner: Some(other.to_string()),
+            ..Default::default()
+        },
+    }
+}
+
+/// Enregistre ou remplace : la présence d'un bilan en base décide de la commande (état complet
+/// dans les deux cas), le champ caché `revision` protège le remplacement.
+pub async fn opening_save(
+    State(state): State<AppState>,
+    Form(form): Form<OpeningForm>,
+) -> Response {
+    let revision: Option<i64> = form.revision.as_deref().and_then(|s| s.parse().ok());
+    let values = OpeningFormValues::from(&form);
+    let parsed = match parse_opening_form(&form) {
+        Ok(p) => p,
+        Err(errors) => {
+            return Html(
+                views::cloture::opening_form_panel(&values, &errors, revision).into_string(),
+            )
+            .into_response();
+        }
+    };
+    let existing = match current_opening(&state).await {
+        None => return locked_fragment().into_response(),
+        Some(Err(e)) => return message_fragment(&e.to_string()).into_response(),
+        Some(Ok(existing)) => existing,
+    };
+    let result = match existing {
+        Some(existing) => {
+            execute(
+                &state,
+                UpdateOpeningBalance {
+                    // Sans révision dans le formulaire (soumission « nouveau » alors qu'un bilan
+                    // vient d'être créé ailleurs), on force le conflit plutôt que d'écraser.
+                    revision: revision.unwrap_or(existing.revision.wrapping_neg()),
+                    opens_on: parsed.opens_on,
+                    source: parsed.source,
+                    lines: parsed.lines,
+                    tax_losses: parsed.tax_losses,
+                    prior_corporate_tax: parsed.prior_corporate_tax,
+                    prior_vat_due: parsed.prior_vat_due,
+                },
+            )
+            .await
+            .map(|r| r.map(|_| ()))
+        }
+        None => execute(
+            &state,
+            RecordOpeningBalance {
+                opens_on: parsed.opens_on,
+                source: parsed.source,
+                lines: parsed.lines,
+                tax_losses: parsed.tax_losses,
+                prior_corporate_tax: parsed.prior_corporate_tax,
+                prior_vat_due: parsed.prior_vat_due,
+            },
+        )
+        .await
+        .map(|r| r.map(|_| ())),
+    };
+    match result {
+        None => locked_fragment().into_response(),
+        Some(Ok(())) => saved(),
+        Some(Err(e)) => {
+            let errors = opening_error_banner(&e, "/cloture/opening/edit");
+            Html(views::cloture::opening_form_panel(&values, &errors, revision).into_string())
+                .into_response()
+        }
+    }
+}
+
+pub async fn opening_delete_panel(State(state): State<AppState>) -> Html<String> {
+    match current_opening(&state).await {
+        None => locked_fragment(),
+        Some(Err(e)) => message_fragment(&e.to_string()),
+        Some(Ok(None)) => message_fragment("aucun bilan d'ouverture enregistré"),
+        Some(Ok(Some(record))) => Html(views::cloture::opening_delete_panel(&record).into_string()),
+    }
+}
+
+pub async fn opening_delete(State(state): State<AppState>) -> Response {
+    // Révision relue au moment du clic — même raison que la suppression d'un exercice.
+    let record = match current_opening(&state).await {
+        None => return locked_fragment().into_response(),
+        Some(Err(e)) => return message_fragment(&e.to_string()).into_response(),
+        Some(Ok(None)) => {
+            return message_fragment("aucun bilan d'ouverture enregistré").into_response();
+        }
+        Some(Ok(Some(record))) => record,
+    };
+    match execute(
+        &state,
+        DeleteOpeningBalance {
+            revision: record.revision,
+        },
+    )
+    .await
+    {
+        None => locked_fragment().into_response(),
+        Some(Ok(_)) => saved(),
+        Some(Err(e)) => {
+            Html(views::cloture::opening_detail_panel(&record, Some(&e.to_string())).into_string())
+                .into_response()
+        }
+    }
+}
+
+/// `POST /cloture/opening/import` (lot 40, multipart) : une balance de cabinet ou un FEC →
+/// le formulaire du bilan d'ouverture pré-rempli avec les lignes retenues (modifiables avant
+/// enregistrement), les lignes écartées, le résultat dérivé et les avertissements. Rien n'est
+/// écrit : l'enregistrement reste le `POST /cloture/opening` ordinaire.
+pub async fn opening_import(
+    State(state): State<AppState>,
+    mut multipart: axum::extract::Multipart,
+) -> Html<String> {
+    let mut opens_on = String::new();
+    let mut file: Option<(String, Vec<u8>)> = None;
+    while let Ok(Some(field)) = multipart.next_field().await {
+        match field.name().unwrap_or_default() {
+            "opens_on" => opens_on = field.text().await.unwrap_or_default(),
+            "statement" => {
+                let name = std::path::Path::new(field.file_name().unwrap_or_default())
+                    .file_name()
+                    .map(|f| f.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                if let Ok(bytes) = field.bytes().await
+                    && !bytes.is_empty()
+                {
+                    file = Some((name, bytes.to_vec()));
+                }
+            }
+            _ => {}
+        }
+    }
+    let revision = match current_opening(&state).await {
+        Some(Ok(Some(existing))) => Some(existing.revision),
+        _ => None,
+    };
+    let mut values = OpeningFormValues {
+        opens_on: opens_on.clone(),
+        ..Default::default()
+    };
+    let mut errors = OpeningFormErrors::default();
+    let Ok(date) = griffe_core::domain::parse_date(opens_on.trim()) else {
+        errors.opens_on = Some("date invalide (AAAA-MM-JJ)".to_string());
+        return Html(views::cloture::opening_form_panel(&values, &errors, revision).into_string());
+    };
+    let Some((name, bytes)) = file else {
+        errors.banner = Some("choisissez un fichier (balance générale CSV ou FEC)".to_string());
+        return Html(views::cloture::opening_form_panel(&values, &errors, revision).into_string());
+    };
+    match griffe_core::opening_balance::import::import_opening_balance(&bytes, date, None) {
+        Err(e) => {
+            errors.banner = Some(e.to_string());
+        }
+        Ok(preview) => {
+            values.source = format!("import de {name}");
+            values.lines = preview
+                .lines
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n");
+            values.tax_losses = "0".to_string();
+            let mut note = format!(
+                "{} compte(s) repris depuis {name}{}.",
+                preview.lines.len(),
+                preview.derived_result.map_or(String::new(), |r| format!(
+                    " — résultat dérivé des comptes 6/7 : {r}, posé en {}",
+                    if r.is_negative() { "129" } else { "120" }
+                ))
+            );
+            if !preview.dropped.is_empty() {
+                note.push_str(&format!(
+                    " Écarté : {}.",
+                    preview
+                        .dropped
+                        .iter()
+                        .map(|(what, why)| format!("{what} ({why})"))
+                        .collect::<Vec<_>>()
+                        .join(" ; ")
+                ));
+            }
+            for w in &preview.warnings {
+                note.push_str(&format!(" ⚠ {w}"));
+            }
+            values.import_note = Some(note);
+        }
+    }
+    Html(views::cloture::opening_form_panel(&values, &errors, revision).into_string())
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct Opening2033Form {
+    #[serde(default)]
+    opens_on: String,
+    #[serde(default)]
+    box_084: String,
+    #[serde(default)]
+    box_072: String,
+    #[serde(default)]
+    box_068: String,
+    #[serde(default)]
+    box_028: String,
+    #[serde(default)]
+    box_092: String,
+    #[serde(default)]
+    box_120: String,
+    #[serde(default)]
+    box_126: String,
+    #[serde(default)]
+    box_134: String,
+    #[serde(default)]
+    box_136: String,
+    #[serde(default)]
+    box_166: String,
+    #[serde(default)]
+    box_172: String,
+    #[serde(default)]
+    box_169: String,
+    #[serde(default)]
+    box_156: String,
+}
+
+/// `POST /cloture/opening/from-2033a` (lot 43) : cases du 2033-A → lignes pré-remplies.
+pub async fn opening_from_2033a(
+    State(state): State<AppState>,
+    Form(form): Form<Opening2033Form>,
+) -> Html<String> {
+    let revision = match current_opening(&state).await {
+        Some(Ok(Some(existing))) => Some(existing.revision),
+        _ => None,
+    };
+    let mut values = OpeningFormValues {
+        opens_on: form.opens_on.clone(),
+        ..Default::default()
+    };
+    let mut errors = OpeningFormErrors::default();
+    let Ok(date) = griffe_core::domain::parse_date(form.opens_on.trim()) else {
+        errors.opens_on = Some("date invalide (AAAA-MM-JJ)".to_string());
+        return Html(views::cloture::opening_form_panel(&values, &errors, revision).into_string());
+    };
+    let mut boxes = griffe_core::opening_balance::import::CerfaBoxes::new();
+    let pairs = [
+        ("084", form.box_084.as_str()),
+        ("072", form.box_072.as_str()),
+        ("068", form.box_068.as_str()),
+        ("028", form.box_028.as_str()),
+        ("092", form.box_092.as_str()),
+        ("120", form.box_120.as_str()),
+        ("126", form.box_126.as_str()),
+        ("134", form.box_134.as_str()),
+        ("136", form.box_136.as_str()),
+        ("166", form.box_166.as_str()),
+        ("172", form.box_172.as_str()),
+        ("169", form.box_169.as_str()),
+        ("156", form.box_156.as_str()),
+    ];
+    for (case, raw) in pairs {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            continue;
+        }
+        match Money::parse_decimal(raw) {
+            Ok(amount) => {
+                boxes.insert(case.to_string(), amount);
+            }
+            Err(_) => {
+                errors.banner = Some(format!("montant invalide pour la case {case}"));
+                return Html(
+                    views::cloture::opening_form_panel(&values, &errors, revision).into_string(),
+                );
+            }
+        }
+    }
+    match griffe_core::opening_balance::import::from_2033a(date, &boxes) {
+        Err(e) => {
+            errors.banner = Some(e.to_string());
+        }
+        Ok(preview) => {
+            values.source = "2033-A du cabinet".to_string();
+            values.lines = preview
+                .lines
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n");
+            values.tax_losses = "0".to_string();
+            let mut note = format!("{} compte(s) dérivés du 2033-A.", preview.lines.len());
+            if !preview.dropped.is_empty() {
+                note.push_str(&format!(
+                    " Écarté : {}.",
+                    preview
+                        .dropped
+                        .iter()
+                        .map(|(what, why)| format!("{what} ({why})"))
+                        .collect::<Vec<_>>()
+                        .join(" ; ")
+                ));
+            }
+            for w in &preview.warnings {
+                note.push_str(&format!(" ⚠ {w}"));
+            }
+            values.import_note = Some(note);
+        }
+    }
+    Html(views::cloture::opening_form_panel(&values, &errors, revision).into_string())
+}

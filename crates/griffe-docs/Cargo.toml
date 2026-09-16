@@ -1,0 +1,19 @@
+[package]
+name = "griffe-docs"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+griffe-core = { version = "0.1.0", path = "../griffe-core" }
+serde = { version = "1.0.229", features = ["derive"] }
+tempfile = "3.27.0"
+thiserror = "2.0.20"
+time = { version = "0.3.55", features = ["formatting"] }
+
+[dev-dependencies]
+serde_json = "1.0.151"

@@ -1,4 +1,8 @@
-# FreeFlow
+# Griffe
+
+Le produit s’appelle **Griffe** — la lettre du matin pour un indépendant en SASU/EURL à l’IS.
+La vitrine (une fois GitHub Pages activé, source = Actions) sera
+[https://dz9oo.github.io/freeflow/](https://dz9oo.github.io/freeflow/).
 
 Application desktop de gestion pour un indépendant en SASU/EURL à l'IS : prospection, missions,
 devis, facturation Factur-X, dépenses, échéances fiscales indicatives et prévisionnel de
@@ -8,14 +12,14 @@ sauf si tu choisis explicitement de les synchroniser (Syncthing, iCloud Drive...
 ## Pourquoi ce projet
 
 La plupart des outils de facturation pour indépendants sont des SaaS : tes données de
-prospection, tes marges, tes factures vivent chez un tiers. FreeFlow fait le pari inverse — un
+prospection, tes marges, tes factures vivent chez un tiers. Griffe fait le pari inverse — un
 seul fichier chiffré (SQLCipher) sur ton disque, aucune connexion sortante, et une architecture
 « Studio » où la CLI, le serveur MCP (pour piloter l'app depuis un agent LLM) et la fenêtre
 desktop sont trois façades strictement équivalentes au-dessus du même cœur applicatif. Tout ce
 que fait la GUI, la CLI peut le faire à l'identique — et donc un agent aussi, avec les mêmes
 garde-fous (audit, confirmation humaine avant tout effet sensible).
 
-Le détail de l'architecture (pourquoi pas de serveur, comment le protocole `freeflow://` marche,
+Le détail de l'architecture (pourquoi pas de serveur, comment le protocole `griffe://` marche,
 la doctrine de test) est dans [`CLAUDE.md`](./CLAUDE.md) — ce README est orienté usage, pas
 implémentation.
 
@@ -23,14 +27,14 @@ implémentation.
 
 ### Clients
 - Créer, consulter, **modifier**, **archiver** et **supprimer** un client, et gérer ses contacts
-  (ajout, modification, suppression) — en CLI (`freeflow client …`), en MCP (`clients.*`) et
+  (ajout, modification, suppression) — en CLI (`griffe client …`), en MCP (`clients.*`) et
   depuis la fenêtre (écran `clients`, panneau latéral).
 - Un client ne se supprime pour de bon que s'il n'est référencé par aucune opportunité, devis,
   mission ou facture ; sinon il s'**archive** (retiré des listes actives, ses références passées
   restent valides).
 - Désignation par UUID, préfixe d'UUID, ou **nom** (insensible à la casse et aux accents) en CLI
   et en MCP — pas besoin de copier un identifiant complet pour agir sur un client.
-- `freeflow client edit` ne change que les champs fournis ; `--clear-siren`, `--clear-vat-number`
+- `griffe client edit` ne change que les champs fournis ; `--clear-siren`, `--clear-vat-number`
   et `--clear-address` (et `--clear-email`/`--clear-phone`/`--clear-role` sur un contact)
   effacent un champ optionnel sans en fournir un nouveau.
 - Garde-fou contre l'écriture concurrente : chaque modification porte la révision lue au
@@ -47,7 +51,7 @@ implémentation.
   notes) — en CLI, en MCP et depuis la fenêtre. L'archivage est un axe distinct de gagnée/perdue :
   une opportunité archivée est simplement devenue sans objet. Même désignation par nom/UUID/préfixe
   et même garde-fou d'écriture concurrente que les clients.
-- Un prospect se crée **sans fiche client préalable** (`freeflow prospect create --prospect NOM`,
+- Un prospect se crée **sans fiche client préalable** (`griffe prospect create --prospect NOM`,
   outil `prospect.create` `prospect`, champ « nom du prospect » de la fenêtre) : une fiche est
   posée, mais elle n'apparaît dans l'onglet Clients qu'au **premier devis ou à la première
   facture**. Un nom déjà enregistré (exact, casse et accents ignorés) s'y rattache, sans
@@ -69,7 +73,7 @@ implémentation.
   est issu (comme un gain direct).
 - **Lisibles** (`quote list`/`quote show` : contenu, total HT net de remise, mission issue,
   nombre de versions) et désignables par **référence** (UUID, préfixe, ou nom du client porteur)
-  dans tous les verbes — en CLI, en MCP (`quote.*`, ressources `freeflow://quotes`) et depuis la
+  dans tous les verbes — en CLI, en MCP (`quote.*`, ressources `griffe://quotes`) et depuis la
   fenêtre (écran `devis` : liste, fiche avec lignes, envoyer/décliner/accepter).
 - **Création et révision depuis la fenêtre** (panneaux « nouveau devis » / « réviser », palette
   ⌘K, raccourci `n`) comme en CLI : les lignes polymorphes s'écrivent dans une syntaxe texte
@@ -87,7 +91,7 @@ implémentation.
   Une facture annulée par un avoir sort de la balance âgée (donc du tableau de bord, du
   prévisionnel et du parcours de clôture) et s'affiche « annulée par avoir » dans la fenêtre —
   jusqu'au lot 35, elle restait comptée « non encaissée » en entier.
-- Journal d'audit **chaîné par hash** — `freeflow audit verify-chain` détecte toute altération
+- Journal d'audit **chaîné par hash** — `griffe audit verify-chain` détecte toute altération
   directe de la base.
 - Cinq taux de TVA (normal, intermédiaire, réduit, super-réduit, taux zéro / autoliquidation),
   arrondi au centime par taux.
@@ -112,18 +116,18 @@ implémentation.
 - Dépenses catégorisées (logiciels, matériel, déplacement, repas, bureau, formation/cotisations,
   **honoraires**, **frais bancaires**, autre) avec TVA déductible et justificatif archivé par
   hash d'intégrité (SHA-256).
-- Créer, consulter, **modifier** et **supprimer** une dépense — en CLI (`freeflow expense …`,
+- Créer, consulter, **modifier** et **supprimer** une dépense — en CLI (`griffe expense …`,
   avec `--receipt`/`--clear-receipt` pour remplacer ou détacher le justificatif), en MCP
-  (`expense.*`, ressources `freeflow://expenses`) et depuis la fenêtre (écran `depenses`, avec
+  (`expense.*`, ressources `griffe://expenses`) et depuis la fenêtre (écran `depenses`, avec
   un champ fichier pour joindre, remplacer ou détacher le justificatif — archivé exactement comme
   par la CLI, à côté du coffre, en `0600`). Même désignation par libellé/UUID/préfixe et même
   garde-fou d'écriture concurrente que les clients.
   **Une dépense datée dans un exercice déjà clôturé (voir la clôture d'exercice) ne se crée, ne
   se modifie et ne se supprime plus** : le résultat figé à la clôture a été calculé sur ces
-  lignes-là — supprimez d'abord l'exercice s'il n'est qu'un projet (`freeflow year rm`).
+  lignes-là — supprimez d'abord l'exercice s'il n'est qu'un projet (`griffe year rm`).
 - **Rapprochement bancaire des dépenses** : les débits du relevé importé (`bank list
   --unmatched`, qui ne montrait jusqu'ici que des lignes à jamais « à rapprocher » côté sorties)
-  paient des dépenses. Créer la dépense depuis le débit — `freeflow expense record --transaction
+  paient des dépenses. Créer la dépense depuis le débit — `griffe expense record --transaction
   <id>` reprend le montant et la date du relevé s'ils sont omis, outil MCP `expense.record` avec
   `bank_transaction_id`, bouton « + dépense » du bloc « débits du relevé à rapprocher » de
   l'écran `depenses` (formulaire pré-rempli) — ou rapprocher une dépense existante au montant
@@ -133,7 +137,7 @@ implémentation.
   `bank unreconcile` libère le débit sans toucher à la dépense, supprimer la dépense libère son
   débit. Côté agent MCP, rapprocher est une action de rapprochement bancaire comme
   `bank.reconcile` : proposée, puis confirmée par un humain. `expense show` (et `expense.show`,
-  `freeflow://expenses/{réf}`) porte le débit rapproché sous `bank_transaction`.
+  `griffe://expenses/{réf}`) porte le débit rapproché sous `bank_transaction`.
 - Échéances indicatives CA3 (TVA), acomptes d'IS, CFE — **volontairement pas une source de vérité
   fiscale** : le module le documente explicitement, à vérifier sur impots.gouv.fr. La date limite
   de la CA3 suit toutefois la **grille officielle** (BOFIP BOI-TVA-DECLA-20-20-10-10) : zone du
@@ -144,7 +148,7 @@ implémentation.
   juillet 55 % / décembre 40 % de la TVA de l'exercice précédent, dispense sous 1 000 €) et la
   CA12 annuelle (ou CA12 E pour un exercice décalé), en tenant compte de la suppression de ce
   régime pour les exercices ouverts à compter du 1er janvier 2027 (loi de finances pour 2025),
-  après quoi il bascule en CA3 trimestrielle. `freeflow company show` affiche la règle de
+  après quoi il bascule en CA3 trimestrielle. `griffe company show` affiche la règle de
   télédéclaration dérivée du profil (`vat_filing`). Un crédit de TVA se demande depuis
   la lettre (case 26, formulaire 3519 recopié sur le site) : sous 760 € en cours d'année
   il reste à reporter ; en décembre, 150 € suffisent. Une TVA trop déduite sur une
@@ -158,8 +162,8 @@ implémentation.
   d'ouverture (401), le solde d'IS de l'an dernier (444), la TVA à décaisser (4455), un apport ou
   un remboursement de compte courant (455), des dividendes (457), un virement entre vos comptes
   (580), un emprunt (164). Saisir ces lignes en dépense compterait la charge deux fois et
-  laisserait la dette au passif ; les ignorer surestimerait la banque. `freeflow bank settle <id>
-  --account 401000` (`--label` pour un compte hors du plan de FreeFlow), `bank unsettle`, outils
+  laisserait la dette au passif ; les ignorer surestimerait la banque. `griffe bank settle <id>
+  --account 401000` (`--label` pour un compte hors du plan de Griffe), `bank unsettle`, outils
   MCP `bank.settle`/`bank.unsettle` (proposés par l'agent, confirmés par un humain), et dans
   l'écran `depenses` chaque débit offre « c'est une dépense » ou « c'est le règlement d'une dette
   ou d'un compte » (liste en français des comptes usuels). Le grand livre passe une écriture `BQ`
@@ -169,7 +173,7 @@ implémentation.
   jour. Catégorie de dépense **impôts et taxes** (`taxes`, compte 635, case 244 du 2033-B) pour la
   CFE et consorts — pas l'IS ni la TVA, qui se règlent. La TVA déductible est bornée par le taux
   (`TTC − TTC / (1 + taux)`, arrondi au centime supérieur), plus seulement par le TTC.
-- **Import bancaire réel** (lot 38) : `freeflow bank import <fichier>` prend l'export de la banque
+- **Import bancaire réel** (lot 38) : `griffe bank import <fichier>` prend l'export de la banque
   tel quel et détecte l'encodage (UTF-8 avec ou sans BOM, Windows-1252), le format (OFX 1.x/2.x ou
   CSV), le séparateur, la décimale et les milliers, le format de date, les lignes de préambule et
   de solde, et les colonnes par leur nom (date d'opération, libellé, montant ou débit/crédit,
@@ -185,16 +189,16 @@ implémentation.
   « premiers pas » — *Ma société* (le profil complet, chaque champ avec son aide, les régimes de TVA
   expliqués en une phrase), *D'où venez-vous ?* (recopier le bilan du cabinet, ou « société
   nouvelle »), *Votre banque* (import du relevé), *Prochaine étape* (le parcours de clôture). L'état
-  vient du cœur (`freeflow setup status`, outil MCP `setup.status`) : le tableau de bord porte un
+  vient du cœur (`griffe setup status`, outil MCP `setup.status`) : le tableau de bord porte un
   bandeau « prochaine étape » tant que tout n'est pas en place. Nouvel onglet **`societe`** pour
   modifier le profil (associé unique, président, nombre d'actions compris — le PV du lot 41 en a
   besoin) ; plus aucun message de la fenêtre ne renvoie à une commande ; le lexique est à portée du
   `?` de l'en-tête et de la palette ; la console répond à « aide ». **Justificatifs chiffrés** :
   chaque pièce vit désormais dans `<coffre>.receipts/` sous une clé dérivée de celle du coffre (HKDF,
   XChaCha20-Poly1305), les pièces en clair d'avant sont migrées au premier déverrouillage ;
-  `freeflow expense attach <réf> <fichier>` joint une pièce **même après la clôture** (elle ne change
+  `griffe expense attach <réf> <fichier>` joint une pièce **même après la clôture** (elle ne change
   ni montant ni date), `expense receipt <réf> [--out]` la déchiffre, la fiche de la fenêtre l'affiche.
-- **Reprise depuis Tiime, Indy ou le cabinet** (lot 40) : `freeflow year opening import
+- **Reprise depuis Tiime, Indy ou le cabinet** (lot 40) : `griffe year opening import
   <fichier> --opens-on <date>` lit une **balance générale** (CSV : compte, libellé, débit, crédit
   ou soldes) ou le **FEC** de l'exercice précédent (export Tiime/Indy, `|` ou tabulation) et en
   fait le bilan d'ouverture : comptes de bilan repris tels quels, comptes de charges et de
@@ -214,7 +218,7 @@ implémentation.
   (composition du capital : associé unique, adresse, nombre d'actions, 100 %) dès que le profil
   nomme l'associé. Le **PV est nominatif** (associé unique, adresse, président, signature — un
   blanc à compléter si le profil ne les porte pas) et dit ce qu'un greffe attend : art. 223
-  quater CGI (charges non déductibles, « aucune » par défaut — `freeflow year close
+  quater CGI (charges non déductibles, « aucune » par défaut — `griffe year close
   --non-deductible <€>`, `non_deductible_expenses_cents` de `fiscal.close_year`, champ du
   formulaire ; réintégrées au résultat fiscal, jamais au résultat comptable), conventions
   réglementées (L227-10), dispense de rapport de gestion (L232-1 IV), inscription au registre
@@ -247,9 +251,9 @@ implémentation.
   --duration 36`, ou `asset add`) : le cumul repris est le 28x, les dotations suivantes
   amortissent le net restant. Une **charge constatée d'avance** (486) reprise au bilan
   d'ouverture est extournée au premier jour. La liasse gagne la case **254** du 2033-B et le
-  **tableau 2033-C** (cadres I et II). `freeflow asset list|show|add|rm`, outils MCP
+  **tableau 2033-C** (cadres I et II). `griffe asset list|show|add|rm`, outils MCP
   `fiscal.assets` / `fiscal.add_asset` / `fiscal.delete_asset`, panneau dans l'écran dépenses.
-- **Grand livre dérivé, balance et bilan** : FreeFlow ne tient pas de comptabilité, il *dérive*
+- **Grand livre dérivé, balance et bilan** : Griffe ne tient pas de comptabilité, il *dérive*
   les écritures de ses faits — bilan d'ouverture (journal `AN`), factures et avoirs (`VE`),
   encaissements et annulations (`BQ`), dépenses (`AC` ; une dépense rapprochée d'un débit du
   relevé passe par 401 : la charge à sa date, le décaissement 401/512 à la date du relevé, en
@@ -259,30 +263,30 @@ implémentation.
   affectation du résultat de l'exercice précédent (120/129 vers 1061, 457, 110/119, datée de
   l'AG ou du premier jour de l'exercice tant que la décision est un projet). Les exercices
   s'enchaînent : ceux qui suivent un exercice clos dans l'application s'ouvrent sur son bilan de
-  clôture dérivé. `freeflow year balance 2026` (ou `--json`), outil MCP `fiscal.balance_sheet`,
-  ressource `freeflow://balance-sheet/{année}`, bouton « bilan » de l'écran `cloture` : la
+  clôture dérivé. `griffe year balance 2026` (ou `--json`), outil MCP `fiscal.balance_sheet`,
+  ressource `griffe://balance-sheet/{année}`, bouton « bilan » de l'écran `cloture` : la
   **balance des comptes** et le **bilan simplifié** dans la présentation du tableau
   **2033-A-SD** (actif brut / amortissements / net, passif par rubriques, cases 010 à 180),
   équilibré par construction — pour un exercice clos ou non, c'est ce qu'on regarde *avant* de
-  clore. En PDF : `freeflow year render 2026 balance-sheet --out bilan.pdf`, `fiscal.render_year`
+  clore. En PDF : `griffe year render 2026 balance-sheet --out bilan.pdf`, `fiscal.render_year`
   avec `balance_sheet`, lien « bilan et balance (PDF) » de la fenêtre. La liasse JSON gagne les
   cases 2033-A.
 - **Export FEC** (Fichier des Écritures Comptables, art. A. 47 A-1 LPF) d'un exercice, clos ou
-  non, pour l'expert-comptable : `freeflow fec export 2026 --out <répertoire|fichier>`, outil MCP
+  non, pour l'expert-comptable : `griffe fec export 2026 --out <répertoire|fichier>`, outil MCP
   `fec.export`, bouton « FEC » de l'écran `cloture`. Le format DGFiP (18 colonnes, `|`,
   `AAAAMMJJ`, virgule décimale, nom `<SIREN>FEC<AAAAMMJJ>.txt`) du grand livre dérivé ci-dessus,
   journaux `AN`/`VE`/`AC`/`BQ`/`OD`, écritures équilibrées par construction. Contrôle de
-  structure (sans coffre sur un fichier, ou `--period` sur l'exercice) : `freeflow fec check
-  <FICHIER>`, `freeflow fec check --period 2026`, outil MCP `fec.check`, bouton « vérifier le
+  structure (sans coffre sur un fichier, ou `--period` sur l'exercice) : `griffe fec check
+  <FICHIER>`, `griffe fec check --period 2026`, outil MCP `fec.check`, bouton « vérifier le
   FEC » — ce n'est **pas** une attestation DGFiP ; la conformité structurelle ne présage pas de
   la régularité de la comptabilité.
-- **Bilan d'ouverture** : la reprise, compte par compte, du dernier bilan tenu avant FreeFlow
+- **Bilan d'ouverture** : la reprise, compte par compte, du dernier bilan tenu avant Griffe
   (typiquement par l'expert-comptable), à saisir **avant** toute clôture dans l'application.
-  `freeflow year opening set --opens-on 2025-10-01 --line "101000:Capital social:C:1000.00"
+  `griffe year opening set --opens-on 2025-10-01 --line "101000:Capital social:C:1000.00"
   --line "512000:Banque:D:1000.00"` (ou `--lines-file`, une ligne par compte, même syntaxe
   `compte:libellé:D|C:montant`), `year opening show|rm` ; outils MCP `fiscal.opening_balance`/
   `fiscal.set_opening_balance`/`fiscal.delete_opening_balance` et ressource
-  `freeflow://opening-balance` ; bouton « bilan d'ouverture » de l'écran `cloture`. Comptes de
+  `griffe://opening-balance` ; bouton « bilan d'ouverture » de l'écran `cloture`. Comptes de
   bilan seulement (classes 1 à 5), total débit = total crédit, une ligne par compte. Il fournit
   le report à nouveau (110/119, et un 120/129 réputé affecté en report) et la réserve légale
   (1061) dont hérite le premier exercice clos ici — qui doit commencer le jour même de la
@@ -290,9 +294,9 @@ implémentation.
   qu'un exercice est clos : corriger se fait en supprimant d'abord le projet de clôture. Il
   reprend aussi, hors bilan, les **déficits fiscaux antérieurs** encore reportables
   (`--tax-losses`, case 870 du dernier tableau 2033-D déposé).
-- **Parcours de clôture guidé** : `freeflow year checklist 2026` (ou `--json`, `--today` pour
+- **Parcours de clôture guidé** : `griffe year checklist 2026` (ou `--json`, `--today` pour
   se placer à une autre date), outil MCP `fiscal.checklist`, ressource
-  `freeflow://closing-checklist/{année}`, bouton « parcours » de l'écran `cloture` (et depuis
+  `griffe://closing-checklist/{année}`, bouton « parcours » de l'écran `cloture` (et depuis
   la fiche d'un exercice). Une lecture du coffre, qui n'écrit rien : où en est la clôture de
   l'exercice (*en cours*, *bloquée*, *prête*, *close en projet*, *approuvée*) et seize étapes en
   quatre temps — **préparer** (profil d'entreprise complet, exercice écoulé, bilan d'ouverture
@@ -310,8 +314,8 @@ implémentation.
   arrive pré-rempli avec la période et la dotation minimale). Sur un exercice sans bénéfice, le
   parcours dit qu'aucune dotation n'est obligatoire plutôt que d'afficher un minimum de 0 €.
   Les mots du parcours sont expliqués sans jargon par le **lexique de la clôture**, écrit une
-  fois dans le cœur : `freeflow year glossary`, volet « lexique » du panneau « parcours », ressource
-  MCP `freeflow://closing-glossary`. Le tout est rejoué de bout en bout par le scénario de preuve
+  fois dans le cœur : `griffe year glossary`, volet « lexique » du panneau « parcours », ressource
+  MCP `griffe://closing-glossary`. Le tout est rejoué de bout en bout par le scénario de preuve
   du lot 35 — voir « Clôturer seul son exercice, pas à pas ».
 - **Déficits fiscaux : report en avant et report en arrière.** Le résultat *fiscal* d'un
   exercice n'est pas son résultat comptable : les déficits des exercices antérieurs (bilan
@@ -320,7 +324,7 @@ implémentation.
   BOI-IS-DEF-10-30), et l'IS est calculé sur ce résultat fiscal. Le stock de déficits
   reportables n'est jamais saisi ni stocké : il se dérive de la chaîne des exercices clos
   (`losses_carried_forward` de `year show`, case 870 du 2033-D). À la clôture, **l'option de
-  report en arrière** (`freeflow year close --carry-back`, `carry_back` de `fiscal.close_year`,
+  report en arrière** (`griffe year close --carry-back`, `carry_back` de `fiscal.close_year`,
   case du formulaire de la fenêtre — art. 220 quinquies CGI, notice 2039-SD ligne 13) impute le
   déficit de l'exercice sur le bénéfice fiscal *non distribué* de l'exercice précédent clos
   ici, dans la limite de 1 000 000 €, en priorité sur la fraction taxée au taux normal puis sur
@@ -340,9 +344,9 @@ implémentation.
   se figent au premier geste, chiffrés comme un justificatif. Un re-rendu plus tard ne les
   remplace pas. Un scan déposé est une **copie de travail** ; le papier reste l'original.
 - Catalogue SASU, 10 ans après la clôture (statuts et Kbis : jusqu'à radiation). Pas de
-  destruction automatique. `freeflow papers list|show|add|rm|checklist`, outils MCP `papers.*`,
+  destruction automatique. `griffe papers list|show|add|rm|checklist`, outils MCP `papers.*`,
   chapitre Les papiers dans La société.
-- **Pack contrôle en clair** : `freeflow papers export 2026 --out ./controle-2026` (dossier
+- **Pack contrôle en clair** : `griffe papers export 2026 --out ./controle-2026` (dossier
   **neuf**), outil MCP `papers.export` (refuse d'écraser), bouton « Préparer le dossier d'un
   contrôle » dans la fenêtre (dossier temporaire ouvert). Un `inventaire.txt` liste chaque
   pièce (chemin, nature, empreinte, date). Ces fichiers ne sont plus chiffrés — ne les laissez
@@ -362,7 +366,7 @@ implémentation.
   visible dans l'historique du shell ou `/proc/<pid>/environ`. La clé n'est mise en cache dans le
   trousseau OS (Keychain macOS / Secret Service Linux) que sur demande explicite
   (`--remember`/case « se souvenir »), toujours avec une expiration bornée (12 h par défaut).
-  `freeflow passphrase change` permet d'en changer sans perdre les données du coffre (voir
+  `griffe passphrase change` permet d'en changer sans perdre les données du coffre (voir
   « Changer de passphrase » plus bas).
 - Aucun port réseau ouvert, aucune connexion sortante. Les relances/emails sont générés en
   brouillons `.eml` ouverts dans ton client mail par défaut — rien n'est jamais envoyé par l'app
@@ -373,17 +377,17 @@ implémentation.
   vérification.
 
 ### Trois façades, un seul cœur
-- **CLI** (`freeflow`) — pensée pour un humain *et* pour un agent : `--json`, `--dry-run`,
+- **CLI** (`griffe`) — pensée pour un humain *et* pour un agent : `--json`, `--dry-run`,
   `--actor`, codes de sortie normalisés par famille d'erreur.
-- **Serveur MCP** (`freeflow-mcp`) — expose les mêmes commandes/requêtes comme outils MCP en
+- **Serveur MCP** (`griffe-mcp`) — expose les mêmes commandes/requêtes comme outils MCP en
   stdio, pour piloter l'app depuis Claude Code ou un autre client MCP, plus des **ressources**
-  (`freeflow://clients`, `freeflow://clients/{référence}`) pour lire l'état sans appeler d'outil.
+  (`griffe://clients`, `griffe://clients/{référence}`) pour lire l'état sans appeler d'outil.
   Toute action sensible déclenchée par un agent (émission de facture, avoir, suppression d'un
   client) crée une action en attente (`PendingAction`) : rien ne s'applique sans confirmation
-  humaine explicite, au terminal (`freeflow confirm <id>`) ou dans la fenêtre — il n'existe
+  humaine explicite, au terminal (`griffe confirm <id>`) ou dans la fenêtre — il n'existe
   volontairement **aucun outil MCP pour confirmer** : un agent ne peut jamais valider sa propre
   proposition.
-- **Desktop** (`freeflow-desktop`) — coque Tauri v2, dashboard/prospection/missions/facturation/
+- **Desktop** (`griffe-desktop`) — coque Tauri v2, dashboard/prospection/missions/facturation/
   clients/console avec journal d'audit en temps réel dans le rail latéral. Créer, modifier,
   archiver et supprimer des clients se fait depuis un panneau latéral, sans jamais passer par la
   console. La console intégrée exécute *littéralement* le même parseur que le terminal.
@@ -410,50 +414,50 @@ vit à l'emplacement standard de ton système (`~/.local/share/freeflow/vault.db
 `~/Library/Application Support/FreeFlow/vault.db` sur macOS) :
 
 ```bash
-freeflow init                        # crée le coffre, demande la passphrase deux fois au clavier
+griffe init                        # crée le coffre, demande la passphrase deux fois au clavier
                                       # (invite masquée) — aucune récupération n'est possible si
                                       # tu la perds, note-le où tu notes déjà tes mots de passe
-freeflow unlock --remember --ttl 12h # ouvre une session de 12h dans le trousseau OS
-freeflow company set-profile --help  # renseigne SIREN, TVA intra, adresse...
+griffe unlock --remember --ttl 12h # ouvre une session de 12h dans le trousseau OS
+griffe company set-profile --help  # renseigne SIREN, TVA intra, adresse...
 ```
 
-Sans `--remember`, `freeflow unlock` vérifie seulement la passphrase — chaque commande suivante en
-redemandera une, tant qu'aucune session n'est active. `freeflow vault status` affiche le chemin
-résolu, si un coffre y existe, et jusqu'à quand une session est en cache. `freeflow lock` purge
+Sans `--remember`, `griffe unlock` vérifie seulement la passphrase — chaque commande suivante en
+redemandera une, tant qu'aucune session n'est active. `griffe vault status` affiche le chemin
+résolu, si un coffre y existe, et jusqu'à quand une session est en cache. `griffe lock` purge
 cette session à tout moment.
 
-Pour un usage non interactif (scripts, CI, `freeflow-mcp`) : `--passphrase-file <fichier>` (dont
+Pour un usage non interactif (scripts, CI, `griffe-mcp`) : `--passphrase-file <fichier>` (dont
 les permissions doivent être 0600) ou `--passphrase-command "<commande>"` (ex.
 `--passphrase-command "pass show freeflow"`) remplacent l'invite au clavier sur n'importe quelle
 commande.
 
-**En GUI** : `cargo run -p freeflow-desktop` ouvre une vraie fenêtre native — toujours, même si le
+**En GUI** : `cargo run -p griffe-desktop` ouvre une vraie fenêtre native — toujours, même si le
 coffre n'existe pas encore ou est verrouillé : elle affiche alors l'écran de création ou de
 déverrouillage plutôt que de disparaître. La case « rester déverrouillé 12h » y correspond à
 `--remember`. La fenêtre se reverrouille elle-même après 15 minutes d'inactivité réelle (la
 frappe et le clic comptent, le rafraîchissement automatique du journal d'audit non).
 
-**Piloté par un agent** : lance d'abord `freeflow unlock --remember --ttl <durée>` dans un
-terminal, puis `freeflow-mcp` (stdio) — ce serveur, sans terminal, ne peut jamais demander de
+**Piloté par un agent** : lance d'abord `griffe unlock --remember --ttl <durée>` dans un
+terminal, puis `griffe-mcp` (stdio) — ce serveur, sans terminal, ne peut jamais demander de
 passphrase lui-même et dépend entièrement de cette session déjà en cache. Branche-le dans Claude
 Code ou un autre client MCP compatible. Toute action à effet sensible proposée par l'agent attend
-ta confirmation (`freeflow pending list`, `freeflow confirm <id>`).
+ta confirmation (`griffe pending list`, `griffe confirm <id>`).
 
 > **Tu utilisais `FREEFLOW_PASSPHRASE` ?** Cette variable a été supprimée : plus aucune commande
 > ne la lit. Si tu l'avais exportée dans un fichier de shell (`.bashrc`, `.envrc`...), retire-la
 > et considère cette passphrase comme potentiellement compromise (elle est restée en clair dans
 > ton historique de shell et dans l'environnement de chaque process que tu as lancé) —
-> remplace-la avec `freeflow passphrase change` (voir ci-dessous), qui garde le même coffre et
+> remplace-la avec `griffe passphrase change` (voir ci-dessous), qui garde le même coffre et
 > toutes ses données.
 
 ### Usage quotidien
 
-- **En CLI** : `freeflow --help`, puis `freeflow <commande> --help` pour chaque sous-commande
+- **En CLI** : `griffe --help`, puis `griffe <commande> --help` pour chaque sous-commande
   (`client`, `prospect`, `mission`, `quote`, `invoice`, `payment`, `bank`, `expense`, `fiscal`,
   `forecast`, `audit`, `backup`...). Ajoute `--json` pour scripter, `--dry-run` pour prévisualiser
   sans écrire.
 - **En GUI** : voir « Premier lancement » ci-dessus. Le bouton « verrouiller » de la barre de
-  commandes ferme la connexion et purge la session du trousseau OS, comme `freeflow lock`.
+  commandes ferme la connexion et purge la session du trousseau OS, comme `griffe lock`.
 - **Piloté par un agent** : voir « Premier lancement » ci-dessus.
 
 ### Sauvegarde et restauration
@@ -462,8 +466,8 @@ Une sauvegarde silencieuse tourne déjà en arrière-plan (voir plus haut). Pour
 restaurer explicitement :
 
 ```bash
-freeflow backup create --out ~/Sauvegardes/freeflow-$(date +%Y%m%d).db
-freeflow backup restore --from ~/Sauvegardes/freeflow-20260101.db --to ~/nouveau-coffre.db
+griffe backup create --out ~/Sauvegardes/griffe-$(date +%Y%m%d).db
+griffe backup restore --from ~/Sauvegardes/griffe-20260101.db --to ~/nouveau-coffre.db
 ```
 
 `backup restore` ne touche jamais ton coffre par défaut — il faut lui donner une destination
@@ -472,7 +476,7 @@ explicite, restaurée puis vérifiée avant de la mettre en usage.
 ### Changer de passphrase
 
 ```bash
-freeflow passphrase change   # invite l'ancienne, puis deux fois la nouvelle (saisies masquées)
+griffe passphrase change   # invite l'ancienne, puis deux fois la nouvelle (saisies masquées)
 ```
 
 Sur un coffre au format v3 (tout coffre créé désormais), l'opération est **instantanée quelle
@@ -496,34 +500,34 @@ console de la fenêtre : lance-la depuis un terminal, fenêtre fermée (voir `CL
 
 ### Empaquetage natif
 
-`nix build` produit les binaires (`freeflow`, `freeflow-desktop`, `freeflow-mcp`) pour ta
+`nix build` produit les binaires (`griffe`, `griffe-desktop`, `griffe-mcp`) pour ta
 plateforme. Les bundles installables (`.dmg` macOS, `.AppImage` Linux) ne sont pas encore
 distribués prêts à l'emploi — voir la checklist ci-dessous.
 
 ## Clôturer seul son exercice, pas à pas
 
 Cette section s'adresse à toi si tu n'as **aucune notion de comptabilité** : elle raconte, dans
-l'ordre, ce que FreeFlow te fait faire une fois par an, avec les mots de tous les jours d'abord
+l'ordre, ce que Griffe te fait faire une fois par an, avec les mots de tous les jours d'abord
 et le mot du comptable entre parenthèses. Le scénario ci-dessous est celui que le dépôt rejoue
-automatiquement à chaque vérification (`crates/freeflow-cli/tests/closing_scenario.rs`, lot 35),
+automatiquement à chaque vérification (`crates/griffe-cli/tests/closing_scenario.rs`, lot 35),
 avec tous les chiffres attendus posés à la main avant d'écrire le test : ce n'est pas un exemple
 décoratif, c'est la preuve que la chaîne complète tient.
 
 **Le cas.** Lumen Conseil est une SASU créée il y a quelques années, capital 1 000 €, dont
 l'exercice se termine chaque **30 septembre**. Jusqu'ici, un cabinet tenait les comptes. À
-partir du 1er octobre 2025, tu continues seul avec FreeFlow. Ta première année seul est une
+partir du 1er octobre 2025, tu continues seul avec Griffe. Ta première année seul est une
 année de transition **sans aucune facture** ; l'année suivante, l'activité reprend.
 
 ### Les mots à connaître (il n'y en a que huit)
 
 - **Exercice** : la période d'un an sur laquelle on fait les comptes. Ici du 1er octobre au
-  30 septembre. FreeFlow désigne un exercice par l'**année civile de sa fin** : « 2026 » est
+  30 septembre. Griffe désigne un exercice par l'**année civile de sa fin** : « 2026 » est
   l'exercice qui va du 1er octobre 2025 au 30 septembre 2026.
 - **Bilan** : la photo de ce que la société possède (sa banque, ce que les clients lui doivent)
   et de ce qu'elle doit (TVA à reverser, impôt, et ce qu'elle « doit » à son associé : le
   capital et les bénéfices passés non distribués). Les deux colonnes sont toujours égales.
 - **Bilan d'ouverture** : la photo au premier jour, telle que le cabinet te l'a remise. C'est le
-  point de départ ; sans elle, FreeFlow partirait de zéro comme si la société venait de naître.
+  point de départ ; sans elle, Griffe partirait de zéro comme si la société venait de naître.
 - **Résultat** : ce que l'exercice a rapporté (ventes hors taxes moins dépenses hors taxes).
   Positif, c'est un bénéfice ; négatif, une perte (un « déficit »). L'**IS** (impôt sur les
   sociétés) se calcule dessus — 15 % jusqu'à 42 500 €, 25 % au-delà — et une perte se garde en
@@ -531,18 +535,18 @@ année de transition **sans aucune facture** ; l'année suivante, l'activité re
 - **Report à nouveau** : le cumul des bénéfices et pertes passés que tu n'as pas distribués. Il
   augmente d'un bénéfice, diminue d'une perte, diminue des dividendes.
 - **Réserve légale** : une part du bénéfice que la loi t'oblige à garder dans la société (5 % du
-  bénéfice chaque année, jusqu'à ce qu'elle atteigne 10 % du capital). FreeFlow te chiffre le
+  bénéfice chaque année, jusqu'à ce qu'elle atteigne 10 % du capital). Griffe te chiffre le
   minimum.
 - **Rapprochement bancaire** : faire coïncider chaque ligne de ton relevé avec une facture
   encaissée ou une dépense. C'est ce qui rend le compte « banque » du bilan égal à ton solde réel.
 - **Liasse fiscale** et **FEC** : les deux fichiers que l'administration attend — la déclaration
-  annuelle de résultat (formulaires 2065 et 2033) et le fichier de toutes les écritures. FreeFlow
+  annuelle de résultat (formulaires 2065 et 2033) et le fichier de toutes les écritures. Griffe
   produit les chiffres de la première (JSON) et le second (texte) ; le dépôt lui-même se fait sur
   impots.gouv.fr (voir plus bas).
 
-Le reste du vocabulaire est expliqué au fil de l'app : `freeflow year glossary`, le volet
+Le reste du vocabulaire est expliqué au fil de l'app : `griffe year glossary`, le volet
 « lexique » du panneau « parcours » de la fenêtre, ou la ressource MCP
-`freeflow://closing-glossary`.
+`griffe://closing-glossary`.
 
 ### Année 1 (exercice 2026) : une année sans facture
 
@@ -550,26 +554,26 @@ Le reste du vocabulaire est expliqué au fil de l'app : `freeflow year glossary`
    (`30/09`) et régime de TVA. Sans ça, rien ne se calcule (le parcours te le dit en premier).
 
    ```bash
-   freeflow company set-profile --name "Lumen Conseil" --legal-form SASU --siren 901265322 \
+   griffe company set-profile --name "Lumen Conseil" --legal-form SASU --siren 901265322 \
      --street "8 rue des Capucins" --postal-code 69001 --city Lyon --country FR \
      --share-capital 1000 --fiscal-year-end 30/09 --vat-regime real_normal_monthly
    ```
 
 2. **Reprends le dernier bilan du cabinet** (le bilan d'ouverture), daté du premier jour de ton
    exercice. Le plus simple : demande-lui sa *balance de clôture* (ou exporte le FEC depuis Tiime
-   ou Indy) et importe le fichier tel quel — FreeFlow reprend les comptes de bilan et résume le
+   ou Indy) et importe le fichier tel quel — Griffe reprend les comptes de bilan et résume le
    résultat :
 
    ```bash
-   freeflow year opening import balance-30-09-2025.csv --opens-on 2025-10-01 --dry-run   # aperçu
-   freeflow year opening import balance-30-09-2025.csv --opens-on 2025-10-01 --prior-is 0
+   griffe year opening import balance-30-09-2025.csv --opens-on 2025-10-01 --dry-run   # aperçu
+   griffe year opening import balance-30-09-2025.csv --opens-on 2025-10-01 --prior-is 0
    ```
 
    Sinon, recopie-le compte par compte ; il n'y en a souvent que trois ou quatre. Le total de la
-   colonne « débit » doit être égal au total « crédit », sinon FreeFlow refuse.
+   colonne « débit » doit être égal au total « crédit », sinon Griffe refuse.
 
    ```bash
-   freeflow year opening set --opens-on 2025-10-01 --source "bilan au 30/09/2025, cabinet X" \
+   griffe year opening set --opens-on 2025-10-01 --source "bilan au 30/09/2025, cabinet X" \
      --line "101000:Capital social:C:1000.00" \
      --line "110000:Report à nouveau:C:2400.00" \
      --line "512000:Banque:D:3400.00"
@@ -587,15 +591,15 @@ Le reste du vocabulaire est expliqué au fil de l'app : `freeflow year glossary`
    catégorie, la TVA et le justificatif.
 
    ```bash
-   freeflow bank import releve.csv                      # l'export de ta banque, tel quel
-   freeflow bank list --unmatched                       # les lignes qu'il reste à expliquer
-   freeflow expense record --transaction <id> --label "Honoraires cabinet" --category fees \
+   griffe bank import releve.csv                      # l'export de ta banque, tel quel
+   griffe bank list --unmatched                       # les lignes qu'il reste à expliquer
+   griffe expense record --transaction <id> --label "Honoraires cabinet" --category fees \
      --vat-rate standard --vat-deductible 120 --receipt facture-cabinet.pdf
-   freeflow expense record --transaction <id> --label "Frais de tenue de compte" \
+   griffe expense record --transaction <id> --label "Frais de tenue de compte" \
      --category bank_charges --vat-rate zero --vat-deductible 0
    ```
 
-   Une dépense saisie avant l'import se rapproche après coup (`freeflow expense reconcile
+   Une dépense saisie avant l'import se rapproche après coup (`griffe expense reconcile
    <libellé> --transaction <id>`), à condition que le montant soit exactement celui du relevé.
    Dans la fenêtre : écran `depenses`, bloc « débits du relevé à rapprocher », bouton
    « c'est une dépense » (le formulaire arrive pré-rempli).
@@ -607,8 +611,8 @@ Le reste du vocabulaire est expliqué au fil de l'app : `freeflow year glossary`
    repris 401000 ») ; la bonne réponse est un **règlement**, qui solde le compte sans charge :
 
    ```bash
-   freeflow bank settle <id> --account 401000     # honoraires repris au bilan
-   freeflow bank settle <id> --account 444000     # solde d'IS repris au bilan
+   griffe bank settle <id> --account 401000     # honoraires repris au bilan
+   griffe bank settle <id> --account 444000     # solde d'IS repris au bilan
    ```
 
    Dans la fenêtre, le même débit offre « c'est le règlement d'une dette ou d'un compte ». La CFE,
@@ -618,42 +622,42 @@ Le reste du vocabulaire est expliqué au fil de l'app : `freeflow year glossary`
    tu en es, ce qui bloque, ce qui mérite un coup d'œil, et **la commande exacte à taper ensuite**.
 
    ```bash
-   freeflow year checklist 2026
+   griffe year checklist 2026
    ```
 
    Dans notre scénario, il ne signale qu'une chose : une dépense sans justificatif. Tu joins la
-   pièce (`freeflow expense edit "frais de tenue" --receipt releve-frais.pdf`) et tout passe au
+   pièce (`griffe expense edit "frais de tenue" --receipt releve-frais.pdf`) et tout passe au
    vert. Il t'annonce aussi le résultat : −816 € (les honoraires, un logiciel, les frais
    bancaires), aucun impôt, et une perte de 816 € mise de côté pour réduire l'impôt de l'an
-   prochain. Le bilan dérivé, lui, est déjà consultable (`freeflow year balance 2026`) : tu peux
+   prochain. Le bilan dérivé, lui, est déjà consultable (`griffe year balance 2026`) : tu peux
    vérifier que la ligne « banque » est bien ton solde au 30 septembre — c'est le meilleur test
    que tu n'as rien oublié.
 
 5. **Clos.** Le résultat est figé, l'affectation enregistrée en projet (ici : rien à affecter,
-   la perte vient diminuer le report à nouveau, 2 400 − 816 = 1 584 €). FreeFlow **refuse** de
+   la perte vient diminuer le report à nouveau, 2 400 − 816 = 1 584 €). Griffe **refuse** de
    clore tant que l'exercice n'est pas écoulé (le 2 septembre, il répond que l'exercice court
    jusqu'au 30 septembre) : un exercice clos trop tôt puis approuvé ne se rouvrirait plus.
 
    ```bash
-   freeflow year close --period 2026
+   griffe year close --period 2026
    ```
 
 6. **Approuve tes comptes** — en SASU, c'est une décision que tu prends seul, par écrit, dans
-   les six mois de la clôture (avant le 30 mars 2027). FreeFlow rédige le procès-verbal. La
+   les six mois de la clôture (avant le 30 mars 2027). Griffe rédige le procès-verbal. La
    date de la décision ne peut pas être dans le futur, et une **sauvegarde du coffre est
    écrite juste avant** (`backups/pre-approve-2026-<horodatage>.db`, chiffrée comme lui) :
    l'exercice approuvé est immuable, cette sauvegarde est le seul retour en arrière. Une
    approbation tardive (au-delà des six mois) passe, mais te le dit.
 
    ```bash
-   freeflow year approve 2026 --approved-on 2026-12-15
-   freeflow year render 2026 minutes --out pv-2026.pdf          # le PV de ta décision
-   freeflow year render 2026 appropriation --out affectation-2026.pdf
-   freeflow year render 2026 synthesis --out compte-de-resultat-2026.pdf
-   freeflow year render 2026 balance-sheet --out bilan-2026.pdf
-   freeflow year render 2026 liasse --out liasse-2026.json
-   freeflow fec export 2026 --out .                              # 901265322FEC20260930.txt
-   freeflow fec check 901265322FEC20260930.txt                   # structure A. 47 A-1
+   griffe year approve 2026 --approved-on 2026-12-15
+   griffe year render 2026 minutes --out pv-2026.pdf          # le PV de ta décision
+   griffe year render 2026 appropriation --out affectation-2026.pdf
+   griffe year render 2026 synthesis --out compte-de-resultat-2026.pdf
+   griffe year render 2026 balance-sheet --out bilan-2026.pdf
+   griffe year render 2026 liasse --out liasse-2026.json
+   griffe fec export 2026 --out .                              # 901265322FEC20260930.txt
+   griffe fec check 901265322FEC20260930.txt                   # structure A. 47 A-1
    ```
 
 7. **Déclare et dépose** — trois démarches hors de l'app, que le parcours date pour toi :
@@ -675,14 +679,14 @@ Le reste du vocabulaire est expliqué au fil de l'app : `freeflow year glossary`
 
 ### Année 2 (exercice 2027) : l'activité reprend
 
-Tu factures comme d'habitude (écrans `facturation`/`devis`, ou `freeflow invoice emit`), tu
-importes le relevé et tu rapproches chaque virement reçu d'une facture (`freeflow bank reconcile
+Tu factures comme d'habitude (écrans `facturation`/`devis`, ou `griffe invoice emit`), tu
+importes le relevé et tu rapproches chaque virement reçu d'une facture (`griffe bank reconcile
 --transaction <id> --invoice <id>` — l'import du relevé et ce rapprochement-là restent en CLI ou
 en MCP, la fenêtre affiche ensuite la facture « payée ») et chaque débit d'une dépense (là, la
 fenêtre le fait). Dans le scénario : 12 000 € HT facturés, 796 € HT de charges, une facture de septembre
 pas encore payée au 30 septembre.
 
-Le parcours du 10 octobre 2027 (`freeflow year checklist 2027`) montre ce que l'année
+Le parcours du 10 octobre 2027 (`griffe year checklist 2027`) montre ce que l'année
 précédente lui a transmis (report à nouveau 1 584 €, perte reportable 816 €), signale la facture
 non encaissée (sans effet sur l'impôt : l'IS se calcule sur ce que tu as *facturé*, pas encaissé
 — mais relance ou enregistre le paiement avant de clore, sinon ton bilan « clients » sera faux),
@@ -700,8 +704,8 @@ puis chiffre :
 Il te propose la commande de clôture avec cette réserve pré-remplie ; tu décides des dividendes :
 
 ```bash
-freeflow year close --period 2027 --legal-reserve 100 --dividends 3000
-freeflow year approve 2027 --approved-on 2027-12-10
+griffe year close --period 2027 --legal-reserve 100 --dividends 3000
+griffe year approve 2027 --approved-on 2027-12-10
 ```
 
 Le bilan au 30 septembre 2027 s'ouvre tout seul sur celui de l'année 1 (banque 11 104 €,
@@ -712,7 +716,7 @@ démarches qu'en année 1 — cette fois avec un solde d'IS de 1 558 € à paye
 10 janvier 2028. Le parcours de l'exercice 2028 démarre déjà avec le report à nouveau à jour
 (8 130 €) et la réserve légale (100 €).
 
-**Ce qui reste du ressort d'un professionnel.** FreeFlow dérive un bilan simplifié des faits
+**Ce qui reste du ressort d'un professionnel.** Griffe dérive un bilan simplifié des faits
 qu'il connaît (factures, encaissements, dépenses, relevé) : il ne sait pas amortir un ordinateur,
 provisionner un litige ni rattacher une charge à cheval sur deux exercices, et il ne liquide pas
 la TVA (les comptes de TVA restent bruts au bilan). Pour une SASU de prestation intellectuelle
@@ -748,7 +752,7 @@ existe.
 
 ## Feuille de route / améliorations futures
 
-- [x] `freeflow passphrase change` : ré-chiffrement complet du coffre, sauvegarde préalable
+- [x] `griffe passphrase change` : ré-chiffrement complet du coffre, sauvegarde préalable
       obligatoire (voir « Changer de passphrase » ci-dessus). N'émet pas `PRAGMA rekey` :
       `sqlite3_rekey_v2` de SQLCipher renvoie inconditionnellement succès même quand la
       transaction interne échoue (page illisible, coffre occupé, commit raté) — inutilisable pour
@@ -777,7 +781,7 @@ existe.
       TVA » ci-dessus.
 - [x] Parité MCP sur `company`/`forecast`/`invoice render` — comblée pour `expense.*` (lot 21) et
       `fiscal.calendar`/`fiscal.years` (lots 19-20), puis achevée (lot 25) : `company.show`/
-      `company.set_profile` (+ ressource `freeflow://company`), `forecast.show`,
+      `company.set_profile` (+ ressource `griffe://company`), `forecast.show`,
       `fiscal.deadlines`, cycle de vie complet des exercices (`fiscal.year_show`/`amend_year`/
       `approve_year`/`delete_year` — approbation et suppression derrière confirmation humaine,
       comme la clôture) et rendu de documents (`invoice.render` Factur-X, `fiscal.render_year`
@@ -807,7 +811,7 @@ existe.
 - [x] Relances (lot 47) : file d'une carte, cadences et modèles, brouillons `.eml` ouverts dans
       le client mail — jamais d'envoi. Prospects (écarts 0/3/7/14) et impayés (J+0/7/15/30).
 - [x] Export comptable : FEC d'un exercice (CLI, MCP, fenêtre), dérivé des faits du domaine, et
-      contrôle de structure (`freeflow fec check`, `fec.check`, bouton « vérifier le FEC ») —
+      contrôle de structure (`griffe fec check`, `fec.check`, bouton « vérifier le FEC ») —
       18 colonnes A. 47 A-1, pas une attestation DGFiP. Voir « Dépenses & obligations fiscales »
       et les limites ci-dessus.
 - [x] Bilan d'ouverture (reprise du bilan de l'expert-comptable) chaîné dans la clôture et le FEC —
@@ -832,7 +836,7 @@ existe.
       obligations fiscales ».
 - [x] Scénario de preuve de bout en bout « clôturer seul » : une SASU préexistante, clôture au
       30 septembre, un exercice sans CA puis un exercice bénéficiaire, rejoués par la CLI avec
-      tous les chiffres attendus posés à la main (`crates/freeflow-cli/tests/closing_scenario.rs`),
+      tous les chiffres attendus posés à la main (`crates/griffe-cli/tests/closing_scenario.rs`),
       guide pas à pas pour non-comptable et lexique de la clôture dans les trois façades — voir
       « Clôturer seul son exercice, pas à pas ».
 - [x] Conformité des documents et des déclarations : vraies lignes du 2033-B, 2033-F, PV
@@ -841,7 +845,7 @@ existe.
       fiscales ».
 - [x] Immobilisations et amortissements linéaires : table `fixed_assets`, dotation `681 / 28x`
       prorata temporis, seuil de 500 € HT, charges constatées d'avance (486) extournées, case
-      254 et tableau 2033-C — `freeflow asset list|add|rm`, `fiscal.assets`, panneau dans
+      254 et tableau 2033-C — `griffe asset list|add|rm`, `fiscal.assets`, panneau dans
       l'écran dépenses.
 - [ ] Tableau de bord de rentabilité par client sur la durée (au-delà de la mission en cours).
 - [ ] Chiffrement additionnel des pièces jointes de justificatifs de dépenses sur disque (au-delà

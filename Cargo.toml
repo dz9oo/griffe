@@ -1,13 +1,13 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/freeflow-core",
-    "crates/freeflow-cli",
-    "crates/freeflow-mcp",
-    "crates/freeflow-web",
-    "crates/freeflow-invoice",
-    "crates/freeflow-docs",
-    "crates/freeflow-desktop",
+    "crates/griffe-core",
+    "crates/griffe-cli",
+    "crates/griffe-mcp",
+    "crates/griffe-web",
+    "crates/griffe-invoice",
+    "crates/griffe-docs",
+    "crates/griffe-desktop",
 ]
 
 [workspace.package]

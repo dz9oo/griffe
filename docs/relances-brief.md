@@ -6,7 +6,7 @@ Date : 2026-09-05. Dernier commit utile : `265db56` (lot 46, coque fenêtre).
 ## Contexte produit
 
 FreeFlow : app locale chiffrée (SASU/EURL à l’IS). Thèse Studio : toute règle métier dans
-`freeflow-core` ; CLI, MCP et fenêtre sont trois façades équivalentes. **Aucune connexion
+`griffe-core` ; CLI, MCP et fenêtre sont trois façades équivalentes. **Aucune connexion
 sortante.** Les mails ne partent jamais de l’app.
 
 L’utilisateur facture pour l’instant via **Tiime / Indy** (réforme facturation électronique :
@@ -37,7 +37,7 @@ cadences et modèles, ouverture d’un brouillon dans le client mail, sans que F
 
 ## Contraintes d’architecture (ne pas casser)
 
-- Pas d’envoi SMTP/IMAP/API mail depuis `freeflow-core` ni les façades.
+- Pas d’envoi SMTP/IMAP/API mail depuis `griffe-core` ni les façades.
 - Handoff mail = fichier `.eml` (RFC 5322) + IO d’adaptateur (`xdg-open`, ou commande
   configurable). Agnostique du client (aerc aujourd’hui ; Omamail / GUI possibles plus tard).
 - Commandes via `Executor` ; lectures = queries. Confirmation humaine si un agent propose

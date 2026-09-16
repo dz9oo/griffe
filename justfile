@@ -29,7 +29,20 @@ audit:
 
 # Lance l'application desktop en mode développement.
 run:
-    cargo run -p freeflow-desktop
+    cargo run -p griffe-desktop
 
 # Tout ce qui doit passer avant de considérer un lot terminé.
 check: fmt-check lint unused test audit
+
+# Landing `site/` : présence des assets, copy Griffe, aucun CDN / sigle fiscal / CLI.
+site-check:
+    test -f site/index.html
+    test -f site/lockup.svg
+    test -f site/fonts/newsreader-latin-400-italic.woff2
+    ! grep -E 'googleapis|fonts.gstatic|CA3|3514|2777' site/index.html site/app.css
+    ! grep -F 'freeflow ' site/index.html
+    grep -q 'Griffe' site/index.html
+    grep -q 'La lettre du matin' site/index.html
+    grep -q 'Le jour' site/index.html
+    grep -q 'Les affaires' site/index.html
+    grep -q 'La société' site/index.html

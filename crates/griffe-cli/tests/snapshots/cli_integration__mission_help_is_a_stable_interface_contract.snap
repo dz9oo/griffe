@@ -1,0 +1,51 @@
+---
+source: crates/griffe-cli/tests/cli_integration.rs
+expression: "String::from_utf8(output.stdout).unwrap()"
+---
+Missions : création, saisie de temps, TJM effectif, capacité
+
+Usage: griffe mission [OPTIONS] <COMMAND>
+
+Commands:
+  create      Crée une mission directement (sans passer par le gain d'une opportunité)
+  show        Affiche une mission
+  list        Liste les missions en cours et non archivées (ajoutez `--ended`/`--archived` pour élargir)
+  edit        Modifie une mission existante — seuls les champs fournis changent. Ne peut ni clore la mission (utilisez `close`) ni changer son devis d'origine
+  close       Clôt une mission à une date donnée — fait métier daté et réversible (`reopen`), distinct de `archive` (classement sans date, pour une mission déjà facturée par exemple)
+  reopen      Rouvre une mission clôturée
+  archive     Retire une mission des listes actives sans la clore ni la supprimer
+  unarchive   Réintègre une mission archivée dans les listes actives
+  rm          Supprime une mission pour de bon — refusée si une facture ou une saisie de temps la référence (archivez-la, ou videz ses saisies de temps, dans ce cas)
+  references  Ce qui empêche une mission d'être supprimée
+  schedule    Échéancier de facturation dérivé du type de mission et de ses jalons
+  log-time    Saisit du temps sur une mission
+  time        Saisies de temps d'une mission : modifier ou supprimer une entrée déjà saisie (`log-time` reste le verbe de création)
+  rate        TJM effectif d'une mission (CA ÷ jours facturables consommés)
+  capacity    Capacité vendue pour un mois donné, tous clients confondus
+  help        Print this message or the help of the given subcommand(s)
+
+Options:
+      --db <DB>
+          Chemin du coffre chiffré. Sinon, lu depuis `FREEFLOW_DB`
+      --json
+          Imprime le résultat en JSON plutôt qu'en texte lisible — le contrat que consomme un agent
+      --actor <ACTOR>
+          Qui déclenche la commande : `human` (défaut), `system`, ou `agent:<session>` [default: human]
+      --dry-run
+          N'écrit rien : montre ce qui serait fait
+      --no-color
+          Désactive la coloration (déjà minimale) de la sortie humaine
+      --passphrase-file <PASSPHRASE_FILE>
+          Lit la passphrase dans ce fichier (refusé si son mode est plus ouvert que 0600)
+      --passphrase-command <PASSPHRASE_COMMAND>
+          Exécute cette commande et prend sa sortie standard comme passphrase — ex. `pass show freeflow`, `op read op://Perso/freeflow/passphrase`
+      --passphrase-stdin
+          Lit la passphrase sur l'entrée standard (une ligne)
+      --non-interactive
+          N'invite jamais au terminal : échoue proprement si aucune source non interactive n'a fourni de passphrase, plutôt que de bloquer en attente d'une frappe
+      --remember
+          Met la clé en cache dans le trousseau OS pour les appels suivants (jamais automatique)
+      --ttl <TTL>
+          Durée de la session mise en cache (défaut 12h). Implique `--remember`
+  -h, --help
+          Print help

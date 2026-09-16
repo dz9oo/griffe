@@ -8,5 +8,6 @@
 *.kdf
 .DS_Store
 /.claude
-/crates/freeflow-desktop/gen
+/.superpowers
+/crates/griffe-desktop/gen
 /notes-perso/

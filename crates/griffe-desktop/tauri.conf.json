@@ -1,0 +1,28 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Griffe",
+  "version": "0.1.0",
+  "identifier": "dev.freeflow.desktop",
+  "build": {
+    "frontendDist": "dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Griffe",
+        "url": "griffe://localhost/",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 960,
+        "minHeight": 600
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' griffe:; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' griffe:; connect-src 'self' griffe:; script-src 'self'; form-action 'self' griffe:; base-uri 'none'; frame-ancestors 'none'; object-src 'none'"
+    }
+  },
+  "bundle": {
+    "icon": ["icons/icon.png"]
+  }
+}
