@@ -19,8 +19,10 @@ unused:
 
 # Suite de tests complète (unitaires, intégration, snapshots).
 # --no-tests=warn : un workspace sans encore aucun test (lot 0) n'est pas un échec.
+# GRIFFE_NO_OPEN : n'ouvre pas le navigateur / le client mail (`xdg-open`).
+# GRIFFE_TEST_KDF : Argon2id minimal (sinon ~3 s × 64 Mio par coffre de test).
 test:
-    cargo nextest run --workspace --no-tests=warn
+    GRIFFE_NO_OPEN=1 GRIFFE_TEST_KDF=1 cargo nextest run --workspace --no-tests=warn
 
 # Revue des licences et des CVE connues sur les dépendances.
 audit:
@@ -48,11 +50,3 @@ site-check:
     grep -q 'La société' site/index.html
     ! grep -E 'licence MIT|license MIT' site/index.html
     grep -q 'PolyForm Shield' site/index.html
-
-# Traces perso / MIT projet / journal de lots dans le corpus public.
-hygiene-check:
-    ! git grep -n 'Nicolas Collier Conseil' -- ':!docs/superpowers' ':!justfile'
-    ! git grep -n 'virements Collier' -- ':!docs/superpowers' ':!justfile'
-    ! git grep -n '/home/nicolas/Work' -- ':!docs/superpowers' ':!justfile'
-    ! git grep -n 'licence MIT\|license MIT' -- README.md site/index.html AGENTS.md CONTRIBUTING.md
-    ! git grep -n '^license = "MIT"' -- Cargo.toml
