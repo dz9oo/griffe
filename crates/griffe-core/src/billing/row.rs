@@ -451,7 +451,6 @@ pub(super) fn all_bank_transactions(conn: &Connection) -> Result<Vec<BankTransac
     rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
 }
 
-#[allow(dead_code)] // consommées par les commandes / le grand livre aux tâches suivantes
 pub(super) fn insert_write_off(conn: &Connection, w: &InvoiceWriteOff) -> Result<(), AppError> {
     conn.execute(
         "INSERT INTO invoice_write_offs
@@ -471,7 +470,6 @@ pub(super) fn insert_write_off(conn: &Connection, w: &InvoiceWriteOff) -> Result
     Ok(())
 }
 
-#[allow(dead_code)]
 fn row_to_write_off(row: &Row) -> rusqlite::Result<InvoiceWriteOff> {
     let id: String = row.get("id")?;
     let invoice_id: String = row.get("invoice_id")?;
@@ -507,7 +505,6 @@ pub(super) fn write_off_by_id(
     .map_err(AppError::from)
 }
 
-#[allow(dead_code)]
 pub(super) fn active_write_off_for(
     conn: &Connection,
     invoice_id: InvoiceId,

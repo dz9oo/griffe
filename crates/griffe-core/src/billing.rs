@@ -15,6 +15,7 @@ pub use commands::{
     DeleteBankTransaction, EmitInvoice, EmittedInvoice, ImportBankTransactions,
     ImportIssuedInvoice, IssueCreditNote, ReconcileTransaction, RecordPayment,
     SettleBankTransaction, UnreconcileTransaction, UnsettleBankTransaction, VoidPayment,
+    WriteOffReceivable,
 };
 pub use error::BillingError;
 pub use import::{
@@ -68,11 +69,35 @@ mod tests {
         }]
     }
 
+    fn bakari_lines() -> Vec<InvoiceLine> {
+        vec![InvoiceLine {
+            description: "Mission".into(),
+            quantity: 1.0,
+            unit_price: Money::from_cents(350_667),
+            vat_rate: VatRate::Standard,
+        }]
+    }
+
     fn emit(store: &mut Store, client_id: ClientId, issued_on: Date) -> EmittedInvoice {
         let cmd = EmitInvoice {
             client_id,
             mission_id: None,
             lines: sample_lines(),
+            issued_on,
+            payment_terms_days: 30,
+        };
+        let Outcome::Applied(emitted) = Executor::new(store).execute(&cmd, &human_ctx()).unwrap()
+        else {
+            panic!("expected Applied")
+        };
+        emitted
+    }
+
+    fn emit_bakari(store: &mut Store, client_id: ClientId, issued_on: Date) -> EmittedInvoice {
+        let cmd = EmitInvoice {
+            client_id,
+            mission_id: None,
+            lines: bakari_lines(),
             issued_on,
             payment_terms_days: 30,
         };
@@ -1364,5 +1389,238 @@ mod tests {
 
         let listed = row::list_write_offs(store.connection()).unwrap();
         assert_eq!(listed, vec![write_off]);
+    }
+
+    #[test]
+    fn writing_off_an_unpaid_invoice_clears_aged_balance_without_a_credit_note() {
+        let (mut store, client_id) = test_store("write-off-ok");
+        let inv = emit_bakari(&mut store, client_id, date(2026, Month::August, 15));
+        let Outcome::Applied(w) = Executor::new(&mut store)
+            .execute(
+                &WriteOffReceivable {
+                    invoice_id: inv.id,
+                    written_off_on: date(2026, Month::September, 17),
+                },
+                &human_ctx(),
+            )
+            .unwrap()
+        else {
+            panic!("expected Applied")
+        };
+        assert_eq!(w.ht, Money::from_cents(350_667));
+        assert_eq!(w.vat, Money::from_cents(70_133));
+        assert_eq!(w.ttc, Money::from_cents(420_800));
+        assert!(!w.recovers_vat);
+        assert!(
+            aged_balance(store.connection(), date(2026, Month::September, 17))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(!row::has_credit_note(store.connection(), inv.id).unwrap());
+    }
+
+    #[test]
+    fn cannot_write_off_twice_or_credit_after_write_off() {
+        let (mut store, client_id) = test_store("write-off-twice");
+        let inv = emit_bakari(&mut store, client_id, date(2026, Month::August, 15));
+        let write_off = WriteOffReceivable {
+            invoice_id: inv.id,
+            written_off_on: date(2026, Month::September, 17),
+        };
+        let Outcome::Applied(_) = Executor::new(&mut store)
+            .execute(&write_off, &human_ctx())
+            .unwrap()
+        else {
+            panic!("expected Applied")
+        };
+
+        let twice = Executor::new(&mut store)
+            .execute(&write_off, &human_ctx())
+            .unwrap_err();
+        assert!(
+            matches!(twice, AppError::Domain(ref msg) if msg.contains("déjà") && msg.contains("perte")),
+            "{twice}"
+        );
+
+        let credit = Executor::new(&mut store)
+            .execute(
+                &IssueCreditNote {
+                    invoice_id: inv.id,
+                    issued_on: date(2026, Month::September, 18),
+                },
+                &human_ctx(),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(credit, AppError::Domain(ref msg) if msg.contains("avoir") && msg.contains("perte")),
+            "{credit}"
+        );
+        assert!(!row::has_credit_note(store.connection(), inv.id).unwrap());
+    }
+
+    #[test]
+    fn cannot_write_off_a_credited_or_fully_paid_invoice() {
+        let (mut store, client_id) = test_store("write-off-guards");
+        let issued_on = date(2026, Month::August, 15);
+        let inv = emit_bakari(&mut store, client_id, issued_on);
+        let Outcome::Applied(credit) = Executor::new(&mut store)
+            .execute(
+                &IssueCreditNote {
+                    invoice_id: inv.id,
+                    issued_on: date(2026, Month::August, 20),
+                },
+                &human_ctx(),
+            )
+            .unwrap()
+        else {
+            panic!("expected Applied")
+        };
+
+        let credited = Executor::new(&mut store)
+            .execute(
+                &WriteOffReceivable {
+                    invoice_id: inv.id,
+                    written_off_on: date(2026, Month::September, 17),
+                },
+                &human_ctx(),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(credited, AppError::Domain(ref msg) if msg.contains("avoir")),
+            "{credited}"
+        );
+
+        let on_credit_note = Executor::new(&mut store)
+            .execute(
+                &WriteOffReceivable {
+                    invoice_id: credit.id,
+                    written_off_on: date(2026, Month::September, 17),
+                },
+                &human_ctx(),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(on_credit_note, AppError::Domain(ref msg) if msg.contains("avoir")),
+            "{on_credit_note}"
+        );
+
+        let paid_inv = emit_bakari(&mut store, client_id, issued_on);
+        Executor::new(&mut store)
+            .execute(
+                &RecordPayment {
+                    invoice_id: paid_inv.id,
+                    amount: Money::from_cents(420_800),
+                    received_on: date(2026, Month::September, 1),
+                    method: PaymentMethod::BankTransfer,
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+        let nothing = Executor::new(&mut store)
+            .execute(
+                &WriteOffReceivable {
+                    invoice_id: paid_inv.id,
+                    written_off_on: date(2026, Month::September, 17),
+                },
+                &human_ctx(),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(nothing, AppError::Domain(ref msg) if msg.contains("solde") || msg.contains("zéro") || msg.contains("rien")),
+            "{nothing}"
+        );
+
+        let unpaid = emit_bakari(&mut store, client_id, issued_on);
+        let too_early = Executor::new(&mut store)
+            .execute(
+                &WriteOffReceivable {
+                    invoice_id: unpaid.id,
+                    written_off_on: date(2026, Month::August, 14),
+                },
+                &human_ctx(),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(too_early, AppError::Domain(ref msg) if msg.contains("avant") && msg.contains("émission")),
+            "{too_early}"
+        );
+    }
+
+    #[test]
+    fn partial_payment_writes_off_only_the_remainder() {
+        let (mut store, client_id) = test_store("write-off-partial");
+        let inv = emit_bakari(&mut store, client_id, date(2026, Month::August, 15));
+        Executor::new(&mut store)
+            .execute(
+                &RecordPayment {
+                    invoice_id: inv.id,
+                    amount: Money::from_cents(100_000),
+                    received_on: date(2026, Month::September, 1),
+                    method: PaymentMethod::BankTransfer,
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+
+        let Outcome::Applied(w) = Executor::new(&mut store)
+            .execute(
+                &WriteOffReceivable {
+                    invoice_id: inv.id,
+                    written_off_on: date(2026, Month::September, 17),
+                },
+                &human_ctx(),
+            )
+            .unwrap()
+        else {
+            panic!("expected Applied")
+        };
+        assert_eq!(w.ttc, Money::from_cents(320_800));
+        assert_eq!(w.ht, Money::from_cents(267_333));
+        assert_eq!(w.vat, Money::from_cents(53_467));
+        assert!(!w.recovers_vat);
+        assert!(
+            aged_balance(store.connection(), date(2026, Month::September, 17))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(!row::has_credit_note(store.connection(), inv.id).unwrap());
+    }
+
+    #[test]
+    fn an_agent_only_deposits_a_pending_write_off() {
+        let (mut store, client_id) = test_store("write-off-agent");
+        let inv = emit_bakari(&mut store, client_id, date(2026, Month::August, 15));
+        let agent_ctx = ExecutionContext::new(
+            Actor::Agent {
+                session: "sess-1".into(),
+            },
+            false,
+        );
+        let outcome = Executor::new(&mut store)
+            .execute(
+                &WriteOffReceivable {
+                    invoice_id: inv.id,
+                    written_off_on: date(2026, Month::September, 17),
+                },
+                &agent_ctx,
+            )
+            .unwrap();
+        assert!(matches!(outcome, Outcome::PendingConfirmation(_)));
+        let count: i64 = store
+            .connection()
+            .query_row("SELECT count(*) FROM invoice_write_offs", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            count, 0,
+            "aucune perte ne doit être constatée tant qu'un humain n'a pas confirmé"
+        );
+        assert_eq!(
+            aged_balance(store.connection(), date(2026, Month::September, 17))
+                .unwrap()
+                .len(),
+            1
+        );
     }
 }
