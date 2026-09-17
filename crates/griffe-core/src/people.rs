@@ -23,6 +23,7 @@ use crate::domain::{
     BankTransaction, Client, ClientId, Expense, ExpenseId, ExpensePaidBy, FollowUpFact,
     FollowUpSubject, InteractionId, InteractionKind, Invoice, InvoiceId, Milestone, Mission,
     MissionId, MissionKind, Money, Opportunity, OpportunityId, Quote, QuoteId, QuoteStatus,
+    WriteOffId,
 };
 use crate::expenses::list_expenses;
 use crate::follow_up::{CardStatus, FollowUpCard, events_for, follow_up_board};
@@ -264,6 +265,7 @@ pub struct Paper {
     pub status: PaperStatus,
     pub quote_id: Option<QuoteId>,
     pub invoice_id: Option<InvoiceId>,
+    pub write_off_id: Option<WriteOffId>,
     pub number: Option<String>,
 }
 
@@ -556,7 +558,7 @@ struct Snapshot {
     quotes: Vec<Quote>,
     invoices: Vec<Invoice>,
     aged: Vec<crate::billing::AgedInvoice>,
-    written_off: HashSet<InvoiceId>,
+    written_off: HashMap<InvoiceId, WriteOffId>,
     expenses: Vec<Expense>,
     unmatched: Vec<BankTransaction>,
     bank: Vec<BankTransaction>,
@@ -585,7 +587,7 @@ impl Snapshot {
         let written_off = list_write_offs(conn)?
             .into_iter()
             .filter(|w| w.retracted_on.is_none())
-            .map(|w| w.invoice_id)
+            .map(|w| (w.invoice_id, w.id))
             .collect();
         let expenses = list_expenses(conn)?;
         let unmatched = unmatched_debits(conn)?;
@@ -1151,6 +1153,7 @@ impl Snapshot {
                 },
                 quote_id: Some(latest.id),
                 invoice_id: None,
+                write_off_id: None,
                 number: Some(format!("n°{}", latest.version)),
             });
         }
@@ -1164,9 +1167,10 @@ impl Snapshot {
                 .invoices
                 .iter()
                 .any(|c| c.credited_invoice_id == Some(invoice.id));
+            let write_off_id = self.written_off.get(&invoice.id).copied();
             let status = if credited {
                 PaperStatus::InvoiceCredited
-            } else if self.written_off.contains(&invoice.id) {
+            } else if write_off_id.is_some() {
                 PaperStatus::InvoiceWrittenOff
             } else if let Some(a) = aged {
                 PaperStatus::InvoiceOutstanding {
@@ -1183,6 +1187,7 @@ impl Snapshot {
                 status,
                 quote_id: None,
                 invoice_id: Some(invoice.id),
+                write_off_id,
                 number: Some(invoice.number.clone()),
             });
         }

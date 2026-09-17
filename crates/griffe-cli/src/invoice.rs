@@ -306,7 +306,17 @@ pub fn run_invoice(
                 written_off_on: on,
             };
             let outcome = Executor::new(store).execute(&command, ctx)?;
-            format_outcome(&outcome, json)
+            let rendered = format_outcome(&outcome, json);
+            let note = match &outcome {
+                griffe_core::app::Outcome::Applied(write_off) if write_off.recovers_vat => {
+                    match crate::papers::write_uncollectible_notice(store, ctx, write_off) {
+                        Ok(_) => Some("duplicata figé au coffre".to_string()),
+                        Err(e) => Some(format!("duplicata non figé : {e}")),
+                    }
+                }
+                _ => None,
+            };
+            crate::papers::append_capture_note(rendered, json, note)
         }
         InvoiceCommand::RetractWriteOff { id, on } => {
             let command = billing::RetractWriteOff {

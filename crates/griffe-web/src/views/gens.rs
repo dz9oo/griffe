@@ -218,6 +218,7 @@ pub fn dossier_markup(dossier: &PersonDossier, today: Date, flash: Option<&str>)
                                 li {
                                     span class="when" { (short_date(paper.on)) }
                                     span { (paper_line(paper)) }
+                                    (paper_write_off_form(paper, &href, today))
                                 }
                             }
                         }
@@ -576,6 +577,42 @@ fn import_invoice_form(dossier: &PersonDossier, today: Date) -> Markup {
                 }
             }
         }
+    }
+}
+
+fn paper_write_off_form(paper: &Paper, dossier_href: &str, today: Date) -> Markup {
+    let Some(invoice_id) = paper.invoice_id else {
+        return html! {};
+    };
+    let on = format_date(today);
+    match &paper.status {
+        PaperStatus::InvoiceOutstanding { .. } => {
+            let action = format!("{dossier_href}/facture/{invoice_id}/ne-plus-attendre");
+            html! {
+                form class="note-join" hx-post=(action) hx-target="#content" {
+                    (form::date("on", "Date", &on, None))
+                    div class="row-actions" {
+                        button class="quiet" type="submit" { "Je n'attends plus cet argent" }
+                    }
+                }
+            }
+        }
+        PaperStatus::InvoiceWrittenOff => {
+            let Some(write_off_id) = paper.write_off_id else {
+                return html! {};
+            };
+            let action = format!("{dossier_href}/facture/{invoice_id}/j-attends-encore");
+            html! {
+                form class="note-join" hx-post=(action) hx-target="#content" {
+                    input type="hidden" name="write_off_id" value=(write_off_id.to_string());
+                    (form::date("on", "Date", &on, None))
+                    div class="row-actions" {
+                        button class="quiet" type="submit" { "Finalement j'attends encore" }
+                    }
+                }
+            }
+        }
+        _ => html! {},
     }
 }
 

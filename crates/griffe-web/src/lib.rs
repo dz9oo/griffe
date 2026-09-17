@@ -91,6 +91,14 @@ fn people_routes() -> Router<AppState> {
             "/{reference}/facture",
             post(gens::import_invoice).layer(depenses::body_limit()),
         )
+        .route(
+            "/{reference}/facture/{invoice_id}/ne-plus-attendre",
+            post(gens::write_off_receivable),
+        )
+        .route(
+            "/{reference}/facture/{invoice_id}/j-attends-encore",
+            post(gens::retract_write_off),
+        )
 }
 
 pub fn router(state: AppState) -> Router {
