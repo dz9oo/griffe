@@ -48,6 +48,12 @@ pub enum BillingError {
     #[error("on ne peut pas constater la perte avant la date d'émission de la facture {0}")]
     WriteOffBeforeIssue(InvoiceId),
 
+    #[error("on ne peut plus constater une perte : cette période est déjà déposée")]
+    WriteOffPeriodAlreadyFiled,
+
+    #[error("cet exercice est déjà clos")]
+    ExerciseClosed,
+
     #[error("la facture {0} est déjà passée en perte : un avoir n'est plus le bon geste")]
     CannotCreditWrittenOff(InvoiceId),
 

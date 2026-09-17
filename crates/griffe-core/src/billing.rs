@@ -29,7 +29,8 @@ pub use queries::{
     verify_chain,
 };
 pub(crate) use row::{
-    bank_transaction_for_expense, clear_transaction_match, mark_transaction_matched_expense,
+    active_write_off_for, bank_transaction_for_expense, clear_transaction_match, list_write_offs,
+    mark_transaction_matched_expense,
 };
 pub use totals::{InvoiceTotals, VatBreakdownLine, compute_totals};
 
@@ -1621,6 +1622,96 @@ mod tests {
                 .unwrap()
                 .len(),
             1
+        );
+    }
+
+    #[test]
+    fn unfiled_write_off_is_absent_from_collected_vat() {
+        let (mut store, client_id) = test_store("write-off-unfiled-vat");
+        let inv = emit_bakari(&mut store, client_id, date(2026, Month::August, 15));
+        let Outcome::Applied(_) = Executor::new(&mut store)
+            .execute(
+                &WriteOffReceivable {
+                    invoice_id: inv.id,
+                    written_off_on: date(2026, Month::September, 17),
+                },
+                &human_ctx(),
+            )
+            .unwrap()
+        else {
+            panic!("expected Applied")
+        };
+        let vat = crate::accounting::vat_due_for_period(
+            store.connection(),
+            date(2026, Month::August, 1),
+            date(2026, Month::August, 31),
+        )
+        .unwrap();
+        assert_eq!(vat.collected, Money::ZERO);
+        assert_eq!(vat.taxable_ht, Money::ZERO);
+    }
+
+    #[test]
+    fn cannot_write_off_in_a_filed_month() {
+        let (mut store, client_id) = test_store("write-off-filed-month");
+        let inv = emit_bakari(&mut store, client_id, date(2026, Month::August, 15));
+        Executor::new(&mut store)
+            .execute(
+                &crate::society::MarkDutyFiled {
+                    kind: crate::fiscal::FiscalDeadlineKind::Ca3,
+                    period_key: "2026-09".into(),
+                    due_on: date(2026, Month::September, 15),
+                    filed_on: date(2026, Month::September, 15),
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+        let err = Executor::new(&mut store)
+            .execute(
+                &WriteOffReceivable {
+                    invoice_id: inv.id,
+                    written_off_on: date(2026, Month::September, 17),
+                },
+                &human_ctx(),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(err, AppError::Domain(ref msg) if msg.contains("déposée") && !msg.to_lowercase().contains("ca3")),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn cannot_write_off_in_a_closed_fiscal_year() {
+        let (mut store, client_id) = test_store("write-off-closed-year");
+        let inv = emit_bakari(&mut store, client_id, date(2026, Month::August, 15));
+        store
+            .connection()
+            .execute(
+                "INSERT INTO fiscal_years (
+                    id, starts_on, ends_on, revenue_ht_cents, expenses_cents,
+                    director_remuneration_cents, result_before_tax_cents,
+                    corporate_tax_cents, net_result_cents, retained_earnings_cents,
+                    created_at
+                 ) VALUES (
+                    'fy-closed-2026', '2026-01-01', '2026-12-31',
+                    0, 0, 0, 0, 0, 0, 0, '2026-01-01T00:00:00Z'
+                 )",
+                [],
+            )
+            .unwrap();
+        let err = Executor::new(&mut store)
+            .execute(
+                &WriteOffReceivable {
+                    invoice_id: inv.id,
+                    written_off_on: date(2026, Month::September, 17),
+                },
+                &human_ctx(),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(err, AppError::Domain(ref msg) if msg.contains("cet exercice est déjà clos")),
+            "{err}"
         );
     }
 }

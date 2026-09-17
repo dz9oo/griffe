@@ -1,11 +1,12 @@
 //! Correspondance ligne SQL <-> types du domaine pour les factures et les encaissements.
 
 use rusqlite::{Connection, OptionalExtension, Row, params};
+use time::Date;
 
 use crate::app::AppError;
 use crate::domain::{
     self, BankTransaction, BankTransactionId, Invoice, InvoiceId, InvoiceLine, InvoiceOrigin,
-    InvoiceStatus, InvoiceWriteOff, Money, Payment, PaymentMethod, VatRate, WriteOffId,
+    InvoiceStatus, InvoiceWriteOff, Money, Payment, PaymentMethod, VatRate, VatRegime, WriteOffId,
 };
 
 use super::import::ParsedTransaction;
@@ -451,6 +452,42 @@ pub(super) fn all_bank_transactions(conn: &Connection) -> Result<Vec<BankTransac
     rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
 }
 
+/// Période de déclaration pour `on` : mois calendaire, ou premier mois du trimestre civil
+/// si le régime est trimestriel. Sans profil / hors trimestriel : `YYYY-MM`.
+pub(super) fn period_key_for(conn: &Connection, on: Date) -> Result<String, AppError> {
+    let quarterly = crate::company::company_profile(conn)?.and_then(|p| p.vat_regime)
+        == Some(VatRegime::RealNormalQuarterly);
+    let month = if quarterly {
+        match u8::from(on.month()) {
+            1..=3 => 1,
+            4..=6 => 4,
+            7..=9 => 7,
+            _ => 10,
+        }
+    } else {
+        u8::from(on.month())
+    };
+    Ok(format!("{:04}-{month:02}", on.year()))
+}
+
+pub(super) fn ca3_filed(conn: &Connection, key: &str) -> Result<bool, AppError> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM duty_filings WHERE kind = 'ca3' AND period_key = ?1",
+        [key],
+        |row| row.get(0),
+    )?;
+    Ok(n > 0)
+}
+
+pub(super) fn exercise_closed(conn: &Connection, on: Date) -> Result<bool, AppError> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM fiscal_years WHERE starts_on <= ?1 AND ends_on >= ?1",
+        [domain::format_date(on)],
+        |row| row.get(0),
+    )?;
+    Ok(n > 0)
+}
+
 pub(super) fn insert_write_off(conn: &Connection, w: &InvoiceWriteOff) -> Result<(), AppError> {
     conn.execute(
         "INSERT INTO invoice_write_offs
@@ -505,7 +542,7 @@ pub(super) fn write_off_by_id(
     .map_err(AppError::from)
 }
 
-pub(super) fn active_write_off_for(
+pub(crate) fn active_write_off_for(
     conn: &Connection,
     invoice_id: InvoiceId,
 ) -> Result<Option<InvoiceWriteOff>, AppError> {
@@ -519,8 +556,7 @@ pub(super) fn active_write_off_for(
 }
 
 /// Toutes les pertes, y compris rétractées — le grand livre a besoin de l'historique.
-#[allow(dead_code)]
-pub(super) fn list_write_offs(conn: &Connection) -> Result<Vec<InvoiceWriteOff>, AppError> {
+pub(crate) fn list_write_offs(conn: &Connection) -> Result<Vec<InvoiceWriteOff>, AppError> {
     let mut stmt =
         conn.prepare("SELECT * FROM invoice_write_offs ORDER BY written_off_on ASC, id ASC")?;
     let rows = stmt.query_map([], row_to_write_off)?;

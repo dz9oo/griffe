@@ -288,6 +288,12 @@ impl Command for WriteOffReceivable {
         if self.written_off_on < invoice.issued_on {
             return Err(BillingError::WriteOffBeforeIssue(self.invoice_id).into());
         }
+        if row::exercise_closed(conn, self.written_off_on)? {
+            return Err(BillingError::ExerciseClosed.into());
+        }
+        if row::ca3_filed(conn, &row::period_key_for(conn, self.written_off_on)?)? {
+            return Err(BillingError::WriteOffPeriodAlreadyFiled.into());
+        }
 
         let totals = compute_totals(&invoice.lines);
         let original_ttc = totals.total_ttc;
@@ -312,7 +318,7 @@ impl Command for WriteOffReceivable {
             let ht = totals.subtotal_ht.scale(outstanding, original_ttc);
             (ht, outstanding - ht, outstanding)
         };
-        let recovers_vat = false;
+        let recovers_vat = row::ca3_filed(conn, &row::period_key_for(conn, invoice.issued_on)?)?;
 
         let write_off = InvoiceWriteOff {
             id: WriteOffId::new(),
