@@ -48,7 +48,7 @@ pub use ids::{
     QuoteId, TimeEntryId,
 };
 pub use interaction::{Interaction, InteractionKind, UnknownInteractionKind};
-pub use invoice::{Invoice, InvoiceLine, InvoiceStatus};
+pub use invoice::{Invoice, InvoiceLine, InvoiceOrigin, InvoiceStatus, UnknownInvoiceOrigin};
 pub use mission::{Milestone, MilestoneParseError, Mission, MissionKind};
 pub use money::{Money, MoneyParseError};
 pub use opening::{

@@ -6807,3 +6807,196 @@ async fn creating_an_associate_paid_expense_keeps_the_panel() {
     assert!(body.contains("La société te doit"), "{body}");
     assert!(body.contains("204"), "{body}");
 }
+
+#[tokio::test]
+async fn the_dossier_accepts_an_imported_invoice_and_lists_its_number() {
+    let db_path = test_db_path("dossier-import-invoice");
+    let mut store = Store::create(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    Executor::new(&mut store)
+        .execute(
+            &CreateClient {
+                name: "Camille Rivière".to_string(),
+                siren: None,
+                vat_number: None,
+                address: None,
+            },
+            &human_ctx(),
+        )
+        .unwrap();
+    drop(store);
+
+    let state = AppState::new(db_path);
+    state
+        .unlock(&Passphrase::from(PASSPHRASE), false)
+        .await
+        .unwrap();
+    let router = griffe_web::router(state);
+
+    let dossier = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Camille%20Rivi%C3%A8re")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        dossier.contains("Poser une facture née ailleurs"),
+        "le geste est sur le dossier d'une cliente : {dossier}"
+    );
+    assert!(
+        dossier.contains("quantité négative"),
+        "un avoir doit se poser avec une quantité négative : {dossier}"
+    );
+
+    let (content_type, form_body) = multipart_form_file(
+        &[
+            ("number", "FAC-2026-0042"),
+            ("issued_on", "2026-09-16"),
+            ("payment_terms_days", "30"),
+            ("description", "Mission Camille"),
+            ("quantity", "1"),
+            ("unit_price", "5000,00"),
+            ("vat_rate", "standard"),
+        ],
+        "file",
+        Some(("FAC-2026-0042.pdf", b"%PDF-1.7 camille")),
+    );
+    let posted = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/affaires/Camille%20Rivi%C3%A8re/facture")
+                .header("content-type", content_type)
+                .body(Body::from(form_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(posted.status(), StatusCode::OK);
+    let posted_body = body_text(posted).await;
+    assert!(
+        posted_body.contains("FAC-2026-0042"),
+        "le numéro de Tiime est collé au dossier : {posted_body}"
+    );
+    assert!(
+        posted_body.contains("original figé") || posted_body.contains("original non figé"),
+        "le flash dit si le PDF est au coffre : {posted_body}"
+    );
+
+    let facturation = body_text(
+        router
+            .oneshot(
+                Request::builder()
+                    .uri("/view/facturation")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        facturation.contains("FAC-2026-0042"),
+        "la liste lit le même numéro : {facturation}"
+    );
+}
+
+#[tokio::test]
+async fn the_window_has_no_emit_post_route() {
+    let db_path = test_db_path("no-emit-post");
+    let state = unlocked_state_with_client(&db_path).await;
+    let router = griffe_web::router(state);
+
+    let emit = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/facturation/emit")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        emit.status() == StatusCode::NOT_FOUND || emit.status() == StatusCode::METHOD_NOT_ALLOWED,
+        "pas de POST d'émission : {}",
+        emit.status()
+    );
+
+    let dossier = body_text(
+        router
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Kappa%20Software")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    let lower = dossier.to_lowercase();
+    assert!(
+        !lower.contains("émettre une facture") && !lower.contains("emettre une facture"),
+        "le dossier n'offre pas d'émission : {dossier}"
+    );
+}
+
+#[tokio::test]
+async fn facturation_empty_state_does_not_send_to_the_console() {
+    let state = unlocked_state(&test_db_path("facturation-empty")).await;
+    let router = griffe_web::router(state);
+
+    let body = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/view/facturation")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        !body.to_lowercase().contains("console"),
+        "l'empty-state n'envoie pas à la console : {body}"
+    );
+    assert!(
+        body.contains("aucune facture dans le coffre")
+            && (body.contains("dossier")
+                || body.contains("Les affaires")
+                || body.contains("plateforme")),
+        "l'empty-state pointe le dossier : {body}"
+    );
+
+    let aide = body_text(
+        router
+            .oneshot(
+                Request::builder()
+                    .uri("/aide/devis")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        !aide.contains("l'ancien écran Facturation ou la console"),
+        "la recette devis ne renvoie plus à l'émission : {aide}"
+    );
+}

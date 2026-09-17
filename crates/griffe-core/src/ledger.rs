@@ -1861,7 +1861,8 @@ pub fn ledger_ending_in(
 mod tests {
     use super::*;
     use crate::domain::{
-        Address, BankTransactionId, FiscalYearId, InvoiceLine, InvoiceStatus, Siren, VatRate,
+        Address, BankTransactionId, FiscalYearId, InvoiceLine, InvoiceOrigin, InvoiceStatus, Siren,
+        VatRate,
     };
     use proptest::prelude::*;
     use time::Month as TimeMonth;
@@ -1925,6 +1926,7 @@ mod tests {
                 vat_rate: VatRate::Standard,
             }],
             status: InvoiceStatus::Issued,
+            origin: InvoiceOrigin::Issued,
             issued_on,
             due_on: issued_on,
             previous_hash: None,
@@ -2524,14 +2526,9 @@ mod tests {
         use crate::company::SetCompanyProfile;
         use crate::fiscal_year::CloseFiscalYear;
         use crate::opening_balance::RecordOpeningBalance;
-        use crate::store::{Passphrase, Store};
+        use crate::store::testing::test_store;
 
-        let dir = std::env::temp_dir().join(format!(
-            "freeflow-ledger-chain-{}-{}",
-            std::process::id(),
-            uuid::Uuid::now_v7()
-        ));
-        let mut store = Store::create(&dir.join("vault.db"), &Passphrase::from("s3cret")).unwrap();
+        let mut store = test_store("ledger-chain");
         let human = ExecutionContext::new(Actor::Human, false);
         let p = profile(None, None);
         Executor::new(&mut store)

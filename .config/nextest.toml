@@ -1,0 +1,40 @@
+# Harness de test Griffe. Les variables GRIFFE_TEST_KDF / GRIFFE_NO_OPEN
+# viennent du devShell Nix et de `just test` — nextest ne les pose pas lui-même.
+
+[profile.default]
+slow-timeout = { period = "60s", terminate-after = 3 }
+# Un xdg-open / client mail laissé par un test est un leak : on le refuse
+# plutôt que de le laisser gonfler la RAM de la machine.
+leak-timeout = "2s"
+
+[profile.ci]
+slow-timeout = { period = "60s", terminate-after = 2 }
+leak-timeout = "2s"
+
+# Typst (binaire externe) et concurrence inter-process : plus longs, et le
+# second prend plusieurs cœurs à lui seul.
+[[profile.default.overrides]]
+filter = 'package(griffe-docs) or package(griffe-invoice)'
+slow-timeout = { period = "120s", terminate-after = 2 }
+
+[[profile.default.overrides]]
+filter = 'test(numbering_has_no_gap_or_duplicate_across_threads_and_processes)'
+slow-timeout = { period = "120s", terminate-after = 2 }
+threads-required = 4
+
+[[profile.default.overrides]]
+filter = 'test(passphrase_change_without_test_kdf_uses_production_argon2)'
+slow-timeout = { period = "30s", terminate-after = 2 }
+
+[[profile.ci.overrides]]
+filter = 'package(griffe-docs) or package(griffe-invoice)'
+slow-timeout = { period = "120s", terminate-after = 2 }
+
+[[profile.ci.overrides]]
+filter = 'test(numbering_has_no_gap_or_duplicate_across_threads_and_processes)'
+slow-timeout = { period = "120s", terminate-after = 2 }
+threads-required = 4
+
+[[profile.ci.overrides]]
+filter = 'test(passphrase_change_without_test_kdf_uses_production_argon2)'
+slow-timeout = { period = "30s", terminate-after = 2 }

@@ -1,6 +1,7 @@
-//! Parcours réels via `assert_cmd` (le binaire compilé, pas la bibliothèque), snapshots
-//! `insta` du contrat `--help` et des sorties `--json`, et vérification qu'un code de sortie
-//! distinct existe par famille d'erreur.
+//! Parcours via [`common::capturing`] (in-process) sauf le contrat binaire `--help`
+//! ([`common::freeflow`]) et les cas qui isolent l'environnement ou le cwd. Snapshots
+//! `insta` du contrat `--help` et des sorties `--json`, et un code de sortie distinct
+//! par famille d'erreur.
 //!
 //! Les aides (coffre temporaire, `provision`, lecture JSON) vivent dans `common/mod.rs`,
 //! partagées avec le scénario de preuve de bout en bout (`closing_scenario.rs`, lot 35).
@@ -10,15 +11,52 @@ use std::path::{Path, PathBuf};
 use predicates::prelude::*;
 
 mod common;
-use common::{create_client, freeflow, json_result, passphrase_file, provision, temp_db};
+use common::{
+    capturing, create_client, freeflow, json_result, passphrase_file, provision, temp_db, unlocked,
+};
+
+fn papers_of_kind(db: &Path, kind: &str) -> serde_json::Value {
+    json_result(
+        &unlocked(db)
+            .args(["--json", "papers", "list", "--kind", kind])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    )
+}
+
+#[test]
+fn a_plain_command_does_not_write_an_automatic_backup_under_test_kdf() {
+    // Production code that would make this fail: `dispatch` calling
+    // `auto_backup_if_stale` even when GRIFFE_TEST_KDF is set.
+    if std::env::var_os("GRIFFE_TEST_KDF").is_none() {
+        return;
+    }
+    let db = temp_db("no-auto-backup");
+    provision(&db);
+    unlocked(&db).args(["client", "list"]).assert().success();
+    let backups = db.with_file_name("backups");
+    let wrote_auto = std::fs::read_dir(&backups)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .any(|e| e.file_name().to_string_lossy().starts_with("backup-"))
+        })
+        .unwrap_or(false);
+    assert!(
+        !wrote_auto,
+        "GRIFFE_TEST_KDF ne doit pas déclencher la sauvegarde automatique"
+    );
+}
 
 #[test]
 fn golden_path_from_prospection_to_paid_invoice() {
     let db = temp_db("golden-path");
     provision(&db);
 
-    let client_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let client_out = unlocked(&db)
         .args(["--json", "client", "create", "--name", "Kappa Software"])
         .assert()
         .success()
@@ -30,8 +68,7 @@ fn golden_path_from_prospection_to_paid_invoice() {
         .unwrap()
         .to_string();
 
-    let opp_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let opp_out = unlocked(&db)
         .args([
             "--json",
             "prospect",
@@ -57,8 +94,7 @@ fn golden_path_from_prospection_to_paid_invoice() {
         .unwrap()
         .to_string();
 
-    let win_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let win_out = unlocked(&db)
         .args([
             "--json",
             "prospect",
@@ -77,8 +113,7 @@ fn golden_path_from_prospection_to_paid_invoice() {
         .unwrap()
         .to_string();
 
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "mission",
             "log-time",
@@ -97,8 +132,7 @@ fn golden_path_from_prospection_to_paid_invoice() {
         r#"[{"description":"Prestation","quantity":9.5,"unit_price":65000,"vat_rate":"Standard"}]"#;
 
     // Un agent ne peut pas émettre directement : l'action reste en attente.
-    let pending_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let pending_out = unlocked(&db)
         .args([
             "--json",
             "--actor",
@@ -124,8 +158,7 @@ fn golden_path_from_prospection_to_paid_invoice() {
     let pending_id = pending["pending_action_id"].as_str().unwrap().to_string();
 
     // Confirmation humaine : l'action en attente s'applique désormais.
-    let confirm_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let confirm_out = unlocked(&db)
         .args(["--json", "confirm", "--id", &pending_id])
         .assert()
         .success()
@@ -137,19 +170,16 @@ fn golden_path_from_prospection_to_paid_invoice() {
     let invoice_id = confirmed["result"]["id"].as_str().unwrap().to_string();
     assert_eq!(confirmed["result"]["number"], "FA-2026-0001");
 
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["invoice", "verify-chain"])
         .assert()
         .success();
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["audit", "verify-chain"])
         .assert()
         .success();
 
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "payment",
             "record",
@@ -165,8 +195,7 @@ fn golden_path_from_prospection_to_paid_invoice() {
         .assert()
         .success();
 
-    let aged_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let aged_out = unlocked(&db)
         .args(["--json", "invoice", "aged-balance", "--today", "2026-10-06"])
         .assert()
         .success()
@@ -184,8 +213,7 @@ fn golden_path_from_prospection_to_paid_invoice() {
 fn emitting_an_invoice_with_no_lines_fails_with_the_domain_exit_code() {
     let db = temp_db("empty-invoice");
     provision(&db);
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "invoice",
             "emit",
@@ -206,8 +234,7 @@ fn emitting_an_invoice_with_no_lines_fails_with_the_domain_exit_code() {
 fn a_missing_invoice_fails_with_the_domain_exit_code() {
     let db = temp_db("missing-invoice");
     provision(&db);
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "invoice",
             "credit-note",
@@ -226,12 +253,8 @@ fn a_missing_invoice_fails_with_the_domain_exit_code() {
 fn a_locked_vault_fails_with_its_own_exit_code() {
     let db = temp_db("locked-vault");
     provision(&db);
-    freeflow()
-        .env("FREEFLOW_DB", &db)
-        .arg("lock")
-        .assert()
-        .success();
-    freeflow()
+    unlocked(&db).arg("lock").assert().success();
+    capturing()
         .env("FREEFLOW_DB", &db)
         // Positionnée sur le sous-processus, pas sur ce process de test : prouve que la
         // variable n'est plus lue nulle part, pas seulement qu'elle est absente de l'environnement.
@@ -246,14 +269,10 @@ fn a_locked_vault_fails_with_its_own_exit_code() {
 fn freeflow_passphrase_env_var_is_never_read_even_when_set() {
     let db = temp_db("passphrase-env-ignored");
     provision(&db);
-    freeflow()
-        .env("FREEFLOW_DB", &db)
-        .arg("lock")
-        .assert()
-        .success();
+    unlocked(&db).arg("lock").assert().success();
     // Coffre verrouillé, FREEFLOW_PASSPHRASE positionnée mais non-interactif : doit échouer
     // avec le code « verrouillé », jamais réussir en lisant l'ancienne variable d'environnement.
-    freeflow()
+    capturing()
         .env("FREEFLOW_DB", &db)
         .env("FREEFLOW_PASSPHRASE", "s3cret")
         .args(["--non-interactive", "client", "list", "--json"])
@@ -266,8 +285,7 @@ fn freeflow_passphrase_env_var_is_never_read_even_when_set() {
 fn invalid_lines_json_fails_with_its_own_exit_code() {
     let db = temp_db("invalid-lines-json");
     provision(&db);
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "invoice",
             "emit",
@@ -285,7 +303,7 @@ fn invalid_lines_json_fails_with_its_own_exit_code() {
 
 #[test]
 fn a_bad_argument_fails_with_clap_s_own_usage_exit_code() {
-    freeflow()
+    capturing()
         .args(["prospect", "create", "--unknown-flag"])
         .assert()
         .failure()
@@ -297,7 +315,7 @@ fn init_refuses_an_existing_vault() {
     let db = temp_db("init-twice");
     provision(&db);
     let pass_file = passphrase_file(&db, "another");
-    freeflow()
+    capturing()
         .env("FREEFLOW_DB", &db)
         .args(["--passphrase-file"])
         .arg(&pass_file)
@@ -311,7 +329,7 @@ fn init_refuses_an_existing_vault() {
 fn unlock_never_creates_a_vault() {
     let db = temp_db("unlock-no-create");
     let pass_file = passphrase_file(&db, "s3cret");
-    freeflow()
+    capturing()
         .env("FREEFLOW_DB", &db)
         .args(["--passphrase-file"])
         .arg(&pass_file)
@@ -326,12 +344,8 @@ fn unlock_never_creates_a_vault() {
 fn a_command_with_no_passphrase_source_and_non_interactive_exits_2() {
     let db = temp_db("no-source-non-interactive");
     provision(&db);
-    freeflow()
-        .env("FREEFLOW_DB", &db)
-        .arg("lock")
-        .assert()
-        .success();
-    freeflow()
+    unlocked(&db).arg("lock").assert().success();
+    capturing()
         .env("FREEFLOW_DB", &db)
         .args(["--non-interactive", "client", "list", "--json"])
         .assert()
@@ -348,7 +362,7 @@ fn a_passphrase_file_readable_by_others_is_refused() {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&pass_file, std::fs::Permissions::from_mode(0o644)).unwrap();
     }
-    let assertion = freeflow()
+    let assertion = capturing()
         .env("FREEFLOW_DB", &db)
         .args(["--passphrase-file"])
         .arg(&pass_file)
@@ -365,7 +379,7 @@ fn a_passphrase_file_readable_by_others_is_refused() {
 #[test]
 fn vault_status_reports_absence_then_presence() {
     let db = temp_db("vault-status");
-    let absent = freeflow()
+    let absent = capturing()
         .env("FREEFLOW_DB", &db)
         .args(["vault", "status", "--json"])
         .output()
@@ -374,8 +388,7 @@ fn vault_status_reports_absence_then_presence() {
     assert_eq!(absent_value["exists"], false);
 
     provision(&db);
-    let present = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let present = unlocked(&db)
         .args(["vault", "status", "--json"])
         .output()
         .unwrap();
@@ -384,7 +397,11 @@ fn vault_status_reports_absence_then_presence() {
     // Un coffre neuf est v3 depuis le lot 24 : clé maître enveloppée, changement de passphrase
     // sans re-chiffrement.
     assert_eq!(present_value["sidecar_version"], 3);
-    assert!(present_value["session_expires_at"].is_string());
+    // Session OS : présente avec un trousseau, `null` sur un runner CI (pas de Secret Service).
+    assert!(
+        present_value["session_expires_at"].is_string()
+            || present_value["session_expires_at"].is_null()
+    );
 }
 
 /// Écrit une NOUVELLE passphrase dans un fichier temporaire distinct de celui de `provision()`,
@@ -408,7 +425,7 @@ fn passphrase_change_rotates_the_passphrase_end_to_end() {
     let old_file = passphrase_file(&db, "s3cret");
     let new_file = new_passphrase_file(&db, "new-s3cret");
 
-    freeflow()
+    capturing()
         .env("FREEFLOW_DB", &db)
         .args(["--passphrase-file"])
         .arg(&old_file)
@@ -420,7 +437,7 @@ fn passphrase_change_rotates_the_passphrase_end_to_end() {
         .success();
 
     // L'ancienne passphrase n'ouvre plus le coffre.
-    freeflow()
+    capturing()
         .env("FREEFLOW_DB", &db)
         .args(["--passphrase-file"])
         .arg(&old_file)
@@ -430,7 +447,7 @@ fn passphrase_change_rotates_the_passphrase_end_to_end() {
         .code(3); // StoreError::WrongPassphrase, via CliError::Store
 
     // La nouvelle passphrase, si.
-    freeflow()
+    capturing()
         .env("FREEFLOW_DB", &db)
         .args(["--passphrase-file"])
         .arg(&new_file)
@@ -442,12 +459,14 @@ fn passphrase_change_rotates_the_passphrase_end_to_end() {
 #[test]
 fn passphrase_change_refuses_a_cached_session_as_proof_of_the_old_passphrase() {
     let db = temp_db("passphrase-change-needs-old");
-    provision(&db); // laisse une session active dans le trousseau OS
+    provision(&db);
     let new_file = new_passphrase_file(&db, "new-s3cret");
 
     // Aucune source pour l'ANCIENNE passphrase, et non-interactif : la session en cache ne
     // peut pas en tenir lieu, même si elle prouve la possession de la clé.
-    freeflow()
+    // Pas `unlocked()` : ce helper passe `--passphrase-file` (l'ancienne), ce qui ferait
+    // réussir le changement — exactement ce que ce test refuse.
+    capturing()
         .env("FREEFLOW_DB", &db)
         .args([
             "--non-interactive",
@@ -462,7 +481,7 @@ fn passphrase_change_refuses_a_cached_session_as_proof_of_the_old_passphrase() {
 
     // Rien n'a changé : la passphrase d'origine ouvre toujours le coffre.
     let old_file = passphrase_file(&db, "s3cret");
-    freeflow()
+    capturing()
         .env("FREEFLOW_DB", &db)
         .args(["--passphrase-file"])
         .arg(&old_file)
@@ -478,7 +497,7 @@ fn passphrase_change_dry_run_writes_nothing() {
     let old_file = passphrase_file(&db, "s3cret");
     let new_file = new_passphrase_file(&db, "new-s3cret");
 
-    let output = freeflow()
+    let output = capturing()
         .env("FREEFLOW_DB", &db)
         .args(["--json", "--passphrase-file"])
         .arg(&old_file)
@@ -494,7 +513,7 @@ fn passphrase_change_dry_run_writes_nothing() {
     assert_eq!(value["bytes_to_reencrypt"], 0);
 
     // L'ancienne passphrase ouvre toujours le coffre.
-    freeflow()
+    capturing()
         .env("FREEFLOW_DB", &db)
         .args(["--passphrase-file"])
         .arg(&old_file)
@@ -533,7 +552,7 @@ fn passphrase_change_writes_a_backup_and_names_it_in_its_json_output() {
     let old_file = passphrase_file(&db, "s3cret");
     let new_file = new_passphrase_file(&db, "new-s3cret");
 
-    let output = freeflow()
+    let output = capturing()
         .env("FREEFLOW_DB", &db)
         .args(["--json", "--passphrase-file"])
         .arg(&old_file)
@@ -550,7 +569,10 @@ fn passphrase_change_writes_a_backup_and_names_it_in_its_json_output() {
         value["reencrypted"], false,
         "un coffre v3 change de passphrase sans ré-chiffrer la base"
     );
-    assert_eq!(value["argon2"]["m_cost"], 65536);
+    assert_eq!(
+        value["argon2"]["m_cost"], 32,
+        "le harness pose GRIFFE_TEST_KDF ; le coût de prod est l'autre test"
+    );
     let backup_path = value["backup"].as_str().unwrap();
     assert!(
         Path::new(backup_path).exists(),
@@ -560,13 +582,38 @@ fn passphrase_change_writes_a_backup_and_names_it_in_its_json_output() {
 }
 
 #[test]
+fn passphrase_change_without_test_kdf_uses_production_argon2() {
+    // Production code that would make this fail: `rewrap` ignoring
+    // `for_new_vault()` when GRIFFE_TEST_KDF is absent.
+    let db = temp_db("passphrase-change-prod-kdf");
+    provision(&db);
+    let old_file = passphrase_file(&db, "s3cret");
+    let new_file = new_passphrase_file(&db, "new-s3cret");
+
+    let output = capturing()
+        .env("FREEFLOW_DB", &db)
+        .env_remove("GRIFFE_TEST_KDF")
+        .args(["--json", "--passphrase-file"])
+        .arg(&old_file)
+        .arg("passphrase")
+        .arg("change")
+        .arg("--new-passphrase-file")
+        .arg(&new_file)
+        .output()
+        .unwrap();
+    let value = json_result(&output.stdout);
+    assert_eq!(value["changed"], true);
+    assert_eq!(value["argon2"]["m_cost"], 65536);
+}
+
+#[test]
 fn the_audit_chain_stays_intact_across_a_passphrase_change() {
     let db = temp_db("passphrase-change-audit");
     provision(&db);
     let old_file = passphrase_file(&db, "s3cret");
     let new_file = new_passphrase_file(&db, "new-s3cret");
 
-    freeflow()
+    capturing()
         .env("FREEFLOW_DB", &db)
         .args(["--passphrase-file"])
         .arg(&old_file)
@@ -577,7 +624,7 @@ fn the_audit_chain_stays_intact_across_a_passphrase_change() {
         .assert()
         .success();
 
-    freeflow()
+    capturing()
         .env("FREEFLOW_DB", &db)
         .args(["--passphrase-file"])
         .arg(&new_file)
@@ -597,7 +644,7 @@ fn a_new_passphrase_file_readable_by_others_is_refused() {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&new_file, std::fs::Permissions::from_mode(0o644)).unwrap();
     }
-    let assertion = freeflow()
+    let assertion = capturing()
         .env("FREEFLOW_DB", &db)
         .args(["--passphrase-file"])
         .arg(&old_file)
@@ -618,13 +665,11 @@ fn a_new_passphrase_file_readable_by_others_is_refused() {
 fn follow_up_queue_lists_a_due_opportunity_and_drafts_without_sending() {
     let db = temp_db("follow-up-queue");
     provision(&db);
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["client", "create", "--name", "Acme"])
         .assert()
         .success();
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "client",
             "contact",
@@ -638,8 +683,7 @@ fn follow_up_queue_lists_a_due_opportunity_and_drafts_without_sending() {
         ])
         .assert()
         .success();
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "prospect",
             "create",
@@ -656,8 +700,7 @@ fn follow_up_queue_lists_a_due_opportunity_and_drafts_without_sending() {
         ])
         .assert()
         .success();
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "follow-up",
             "from",
@@ -668,8 +711,7 @@ fn follow_up_queue_lists_a_due_opportunity_and_drafts_without_sending() {
         ])
         .assert()
         .success();
-    let queue = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let queue = unlocked(&db)
         .args(["--json", "follow-up", "queue", "--today", "2026-09-05"])
         .assert()
         .success()
@@ -679,8 +721,7 @@ fn follow_up_queue_lists_a_due_opportunity_and_drafts_without_sending() {
     let cards = json_result(&queue);
     assert_eq!(cards.as_array().unwrap().len(), 1);
     assert_eq!(cards[0]["title"], "Refonte");
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "follow-up",
             "draft",
@@ -691,13 +732,11 @@ fn follow_up_queue_lists_a_due_opportunity_and_drafts_without_sending() {
         ])
         .assert()
         .success();
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["follow-up", "sent", "Refonte", "--today", "2026-09-05"])
         .assert()
         .success();
-    let show = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let show = unlocked(&db)
         .args([
             "--json",
             "follow-up",
@@ -719,8 +758,7 @@ fn follow_up_queue_lists_a_due_opportunity_and_drafts_without_sending() {
 fn day_mast_json_on_an_empty_vault_has_zero_bank_and_typed_signals() {
     let db = temp_db("day-mast");
     provision(&db);
-    let output = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let output = unlocked(&db)
         .args(["--json", "day", "mast", "--today", "2026-09-05"])
         .assert()
         .success()
@@ -760,8 +798,7 @@ fn society_help_is_a_stable_interface_contract() {
 fn society_duty_is_acompte_json_on_an_empty_vault_has_the_path() {
     let db = temp_db("society-duty");
     provision(&db);
-    let output = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let output = unlocked(&db)
         .args([
             "--json",
             "society",
@@ -792,8 +829,7 @@ fn society_duty_is_acompte_json_on_an_empty_vault_has_the_path() {
 fn society_vat_credit_seeds_the_next_ca3() {
     let db = temp_db("society-vat-credit");
     provision(&db);
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "company",
             "set-profile",
@@ -818,8 +854,7 @@ fn society_vat_credit_seeds_the_next_ca3() {
         ])
         .assert()
         .success();
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "society",
             "vat-credit",
@@ -831,8 +866,7 @@ fn society_vat_credit_seeds_the_next_ca3() {
         ])
         .assert()
         .success();
-    let show = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let show = unlocked(&db)
         .args(["--json", "society", "vat-credit", "show"])
         .assert()
         .success()
@@ -842,8 +876,7 @@ fn society_vat_credit_seeds_the_next_ca3() {
     let value: serde_json::Value = serde_json::from_slice(&show).unwrap();
     assert_eq!(value["after_period"], "2026-08");
     assert_eq!(value["credit"], 32400);
-    let duty = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let duty = unlocked(&db)
         .args([
             "--json",
             "society",
@@ -867,8 +900,7 @@ fn society_vat_credit_seeds_the_next_ca3() {
     assert_eq!(case25["amount"], 32400);
     let case27 = boxes.iter().find(|b| b["case"] == "27").expect("case 27");
     assert_eq!(case27["amount"], 32400);
-    let again = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let again = unlocked(&db)
         .args([
             "society",
             "vat-credit",
@@ -892,8 +924,7 @@ fn society_vat_credit_seeds_the_next_ca3() {
 fn society_vat_refund_on_december_clears_january() {
     let db = temp_db("society-vat-refund");
     provision(&db);
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "company",
             "set-profile",
@@ -918,8 +949,7 @@ fn society_vat_refund_on_december_clears_january() {
         ])
         .assert()
         .success();
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "society",
             "vat-credit",
@@ -932,8 +962,7 @@ fn society_vat_refund_on_december_clears_january() {
         .assert()
         .success();
 
-    let too_soon = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let too_soon = unlocked(&db)
         .args([
             "society",
             "vat-refund",
@@ -950,8 +979,7 @@ fn society_vat_refund_on_december_clears_january() {
     let stderr = String::from_utf8_lossy(&too_soon.stderr);
     assert!(stderr.contains("760"), "{stderr}");
 
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "society",
             "vat-refund",
@@ -963,8 +991,7 @@ fn society_vat_refund_on_december_clears_january() {
         .assert()
         .success();
 
-    let december = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let december = unlocked(&db)
         .args([
             "--json",
             "society",
@@ -989,8 +1016,7 @@ fn society_vat_refund_on_december_clears_january() {
         "pas de case 27 : {boxes:?}"
     );
 
-    let january = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let january = unlocked(&db)
         .args([
             "--json",
             "society",
@@ -1018,8 +1044,7 @@ fn society_vat_refund_on_december_clears_january() {
 fn society_vat_reversal_drops_september_credit_to_319() {
     let db = temp_db("society-vat-reversal");
     provision(&db);
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "company",
             "set-profile",
@@ -1044,8 +1069,7 @@ fn society_vat_reversal_drops_september_credit_to_319() {
         ])
         .assert()
         .success();
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "society",
             "vat-credit",
@@ -1057,8 +1081,7 @@ fn society_vat_reversal_drops_september_credit_to_319() {
         ])
         .assert()
         .success();
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "society",
             "vat-reversal",
@@ -1072,8 +1095,7 @@ fn society_vat_reversal_drops_september_credit_to_319() {
         .assert()
         .success();
 
-    let duty = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let duty = unlocked(&db)
         .args([
             "--json",
             "society",
@@ -1100,8 +1122,7 @@ fn society_vat_reversal_drops_september_credit_to_319() {
     let case27 = boxes.iter().find(|b| b["case"] == "27").expect("case 27");
     assert_eq!(case27["amount"], 31900);
 
-    let shown = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let shown = unlocked(&db)
         .args(["--json", "society", "show", "--today", "2026-10-08"])
         .assert()
         .success()
@@ -1112,8 +1133,7 @@ fn society_vat_reversal_drops_september_credit_to_319() {
     assert_eq!(shown["vat_position"]["kind"], "credit");
     assert_eq!(shown["vat_position"]["amount"], 31900);
 
-    let october = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let october = unlocked(&db)
         .args([
             "--json",
             "society",
@@ -1146,13 +1166,11 @@ fn society_vat_reversal_drops_september_credit_to_319() {
 fn society_filed_marks_the_current_is_acompte() {
     let db = temp_db("society-filed");
     provision(&db);
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["society", "filed", "is_acompte", "--today", "2026-09-05"])
         .assert()
         .success();
-    let output = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let output = unlocked(&db)
         .args([
             "--json",
             "society",
@@ -1177,8 +1195,7 @@ fn society_filed_marks_the_current_is_acompte() {
 fn society_pay_on_an_empty_vault_closes_the_dividend() {
     let db = temp_db("society-pay");
     provision(&db);
-    let output = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let output = unlocked(&db)
         .args(["--json", "society", "pay", "--today", "2026-09-05"])
         .assert()
         .success()
@@ -1195,8 +1212,7 @@ fn society_pay_on_an_empty_vault_closes_the_dividend() {
 fn people_list_json_on_an_empty_vault_has_three_empty_chapters() {
     let db = temp_db("people-list");
     provision(&db);
-    let output = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let output = unlocked(&db)
         .args(["--json", "people", "list", "--today", "2026-09-05"])
         .assert()
         .success()
@@ -1219,6 +1235,42 @@ fn top_level_help_is_a_stable_interface_contract() {
 }
 
 #[test]
+fn invoice_import_keeps_the_tiime_number_and_archives_the_file() {
+    let db = temp_db("invoice-import");
+    provision(&db);
+    let client_id = create_client(&db, "Camille");
+    let pdf = db.parent().unwrap().join("FAC-2026-0042.pdf");
+    std::fs::write(&pdf, b"%PDF-1.7 camille").unwrap();
+    let lines = r#"[{"description":"Mission Camille","quantity":1,"unit_price":500000,"vat_rate":"Standard"}]"#;
+    let out = json_result(
+        &unlocked(&db)
+            .args([
+                "--json",
+                "invoice",
+                "import",
+                "--file",
+                pdf.to_str().unwrap(),
+                "--client",
+                &client_id,
+                "--number",
+                "FAC-2026-0042",
+                "--lines",
+                lines,
+                "--issued-on",
+                "2026-09-16",
+            ])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert_eq!(out["result"]["number"], "FAC-2026-0042");
+    let papers = papers_of_kind(&db, "issued_invoice");
+    assert_eq!(papers[0]["origin"], "imported");
+}
+
+#[test]
 fn invoice_help_is_a_stable_interface_contract() {
     let output = freeflow().args(["invoice", "--help"]).output().unwrap();
     insta::assert_snapshot!(String::from_utf8(output.stdout).unwrap());
@@ -1237,8 +1289,7 @@ fn passphrase_change_help_is_a_stable_interface_contract() {
 fn client_create_json_output_matches_the_documented_shape() {
     let db = temp_db("json-shape");
     provision(&db);
-    let output = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let output = unlocked(&db)
         .args(["--json", "client", "create", "--name", "Kappa Software"])
         .output()
         .unwrap();
@@ -1250,8 +1301,7 @@ fn client_create_json_output_matches_the_documented_shape() {
 fn empty_pipeline_json_output_matches_the_documented_shape() {
     let db = temp_db("pipeline-shape");
     provision(&db);
-    let output = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let output = unlocked(&db)
         .args(["--json", "prospect", "pipeline"])
         .output()
         .unwrap();
@@ -1294,14 +1344,12 @@ fn client_edit_changes_only_the_fields_provided_and_bumps_the_revision() {
     provision(&db);
     let id = create_client(&db, "Kappa Software");
 
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["client", "edit", &id, "--siren", "552100554"])
         .assert()
         .success();
 
-    let show_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let show_out = unlocked(&db)
         .args(["--json", "client", "show", &id])
         .assert()
         .success()
@@ -1327,8 +1375,7 @@ fn client_edit_clear_flags_erase_optional_fields_that_or_current_could_never_era
     provision(&db);
     let id = create_client(&db, "Kappa Software");
 
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "client",
             "edit",
@@ -1349,8 +1396,7 @@ fn client_edit_clear_flags_erase_optional_fields_that_or_current_could_never_era
         .assert()
         .success();
 
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "client",
             "edit",
@@ -1363,8 +1409,7 @@ fn client_edit_clear_flags_erase_optional_fields_that_or_current_could_never_era
         .failure()
         .code(2);
 
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "client",
             "edit",
@@ -1376,8 +1421,7 @@ fn client_edit_clear_flags_erase_optional_fields_that_or_current_could_never_era
         .assert()
         .success();
 
-    let show_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let show_out = unlocked(&db)
         .args(["--json", "client", "show", &id])
         .assert()
         .success()
@@ -1406,19 +1450,16 @@ fn editing_twice_in_a_row_reads_the_fresh_revision_each_time() {
     provision(&db);
     let id = create_client(&db, "Kappa Software");
 
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["client", "edit", &id, "--name", "Kappa Software SASU"])
         .assert()
         .success();
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["client", "edit", &id, "--name", "Kappa Software (bis)"])
         .assert()
         .success();
 
-    let show_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let show_out = unlocked(&db)
         .args(["--json", "client", "show", &id])
         .assert()
         .success()
@@ -1435,8 +1476,7 @@ fn prospect_create_without_an_existing_client_stays_off_the_client_list() {
     let db = temp_db("prospect-without-client");
     provision(&db);
 
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "prospect",
             "create",
@@ -1458,8 +1498,7 @@ fn prospect_create_without_an_existing_client_stays_off_the_client_list() {
         .assert()
         .success();
 
-    let listed = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let listed = unlocked(&db)
         .args(["--json", "client", "list"])
         .assert()
         .success()
@@ -1472,8 +1511,7 @@ fn prospect_create_without_an_existing_client_stays_off_the_client_list() {
         "un prospect sans devis ni facture n'apparaît pas dans client list : {clients}"
     );
 
-    let prospects = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let prospects = unlocked(&db)
         .args(["--json", "prospect", "list"])
         .assert()
         .success()
@@ -1496,8 +1534,7 @@ fn rm_refuses_a_client_still_referenced_by_an_open_opportunity() {
     provision(&db);
     let id = create_client(&db, "Kappa Software");
 
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "prospect",
             "create",
@@ -1515,16 +1552,14 @@ fn rm_refuses_a_client_still_referenced_by_an_open_opportunity() {
         .assert()
         .success();
 
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["client", "rm", &id])
         .assert()
         .failure()
         .code(4)
         .stderr(predicate::str::contains("1 opportunité"));
 
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["client", "show", &id])
         .assert()
         .success();
@@ -1536,14 +1571,12 @@ fn archiving_then_unarchiving_a_client_round_trips_through_the_active_list() {
     provision(&db);
     let id = create_client(&db, "Kappa Software");
 
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["client", "archive", &id])
         .assert()
         .success();
 
-    let active_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let active_out = unlocked(&db)
         .args(["--json", "client", "list"])
         .assert()
         .success()
@@ -1552,8 +1585,7 @@ fn archiving_then_unarchiving_a_client_round_trips_through_the_active_list() {
         .clone();
     assert_eq!(json_result(&active_out).as_array().unwrap().len(), 0);
 
-    let all_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let all_out = unlocked(&db)
         .args(["--json", "client", "list", "--archived"])
         .assert()
         .success()
@@ -1562,14 +1594,12 @@ fn archiving_then_unarchiving_a_client_round_trips_through_the_active_list() {
         .clone();
     assert_eq!(json_result(&all_out).as_array().unwrap().len(), 1);
 
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["client", "unarchive", &id])
         .assert()
         .success();
 
-    let active_again = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let active_again = unlocked(&db)
         .args(["--json", "client", "list"])
         .assert()
         .success()
@@ -1586,8 +1616,7 @@ fn showing_an_ambiguous_name_prefix_lists_every_candidate() {
     create_client(&db, "Argon Digital");
     create_client(&db, "Argon Studio");
 
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["client", "show", "argon"])
         .assert()
         .failure()
@@ -1602,8 +1631,7 @@ fn resolving_a_client_by_accented_name_ignores_case_and_diacritics() {
     provision(&db);
     let id = create_client(&db, "Société Générale");
 
-    let show_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let show_out = unlocked(&db)
         .args(["--json", "client", "show", "societe generale"])
         .assert()
         .success()
@@ -1619,8 +1647,7 @@ fn contact_lifecycle_add_list_edit_rm() {
     provision(&db);
     let client_id = create_client(&db, "Kappa Software");
 
-    let add_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let add_out = unlocked(&db)
         .args([
             "--json",
             "client",
@@ -1643,8 +1670,7 @@ fn contact_lifecycle_add_list_edit_rm() {
         .unwrap()
         .to_string();
 
-    let list_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let list_out = unlocked(&db)
         .args([
             "--json", "client", "contact", "list", "--client", &client_id,
         ])
@@ -1655,21 +1681,18 @@ fn contact_lifecycle_add_list_edit_rm() {
         .clone();
     assert_eq!(json_result(&list_out).as_array().unwrap().len(), 1);
 
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["client", "contact", "edit", &contact_id, "--role", "DAF"])
         .assert()
         .success();
 
     // `--clear-email` efface un optionnel que `--email` seul ne pourrait jamais vider ; le rôle
     // posé juste avant et le nom, non mentionnés, survivent.
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["client", "contact", "edit", &contact_id, "--clear-email"])
         .assert()
         .success();
-    let cleared_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let cleared_out = unlocked(&db)
         .args([
             "--json", "client", "contact", "list", "--client", &client_id,
         ])
@@ -1683,14 +1706,12 @@ fn contact_lifecycle_add_list_edit_rm() {
     assert_eq!(contact["role"], "DAF");
     assert_eq!(contact["name"], "Alex Martin");
 
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["client", "contact", "rm", &contact_id])
         .assert()
         .success();
 
-    let empty_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let empty_out = unlocked(&db)
         .args([
             "--json", "client", "contact", "list", "--client", &client_id,
         ])
@@ -1714,8 +1735,7 @@ fn year_help_is_a_stable_interface_contract() {
 
 /// Profil minimal avec exercice civil et 1 000 € de capital (plafond de réserve légale 100 €).
 fn set_company_profile(db: &Path) {
-    freeflow()
-        .env("FREEFLOW_DB", db)
+    unlocked(db)
         .args([
             "company",
             "set-profile",
@@ -1747,8 +1767,7 @@ fn company_show_reports_the_derived_vat_filing_rule() {
     let db = temp_db("company-show");
     provision(&db);
     set_company_profile(&db);
-    let out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let out = unlocked(&db)
         .args(["--json", "company", "show"])
         .assert()
         .success()
@@ -1772,8 +1791,7 @@ fn fec_export_writes_the_regulatory_file_for_the_exercise() {
     let db = temp_db("fec-export");
     provision(&db);
     set_company_profile(&db);
-    let client_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let client_out = unlocked(&db)
         .args(["--json", "client", "create", "--name", "Kappa Software"])
         .assert()
         .success()
@@ -1786,8 +1804,7 @@ fn fec_export_writes_the_regulatory_file_for_the_exercise() {
         .to_string();
     let lines =
         r#"[{"description":"Prestation","quantity":2,"unit_price":100000,"vat_rate":"Standard"}]"#;
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "invoice",
             "emit",
@@ -1800,8 +1817,7 @@ fn fec_export_writes_the_regulatory_file_for_the_exercise() {
         ])
         .assert()
         .success();
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "expense",
             "record",
@@ -1823,8 +1839,7 @@ fn fec_export_writes_the_regulatory_file_for_the_exercise() {
 
     // `--out` sur un répertoire : le fichier prend son nom réglementaire.
     let dir = db.parent().unwrap().to_path_buf();
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["fec", "export", "2026", "--out"])
         .arg(&dir)
         .assert()
@@ -1862,8 +1877,7 @@ fn fec_export_writes_the_regulatory_file_for_the_exercise() {
 
     // `--out` sur un fichier, en JSON : le résumé porte le nom réglementaire et l'équilibre.
     let file = dir.join("export.txt");
-    let out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let out = unlocked(&db)
         .args(["--json", "fec", "export", "2026", "--out"])
         .arg(&file)
         .assert()
@@ -1882,15 +1896,14 @@ fn fec_export_writes_the_regulatory_file_for_the_exercise() {
 
     // Le FEC qu'on vient d'écrire passe le contrôle de structure, coffre ouvert (--period)
     // comme fichier sur disque (sans coffre).
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["fec", "check", "--period", "2026"])
         .assert()
         .success()
         .stdout(predicate::str::contains("structure conforme"))
         .stdout(predicate::str::contains("régularité"));
     let regulatory = dir.join("552100554FEC20261231.txt");
-    let checked = freeflow()
+    let checked = capturing()
         .args(["--json", "fec", "check"])
         .arg(&regulatory)
         .assert()
@@ -1914,7 +1927,7 @@ fn fec_check_reads_a_file_without_a_vault() {
         format!("{header}\nVE|Ventes|1|20260310|411000|Clients|||FA-1|20260310|Facture|100.00|0,00|||20260310||\n"),
     )
     .unwrap();
-    freeflow()
+    capturing()
         .args(["fec", "check"])
         .arg(&hostile)
         .assert()
@@ -1937,8 +1950,7 @@ fn year_lifecycle_close_amend_approve_then_immutable() {
     let client_id = create_client(&db, "Kappa Software");
     let lines =
         r#"[{"description":"Prestation","quantity":9.5,"unit_price":65000,"vat_rate":"Standard"}]"#;
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "invoice",
             "emit",
@@ -1953,8 +1965,7 @@ fn year_lifecycle_close_amend_approve_then_immutable() {
         .success();
 
     // Clôture par --period : la période dérive de la clôture 31/12 du profil.
-    let close_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let close_out = unlocked(&db)
         .args([
             "--json",
             "year",
@@ -1973,8 +1984,7 @@ fn year_lifecycle_close_amend_approve_then_immutable() {
         .clone();
     assert_eq!(json_result(&close_out)["status"], "applied");
 
-    let list_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let list_out = unlocked(&db)
         .args(["--json", "year", "list"])
         .assert()
         .success()
@@ -1992,14 +2002,12 @@ fn year_lifecycle_close_amend_approve_then_immutable() {
     assert_eq!(year["approved_on"], serde_json::Value::Null);
 
     // Amender le projet : seule la valeur fournie change (patch CLI, état complet au cœur).
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["year", "amend", "2026", "--legal-reserve", "50"])
         .assert()
         .success();
     let shown = json_result(
-        &freeflow()
-            .env("FREEFLOW_DB", &db)
+        &unlocked(&db)
             .args(["--json", "year", "show", "2026"])
             .assert()
             .success()
@@ -2013,8 +2021,7 @@ fn year_lifecycle_close_amend_approve_then_immutable() {
 
     // L'export de liasse s'écrit et contient les cases attendues.
     let liasse_path = db.with_file_name("liasse.json");
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["year", "render", "2026", "liasse", "--out"])
         .arg(&liasse_path)
         .assert()
@@ -2031,8 +2038,7 @@ fn year_lifecycle_close_amend_approve_then_immutable() {
     );
 
     // Approbation, puis l'exercice est immuable : amender ou supprimer échoue en erreur métier.
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "year",
             "approve",
@@ -2044,15 +2050,13 @@ fn year_lifecycle_close_amend_approve_then_immutable() {
         ])
         .assert()
         .success();
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["year", "amend", "2026", "--dividends", "0"])
         .assert()
         .failure()
         .code(4)
         .stderr(predicate::str::contains("déjà approuvé"));
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["year", "rm", "2026"])
         .assert()
         .failure()
@@ -2065,8 +2069,7 @@ fn year_close_by_an_agent_stays_pending_until_a_human_confirms() {
     provision(&db);
     set_company_profile(&db);
 
-    let pending_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let pending_out = unlocked(&db)
         .args([
             "--json",
             "--actor",
@@ -2088,8 +2091,7 @@ fn year_close_by_an_agent_stays_pending_until_a_human_confirms() {
     let pending_id = pending["pending_action_id"].as_str().unwrap().to_string();
 
     // Rien n'est clos tant qu'un humain n'a pas confirmé...
-    let list_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let list_out = unlocked(&db)
         .args(["--json", "year", "list"])
         .assert()
         .success()
@@ -2099,13 +2101,11 @@ fn year_close_by_an_agent_stays_pending_until_a_human_confirms() {
     assert_eq!(json_result(&list_out).as_array().unwrap().len(), 0);
 
     // ... et `freeflow confirm` sait rejouer cette commande-là.
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["confirm", "--id", &pending_id])
         .assert()
         .success();
-    let list_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let list_out = unlocked(&db)
         .args(["--json", "year", "list"])
         .assert()
         .success()
@@ -2120,8 +2120,7 @@ fn expense_lifecycle_record_edit_rm_by_reference() {
     let db = temp_db("expense-lifecycle");
     provision(&db);
 
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "expense",
             "record",
@@ -2142,8 +2141,7 @@ fn expense_lifecycle_record_edit_rm_by_reference() {
         .success();
 
     // Édition par référence (préfixe de libellé, accents ignorés) : seul `--amount` change.
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "expense",
             "edit",
@@ -2156,8 +2154,7 @@ fn expense_lifecycle_record_edit_rm_by_reference() {
         .assert()
         .success();
 
-    let show_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let show_out = unlocked(&db)
         .args(["--json", "expense", "show", "abonnement"])
         .assert()
         .success()
@@ -2172,13 +2169,11 @@ fn expense_lifecycle_record_edit_rm_by_reference() {
     );
     assert_eq!(expense["revision"], 2, "l'édition bumpe la révision");
 
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["expense", "rm", "abonnement"])
         .assert()
         .success();
-    let list_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let list_out = unlocked(&db)
         .args(["--json", "expense", "list"])
         .assert()
         .success()
@@ -2204,14 +2199,12 @@ fn expense_reconciliation_with_a_statement_debit_by_cli() {
          2026-09-09;FRAIS TENUE DE COMPTE;-12.50\n2026-09-10;VIR CLIENT;500.00\n",
     )
     .unwrap();
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["bank", "import", "--format", "csv"])
         .arg(&statement)
         .assert()
         .success();
-    let list_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let list_out = unlocked(&db)
         .args(["--json", "bank", "list", "--unmatched"])
         .assert()
         .success()
@@ -2237,8 +2230,7 @@ fn expense_reconciliation_with_a_statement_debit_by_cli() {
 
     // Créée depuis le débit : `--amount`/`--incurred-on` omis, repris du relevé ; catégorie
     // « honoraires » (nouvelle au lot 33).
-    let record_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let record_out = unlocked(&db)
         .args([
             "--json",
             "expense",
@@ -2260,8 +2252,7 @@ fn expense_reconciliation_with_a_statement_debit_by_cli() {
         .stdout
         .clone();
     assert_eq!(json_result(&record_out)["status"], "applied");
-    let show_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let show_out = unlocked(&db)
         .args(["--json", "expense", "show", "expert"])
         .assert()
         .success()
@@ -2280,8 +2271,7 @@ fn expense_reconciliation_with_a_statement_debit_by_cli() {
     assert_eq!(shown["bank_transaction"]["id"], fees_tx);
 
     // Sans `--transaction`, montant et date restent obligatoires — refusé par clap.
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "expense",
             "record",
@@ -2299,8 +2289,7 @@ fn expense_reconciliation_with_a_statement_debit_by_cli() {
         .code(2);
 
     // Une dépense existante se rapproche après coup, au montant exact ; un crédit est refusé.
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "expense",
             "record",
@@ -2319,21 +2308,18 @@ fn expense_reconciliation_with_a_statement_debit_by_cli() {
         ])
         .assert()
         .success();
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["expense", "reconcile", "frais", "--transaction", &credit_tx])
         .assert()
         .failure()
         .code(4)
         .stderr(predicates::str::contains("crédit"));
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["expense", "reconcile", "frais", "--transaction", &bank_tx])
         .assert()
         .success();
 
-    let list_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let list_out = unlocked(&db)
         .args(["--json", "bank", "list", "--unmatched"])
         .assert()
         .success()
@@ -2343,8 +2329,7 @@ fn expense_reconciliation_with_a_statement_debit_by_cli() {
     let remaining = json_result(&list_out);
     assert_eq!(remaining.as_array().unwrap().len(), 1);
     assert_eq!(remaining[0]["id"], credit_tx);
-    let table = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let table = unlocked(&db)
         .args(["expense", "list"])
         .assert()
         .success()
@@ -2354,8 +2339,7 @@ fn expense_reconciliation_with_a_statement_debit_by_cli() {
     assert!(String::from_utf8(table).unwrap().contains("2026-09-09"));
 
     // Le montant d'une dépense rapprochée est celui du relevé.
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["expense", "edit", "frais", "--amount", "13.00"])
         .assert()
         .failure()
@@ -2363,18 +2347,15 @@ fn expense_reconciliation_with_a_statement_debit_by_cli() {
         .stderr(predicates::str::contains("relevé"));
 
     // Défaire libère le débit, la dépense reste ; supprimer l'autre libère son débit.
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["bank", "unreconcile", "--transaction", &bank_tx])
         .assert()
         .success();
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["expense", "rm", "expert"])
         .assert()
         .success();
-    let list_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let list_out = unlocked(&db)
         .args(["--json", "bank", "list", "--unmatched"])
         .assert()
         .success()
@@ -2382,8 +2363,7 @@ fn expense_reconciliation_with_a_statement_debit_by_cli() {
         .stdout
         .clone();
     assert_eq!(json_result(&list_out).as_array().unwrap().len(), 3);
-    let list_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let list_out = unlocked(&db)
         .args(["--json", "expense", "list"])
         .assert()
         .success()
@@ -2400,8 +2380,7 @@ fn quote_lifecycle_by_reference_from_creation_to_acceptance() {
     create_client(&db, "Kappa Software");
 
     let lines = r#"[{"description":"Refonte plateforme","kind":{"Forfait":{"amount":4500000}},"vat_rate":"Standard"}]"#;
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "quote",
             "create",
@@ -2416,8 +2395,7 @@ fn quote_lifecycle_by_reference_from_creation_to_acceptance() {
         .success();
 
     // Un devis créé est enfin lisible (lot 21) — et adressable par le nom de son client.
-    let list_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let list_out = unlocked(&db)
         .args(["--json", "quote", "list"])
         .assert()
         .success()
@@ -2428,19 +2406,16 @@ fn quote_lifecycle_by_reference_from_creation_to_acceptance() {
     assert_eq!(quotes.as_array().unwrap().len(), 1);
     assert_eq!(quotes[0]["status"], "Draft");
 
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["quote", "send", "kappa"])
         .assert()
         .success();
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["quote", "accept", "kappa", "--started-on", "2026-11-01"])
         .assert()
         .success();
 
-    let show_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let show_out = unlocked(&db)
         .args(["--json", "quote", "show", "kappa"])
         .assert()
         .success()
@@ -2464,8 +2439,7 @@ fn quote_lines_are_expressible_in_the_shared_text_syntax() {
 
     // `--line`, répétable (lot 23) : la même syntaxe `description:type:montant[:taux]` que le
     // textarea de la fenêtre — clap conserve chaque occurrence, dans l'ordre.
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "quote",
             "create",
@@ -2481,8 +2455,7 @@ fn quote_lines_are_expressible_in_the_shared_text_syntax() {
         .assert()
         .success();
 
-    let show_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let show_out = unlocked(&db)
         .args(["--json", "quote", "show", "kappa"])
         .assert()
         .success()
@@ -2499,8 +2472,7 @@ fn quote_lines_are_expressible_in_the_shared_text_syntax() {
     assert_eq!(quote["total_net_ht"], 135_000 + 650_000);
 
     // Une spec invalide échoue avec le rappel de syntaxe du parseur du domaine.
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "quote",
             "revise",
@@ -2516,7 +2488,7 @@ fn quote_lines_are_expressible_in_the_shared_text_syntax() {
 
     // `--lines` (JSON) et `--line` (texte) sont exclusifs — refusé par clap avant tout accès
     // au coffre.
-    freeflow()
+    capturing()
         .args([
             "quote",
             "create",
@@ -2552,8 +2524,7 @@ fn payment_corrections_from_reconciliation_to_unreconcile_and_void() {
     let client_id = create_client(&db, "Kappa Software");
 
     let lines = r#"[{"description":"Prestation","quantity":10.0,"unit_price":65000,"vat_rate":"Standard"}]"#;
-    let emit_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let emit_out = unlocked(&db)
         .args([
             "--json",
             "invoice",
@@ -2582,16 +2553,14 @@ fn payment_corrections_from_reconciliation_to_unreconcile_and_void() {
         "date;description;montant\n2026-09-05;Virement Kappa;7800.00\n",
     )
     .unwrap();
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["bank", "import", "--format", "csv"])
         .arg(&statement)
         .assert()
         .success();
 
     // `bank list` comble le trou du lot 5 : l'id d'une transaction est enfin accessible.
-    let list_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let list_out = unlocked(&db)
         .args(["--json", "bank", "list", "--unmatched"])
         .assert()
         .success()
@@ -2602,8 +2571,7 @@ fn payment_corrections_from_reconciliation_to_unreconcile_and_void() {
     assert_eq!(transactions.as_array().unwrap().len(), 1);
     let tx_id = transactions[0]["id"].as_str().unwrap().to_string();
 
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "bank",
             "reconcile",
@@ -2614,8 +2582,7 @@ fn payment_corrections_from_reconciliation_to_unreconcile_and_void() {
         ])
         .assert()
         .success();
-    let aged_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let aged_out = unlocked(&db)
         .args(["--json", "invoice", "aged-balance", "--today", "2026-10-15"])
         .assert()
         .success()
@@ -2625,8 +2592,7 @@ fn payment_corrections_from_reconciliation_to_unreconcile_and_void() {
     assert!(json_result(&aged_out).as_array().unwrap().is_empty());
 
     // Rapprocher deux fois la même transaction est refusé (bug latent corrigé au lot 22).
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "bank",
             "reconcile",
@@ -2640,13 +2606,11 @@ fn payment_corrections_from_reconciliation_to_unreconcile_and_void() {
         .code(4);
 
     // Défaire : la transaction est libérée, l'encaissement issu du rapprochement est annulé.
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["bank", "unreconcile", "--transaction", &tx_id])
         .assert()
         .success();
-    let unmatched_again = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let unmatched_again = unlocked(&db)
         .args(["--json", "bank", "list", "--unmatched"])
         .assert()
         .success()
@@ -2654,8 +2618,7 @@ fn payment_corrections_from_reconciliation_to_unreconcile_and_void() {
         .stdout
         .clone();
     assert_eq!(json_result(&unmatched_again).as_array().unwrap().len(), 1);
-    let aged_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let aged_out = unlocked(&db)
         .args(["--json", "invoice", "aged-balance", "--today", "2026-10-15"])
         .assert()
         .success()
@@ -2669,8 +2632,7 @@ fn payment_corrections_from_reconciliation_to_unreconcile_and_void() {
     );
 
     // Encaissement manuel, puis annulation avec motif : la contre-écriture reste listée.
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "payment",
             "record",
@@ -2685,8 +2647,7 @@ fn payment_corrections_from_reconciliation_to_unreconcile_and_void() {
         ])
         .assert()
         .success();
-    let payments_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let payments_out = unlocked(&db)
         .args(["--json", "payment", "list"])
         .assert()
         .success()
@@ -2702,8 +2663,7 @@ fn payment_corrections_from_reconciliation_to_unreconcile_and_void() {
         .expect("l'encaissement manuel doit être listé, non annulé");
     let payment_id = manual["id"].as_str().unwrap().to_string();
 
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "payment",
             "void",
@@ -2714,8 +2674,7 @@ fn payment_corrections_from_reconciliation_to_unreconcile_and_void() {
         ])
         .assert()
         .success();
-    let payments_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let payments_out = unlocked(&db)
         .args(["--json", "payment", "list"])
         .assert()
         .success()
@@ -2745,8 +2704,7 @@ fn year_deficits_are_carried_forward_then_back_from_the_cli() {
     set_company_profile(&db);
 
     // Bilan d'ouverture avec 30 € de déficits antérieurs reportables (hors bilan).
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "year",
             "opening",
@@ -2763,8 +2721,7 @@ fn year_deficits_are_carried_forward_then_back_from_the_cli() {
         .assert()
         .success();
     let opening = json_result(
-        &freeflow()
-            .env("FREEFLOW_DB", &db)
+        &unlocked(&db)
             .args(["--json", "year", "opening", "show"])
             .assert()
             .success()
@@ -2773,8 +2730,7 @@ fn year_deficits_are_carried_forward_then_back_from_the_cli() {
             .clone(),
     );
     assert_eq!(opening["tax_losses_cents"], 3_000);
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["year", "opening", "show"])
         .assert()
         .success()
@@ -2786,8 +2742,7 @@ fn year_deficits_are_carried_forward_then_back_from_the_cli() {
     let client_id = create_client(&db, "Kappa Software");
     let lines =
         r#"[{"description":"Prestation","quantity":9.5,"unit_price":65000,"vat_rate":"Standard"}]"#;
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "invoice",
             "emit",
@@ -2801,8 +2756,7 @@ fn year_deficits_are_carried_forward_then_back_from_the_cli() {
         .assert()
         .success();
     // Le report en arrière est refusé sur un bénéfice : rien n'est clos.
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "year",
             "close",
@@ -2816,14 +2770,12 @@ fn year_deficits_are_carried_forward_then_back_from_the_cli() {
         .failure()
         .code(4)
         .stderr(predicate::str::contains("aucun déficit"));
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["year", "close", "--period", "2026", "--today", "2027-01-05"])
         .assert()
         .success();
     let shown = json_result(
-        &freeflow()
-            .env("FREEFLOW_DB", &db)
+        &unlocked(&db)
             .args(["--json", "year", "show", "2026"])
             .assert()
             .success()
@@ -2841,8 +2793,7 @@ fn year_deficits_are_carried_forward_then_back_from_the_cli() {
 
     // 2027 : une dépense de 80 € nets, aucune facture → déficit de 80 €, reporté en arrière
     // sur le bénéfice 2026 : créance de 15 % × 80 = 12 €, net −68 €.
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "expense",
             "record",
@@ -2861,8 +2812,7 @@ fn year_deficits_are_carried_forward_then_back_from_the_cli() {
         ])
         .assert()
         .success();
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "year",
             "close",
@@ -2875,8 +2825,7 @@ fn year_deficits_are_carried_forward_then_back_from_the_cli() {
         .assert()
         .success();
     let shown = json_result(
-        &freeflow()
-            .env("FREEFLOW_DB", &db)
+        &unlocked(&db)
             .args(["--json", "year", "show", "2027"])
             .assert()
             .success()
@@ -2890,8 +2839,7 @@ fn year_deficits_are_carried_forward_then_back_from_the_cli() {
     assert_eq!(shown["carry_back_credit_cents"], 1_200);
     assert_eq!(shown["net_result_cents"], -6_800);
     assert_eq!(shown["losses_carried_forward_cents"], 0);
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["year", "show", "2027"])
         .assert()
         .success()
@@ -2901,8 +2849,7 @@ fn year_deficits_are_carried_forward_then_back_from_the_cli() {
 
     // La liasse porte les cases de suivi des déficits, et le FEC la créance 444/699.
     let liasse_path = db.with_file_name("liasse-2027.json");
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["year", "render", "2027", "liasse", "--out"])
         .arg(&liasse_path)
         .assert()
@@ -2917,8 +2864,7 @@ fn year_deficits_are_carried_forward_then_back_from_the_cli() {
         "{entries:#?}"
     );
     let fec_path = db.with_file_name("fec-2027.txt");
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["fec", "export", "2027", "--out"])
         .arg(&fec_path)
         .assert()
@@ -2941,8 +2887,7 @@ fn year_opening_balance_set_show_then_chains_into_the_first_close() {
         "# bilan repris\n101000:Capital social:C:1000.00\n106100:Réserve légale:C:60.00\n\n",
     )
     .unwrap();
-    let pending_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let pending_out = unlocked(&db)
         .args([
             "--json",
             "--actor",
@@ -2969,8 +2914,7 @@ fn year_opening_balance_set_show_then_chains_into_the_first_close() {
     let pending = json_result(&pending_out);
     assert_eq!(pending["status"], "pending_confirmation");
     let pending_id = pending["pending_action_id"].as_str().unwrap().to_string();
-    let none_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let none_out = unlocked(&db)
         .args(["--json", "year", "opening", "show"])
         .assert()
         .success()
@@ -2978,14 +2922,12 @@ fn year_opening_balance_set_show_then_chains_into_the_first_close() {
         .stdout
         .clone();
     assert!(json_result(&none_out).is_null());
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["confirm", "--id", &pending_id])
         .assert()
         .success();
 
-    let show_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let show_out = unlocked(&db)
         .args(["--json", "year", "opening", "show"])
         .assert()
         .success()
@@ -3000,8 +2942,7 @@ fn year_opening_balance_set_show_then_chains_into_the_first_close() {
     assert_eq!(opening["equity"]["legal_reserve_cents"], 6_000);
     assert_eq!(opening["equity"]["retained_earnings_cents"], 25_000);
     assert_eq!(opening["revision"], 1);
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["year", "opening", "show"])
         .assert()
         .success()
@@ -3009,8 +2950,7 @@ fn year_opening_balance_set_show_then_chains_into_the_first_close() {
         .stdout(predicate::str::contains("report à nouveau 250,00\u{a0}€"));
 
     // Un bilan déséquilibré est refusé par le cœur, avant toute écriture.
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "year",
             "opening",
@@ -3031,8 +2971,7 @@ fn year_opening_balance_set_show_then_chains_into_the_first_close() {
     let client_id = create_client(&db, "Kappa Software");
     let lines =
         r#"[{"description":"Prestation","quantity":9.5,"unit_price":65000,"vat_rate":"Standard"}]"#;
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "invoice",
             "emit",
@@ -3049,8 +2988,7 @@ fn year_opening_balance_set_show_then_chains_into_the_first_close() {
     // encore ; vu de janvier 2027, il est prêt — bilan d'ouverture repris, dotation minimale à
     // la réserve légale de 40 € (5 % de 5 248,75 € = 262,44 €, plafonnés par les 40 € qu'il
     // reste avant 10 % du capital de 1 000 €, 60 € étant déjà repris).
-    let running = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let running = unlocked(&db)
         .args([
             "--json",
             "year",
@@ -3065,8 +3003,7 @@ fn year_opening_balance_set_show_then_chains_into_the_first_close() {
         .stdout
         .clone();
     assert_eq!(json_result(&running)["stage"], "not_ended");
-    let ready = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let ready = unlocked(&db)
         .args([
             "--json",
             "year",
@@ -3094,8 +3031,7 @@ fn year_opening_balance_set_show_then_chains_into_the_first_close() {
     assert_eq!(step("close")["amount_cents"], 4_000);
     assert_eq!(step("approve")["status"], "later");
     assert_eq!(step("approve")["due_on"], "2027-06-30");
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["year", "checklist", "2026", "--today", "2027-01-15"])
         .assert()
         .success()
@@ -3104,14 +3040,12 @@ fn year_opening_balance_set_show_then_chains_into_the_first_close() {
             "freeflow year close --period 2026 --legal-reserve 40.00",
         ));
 
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["year", "close", "--period", "2026", "--today", "2027-01-05"])
         .assert()
         .success();
     // Clos sans dotation : le parcours signale la dotation insuffisante et le prochain geste.
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["year", "checklist", "2026", "--today", "2027-03-01"])
         .assert()
         .success()
@@ -3125,8 +3059,7 @@ fn year_opening_balance_set_show_then_chains_into_the_first_close() {
         .stdout(predicate::str::contains(
             "freeflow year approve 2026 --approved-on AAAA-MM-JJ",
         ));
-    let year_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let year_out = unlocked(&db)
         .args(["--json", "year", "show", "2026"])
         .assert()
         .success()
@@ -3136,16 +3069,14 @@ fn year_opening_balance_set_show_then_chains_into_the_first_close() {
     assert_eq!(json_result(&year_out)["retained_earnings_cents"], 549_900);
 
     // Le bilan est figé par ce snapshot ; le FEC de l'exercice porte ses à-nouveaux.
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["year", "opening", "rm"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("déjà clos"));
     let out_dir = db.parent().unwrap().join("fec");
     std::fs::create_dir_all(&out_dir).unwrap();
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["fec", "export", "2026", "--out"])
         .arg(&out_dir)
         .assert()
@@ -3162,8 +3093,7 @@ fn year_opening_balance_set_show_then_chains_into_the_first_close() {
         fec.contains("OD|Opérations diverses|1|20261231|695000|Impôts sur les bénéfices|||OD-IS|20261231|Impôt sur les sociétés de l'exercice|926,00|0,00|"),
         "{fec}"
     );
-    let balance_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let balance_out = unlocked(&db)
         .args(["--json", "year", "balance", "2026"])
         .assert()
         .success()
@@ -3179,24 +3109,21 @@ fn year_opening_balance_set_show_then_chains_into_the_first_close() {
         rows.iter()
             .any(|r| r["account"] == "444000" && r["balance_cents"] == -92_600)
     );
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["year", "balance", "2026"])
         .assert()
         .success()
         .stdout(predicate::str::contains("présentation 2033-A"))
         .stdout(predicate::str::contains("Clients et comptes rattachés"));
     let bilan = db.parent().unwrap().join("bilan-2026.pdf");
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["year", "render", "2026", "balance-sheet", "--out"])
         .arg(&bilan)
         .assert()
         .success();
     assert!(std::fs::read(&bilan).unwrap().starts_with(b"%PDF-"));
     let liasse = db.parent().unwrap().join("liasse-2026.json");
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["year", "render", "2026", "liasse", "--out"])
         .arg(&liasse)
         .assert()
@@ -3224,7 +3151,7 @@ fn init_with_a_bare_file_name_creates_a_usable_vault_in_the_current_directory() 
     let dir = db.parent().unwrap();
     std::fs::create_dir_all(dir).unwrap();
     let pass_file = passphrase_file(&db, "s3cret");
-    freeflow()
+    capturing()
         .current_dir(dir)
         .args(["--passphrase-file"])
         .arg(&pass_file)
@@ -3233,7 +3160,7 @@ fn init_with_a_bare_file_name_creates_a_usable_vault_in_the_current_directory() 
         .success();
     assert!(dir.join("nom.db").exists(), "la base doit exister");
     assert!(dir.join("nom.db.kdf").exists(), "le sidecar doit exister");
-    freeflow()
+    capturing()
         .current_dir(dir)
         .args(["--passphrase-file"])
         .arg(&pass_file)
@@ -3252,29 +3179,25 @@ fn closing_early_and_approving_in_the_future_are_refused_and_approval_backs_up_f
     provision(&db);
     set_company_profile(&db);
 
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["year", "close", "--period", "2026", "--today", "2026-12-03"])
         .assert()
         .failure()
         .code(4)
         .stderr(predicate::str::contains("court jusqu'au 2026-12-31"));
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["year", "list"])
         .assert()
         .success()
         .stdout(predicate::str::contains("aucun").or(predicate::str::contains("Clôture")));
 
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["year", "close", "--period", "2026", "--today", "2027-01-05"])
         .assert()
         .success()
         .stdout(predicate::str::contains("✓ exercice clos en projet"));
 
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "year",
             "approve",
@@ -3289,8 +3212,7 @@ fn closing_early_and_approving_in_the_future_are_refused_and_approval_backs_up_f
         .code(4)
         .stderr(predicate::str::contains("dans le futur"));
 
-    let approved = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let approved = unlocked(&db)
         .args([
             "year",
             "approve",
@@ -3329,8 +3251,7 @@ fn closing_early_and_approving_in_the_future_are_refused_and_approval_backs_up_f
 
     // La liasse est un JSON : une extension `.pdf` est refusée avant d'écrire quoi que ce soit.
     let out = db.with_file_name("liasse.pdf");
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["year", "render", "2026", "liasse", "--out"])
         .arg(&out)
         .assert()
@@ -3340,8 +3261,7 @@ fn closing_early_and_approving_in_the_future_are_refused_and_approval_backs_up_f
     assert!(!out.exists());
 
     // Les dates d'un exercice sortent en ISO 8601.
-    let shown = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let shown = unlocked(&db)
         .args(["--json", "year", "show", "2026"])
         .assert()
         .success()
@@ -3357,8 +3277,7 @@ fn confirm_takes_the_pending_action_id_as_a_positional_argument() {
     let db = temp_db("confirm-positional");
     provision(&db);
     set_company_profile(&db);
-    let pending_out = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let pending_out = unlocked(&db)
         .args([
             "--json",
             "--actor",
@@ -3379,8 +3298,7 @@ fn confirm_takes_the_pending_action_id_as_a_positional_argument() {
         .as_str()
         .unwrap()
         .to_string();
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["pending", "list"])
         .assert()
         .success()
@@ -3388,14 +3306,12 @@ fn confirm_takes_the_pending_action_id_as_a_positional_argument() {
         .stdout(predicate::str::contains(
             "Confirmer : freeflow confirm <id>",
         ));
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["confirm", &pending_id])
         .assert()
         .success()
         .stdout(predicate::str::starts_with("✓ "));
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["confirm", &pending_id, "--id", &pending_id])
         .assert()
         .failure();
@@ -3408,8 +3324,7 @@ fn human_outputs_are_sentences_and_tables_not_debug_dumps() {
     let db = temp_db("human-outputs");
     provision(&db);
     set_company_profile(&db);
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["company", "show"])
         .assert()
         .success()
@@ -3418,8 +3333,7 @@ fn human_outputs_are_sentences_and_tables_not_debug_dumps() {
         ))
         .stdout(predicate::str::contains("Télédéclaration TVA"))
         .stdout(predicate::str::contains("CompanyProfile").not());
-    let calendar = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let calendar = unlocked(&db)
         .args(["fiscal", "calendar", "--today", "2026-10-01"])
         .assert()
         .success()
@@ -3428,14 +3342,12 @@ fn human_outputs_are_sentences_and_tables_not_debug_dumps() {
         .stdout
         .clone();
     insta::assert_snapshot!(String::from_utf8(calendar).unwrap());
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["audit", "verify-chain"])
         .assert()
         .success()
         .stdout(predicate::str::contains("✓ journal d'audit intact"));
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "expense",
             "record",
@@ -3454,8 +3366,7 @@ fn human_outputs_are_sentences_and_tables_not_debug_dumps() {
         ])
         .assert()
         .success();
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["expense", "show", "Hébergement"])
         .assert()
         .success()
@@ -3470,8 +3381,7 @@ fn an_expense_before_the_opening_balance_is_refused_by_the_cli() {
     let db = temp_db("expense-before-opening");
     provision(&db);
     set_company_profile(&db);
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "year",
             "opening",
@@ -3488,8 +3398,7 @@ fn an_expense_before_the_opening_balance_is_refused_by_the_cli() {
         .stdout(predicate::str::contains(
             "✓ bilan d'ouverture enregistré (révision 1)",
         ));
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "expense",
             "record",
@@ -3575,8 +3484,7 @@ fn real_bank_exports_import_without_options_and_the_dry_run_explains_itself() {
         let path = db.with_file_name(name);
         std::fs::write(&path, bytes).unwrap();
         vaults.insert(name, db.clone());
-        freeflow()
-            .env("FREEFLOW_DB", &db)
+        unlocked(&db)
             .args(["bank", "import"])
             .arg(&path)
             .assert()
@@ -3584,8 +3492,7 @@ fn real_bank_exports_import_without_options_and_the_dry_run_explains_itself() {
             .stdout(predicate::str::contains("✓ 3 nouvelle(s) transaction(s)"))
             .stdout(predicate::str::contains("pied de page").or(predicate::str::is_empty().not()));
         // Réimporter la même chose n'ajoute rien.
-        freeflow()
-            .env("FREEFLOW_DB", &db)
+        unlocked(&db)
             .args(["bank", "import"])
             .arg(&path)
             .assert()
@@ -3593,8 +3500,7 @@ fn real_bank_exports_import_without_options_and_the_dry_run_explains_itself() {
             .stdout(predicate::str::contains("✓ 0 nouvelle(s)"));
     }
     let db = vaults["credit-agricole.csv"].clone();
-    let dry = freeflow()
-        .env("FREEFLOW_DB", &db)
+    let dry = unlocked(&db)
         .args(["--dry-run", "bank", "import"])
         .arg(db.with_file_name("credit-agricole.csv"))
         .assert()
@@ -3613,8 +3519,7 @@ fn real_bank_exports_import_without_options_and_the_dry_run_explains_itself() {
     );
     let qonto = vaults["qonto.csv"].clone();
     let dry_json = json_result(
-        &freeflow()
-            .env("FREEFLOW_DB", &qonto)
+        &unlocked(&qonto)
             .args(["--json", "--dry-run", "bank", "import"])
             .arg(qonto.with_file_name("qonto.csv"))
             .assert()
@@ -3631,8 +3536,7 @@ fn real_bank_exports_import_without_options_and_the_dry_run_explains_itself() {
     // Un fichier binaire : un message qui dit le format attendu, jamais une panique.
     let garbage = db.with_file_name("garbage.bin");
     std::fs::write(&garbage, [0u8, 1, 2, 255, 254, 100, 200]).unwrap();
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["bank", "import"])
         .arg(&garbage)
         .assert()
@@ -3643,8 +3547,7 @@ fn real_bank_exports_import_without_options_and_the_dry_run_explains_itself() {
         ));
     // `--format` force la détection.
     let lcl = vaults["lcl.csv"].clone();
-    freeflow()
-        .env("FREEFLOW_DB", &lcl)
+    unlocked(&lcl)
         .args(["bank", "import", "--format", "ofx"])
         .arg(lcl.with_file_name("lcl.csv"))
         .assert()
@@ -3654,8 +3557,7 @@ fn real_bank_exports_import_without_options_and_the_dry_run_explains_itself() {
 
     // `bank rm` : un agent propose, un humain confirme ; une ligne rapprochée est refusée.
     let listed = json_result(
-        &freeflow()
-            .env("FREEFLOW_DB", &db)
+        &unlocked(&db)
             .args(["--json", "bank", "list"])
             .assert()
             .success()
@@ -3666,8 +3568,7 @@ fn real_bank_exports_import_without_options_and_the_dry_run_explains_itself() {
     let before = listed.as_array().unwrap().len();
     let victim = listed[0]["id"].as_str().unwrap().to_string();
     let pending = json_result(
-        &freeflow()
-            .env("FREEFLOW_DB", &db)
+        &unlocked(&db)
             .args(["--json", "--actor", "agent:audit", "bank", "rm", &victim])
             .assert()
             .success()
@@ -3676,14 +3577,12 @@ fn real_bank_exports_import_without_options_and_the_dry_run_explains_itself() {
             .clone(),
     );
     assert_eq!(pending["status"], "pending_confirmation");
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["confirm", pending["pending_action_id"].as_str().unwrap()])
         .assert()
         .success();
     let after = json_result(
-        &freeflow()
-            .env("FREEFLOW_DB", &db)
+        &unlocked(&db)
             .args(["--json", "bank", "list"])
             .assert()
             .success()
@@ -3692,8 +3591,7 @@ fn real_bank_exports_import_without_options_and_the_dry_run_explains_itself() {
             .clone(),
     );
     assert_eq!(after.as_array().unwrap().len(), before - 1);
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["bank", "rm", &victim])
         .assert()
         .failure()
@@ -3710,8 +3608,7 @@ fn real_bank_exports_import_without_options_and_the_dry_run_explains_itself() {
 fn setup_status_lists_what_is_missing_then_goes_green() {
     let db = temp_db("setup-status");
     provision(&db);
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["setup", "status"])
         .assert()
         .success()
@@ -3723,8 +3620,7 @@ fn setup_status_lists_what_is_missing_then_goes_green() {
         ));
     set_company_profile(&db);
     let status = json_result(
-        &freeflow()
-            .env("FREEFLOW_DB", &db)
+        &unlocked(&db)
             .args(["--json", "setup", "status"])
             .assert()
             .success()
@@ -3734,14 +3630,12 @@ fn setup_status_lists_what_is_missing_then_goes_green() {
     );
     assert_eq!(status["profile"]["state"], "incomplete");
     assert_eq!(status["next_step"], "origin");
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["setup", "new-company"])
         .assert()
         .success()
         .stdout(predicate::str::contains("société déclarée nouvelle"));
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["setup", "status"])
         .assert()
         .success()
@@ -3752,8 +3646,7 @@ fn setup_status_lists_what_is_missing_then_goes_green() {
             "! profil de la société — à compléter : régime de TVA, associé unique, président",
         ))
         .stdout(predicate::str::contains("freeflow bank import"));
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "company",
             "set-profile",
@@ -3788,8 +3681,7 @@ fn setup_status_lists_what_is_missing_then_goes_green() {
         ])
         .assert()
         .success();
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["company", "show"])
         .assert()
         .success()
@@ -3800,15 +3692,13 @@ fn setup_status_lists_what_is_missing_then_goes_green() {
         .stdout(predicate::str::contains("Actions             : 100"));
     let path = db.with_file_name("releve.csv");
     std::fs::write(&path, "date;description;montant\n2026-01-15;FRAIS;-12.50\n").unwrap();
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["bank", "import"])
         .arg(&path)
         .assert()
         .success();
     let status = json_result(
-        &freeflow()
-            .env("FREEFLOW_DB", &db)
+        &unlocked(&db)
             .args(["--json", "setup", "status"])
             .assert()
             .success()
@@ -3839,8 +3729,7 @@ fn receipts_are_encrypted_migrated_and_attachable_after_the_close() {
 
     let receipt = db.with_file_name("facture-cabinet.pdf");
     std::fs::write(&receipt, b"%PDF-1.4 facture du cabinet").unwrap();
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "expense",
             "record",
@@ -3882,15 +3771,13 @@ fn receipts_are_encrypted_migrated_and_attachable_after_the_close() {
     }
 
     // Clore l'exercice, puis joindre une nouvelle pièce : accepté malgré la clôture.
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["year", "close", "--period", "2026", "--today", "2027-01-05"])
         .assert()
         .success();
     let later = db.with_file_name("facture-definitive.pdf");
     std::fs::write(&later, b"%PDF-1.4 facture definitive").unwrap();
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["expense", "attach", "Honoraires"])
         .arg(&later)
         .assert()
@@ -3898,8 +3785,7 @@ fn receipts_are_encrypted_migrated_and_attachable_after_the_close() {
         .stdout(predicate::str::contains(
             "✓ justificatif joint (révision 2)",
         ));
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "expense",
             "edit",
@@ -3912,8 +3798,7 @@ fn receipts_are_encrypted_migrated_and_attachable_after_the_close() {
         .stderr(predicate::str::contains("exercice déjà clôturé"));
 
     let out = db.with_file_name("dechiffree.pdf");
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["expense", "receipt", "Honoraires", "--out"])
         .arg(&out)
         .assert()
@@ -3935,8 +3820,7 @@ fn receipts_are_encrypted_migrated_and_attachable_after_the_close() {
 fn a_cabinet_balance_is_imported_as_the_opening_balance_without_typing_a_line() {
     let db = temp_db("opening-import");
     provision(&db);
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "company",
             "set-profile",
@@ -3969,8 +3853,7 @@ fn a_cabinet_balance_is_imported_as_the_opening_balance_without_typing_a_line() 
         include_bytes!("../../griffe-core/src/opening_balance/fixtures/balance-cabinet.csv"),
     )
     .unwrap();
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["--dry-run", "year", "opening", "import"])
         .arg(&balance)
         .args(["--opens-on", "2025-10-01"])
@@ -3980,8 +3863,7 @@ fn a_cabinet_balance_is_imported_as_the_opening_balance_without_typing_a_line() 
         .stdout(predicate::str::contains("Résultat dérivé des comptes 6/7 : 1\u{202f}200,00\u{a0}€ (posé en 120)"))
         .stdout(predicate::str::contains("⚠ Immobilisation(s) reprise(s)"));
     let preview = json_result(
-        &freeflow()
-            .env("FREEFLOW_DB", &db)
+        &unlocked(&db)
             .args(["--json", "--dry-run", "year", "opening", "import"])
             .arg(&balance)
             .args(["--opens-on", "2025-10-01"])
@@ -3993,15 +3875,13 @@ fn a_cabinet_balance_is_imported_as_the_opening_balance_without_typing_a_line() 
     );
     assert_eq!(preview["balanced"], true);
     assert_eq!(preview["derived_result_cents"], 120_000);
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["year", "opening", "show"])
         .assert()
         .success()
         .stdout(predicate::str::contains("aucun bilan d'ouverture"));
 
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["year", "opening", "import"])
         .arg(&balance)
         .args(["--opens-on", "2025-10-01"])
@@ -4014,8 +3894,7 @@ fn a_cabinet_balance_is_imported_as_the_opening_balance_without_typing_a_line() 
             "11 compte(s), résultat dérivé 1\u{202f}200,00\u{a0}€",
         ));
     let shown = json_result(
-        &freeflow()
-            .env("FREEFLOW_DB", &db)
+        &unlocked(&db)
             .args(["--json", "year", "opening", "show"])
             .assert()
             .success()
@@ -4030,8 +3909,7 @@ fn a_cabinet_balance_is_imported_as_the_opening_balance_without_typing_a_line() 
     assert_eq!(shown["prior_corporate_tax_cents"], serde_json::Value::Null);
 
     // Le calendrier ne présume plus la dispense d'acompte : base inconnue, dit tel quel.
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["fiscal", "calendar", "--today", "2025-10-02"])
         .assert()
         .success()
@@ -4043,8 +3921,7 @@ fn a_cabinet_balance_is_imported_as_the_opening_balance_without_typing_a_line() 
         include_bytes!("../../griffe-core/src/opening_balance/fixtures/fec-tiime.txt"),
     )
     .unwrap();
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["year", "opening", "import"])
         .arg(&fec)
         .args([
@@ -4059,8 +3936,7 @@ fn a_cabinet_balance_is_imported_as_the_opening_balance_without_typing_a_line() 
         .success()
         .stdout(predicate::str::contains("(révision 2)"));
     let again = json_result(
-        &freeflow()
-            .env("FREEFLOW_DB", &db)
+        &unlocked(&db)
             .args(["--json", "year", "opening", "show"])
             .assert()
             .success()
@@ -4085,8 +3961,7 @@ fn a_cabinet_balance_is_imported_as_the_opening_balance_without_typing_a_line() 
     };
     assert_eq!(strip(&again), strip(&shown));
     assert_eq!(again["prior_corporate_tax_cents"], 120_000);
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["fiscal", "calendar", "--today", "2025-10-02"])
         .assert()
         .success()
@@ -4096,8 +3971,7 @@ fn a_cabinet_balance_is_imported_as_the_opening_balance_without_typing_a_line() 
     // Un fichier illisible dit le format attendu.
     let junk = db.with_file_name("junk.csv");
     std::fs::write(&junk, "rien;du;tout\n1;2;3\n").unwrap();
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["year", "opening", "import"])
         .arg(&junk)
         .args(["--opens-on", "2025-10-01"])
@@ -4122,8 +3996,7 @@ fn papers_add_lists_and_shows_statutes_and_an_agent_cannot_purge_them() {
     let pdf = db.with_file_name("statuts.pdf");
     std::fs::write(&pdf, b"%PDF-1.4 statuts SASU").unwrap();
     let added = json_result(
-        &freeflow()
-            .env("FREEFLOW_DB", &db)
+        &unlocked(&db)
             .args(["--json", "papers", "add"])
             .arg(&pdf)
             .args(["--kind", "statutes"])
@@ -4139,8 +4012,7 @@ fn papers_add_lists_and_shows_statutes_and_an_agent_cannot_purge_them() {
     assert_eq!(added["result"]["original_name"], "statuts.pdf");
 
     let listed = json_result(
-        &freeflow()
-            .env("FREEFLOW_DB", &db)
+        &unlocked(&db)
             .args(["--json", "papers", "list"])
             .assert()
             .success()
@@ -4152,8 +4024,7 @@ fn papers_add_lists_and_shows_statutes_and_an_agent_cannot_purge_them() {
     assert_eq!(listed[0]["kind"], "statutes");
 
     let shown = json_result(
-        &freeflow()
-            .env("FREEFLOW_DB", &db)
+        &unlocked(&db)
             .args(["--json", "papers", "show", "statuts.pdf"])
             .assert()
             .success()
@@ -4165,8 +4036,7 @@ fn papers_add_lists_and_shows_statutes_and_an_agent_cannot_purge_them() {
     assert_eq!(shown["mime"], "application/pdf");
 
     let pending = json_result(
-        &freeflow()
-            .env("FREEFLOW_DB", &db)
+        &unlocked(&db)
             .args([
                 "--json",
                 "--actor",
@@ -4183,16 +4053,14 @@ fn papers_add_lists_and_shows_statutes_and_an_agent_cannot_purge_them() {
     );
     assert_eq!(pending["status"], "pending_confirmation");
     // L'humain qui confirmerait se heurte encore au délai (statuts : jusqu'à radiation).
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["confirm", pending["pending_action_id"].as_str().unwrap()])
         .assert()
         .failure()
         .code(4)
         .stderr(predicate::str::contains("délai de conservation"));
 
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "papers",
             "add",

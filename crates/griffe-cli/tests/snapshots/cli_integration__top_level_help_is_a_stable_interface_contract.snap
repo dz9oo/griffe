@@ -21,7 +21,7 @@ Commands:
   prospect    Prospection : opportunités, pipeline, interactions
   mission     Missions : création, saisie de temps, TJM effectif, capacité
   quote       Devis : création, révision, envoi, acceptation
-  invoice     Facturation : émission, avoir, vérification de la chaîne, balance âgée
+  invoice     Facturation : émission, import, avoir, vérification de la chaîne, balance âgée
   payment     Encaissements
   bank        Relevés bancaires : import et rapprochement
   pending     Actions en attente de confirmation humaine (proposées par un agent)

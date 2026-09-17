@@ -15,8 +15,8 @@ use std::process::Command;
 
 use griffe_core::company::CompanyProfile;
 use griffe_core::domain::{
-    Address, Client, ClientId, Invoice, InvoiceId, InvoiceLine, InvoiceStatus, Money, Siren,
-    VatRate,
+    Address, Client, ClientId, Invoice, InvoiceId, InvoiceLine, InvoiceOrigin, InvoiceStatus,
+    Money, Siren, VatRate,
 };
 use time::{Date, Month};
 
@@ -89,6 +89,7 @@ fn invoice() -> Invoice {
             },
         ],
         status: InvoiceStatus::Issued,
+        origin: InvoiceOrigin::Issued,
         issued_on: Date::from_calendar_date(2026, Month::September, 30).unwrap(),
         due_on: Date::from_calendar_date(2026, Month::October, 30).unwrap(),
         previous_hash: None,

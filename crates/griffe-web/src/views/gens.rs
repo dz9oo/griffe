@@ -10,7 +10,7 @@ use griffe_core::follow_up::{FollowUpCard, card_for, follow_up_sender};
 use griffe_core::people::{
     CurrentSituation, HistoryEvent, HistoryKind, MissionShape, OutgoingCadence, OutgoingChapter,
     OutgoingNote, Paper, PaperKind, PaperStatus, PeopleList, PersonAction, PersonCue,
-    PersonDossier, PersonFigure, PersonRow, people_list, person,
+    PersonDossier, PersonFigure, PersonKey, PersonRow, people_list, person,
 };
 use griffe_core::store::Store;
 use maud::{Markup, html};
@@ -209,16 +209,21 @@ pub fn dossier_markup(dossier: &PersonDossier, today: Date, flash: Option<&str>)
                     p { (project_paragraph(project, dossier)) }
                 }
             }
-            @if !dossier.papers.is_empty() {
+            @if show_papers_block(dossier) {
                 div class="block" {
                     h3 { "Les papiers" }
-                    ul class="hist" {
-                        @for paper in &dossier.papers {
-                            li {
-                                span class="when" { (short_date(paper.on)) }
-                                span { (paper_line(paper)) }
+                    @if !dossier.papers.is_empty() {
+                        ul class="hist" {
+                            @for paper in &dossier.papers {
+                                li {
+                                    span class="when" { (short_date(paper.on)) }
+                                    span { (paper_line(paper)) }
+                                }
                             }
                         }
+                    }
+                    @if can_import_invoice(dossier) {
+                        (import_invoice_form(dossier, today))
                     }
                 }
             }
@@ -492,6 +497,86 @@ fn short_date(on: Date) -> String {
         on.day(),
         crate::views::copy::month_fr(u8::from(on.month()))
     )
+}
+
+fn show_papers_block(dossier: &PersonDossier) -> bool {
+    !dossier.papers.is_empty() || can_import_invoice(dossier)
+}
+
+fn can_import_invoice(dossier: &PersonDossier) -> bool {
+    !dossier.not_yet_client && matches!(dossier.key, PersonKey::Client { .. })
+}
+
+const VAT_RATE_OPTIONS: [(&str, &str); 5] = [
+    ("standard", "20 %"),
+    ("intermediate", "10 %"),
+    ("reduced", "5,5 %"),
+    ("super_reduced", "2,1 %"),
+    ("zero", "0 %"),
+];
+
+fn import_invoice_form(dossier: &PersonDossier, today: Date) -> Markup {
+    let href = format!("{}/facture", person_href(&dossier.name));
+    let issued = format_date(today);
+    let mission_options: Vec<(String, String)> = dossier
+        .project
+        .as_ref()
+        .map(|project| (project.mission_id.to_string(), project.name.clone()))
+        .into_iter()
+        .collect();
+    let credit_options: Vec<(String, String)> = dossier
+        .papers
+        .iter()
+        .filter(|paper| paper.kind == PaperKind::Invoice)
+        .filter_map(|paper| {
+            let id = paper.invoice_id?;
+            let number = paper.number.as_deref().filter(|n| !n.is_empty())?;
+            Some((id.to_string(), number.to_string()))
+        })
+        .collect();
+    html! {
+        div class="import-invoice" {
+            p class="section-label" { "Poser une facture née ailleurs" }
+            p class="lede" {
+                "Le numéro est celui de Tiime, Indy ou de votre plateforme. Griffe n'en invente pas un second."
+            }
+            p class="lede" {
+                "Un avoir doit porter une quantité négative."
+            }
+            form class="note-join" hx-encoding="multipart/form-data"
+                 hx-post=(href) hx-target="#content" {
+                (form::file("file", "PDF", ".pdf,application/pdf"))
+                (form::text("number", "Numéro", "", None))
+                (form::date("issued_on", "Date", &issued, None))
+                (form::number("payment_terms_days", "Délai (jours)", "30", "1", None))
+                (form::text("description", "Description", "", None))
+                (form::number("quantity", "Quantité", "1", "0.01", None))
+                (form::text("unit_price", "Prix HT", "", None))
+                (form::select("vat_rate", "Taux", &VAT_RATE_OPTIONS, "standard", None))
+                div class="field" {
+                    label for="mission" { "Mission" }
+                    select id="mission" name="mission" {
+                        option value="" { "aucune" }
+                        @for (value, label) in &mission_options {
+                            option value=(value) { (label) }
+                        }
+                    }
+                }
+                div class="field" {
+                    label for="credits" { "Avoir pour" }
+                    select id="credits" name="credits" {
+                        option value="" { "une vente" }
+                        @for (value, label) in &credit_options {
+                            option value=(value) { (label) }
+                        }
+                    }
+                }
+                div class="row-actions" {
+                    button class="seal" type="submit" { "Coller au dossier" }
+                }
+            }
+        }
+    }
 }
 
 fn paper_line(paper: &Paper) -> String {

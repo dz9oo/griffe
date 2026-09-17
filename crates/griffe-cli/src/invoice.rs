@@ -11,7 +11,8 @@ use griffe_core::billing::{
     self, aged_balance, list_bank_transactions, list_invoices, list_payments, verify_chain,
 };
 use griffe_core::domain::{
-    BankTransactionId, ClientId, InvoiceId, InvoiceLine, MissionId, Money, PaymentId, PaymentMethod,
+    BankTransactionId, ClientId, InvoiceId, InvoiceLine, InvoiceOrigin, MissionId, Money,
+    PaymentId, PaymentMethod,
 };
 use griffe_core::store::Store;
 use time::Date;
@@ -45,6 +46,29 @@ pub enum InvoiceCommand {
         issued_on: Date,
         #[arg(long, default_value_t = 30)]
         payment_terms_days: u32,
+    },
+    /// Enregistre une facture née ailleurs (PA, outil tiers) — conserve son numéro, archive le
+    /// fichier. Nécessite confirmation humaine quand `--actor agent:...`.
+    Import {
+        /// Original produit hors de FreeFlow (PDF de la PA, scan…).
+        #[arg(long)]
+        file: PathBuf,
+        #[arg(long, value_parser = clap::value_parser!(ClientId))]
+        client: ClientId,
+        #[arg(long, value_parser = clap::value_parser!(MissionId))]
+        mission: Option<MissionId>,
+        /// Numéro déjà porté par le document, jamais un `FA-` alloué ici.
+        #[arg(long)]
+        number: String,
+        #[arg(long)]
+        lines: String,
+        #[arg(long, value_parser = parse_date)]
+        issued_on: Date,
+        #[arg(long, default_value_t = 30)]
+        payment_terms_days: u32,
+        /// Facture d'origine si cet import est un avoir.
+        #[arg(long, value_parser = clap::value_parser!(InvoiceId))]
+        credits: Option<InvoiceId>,
     },
     /// Émet un avoir annulant intégralement une facture — même exigence de confirmation.
     CreditNote {
@@ -203,6 +227,50 @@ pub fn run_invoice(
             };
             crate::papers::append_capture_note(rendered, json, note)
         }
+        InvoiceCommand::Import {
+            file,
+            client,
+            mission,
+            number,
+            lines,
+            issued_on,
+            payment_terms_days,
+            credits,
+        } => {
+            let bytes = std::fs::read(&file).map_err(|e| {
+                CliError::Domain(format!("lecture de {} impossible : {e}", file.display()))
+            })?;
+            let original_name = file
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .filter(|n| !n.is_empty())
+                .unwrap_or_else(|| "facture.pdf".to_string());
+            let lines = parse_lines(&lines)?;
+            let command = billing::ImportIssuedInvoice {
+                number,
+                client_id: client,
+                mission_id: mission,
+                lines,
+                issued_on,
+                payment_terms_days,
+                credited_invoice_id: credits,
+            };
+            let outcome = Executor::new(store).execute(&command, ctx)?;
+            let rendered = format_outcome(&outcome, json);
+            let note = match &outcome {
+                griffe_core::app::Outcome::Applied(emitted) => {
+                    crate::papers::invoice_capture_note(crate::papers::capture_imported_invoice(
+                        store,
+                        ctx,
+                        emitted.id,
+                        &original_name,
+                        &bytes,
+                    ))
+                }
+                _ => None,
+            };
+            crate::papers::append_capture_note(rendered, json, note)
+        }
         InvoiceCommand::CreditNote { id, issued_on } => {
             let command = billing::IssueCreditNote {
                 invoice_id: id,
@@ -291,6 +359,12 @@ pub fn run_invoice(
         InvoiceCommand::Render { id, out } => {
             let invoice = billing::invoice_by_id(store.connection(), id)?
                 .ok_or_else(|| CliError::Domain(format!("facture introuvable : {id}")))?;
+            if invoice.origin == InvoiceOrigin::Imported {
+                return Err(CliError::Domain(
+                    "cette facture est née ailleurs : ouvrez le papier importé, ne la re-rendez pas"
+                        .to_string(),
+                ));
+            }
             let client = griffe_core::clients::client_by_id(store.connection(), invoice.client_id)?
                 .ok_or_else(|| {
                     CliError::Domain(format!("client introuvable : {}", invoice.client_id))

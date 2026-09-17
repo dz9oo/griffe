@@ -477,16 +477,8 @@ mod tests {
     use super::*;
     use crate::app::{Actor, ExecutionContext, Executor};
     use crate::clients::CreateClient;
-    use crate::store::{Passphrase, Store};
-
-    fn test_store(label: &str) -> Store {
-        let dir = std::env::temp_dir().join(format!(
-            "freeflow-reference-test-{label}-{}-{}",
-            std::process::id(),
-            uuid::Uuid::now_v7()
-        ));
-        Store::create(&dir.join("vault.db"), &Passphrase::from("s3cret")).unwrap()
-    }
+    use crate::store::Store;
+    use crate::store::testing::test_store;
 
     fn create_client(store: &mut Store, name: &str) -> ClientId {
         let cmd = CreateClient {

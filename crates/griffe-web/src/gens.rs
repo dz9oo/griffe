@@ -5,12 +5,14 @@ use axum::extract::{Multipart, Path, State};
 use axum::http::{HeaderMap, HeaderValue};
 use axum::response::{Html, IntoResponse, Response};
 use griffe_core::app::{AppError, Executor, Outcome};
+use griffe_core::billing::ImportIssuedInvoice;
 use griffe_core::domain::{
-    ExpenseId, InteractionKind, Money, Probability, format_date, parse_date,
+    ExpenseId, InteractionKind, InvoiceId, InvoiceLine, MissionId, Money, Probability, VatRate,
+    format_date, parse_date,
 };
 use griffe_core::expenses::{AttachReceipt, expense_by_id};
 use griffe_core::follow_up::{MarkFollowUpSent, PrepareFollowUp, SnoozeFollowUp};
-use griffe_core::people::person;
+use griffe_core::people::{PersonKey, person};
 use griffe_core::prospection::{CreateProspect, LogInteraction};
 use maud::{Markup, html};
 use serde::Deserialize;
@@ -245,7 +247,7 @@ pub async fn write(
                     &db_path,
                     &prepared.draft.filename,
                     &prepared.draft.rfc5322,
-                    true,
+                    griffe_cli::should_open_externally(),
                 );
             }
             gens::load_card(store, subject, today)
@@ -579,4 +581,225 @@ pub async fn attach_note(
             page(&headers, content).into_response()
         }
     }
+}
+
+#[derive(Default)]
+struct ImportInvoiceFields {
+    number: String,
+    issued_on: String,
+    payment_terms_days: String,
+    description: String,
+    quantity: String,
+    unit_price: String,
+    vat_rate: String,
+    mission: String,
+    credits: String,
+    filename: String,
+    content: Vec<u8>,
+}
+
+/// Colle au dossier une facture née ailleurs : le numéro est celui du PDF, jamais un `FA-`.
+pub async fn import_invoice(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(reference): Path<String>,
+    mut multipart: Multipart,
+) -> Response {
+    let today = state.today();
+    let dossier = match load_dossier(&state, &reference).await {
+        None => return locked(&headers).into_response(),
+        Some(Err(_)) => return page(&headers, gens::not_found(&reference, today)).into_response(),
+        Some(Ok(dossier)) => dossier,
+    };
+    if dossier.not_yet_client {
+        return page(
+            &headers,
+            gens::dossier_markup(
+                &dossier,
+                today,
+                Some("cette fiche n'est pas encore cliente"),
+            ),
+        )
+        .into_response();
+    }
+    let PersonKey::Client { id: client_id } = dossier.key else {
+        return page(
+            &headers,
+            gens::dossier_markup(&dossier, today, Some("cette chemise n'est pas une cliente")),
+        )
+        .into_response();
+    };
+
+    let mut fields = ImportInvoiceFields::default();
+    while let Ok(Some(field)) = multipart.next_field().await {
+        let name = field.name().unwrap_or_default().to_string();
+        if name == "file" {
+            fields.filename = field.file_name().unwrap_or_default().to_string();
+            if let Ok(bytes) = field.bytes().await {
+                fields.content = bytes.to_vec();
+            }
+            continue;
+        }
+        let Ok(value) = field.text().await else {
+            continue;
+        };
+        match name.as_str() {
+            "number" => fields.number = value,
+            "issued_on" => fields.issued_on = value,
+            "payment_terms_days" => fields.payment_terms_days = value,
+            "description" => fields.description = value,
+            "quantity" => fields.quantity = value,
+            "unit_price" => fields.unit_price = value,
+            "vat_rate" => fields.vat_rate = value,
+            "mission" => fields.mission = value,
+            "credits" => fields.credits = value,
+            _ => {}
+        }
+    }
+
+    if fields.filename.is_empty() || fields.content.is_empty() {
+        return page(
+            &headers,
+            gens::dossier_markup(&dossier, today, Some("choisissez le PDF")),
+        )
+        .into_response();
+    }
+
+    let parsed = match parse_import_fields(&fields) {
+        Ok(parsed) => parsed,
+        Err(msg) => {
+            return page(&headers, gens::dossier_markup(&dossier, today, Some(&msg)))
+                .into_response();
+        }
+    };
+
+    let original = fields
+        .filename
+        .rsplit(['/', '\\'])
+        .next()
+        .filter(|n| !n.is_empty())
+        .unwrap_or("facture.pdf")
+        .to_string();
+    let bytes = fields.content;
+    let cmd = ImportIssuedInvoice {
+        number: parsed.number,
+        client_id,
+        mission_id: parsed.mission_id,
+        lines: vec![parsed.line],
+        issued_on: parsed.issued_on,
+        payment_terms_days: parsed.payment_terms_days,
+        credited_invoice_id: parsed.credited_invoice_id,
+    };
+    let result = state
+        .with_store_mut(|store| -> Result<String, String> {
+            match Executor::new(store).execute(&cmd, &AppState::human_ctx()) {
+                Ok(Outcome::Applied(emitted) | Outcome::AlreadyApplied(emitted)) => {
+                    let number = emitted.number;
+                    let note =
+                        griffe_cli::invoice_capture_note(griffe_cli::capture_imported_invoice(
+                            store,
+                            &AppState::human_ctx(),
+                            emitted.id,
+                            &original,
+                            &bytes,
+                        ));
+                    Ok(griffe_cli::append_capture_note(
+                        format!("facture {number} collée au dossier"),
+                        false,
+                        note,
+                    ))
+                }
+                Ok(_) => Err("la facture n'a pas été collée".into()),
+                Err(e) => Err(e.to_string()),
+            }
+        })
+        .await;
+    match result {
+        None => locked(&headers).into_response(),
+        Some(Err(msg)) => {
+            page(&headers, gens::dossier_markup(&dossier, today, Some(&msg))).into_response()
+        }
+        Some(Ok(flash)) => {
+            let content = state
+                .with_store(
+                    |store| match person(store.connection(), &reference, today) {
+                        Ok(fresh) => gens::dossier_markup(&fresh, today, Some(&flash)),
+                        Err(err) => html! { div class="empty-state" { (err.to_string()) } },
+                    },
+                )
+                .await
+                .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
+            page(&headers, content).into_response()
+        }
+    }
+}
+
+struct ParsedImport {
+    number: String,
+    issued_on: time::Date,
+    payment_terms_days: u32,
+    line: InvoiceLine,
+    mission_id: Option<MissionId>,
+    credited_invoice_id: Option<InvoiceId>,
+}
+
+fn parse_import_fields(fields: &ImportInvoiceFields) -> Result<ParsedImport, String> {
+    let issued_on = parse_date(fields.issued_on.trim())
+        .map_err(|_| "indiquez la date (AAAA-MM-JJ)".to_string())?;
+    let payment_terms_days = if fields.payment_terms_days.trim().is_empty() {
+        30
+    } else {
+        fields
+            .payment_terms_days
+            .trim()
+            .parse::<u32>()
+            .map_err(|_| "indiquez le délai en jours".to_string())?
+    };
+    let description = fields.description.trim();
+    if description.is_empty() {
+        return Err("indiquez la description".into());
+    }
+    let quantity = if fields.quantity.trim().is_empty() {
+        1.0
+    } else {
+        fields
+            .quantity
+            .trim()
+            .parse::<f64>()
+            .map_err(|_| "indiquez la quantité".to_string())?
+    };
+    let unit_price = Money::parse_decimal(fields.unit_price.trim())
+        .map_err(|_| "indiquez le prix HT".to_string())?;
+    let vat_raw = fields.vat_rate.trim();
+    let vat_rate = if vat_raw.is_empty() {
+        VatRate::Standard
+    } else {
+        vat_raw
+            .parse::<VatRate>()
+            .map_err(|_| "taux de TVA inconnu".to_string())?
+    };
+    let mission_id = optional_id::<MissionId>(&fields.mission, "cette mission est introuvable")?;
+    let credited_invoice_id =
+        optional_id::<InvoiceId>(&fields.credits, "cette facture est introuvable")?;
+    Ok(ParsedImport {
+        number: fields.number.clone(),
+        issued_on,
+        payment_terms_days,
+        line: InvoiceLine {
+            description: description.to_string(),
+            quantity,
+            unit_price,
+            vat_rate,
+        },
+        mission_id,
+        credited_invoice_id,
+    })
+}
+
+fn optional_id<T: std::str::FromStr>(raw: &str, err: &str) -> Result<Option<T>, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    trimmed.parse::<T>().map(Some).map_err(|_| err.to_string())
 }

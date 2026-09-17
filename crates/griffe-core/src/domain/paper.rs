@@ -188,8 +188,8 @@ impl PaperKind {
                 official: "Facture (Factur-X, norme EN 16931)",
                 what: "Le document qui dit ce que le client vous doit, et la TVA. Une facture \
                        émise ne se modifie plus : un avoir l'annule.",
-                whence: "Née ici, au moment où vous émettez la facture. FreeFlow la fige : un \
-                         re-rendu plus tard ne la remplace pas.",
+                whence: "Née ici si vous émettez dans Griffe (le premier rendu gagne). Sinon \
+                         vous l'apportez : le PDF de la PA, collé au dossier.",
                 origin: PaperWhence::BornHere,
             },
             Self::CreditNote => PaperBrief {
@@ -197,7 +197,8 @@ impl PaperKind {
                 official: "Avoir (note de crédit)",
                 what: "Le document qui annule une facture déjà émise. La facture d'origine reste ; \
                        l'avoir la contre-écrit.",
-                whence: "Né ici, quand vous annulez une facture par un avoir.",
+                whence: "Né ici si vous émettez l'avoir dans Griffe (le premier rendu gagne). \
+                         Sinon vous l'apportez : le PDF de la PA, collé au dossier.",
                 origin: PaperWhence::BornHere,
             },
             Self::Fec => PaperBrief {
@@ -556,6 +557,17 @@ mod tests {
                 "le titre n'est pas le sigle : {kind}"
             );
         }
+    }
+
+    #[test]
+    fn issued_invoice_brief_mentions_a_brought_original() {
+        let b = PaperKind::IssuedInvoice.brief();
+        assert!(
+            b.whence.contains("apporte") || b.whence.contains("PA"),
+            "{}",
+            b.whence
+        );
+        assert_eq!(b.origin, PaperWhence::BornHere);
     }
 
     #[test]

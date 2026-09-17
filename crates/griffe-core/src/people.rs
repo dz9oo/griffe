@@ -1361,7 +1361,8 @@ mod tests {
     use crate::opening_balance::RecordOpeningBalance;
     use crate::prospection::{CreateProspect, LogInteraction};
     use crate::quotes::{CreateQuote, SendQuote};
-    use crate::store::{Passphrase, Store};
+    use crate::store::Store;
+    use crate::store::testing::test_store;
 
     fn date(year: i32, month: TimeMonth, day: u8) -> Date {
         Date::from_calendar_date(year, month, day).unwrap()
@@ -1369,15 +1370,6 @@ mod tests {
 
     fn today() -> Date {
         date(2026, TimeMonth::September, 5)
-    }
-
-    fn test_store(label: &str) -> Store {
-        let dir = std::env::temp_dir().join(format!(
-            "freeflow-people-test-{label}-{}-{}",
-            std::process::id(),
-            uuid::Uuid::now_v7()
-        ));
-        Store::create(&dir.join("vault.db"), &Passphrase::from("s3cret")).unwrap()
     }
 
     fn human() -> ExecutionContext {

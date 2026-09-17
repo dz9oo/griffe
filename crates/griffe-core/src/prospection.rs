@@ -40,7 +40,8 @@ mod tests {
         ClientId, InteractionKind, LossReason, MissionKind, Money, OpportunityId, OpportunityStage,
         Probability,
     };
-    use crate::store::{Passphrase, Store};
+    use crate::store::Store;
+    use crate::store::testing::test_store as empty_store;
 
     fn date(year: i32, month: Month, day: u8) -> Date {
         Date::from_calendar_date(year, month, day).unwrap()
@@ -49,12 +50,7 @@ mod tests {
     /// Ouvre un coffre de test et y insère un client de référence (les opportunités portent
     /// une contrainte de clé étrangère vers `clients`).
     fn test_store(label: &str) -> (Store, ClientId) {
-        let dir = std::env::temp_dir().join(format!(
-            "freeflow-prospection-test-{label}-{}-{}",
-            std::process::id(),
-            uuid::Uuid::now_v7()
-        ));
-        let store = Store::create(&dir.join("vault.db"), &Passphrase::from("s3cret")).unwrap();
+        let store = empty_store(label);
         let client_id = ClientId::new();
         store
             .connection()
@@ -819,15 +815,6 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(interaction.occurred_at, occurred_at);
-    }
-
-    fn empty_store(label: &str) -> Store {
-        let dir = std::env::temp_dir().join(format!(
-            "freeflow-prospection-test-{label}-{}-{}",
-            std::process::id(),
-            uuid::Uuid::now_v7()
-        ));
-        Store::create(&dir.join("vault.db"), &Passphrase::from("s3cret")).unwrap()
     }
 
     fn new_prospect(name: &str) -> CreateProspect {

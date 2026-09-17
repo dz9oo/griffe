@@ -207,7 +207,7 @@ async fn draft(state: &AppState, headers: HeaderMap, subject: FollowUpSubject) -
                 &db_path,
                 &prepared.draft.filename,
                 &prepared.draft.rfc5322,
-                true,
+                griffe_cli::should_open_externally(),
             );
             Ok("brouillon ouvert dans votre client mail — dites ensuite si c'est envoyé".into())
         } else {

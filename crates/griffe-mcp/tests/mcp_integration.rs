@@ -132,6 +132,7 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "quote.decline",
         "quote.accept",
         "invoice.emit",
+        "invoice.import",
         "invoice.credit_note",
         "invoice.verify_chain",
         "invoice.aged_balance",
@@ -262,6 +263,7 @@ async fn lists_every_domain_tool_with_correct_annotations() {
     // annoncées comme destructives côté MCP — c'est ce qui doit alerter un agent avant appel.
     for destructive in [
         "invoice.emit",
+        "invoice.import",
         "invoice.credit_note",
         "clients.delete",
         "prospect.delete",
@@ -2468,6 +2470,134 @@ async fn confirming_an_invoice_emit_captures_the_issued_original() {
     assert_eq!(papers.as_array().unwrap().len(), 1, "{papers}");
     assert_eq!(papers[0]["kind"], "issued_invoice");
     assert_eq!(papers[0]["origin"], "issued");
+
+    client.cancel().await.unwrap();
+}
+
+/// `invoice.import` dépose une action ; `freeflow confirm` (humain) crée la ligne importée
+/// sans papier `Issued` — le pending n'emporte pas les octets, MCP n'archive pas.
+#[tokio::test]
+async fn confirming_an_invoice_import_records_origin_imported_without_an_issued_paper() {
+    let db_path = test_db_path("papers-import-mcp");
+    let store = Store::create(&db_path, &Passphrase::from("s3cret")).unwrap();
+    let client = spawn_client(store).await;
+
+    let created = call(&client, "clients.create", json!({"name": "Camille"})).await;
+    let client_id = json_of(&created)["result"].as_str().unwrap().to_string();
+    let lines_json = serde_json::to_string(&json!([
+        {"description": "Mission Camille", "quantity": 1.0, "unit_price": 500000, "vat_rate": "Standard"}
+    ]))
+    .unwrap();
+
+    let missing = db_path.parent().unwrap().join("absent.pdf");
+    let unread = call(
+        &client,
+        "invoice.import",
+        json!({
+            "number": "FAC-2026-0042",
+            "client_id": client_id,
+            "lines_json": lines_json,
+            "issued_on": "2026-09-16",
+            "path": missing.to_str().unwrap(),
+        }),
+    )
+    .await;
+    assert_eq!(unread.is_error, Some(true), "{unread:?}");
+    let unread_text = tool_text(&unread);
+    assert!(
+        unread_text.contains("lecture") && unread_text.contains("impossible"),
+        "{unread_text}"
+    );
+
+    let pdf = db_path.parent().unwrap().join("FAC-2026-0042.pdf");
+    std::fs::write(&pdf, b"%PDF-1.7 camille").unwrap();
+    let imported = call(
+        &client,
+        "invoice.import",
+        json!({
+            "number": "FAC-2026-0042",
+            "client_id": client_id,
+            "lines_json": lines_json,
+            "issued_on": "2026-09-16",
+            "path": pdf.to_str().unwrap(),
+        }),
+    )
+    .await;
+    assert_eq!(imported.is_error, Some(false), "{imported:?}");
+    let body = json_of(&imported);
+    assert_eq!(body["status"], "pending_confirmation");
+    let pending_id = body["pending_action_id"].as_str().unwrap().to_string();
+
+    let check = Store::open_with_passphrase(&db_path, &Passphrase::from("s3cret")).unwrap();
+    let invoice_count: i64 = check
+        .connection()
+        .query_row("SELECT count(*) FROM invoices", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(
+        invoice_count, 0,
+        "aucune facture ne doit exister tant qu'un humain n'a pas confirmé"
+    );
+    drop(check);
+
+    let mut confirming =
+        Store::open_with_passphrase(&db_path, &Passphrase::from("s3cret")).unwrap();
+    let (out, code) = griffe_cli::run_capturing_with_vault(
+        [
+            "freeflow",
+            "--db",
+            db_path.to_str().expect("chemin UTF-8"),
+            "confirm",
+            pending_id.as_str(),
+        ],
+        griffe_cli::VaultAccess::Borrowed {
+            store: &mut confirming,
+            db_path: &db_path,
+        },
+    );
+    assert_eq!(code, 0, "{out}");
+
+    let (invoice_id, origin): (String, String) = confirming
+        .connection()
+        .query_row(
+            "SELECT id, origin FROM invoices WHERE number = ?1",
+            ["FAC-2026-0042"],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(origin, "imported");
+
+    let papers = json_of(&call(&client, "papers.list", json!({"kind": "issued_invoice"})).await);
+    assert!(
+        papers.as_array().unwrap().is_empty(),
+        "aucun papier Issued ne doit être fabriqué à la confirmation d'un import : {papers}"
+    );
+    let all_papers = json_of(&call(&client, "papers.list", json!({})).await);
+    assert!(
+        !all_papers
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["origin"] == "issued"),
+        "{all_papers}"
+    );
+
+    let out_pdf = db_path.parent().unwrap().join("ne-pas-rendre.pdf");
+    let rendered = call(
+        &client,
+        "invoice.render",
+        json!({"id": invoice_id, "out": out_pdf.to_str().unwrap()}),
+    )
+    .await;
+    assert_eq!(rendered.is_error, Some(true), "{rendered:?}");
+    let text = tool_text(&rendered);
+    assert_eq!(
+        text,
+        "cette facture est née ailleurs : ouvrez le papier importé, ne la re-rendez pas"
+    );
+    assert!(
+        !out_pdf.exists(),
+        "aucun PDF ne doit être écrit pour une facture importée"
+    );
 
     client.cancel().await.unwrap();
 }

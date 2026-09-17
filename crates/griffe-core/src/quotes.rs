@@ -22,19 +22,15 @@ mod tests {
     use crate::domain::{
         ClientId, Discount, LineKind, MissionKind, Money, QuoteId, QuoteLine, QuoteStatus, VatRate,
     };
-    use crate::store::{Passphrase, Store};
+    use crate::store::Store;
+    use crate::store::testing::test_store as empty_test_store;
 
     fn date(year: i32, month: Month, day: u8) -> Date {
         Date::from_calendar_date(year, month, day).unwrap()
     }
 
     fn test_store(label: &str) -> (Store, ClientId) {
-        let dir = std::env::temp_dir().join(format!(
-            "freeflow-quotes-test-{label}-{}-{}",
-            std::process::id(),
-            uuid::Uuid::now_v7()
-        ));
-        let store = Store::create(&dir.join("vault.db"), &Passphrase::from("s3cret")).unwrap();
+        let store = empty_test_store(label);
         let client_id = row::seed_client(store.connection());
         (store, client_id)
     }

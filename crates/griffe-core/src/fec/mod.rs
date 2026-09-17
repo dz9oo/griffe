@@ -274,11 +274,12 @@ mod tests {
     use crate::billing::{EmitInvoice, IssueCreditNote, RecordPayment, VoidPayment};
     use crate::company::SetCompanyProfile;
     use crate::domain::{
-        Address, ClientId, InvoiceId, InvoiceLine, InvoiceStatus, PaymentId, VatRate,
+        Address, ClientId, InvoiceId, InvoiceLine, InvoiceOrigin, InvoiceStatus, PaymentId, VatRate,
     };
     use crate::domain::{ExpenseCategory, FiscalYearEnd, PaymentMethod};
     use crate::expenses::RecordExpense;
-    use crate::store::{Passphrase, Store};
+    use crate::store::Store;
+    use crate::store::testing::test_store;
     use proptest::prelude::*;
     use time::Month as TimeMonth;
     use time::OffsetDateTime;
@@ -356,6 +357,7 @@ mod tests {
             mission_id: None,
             lines,
             status: InvoiceStatus::Issued,
+            origin: InvoiceOrigin::Issued,
             issued_on,
             due_on: issued_on,
             previous_hash: None,
@@ -782,12 +784,7 @@ mod tests {
     // --- Sur base : la requête partagée par les façades. ---
 
     fn fresh_store(tag: &str) -> (Store, ClientId) {
-        let dir = std::env::temp_dir().join(format!(
-            "freeflow-fec-{tag}-{}-{}",
-            std::process::id(),
-            uuid::Uuid::now_v7()
-        ));
-        let store = Store::create(&dir.join("vault.db"), &Passphrase::from("s3cret")).unwrap();
+        let store = test_store(tag);
         let client_id = ClientId::new();
         store
             .connection()

@@ -13,11 +13,34 @@ pub enum BillingError {
     #[error("une facture doit avoir au moins une ligne")]
     EmptyInvoice,
 
+    #[error("un numéro de facture est obligatoire — c'est celui de la PA, pas un FA- inventé ici")]
+    EmptyInvoiceNumber,
+
+    #[error("une facture porte déjà le numéro {0}")]
+    DuplicateInvoiceNumber(String),
+
+    #[error("cette mission n'appartient pas à ce client")]
+    MissionDoesNotBelongToClient,
+
+    #[error(
+        "la facture {0} est née ailleurs : importez l'avoir (même bouche que la facture), n'émettez pas un FA-"
+    )]
+    CannotCreditImportedInvoice(InvoiceId),
+
     #[error("impossible d'émettre un avoir sur un avoir ({0}) : annulez la facture d'origine")]
     CannotCreditACreditNote(InvoiceId),
 
     #[error("la facture {0} a déjà un avoir associé")]
     AlreadyCredited(InvoiceId),
+
+    #[error("un avoir doit porter sur une facture du même client")]
+    ImportedCreditNoteWrongClient,
+
+    #[error(
+        "un avoir importé doit totaliser un TTC strictement négatif — inversez la quantité, \
+         n'ajoutez pas une seconde créance"
+    )]
+    ImportedCreditNoteMustBeNegative,
 
     #[error("transaction bancaire introuvable")]
     TransactionNotFound,

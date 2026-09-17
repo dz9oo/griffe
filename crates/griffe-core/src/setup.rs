@@ -279,16 +279,7 @@ mod tests {
     use crate::company::SetCompanyProfile;
     use crate::domain::{Address, FiscalYearEnd, Money, Siren, VatRegime};
     use crate::opening_balance::RecordOpeningBalance;
-    use crate::store::{Passphrase, Store};
-
-    fn test_store(label: &str) -> Store {
-        let dir = std::env::temp_dir().join(format!(
-            "freeflow-setup-test-{label}-{}-{}",
-            std::process::id(),
-            uuid::Uuid::now_v7()
-        ));
-        Store::create(&dir.join("vault.db"), &Passphrase::from("s3cret")).unwrap()
-    }
+    use crate::store::testing::test_store;
 
     fn human() -> ExecutionContext {
         ExecutionContext::new(Actor::Human, false)

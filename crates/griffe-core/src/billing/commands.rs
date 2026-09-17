@@ -6,14 +6,14 @@ use time::Date;
 
 use crate::app::{AppError, Command};
 use crate::domain::{
-    BankTransactionId, ClientId, Invoice, InvoiceId, InvoiceLine, InvoiceStatus, MissionId, Money,
-    Payment, PaymentId, PaymentMethod,
+    BankTransactionId, ClientId, Invoice, InvoiceId, InvoiceLine, InvoiceOrigin, InvoiceStatus,
+    MissionId, Money, Payment, PaymentId, PaymentMethod,
 };
 
 use super::error::BillingError;
 use super::import::ParsedTransaction;
 use super::row;
-use super::totals::{CanonicalInvoice, compute_invoice_hash};
+use super::totals::{CanonicalInvoice, compute_invoice_hash, compute_totals};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EmittedInvoice {
@@ -71,11 +71,107 @@ impl Command for EmitInvoice {
             mission_id: self.mission_id,
             lines: self.lines.clone(),
             status: InvoiceStatus::Issued,
+            origin: InvoiceOrigin::Issued,
             issued_on: self.issued_on,
             due_on,
             previous_hash,
             hash,
             credited_invoice_id: None,
+        };
+        row::insert_invoice(conn, &invoice)?;
+        Ok(EmittedInvoice { id, number })
+    }
+}
+
+/// Enregistre une facture de vente née ailleurs : le numéro est celui déjà porté par le
+/// document (PA, outil tiers), jamais un `FA-` alloué ici.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportIssuedInvoice {
+    pub number: String,
+    pub client_id: ClientId,
+    pub mission_id: Option<MissionId>,
+    pub lines: Vec<InvoiceLine>,
+    #[serde(with = "crate::domain::serde_date::date")]
+    pub issued_on: Date,
+    pub payment_terms_days: u32,
+    /// `Some` = avoir né ailleurs, lignes fournies (négatives), pas `IssueCreditNote`.
+    pub credited_invoice_id: Option<InvoiceId>,
+}
+
+impl Command for ImportIssuedInvoice {
+    type Output = EmittedInvoice;
+    const NAME: &'static str = "billing.import_issued_invoice";
+
+    fn requires_confirmation(&self) -> bool {
+        true
+    }
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        let number = self.number.trim();
+        if number.is_empty() {
+            return Err(BillingError::EmptyInvoiceNumber.into());
+        }
+        if self.lines.is_empty() {
+            return Err(BillingError::EmptyInvoice.into());
+        }
+        if row::invoice_by_number(conn, number)?.is_some() {
+            return Err(BillingError::DuplicateInvoiceNumber(number.to_string()).into());
+        }
+        if let Some(mission_id) = self.mission_id {
+            let belongs = crate::missions::mission_by_id(conn, mission_id)?
+                .is_some_and(|mission| mission.client_id == self.client_id);
+            if !belongs {
+                return Err(BillingError::MissionDoesNotBelongToClient.into());
+            }
+        }
+        if let Some(credited_id) = self.credited_invoice_id {
+            let original = row::invoice_by_id(conn, credited_id)?
+                .ok_or(BillingError::NotFound(credited_id))?;
+            if original.credited_invoice_id.is_some() {
+                return Err(BillingError::CannotCreditACreditNote(credited_id).into());
+            }
+            if row::has_credit_note(conn, credited_id)? {
+                return Err(BillingError::AlreadyCredited(credited_id).into());
+            }
+            if original.client_id != self.client_id {
+                return Err(BillingError::ImportedCreditNoteWrongClient.into());
+            }
+            if !compute_totals(&self.lines).total_ttc.is_negative() {
+                return Err(BillingError::ImportedCreditNoteMustBeNegative.into());
+            }
+        }
+
+        let due_on = self
+            .issued_on
+            .saturating_add(time::Duration::days(i64::from(self.payment_terms_days)));
+        let previous_hash = row::last_invoice_hash(conn)?;
+        let id = InvoiceId::new();
+        let number = number.to_string();
+
+        let canonical = CanonicalInvoice {
+            number: &number,
+            client_id: self.client_id.to_string(),
+            mission_id: self.mission_id.map(|m| m.to_string()),
+            lines: &self.lines,
+            issued_on: crate::domain::format_date(self.issued_on),
+            due_on: crate::domain::format_date(due_on),
+            credited_invoice_id: self.credited_invoice_id.map(|c| c.to_string()),
+        };
+        let hash = compute_invoice_hash(previous_hash.as_deref(), &canonical);
+
+        let invoice = Invoice {
+            id,
+            number: number.clone(),
+            client_id: self.client_id,
+            mission_id: self.mission_id,
+            lines: self.lines.clone(),
+            status: InvoiceStatus::Issued,
+            origin: InvoiceOrigin::Imported,
+            issued_on: self.issued_on,
+            due_on,
+            previous_hash,
+            hash,
+            credited_invoice_id: self.credited_invoice_id,
         };
         row::insert_invoice(conn, &invoice)?;
         Ok(EmittedInvoice { id, number })
@@ -103,6 +199,9 @@ impl Command for IssueCreditNote {
     fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
         let original = row::invoice_by_id(conn, self.invoice_id)?
             .ok_or(BillingError::NotFound(self.invoice_id))?;
+        if original.origin == InvoiceOrigin::Imported {
+            return Err(BillingError::CannotCreditImportedInvoice(self.invoice_id).into());
+        }
         if original.credited_invoice_id.is_some() {
             return Err(BillingError::CannotCreditACreditNote(self.invoice_id).into());
         }
@@ -142,6 +241,7 @@ impl Command for IssueCreditNote {
             mission_id: original.mission_id,
             lines: negated_lines,
             status: InvoiceStatus::Issued,
+            origin: InvoiceOrigin::Issued,
             issued_on: self.issued_on,
             due_on: self.issued_on,
             previous_hash,

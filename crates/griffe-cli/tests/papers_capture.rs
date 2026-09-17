@@ -4,11 +4,10 @@
 use std::path::Path;
 
 mod common;
-use common::{create_client, freeflow, json_result, provision, temp_db};
+use common::{create_client, json_result, provision, temp_db, unlocked};
 
 fn set_company_profile(db: &Path) {
-    freeflow()
-        .env("FREEFLOW_DB", db)
+    unlocked(db)
         .args([
             "company",
             "set-profile",
@@ -37,8 +36,7 @@ fn set_company_profile(db: &Path) {
 
 fn papers_of_kind(db: &Path, kind: &str) -> serde_json::Value {
     json_result(
-        &freeflow()
-            .env("FREEFLOW_DB", db)
+        &unlocked(db)
             .args(["--json", "papers", "list", "--kind", kind])
             .assert()
             .success()
@@ -63,8 +61,7 @@ fn emitting_an_invoice_archives_the_facturx_and_a_later_render_does_not_replace_
     let lines =
         r#"[{"description":"Prestation","quantity":1,"unit_price":100000,"vat_rate":"Standard"}]"#;
     let emit_out = json_result(
-        &freeflow()
-            .env("FREEFLOW_DB", &db)
+        &unlocked(&db)
             .args([
                 "--json",
                 "invoice",
@@ -98,8 +95,7 @@ fn emitting_an_invoice_archives_the_facturx_and_a_later_render_does_not_replace_
     assert_eq!(files.len(), 1, "un seul original chiffré");
 
     let copy = db.with_file_name("re-rendu.pdf");
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["invoice", "render", "--id", &invoice_id, "--out"])
         .arg(&copy)
         .assert()
@@ -126,8 +122,7 @@ fn bank_import_archives_the_source_file() {
         "date;description;montant\n2026-03-15;Frais;-12.50\n",
     )
     .unwrap();
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["bank", "import"])
         .arg(&statement)
         .assert()
@@ -144,13 +139,11 @@ fn approving_a_year_archives_minutes_appropriation_fec_and_liasse() {
     let db = temp_db("papers-year");
     provision(&db);
     set_company_profile(&db);
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["year", "close", "--period", "2026", "--today", "2027-01-05"])
         .assert()
         .success();
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "year",
             "approve",
@@ -191,8 +184,7 @@ fn papers_checklist_json_shows_issued_invoice_todo_then_done() {
     let lines =
         r#"[{"description":"Prestation","quantity":1,"unit_price":100000,"vat_rate":"Standard"}]"#;
     let emit_out = json_result(
-        &freeflow()
-            .env("FREEFLOW_DB", &db)
+        &unlocked(&db)
             .args([
                 "--json",
                 "invoice",
@@ -219,13 +211,11 @@ fn papers_checklist_json_shows_issued_invoice_todo_then_done() {
         "sans profil, l'émission n'a pas figé l'original"
     );
     set_company_profile(&db);
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["year", "close", "--period", "2026", "--today", "2027-01-05"])
         .assert()
         .success();
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "year",
             "approve",
@@ -239,8 +229,7 @@ fn papers_checklist_json_shows_issued_invoice_todo_then_done() {
         .success();
 
     let before = json_result(
-        &freeflow()
-            .env("FREEFLOW_DB", &db)
+        &unlocked(&db)
             .args([
                 "--json",
                 "papers",
@@ -265,16 +254,14 @@ fn papers_checklist_json_shows_issued_invoice_todo_then_done() {
     assert_eq!(invoice_item["required"], true);
 
     let pdf = db.with_file_name("FA.pdf");
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["invoice", "render", "--id", &invoice_id, "--out"])
         .arg(&pdf)
         .assert()
         .success();
 
     let after = json_result(
-        &freeflow()
-            .env("FREEFLOW_DB", &db)
+        &unlocked(&db)
             .args([
                 "--json",
                 "papers",
@@ -305,8 +292,7 @@ fn papers_export_writes_a_cleartext_pack_and_refuses_to_overwrite() {
     provision(&db);
     let pdf = db.with_file_name("statuts.pdf");
     std::fs::write(&pdf, b"%PDF-1.4 statuts SASU").unwrap();
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["papers", "add"])
         .arg(&pdf)
         .args(["--kind", "statutes"])
@@ -315,8 +301,7 @@ fn papers_export_writes_a_cleartext_pack_and_refuses_to_overwrite() {
 
     let dest = db.with_file_name("pack");
     let text = String::from_utf8(
-        freeflow()
-            .env("FREEFLOW_DB", &db)
+        unlocked(&db)
             .args(["papers", "export", "2026", "--out"])
             .arg(&dest)
             .args(["--today", "2026-09-09"])
@@ -356,8 +341,7 @@ fn papers_export_writes_a_cleartext_pack_and_refuses_to_overwrite() {
     );
 
     let json = json_result(
-        &freeflow()
-            .env("FREEFLOW_DB", &db)
+        &unlocked(&db)
             .args(["--json", "papers", "export", "2026", "--out"])
             .arg(db.with_file_name("pack-json"))
             .assert()
@@ -377,8 +361,7 @@ fn papers_export_writes_a_cleartext_pack_and_refuses_to_overwrite() {
     );
 
     let stderr = String::from_utf8_lossy(
-        &freeflow()
-            .env("FREEFLOW_DB", &db)
+        &unlocked(&db)
             .args(["papers", "export", "2026", "--out"])
             .arg(&dest)
             .assert()

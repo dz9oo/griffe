@@ -105,6 +105,27 @@ impl Argon2Cost {
         p_cost: 1,
     };
 
+    /// Coût de test : le minimum Argon2id valide. Un coffre de prod ne l'utilise jamais
+    /// (`for_new_vault` exige `GRIFFE_TEST_KDF` *et* un binaire debug). Sans ça, chaque
+    /// `Store::create` paie ~3 s / 64 Mio — 800 tests = une demi-heure.
+    pub const TEST: Self = Self {
+        m_cost: 32,
+        t_cost: 1,
+        p_cost: 1,
+    };
+
+    /// Coût d'un coffre neuf. En debug, `GRIFFE_TEST_KDF` sélectionne [`Self::TEST`].
+    /// Un binaire `--release` ignore le drapeau (un utilisateur ne peut pas affaiblir
+    /// l'Argon2id de prod en exportant une variable).
+    #[must_use]
+    pub fn for_new_vault() -> Self {
+        if test_harness() {
+            Self::TEST
+        } else {
+            Self::CURRENT
+        }
+    }
+
     /// # Panics
     ///
     /// Ne panique jamais : `m_cost`/`t_cost`/`p_cost` proviennent soit des constantes ci-dessus,
@@ -116,6 +137,12 @@ impl Argon2Cost {
             .expect("paramètres Argon2id déjà validés par validate_argon2_params");
         Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
     }
+}
+
+/// Harness de test : `GRIFFE_TEST_KDF` n'agit qu'en debug (même contrat que [`Argon2Cost::for_new_vault`]).
+#[must_use]
+pub(super) fn test_harness() -> bool {
+    cfg!(debug_assertions) && std::env::var_os("GRIFFE_TEST_KDF").is_some()
 }
 
 /// Plafond mémoire accepté pour un sidecar (en Kio) : 1 Gio. Très au-dessus du profil courant
@@ -277,9 +304,10 @@ impl Sidecar {
     }
 
     /// Ré-enveloppe la clé maître d'un sidecar v3 sous une nouvelle passphrase : sel neuf, coûts
-    /// [`Argon2Cost::CURRENT`] (un coffre resté à d'anciens paramètres en profite pour se mettre
-    /// à niveau), nonce neuf — puis réécrit `<db>.kdf` de façon atomique. La base n'est jamais
-    /// touchée : la clé maître, le `vault_id` et le `key_id` sont conservés à l'identique.
+    /// [`Argon2Cost::for_new_vault`] (un coffre resté à d'anciens paramètres en profite pour se
+    /// mettre à niveau ; en debug, `GRIFFE_TEST_KDF` sélectionne le coût de test), nonce neuf —
+    /// puis réécrit `<db>.kdf` de façon atomique. La base n'est jamais touchée : la clé maître,
+    /// le `vault_id` et le `key_id` sont conservés à l'identique.
     ///
     /// C'est ici — au plus près des deux dérivations déjà payées — que « nouvelle passphrase
     /// identique à l'ancienne » est détectée, comme `Store::change_passphrase` le fait pour un
@@ -319,7 +347,7 @@ impl Sidecar {
 
         let mut salt = [0u8; SALT_LEN];
         rand::rng().fill_bytes(&mut salt);
-        let cost = Argon2Cost::CURRENT;
+        let cost = Argon2Cost::for_new_vault();
         let new_kek = derive_key(new, &salt, cost)?;
         let body = write_v3(&path, vault_id, &salt, cost, key_id, &new_kek, &master)?;
 
@@ -634,7 +662,7 @@ fn write_fresh_v3(
 ) -> Result<(Sidecar, VaultKey), StoreError> {
     let mut salt = [0u8; SALT_LEN];
     rand::rng().fill_bytes(&mut salt);
-    let cost = Argon2Cost::CURRENT;
+    let cost = Argon2Cost::for_new_vault();
 
     let mut master_bytes = [0u8; VaultKey::LEN];
     rand::rng().fill_bytes(&mut master_bytes);
@@ -803,10 +831,14 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), StoreError> {
             file.set_permissions(fs::Permissions::from_mode(0o600))?;
         }
         file.write_all(bytes)?;
-        file.sync_all()?;
+        if !test_harness() {
+            file.sync_all()?;
+        }
     }
     fs::rename(&tmp_path, path)?;
-    sync_dir(path.parent())?;
+    if !test_harness() {
+        sync_dir(path.parent())?;
+    }
     Ok(())
 }
 
@@ -894,6 +926,22 @@ mod tests {
             hex::encode(hmac_sha256(b"Jefe", b"what do ya want for nothing?")),
             "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
         );
+    }
+
+    #[test]
+    fn a_new_vault_follows_the_test_kdf_flag() {
+        let expected = Argon2Cost::for_new_vault();
+        assert_eq!(
+            expected.m_cost,
+            if std::env::var_os("GRIFFE_TEST_KDF").is_some() {
+                Argon2Cost::TEST.m_cost
+            } else {
+                Argon2Cost::CURRENT.m_cost
+            }
+        );
+        let db_path = temp_db_path("test-kdf-flag");
+        let (sidecar, _) = create(&db_path, &"s3cret".into()).unwrap();
+        assert_eq!(sidecar.cost().m_cost, expected.m_cost);
     }
 
     #[test]
@@ -1137,6 +1185,22 @@ mod tests {
         // la même clé maître, avant comme après.
         assert!(before.verify(&master));
         assert!(reread.verify(&master));
+    }
+
+    #[test]
+    fn rewrap_follows_the_test_kdf_flag_like_create() {
+        // Production code that would make this fail: `rewrap` hard-coding
+        // `Argon2Cost::CURRENT` instead of `for_new_vault()`.
+        let db_path = temp_db_path("v3-rewrap-test-kdf");
+        let (before, _) = create(&db_path, &"old-s3cret".into()).unwrap();
+        let after = before
+            .rewrap(&db_path, &"old-s3cret".into(), &"new-s3cret".into())
+            .unwrap();
+        assert_eq!(
+            after.cost().m_cost,
+            Argon2Cost::for_new_vault().m_cost,
+            "un changement de passphrase v3 doit suivre GRIFFE_TEST_KDF, comme create"
+        );
     }
 
     #[test]

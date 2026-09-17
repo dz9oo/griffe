@@ -25,11 +25,10 @@ use std::path::Path;
 use predicates::prelude::*;
 
 mod common;
-use common::{freeflow, json_result, provision, temp_db};
+use common::{json_result, provision, temp_db, unlocked};
 
 fn set_profile(db: &Path) {
-    freeflow()
-        .env("FREEFLOW_DB", db)
+    unlocked(db)
         .args([
             "company",
             "set-profile",
@@ -63,8 +62,7 @@ fn set_profile(db: &Path) {
 }
 
 fn json_out(db: &Path, args: &[&str]) -> serde_json::Value {
-    let out = freeflow()
-        .env("FREEFLOW_DB", db)
+    let out = unlocked(db)
         .arg("--json")
         .args(args)
         .assert()
@@ -107,8 +105,7 @@ fn account_balance(balance: &serde_json::Value, account: &str) -> i64 {
 }
 
 fn record_from_debit(db: &Path, tx: &str, label: &str, category: &str, rate: &str, vat: &str) {
-    freeflow()
-        .env("FREEFLOW_DB", db)
+    unlocked(db)
         .args([
             "expense",
             "record",
@@ -135,8 +132,7 @@ fn reprised_debts_paid_from_the_statement_are_settled_not_expensed() {
     set_profile(&db);
 
     // Le bilan du cabinet, recopié.
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "year",
             "opening",
@@ -190,8 +186,7 @@ fn reprised_debts_paid_from_the_statement_are_settled_not_expensed() {
     csv.push_str("2026-02-05;CB OVH;-119.88\n");
     let statement = db.with_file_name("releve.csv");
     std::fs::write(&statement, csv).unwrap();
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["bank", "import", "--format", "csv"])
         .arg(&statement)
         .assert()
@@ -242,8 +237,7 @@ fn reprised_debts_paid_from_the_statement_are_settled_not_expensed() {
     );
     let ovh = unmatched_transaction(&db, "CB OVH");
     // 150 € de TVA sur 119,88 € : refusé, la TVA est bornée par le taux (lot 37).
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "expense",
             "record",
@@ -281,27 +275,23 @@ fn reprised_debts_paid_from_the_statement_are_settled_not_expensed() {
     );
     assert_eq!(pending["status"], "pending_confirmation");
     let pending_id = pending["pending_action_id"].as_str().unwrap();
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["confirm", pending_id])
         .assert()
         .success()
         .stdout(predicate::str::starts_with("✓"));
     let is_balance = unmatched_transaction(&db, "PRLV DGFIP SOLDE IS 2025");
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["bank", "settle", &is_balance, "--account", "444000"])
         .assert()
         .success()
         .stdout(predicate::str::contains("réglée sur le compte 444000"));
     // Un compte de gestion n'est pas un compte de règlement.
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["bank", "settle", &is_balance, "--account", "622600"])
         .assert()
         .failure();
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["bank", "list"])
         .assert()
         .success()
@@ -346,8 +336,7 @@ fn reprised_debts_paid_from_the_statement_are_settled_not_expensed() {
     );
 
     // Clôture : résultat −1 226,90, IS nul, report à nouveau 5 123,10.
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["year", "close", "--period", "2026", "--today", "2026-10-02"])
         .assert()
         .success();
@@ -360,8 +349,7 @@ fn reprised_debts_paid_from_the_statement_are_settled_not_expensed() {
 
     // Liasse : impôts et taxes en 244, le reste des charges externes en 242.
     let liasse_path = db.with_file_name("liasse-2026.json");
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["year", "render", "2026", "liasse", "--out"])
         .arg(&liasse_path)
         .assert()
@@ -383,8 +371,7 @@ fn reprised_debts_paid_from_the_statement_are_settled_not_expensed() {
     // FEC (colonnes : JournalCode 0, CompteNum 4, CompteLib 5, PieceRef 8) : deux écritures de
     // règlement `BQ-<uuid>`, chaque compte avec un seul libellé, une pièce par dépense.
     let fec_path = db.with_file_name("fec.txt");
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["fec", "export", "2026", "--out"])
         .arg(&fec_path)
         .assert()
@@ -421,8 +408,7 @@ fn reprised_debts_paid_from_the_statement_are_settled_not_expensed() {
     assert_eq!(expense_pieces.len(), 15, "une pièce distincte par dépense");
 
     // Défaire un règlement rend le débit « à rapprocher ».
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["bank", "unsettle", &is_balance])
         .assert()
         .success()

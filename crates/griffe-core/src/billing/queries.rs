@@ -26,6 +26,11 @@ pub fn invoice_by_id(conn: &Connection, id: InvoiceId) -> Result<Option<Invoice>
     row::invoice_by_id(conn, id)
 }
 
+/// # Errors
+pub fn invoice_by_number(conn: &Connection, number: &str) -> Result<Option<Invoice>, AppError> {
+    row::invoice_by_number(conn, number)
+}
+
 /// Tous les encaissements, annulés compris, les plus récents d'abord — l'historique complet est
 /// la liste par défaut ici (contrairement aux entités archivables) : un paiement annulé reste
 /// une écriture qu'on doit pouvoir montrer, c'est le sens même de la contre-écriture.

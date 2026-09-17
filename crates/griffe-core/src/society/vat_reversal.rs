@@ -208,19 +208,11 @@ mod tests {
         vat_carry_in, vat_position,
     };
     use crate::society::{VatPosition, society_home};
-    use crate::store::{Passphrase, Store};
+    use crate::store::Store;
+    use crate::store::testing::test_store;
 
     fn date(year: i32, month: TimeMonth, day: u8) -> Date {
         Date::from_calendar_date(year, month, day).unwrap()
-    }
-
-    fn test_store(label: &str) -> Store {
-        let dir = std::env::temp_dir().join(format!(
-            "freeflow-vat-reversal-test-{label}-{}-{}",
-            std::process::id(),
-            uuid::Uuid::now_v7()
-        ));
-        Store::create(&dir.join("vault.db"), &Passphrase::from("s3cret")).unwrap()
     }
 
     fn human() -> ExecutionContext {

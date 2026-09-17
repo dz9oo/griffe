@@ -742,6 +742,9 @@ fn parse_external_kind(raw: &str) -> Option<FiscalDeadlineKind> {
 
 fn open_allowed_url(url: &str) {
     const ALLOWED: &[&str] = &["https://www.impots.gouv.fr/", "https://procedures.inpi.fr/"];
+    if !griffe_cli::should_open_externally() {
+        return;
+    }
     if !ALLOWED.iter().any(|prefix| url.starts_with(prefix)) {
         return;
     }
@@ -774,7 +777,13 @@ pub async fn missions(State(state): State<AppState>, headers: HeaderMap) -> Html
 }
 
 pub async fn facturation(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
-    letter(&state, headers, ViewId::Gens, views::gens::render).await
+    letter(
+        &state,
+        headers,
+        ViewId::Facturation,
+        views::facturation::list_fragment,
+    )
+    .await
 }
 
 pub async fn clients(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {

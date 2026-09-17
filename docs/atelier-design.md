@@ -55,7 +55,7 @@ Journal d’audit : replié, éventuellement depuis l’identité / le coffre.
 | Dépenses, banque (rapprochement) | **Le relevé** (chapitre de La société, geste du Jour) |
 | Société, Clôture, calendrier fiscal | **La société** |
 | Console | hors nav |
-| Facturation (émission) | reportée (Tiime / PA) — une facture se *voit* sur le dossier |
+| Facturation (émission) | hors fenêtre. Une facture née dans la PA se *pose* sur le dossier (lot 64). |
 
 Les slugs `/view/…` peuvent rester un temps (htmx, tests HTTP). La chrome n’en montre que trois.
 Nouveaux chemins souhaités, à poser dès que ça ne casse pas les tests :

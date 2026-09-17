@@ -87,6 +87,10 @@ fn people_routes() -> Router<AppState> {
             "/{reference}/notes/{expense_id}/receipt",
             post(gens::attach_note).layer(depenses::body_limit()),
         )
+        .route(
+            "/{reference}/facture",
+            post(gens::import_invoice).layer(depenses::body_limit()),
+        )
 }
 
 pub fn router(state: AppState) -> Router {

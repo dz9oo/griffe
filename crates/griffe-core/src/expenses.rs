@@ -695,17 +695,9 @@ mod tests {
     use crate::billing::{
         ImportBankTransactions, ParsedTransaction, UnreconcileTransaction, list_bank_transactions,
     };
-    use crate::store::{Passphrase, Store};
+    use crate::store::Store;
+    use crate::store::testing::test_store;
     use time::Month;
-
-    fn test_store(label: &str) -> Store {
-        let dir = std::env::temp_dir().join(format!(
-            "freeflow-expenses-test-{label}-{}-{}",
-            std::process::id(),
-            uuid::Uuid::now_v7()
-        ));
-        Store::create(&dir.join("vault.db"), &Passphrase::from("s3cret")).unwrap()
-    }
 
     fn human_ctx() -> ExecutionContext {
         ExecutionContext::new(Actor::Human, false)

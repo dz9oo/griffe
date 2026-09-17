@@ -281,6 +281,9 @@ fn control_pack_temp_dir(period: i32) -> std::path::PathBuf {
 }
 
 fn open_dir(path: &std::path::Path) {
+    if !griffe_cli::should_open_externally() {
+        return;
+    }
     let opener = if cfg!(target_os = "macos") {
         "open"
     } else {

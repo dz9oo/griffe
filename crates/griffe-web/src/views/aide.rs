@@ -59,7 +59,7 @@ const DEVIS: Recipe = Recipe {
         "Dans Les affaires, ouvrez le dossier.",
         "Le devis se rédige depuis le dossier.",
         "S'il est accepté, il devient une mission — encore sur le même dossier.",
-        "Une facture se lit là aussi. L'émettre depuis cette lettre n'est pas encore possible : l'ancien écran Facturation ou la console s'en chargent.",
+        "Une facture se lit là aussi. Celle que vous avez émise dans Tiime (ou votre plateforme), vous la posez sur le dossier. L'émission depuis cette lettre n'existe pas.",
     ],
     does_not: Some("Griffe n'envoie pas le devis à votre place."),
     href: Some("/affaires"),

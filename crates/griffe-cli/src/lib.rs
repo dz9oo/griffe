@@ -31,12 +31,12 @@ mod year;
 
 use std::path::{Path, PathBuf};
 
-pub use follow_up::write_and_open_draft;
+pub use follow_up::{should_open_externally, write_and_open_draft};
 pub use griffe_core::clock::today_local as today;
 pub use papers::{
     CLEARTEXT_WARNING, ControlPackReport, YearCaptureReport, append_capture_note,
-    capture_bank_statement, capture_expense_receipt, capture_invoice, capture_year,
-    invoice_capture_note, write_control_pack,
+    capture_bank_statement, capture_expense_receipt, capture_imported_invoice, capture_invoice,
+    capture_year, invoice_capture_note, write_control_pack,
 };
 
 use clap::{Parser, Subcommand};
@@ -117,7 +117,7 @@ enum TopCommand {
     /// Devis : création, révision, envoi, acceptation.
     #[command(subcommand)]
     Quote(quote::QuoteCommand),
-    /// Facturation : émission, avoir, vérification de la chaîne, balance âgée.
+    /// Facturation : émission, import, avoir, vérification de la chaîne, balance âgée.
     #[command(subcommand)]
     Invoice(invoice::InvoiceCommand),
     /// Encaissements.
@@ -181,6 +181,12 @@ enum VaultCommand {
 /// Durée en-dessous de laquelle une sauvegarde existante est considérée assez fraîche pour que
 /// [`dispatch`] n'en écrive pas une nouvelle.
 const AUTO_BACKUP_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
+
+/// La sauvegarde automatique est un geste utilisateur, pas un coût du harness. Même contrat
+/// que [`griffe_core::store`] `Argon2Cost::for_new_vault` : `GRIFFE_TEST_KDF` n'agit qu'en debug.
+fn should_auto_backup() -> bool {
+    !(cfg!(debug_assertions) && std::env::var_os("GRIFFE_TEST_KDF").is_some())
+}
 
 /// Comment [`dispatch`] obtient le `Store` sur lequel exécuter la commande.
 pub enum VaultAccess<'a> {
@@ -354,8 +360,9 @@ fn dispatch(cli: Cli, access: VaultAccess<'_>) -> Result<String, CliError> {
             }
 
             let mut store = vault::open_or_prompt(&db_path, &passphrase)?;
-            if let Err(e) =
-                store.auto_backup_if_stale(&db_path.with_file_name("backups"), AUTO_BACKUP_MAX_AGE)
+            if should_auto_backup()
+                && let Err(e) = store
+                    .auto_backup_if_stale(&db_path.with_file_name("backups"), AUTO_BACKUP_MAX_AGE)
             {
                 eprintln!("⚠ sauvegarde automatique échouée : {e}");
             }

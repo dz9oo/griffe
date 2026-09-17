@@ -4,8 +4,8 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use crate::app::AppError;
 use crate::domain::{
-    self, BankTransaction, BankTransactionId, Invoice, InvoiceId, InvoiceLine, InvoiceStatus,
-    Money, Payment, PaymentMethod, VatRate,
+    self, BankTransaction, BankTransactionId, Invoice, InvoiceId, InvoiceLine, InvoiceOrigin,
+    InvoiceStatus, Money, Payment, PaymentMethod, VatRate,
 };
 
 use super::import::ParsedTransaction;
@@ -49,8 +49,8 @@ pub(super) fn last_invoice_hash(conn: &Connection) -> Result<Option<String>, App
 pub(super) fn insert_invoice(conn: &Connection, invoice: &Invoice) -> Result<(), AppError> {
     conn.execute(
         "INSERT INTO invoices
-            (id, sequence, number, client_id, mission_id, status, issued_on, due_on, previous_hash, hash, credited_invoice_id)
-         VALUES (?1, (SELECT COALESCE(MAX(sequence), 0) + 1 FROM invoices), ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            (id, sequence, number, client_id, mission_id, status, origin, issued_on, due_on, previous_hash, hash, credited_invoice_id)
+         VALUES (?1, (SELECT COALESCE(MAX(sequence), 0) + 1 FROM invoices), ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             invoice.id.to_string(),
             invoice.number,
@@ -58,6 +58,7 @@ pub(super) fn insert_invoice(conn: &Connection, invoice: &Invoice) -> Result<(),
             invoice.mission_id.map(|id| id.to_string()),
             "issued", // le statut stocké ne varie jamais après émission ; le statut affiché
                       // (payée / en retard / partiellement payée) se calcule à la lecture.
+            invoice.origin.as_str(),
             domain::format_date(invoice.issued_on),
             domain::format_date(invoice.due_on),
             invoice.previous_hash,
@@ -79,6 +80,7 @@ fn row_to_invoice_without_lines(row: &Row) -> rusqlite::Result<Invoice> {
     let id: String = row.get("id")?;
     let client_id: String = row.get("client_id")?;
     let mission_id: Option<String> = row.get("mission_id")?;
+    let origin: String = row.get("origin")?;
     let issued_on: String = row.get("issued_on")?;
     let due_on: String = row.get("due_on")?;
     let credited_invoice_id: Option<String> = row.get("credited_invoice_id")?;
@@ -93,6 +95,7 @@ fn row_to_invoice_without_lines(row: &Row) -> rusqlite::Result<Invoice> {
             .map_err(conv_err)?,
         lines: Vec::new(),
         status: InvoiceStatus::Issued,
+        origin: origin.parse::<InvoiceOrigin>().map_err(conv_err)?,
         issued_on: domain::parse_date(&issued_on).map_err(conv_err)?,
         due_on: domain::parse_date(&due_on).map_err(conv_err)?,
         previous_hash: row.get("previous_hash")?,
@@ -130,6 +133,24 @@ pub(super) fn invoice_by_id(conn: &Connection, id: InvoiceId) -> Result<Option<I
         return Ok(None);
     };
     invoice.lines = lines_for_invoice(conn, id)?;
+    Ok(Some(invoice))
+}
+
+pub(super) fn invoice_by_number(
+    conn: &Connection,
+    number: &str,
+) -> Result<Option<Invoice>, AppError> {
+    let Some(mut invoice) = conn
+        .query_row(
+            "SELECT * FROM invoices WHERE number = ?1",
+            [number],
+            row_to_invoice_without_lines,
+        )
+        .optional()?
+    else {
+        return Ok(None);
+    };
+    invoice.lines = lines_for_invoice(conn, invoice.id)?;
     Ok(Some(invoice))
 }
 

@@ -1589,7 +1589,8 @@ mod tests {
     use crate::billing::EmitInvoice;
     use crate::company::SetCompanyProfile;
     use crate::domain::{Address, ClientId, FiscalYearEnd, InvoiceLine, Siren, VatRate, VatRegime};
-    use crate::store::{Passphrase, Store};
+    use crate::store::Store;
+    use crate::store::testing::test_store;
 
     fn calendar_profile() -> SetCompanyProfile {
         SetCompanyProfile {
@@ -1618,12 +1619,7 @@ mod tests {
     }
 
     fn fresh_store(tag: &str) -> (Store, ClientId) {
-        let dir = std::env::temp_dir().join(format!(
-            "freeflow-{tag}-{}-{}",
-            std::process::id(),
-            uuid::Uuid::now_v7()
-        ));
-        let store = Store::create(&dir.join("vault.db"), &Passphrase::from("s3cret")).unwrap();
+        let store = test_store(tag);
         let client_id = ClientId::new();
         store
             .connection()

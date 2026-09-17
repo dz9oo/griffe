@@ -36,7 +36,8 @@ zeroize = { version = "1.9.0", features = ["derive"] }
 proptest = "1.11.0"
 
 [features]
-# Expose `store::testing` : un magasin de clés en mémoire pour les tests d'autres crates, qui ne
-# doivent ni polluer le trousseau OS réel de la machine ni muter l'environnement du process
-# (`unsafe_code = "forbid"` interdit `std::env::set_var` depuis l'édition 2024).
+# Expose `store::testing` : coffre SQLCipher temporaire (`test_store`) et magasin de clés
+# en mémoire (`InMemoryKeyCache`) pour les tests d'autres crates, qui ne doivent ni polluer
+# le trousseau OS réel ni muter l'environnement du process (`unsafe_code = "forbid"`
+# interdit `std::env::set_var` depuis l'édition 2024).
 test-support = []
