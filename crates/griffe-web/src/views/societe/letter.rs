@@ -978,6 +978,7 @@ fn box_label_fr(b: &FormBox) -> &'static str {
         ("3310-CA3", "09") => "TVA brute 5,5 %",
         ("3310-CA3", "19") => "TVA déductible, immobilisations",
         ("3310-CA3", "20") => "TVA déductible, autres biens et services",
+        ("3310-CA3", "21") => "Autre TVA à déduire",
         ("3310-CA3", "15") => "TVA trop déduite, à rendre",
         ("3310-CA3", "22") => "Crédit reporté",
         ("3310-CA3", "25") => "Crédit de cette période",

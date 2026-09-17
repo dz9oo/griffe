@@ -240,6 +240,7 @@ pub enum GestureVerb {
     FileStatement,
     KnowVat,
     KnowDuty,
+    ReleaseReceivable,
 }
 
 /// Source d'un geste — assez pour que chaque façade branche l'action (dossier, brouillon,
@@ -274,6 +275,12 @@ pub enum GestureSource {
         amount: Option<Money>,
         period_key: String,
     },
+    ReleaseReceivable {
+        invoice_id: InvoiceId,
+        client_id: ClientId,
+        party: String,
+        amount: Money,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -301,6 +308,23 @@ pub fn day_gestures(conn: &Connection, today: Date) -> Result<Vec<DayGesture>, A
             break;
         }
         gestes.push(follow_up_gesture(card));
+    }
+    for r in receivables(conn, today)? {
+        if gestes.len() >= MAX_GESTURES {
+            break;
+        }
+        if r.days_overdue < RECEIVABLE_STALE_DAYS {
+            continue;
+        }
+        gestes.push(DayGesture {
+            verb: GestureVerb::ReleaseReceivable,
+            source: GestureSource::ReleaseReceivable {
+                invoice_id: r.invoice_id,
+                client_id: r.client_id,
+                party: r.party,
+                amount: r.amount,
+            },
+        });
     }
     if unmatched > 0 && gestes.len() < MAX_GESTURES {
         let bank = DayGesture {
@@ -847,7 +871,8 @@ mod tests {
     use super::*;
     use crate::app::{Actor, ExecutionContext, Executor, Outcome};
     use crate::billing::{
-        EmitInvoice, ImportBankTransactions, ParsedTransaction, unmatched_debits,
+        EmitInvoice, ImportBankTransactions, ParsedTransaction, WriteOffReceivable,
+        unmatched_debits,
     };
     use crate::clients::{CreateClient, CreateContact};
     use crate::company::SetCompanyProfile;
@@ -1316,6 +1341,99 @@ mod tests {
         let store = test_store("setup-geste");
         let gestes = day_gestures(store.connection(), today()).unwrap();
         assert_eq!(gestes[0].verb, GestureVerb::Setup);
+    }
+
+    fn stale_invoice(store: &mut Store) -> crate::domain::InvoiceId {
+        let client = create_client(store, "Bakari");
+        applied(
+            Executor::new(store)
+                .execute(
+                    &EmitInvoice {
+                        client_id: client,
+                        mission_id: None,
+                        lines: vec![InvoiceLine {
+                            description: "Mission".into(),
+                            quantity: 1.0,
+                            unit_price: Money::from_cents(350_667),
+                            vat_rate: VatRate::Standard,
+                        }],
+                        issued_on: date(2026, TimeMonth::July, 1),
+                        payment_terms_days: 30,
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        )
+        .id
+    }
+
+    #[test]
+    fn written_off_invoice_is_not_a_mast_receivable() {
+        let mut store = test_store("write-off-mast");
+        let invoice_id = stale_invoice(&mut store);
+        let before = day_mast(store.connection(), today()).unwrap();
+        assert!(
+            before
+                .receivables
+                .iter()
+                .any(|r| r.invoice_id == invoice_id),
+            "{:?}",
+            before.receivables
+        );
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &WriteOffReceivable {
+                        invoice_id,
+                        written_off_on: today(),
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        let after = day_mast(store.connection(), today()).unwrap();
+        assert!(
+            !after.receivables.iter().any(|r| r.invoice_id == invoice_id),
+            "{:?}",
+            after.receivables
+        );
+        assert!(
+            !after
+                .signals
+                .iter()
+                .any(|s| matches!(s, MastSignal::ReceivableStale { .. })),
+            "{:?}",
+            after.signals
+        );
+    }
+
+    #[test]
+    fn stale_receivable_offers_release_beside_remind() {
+        let mut store = test_store("stale-release");
+        let invoice_id = stale_invoice(&mut store);
+        let gestes = day_gestures(store.connection(), today()).unwrap();
+        assert!(gestes.len() <= MAX_GESTURES, "filet 5 gestes : {gestes:?}");
+        assert!(
+            gestes.iter().any(|g| g.verb == GestureVerb::Remind),
+            "la relance reste : {gestes:?}"
+        );
+        let release = gestes
+            .iter()
+            .find(|g| g.verb == GestureVerb::ReleaseReceivable)
+            .expect("geste de ne plus attendre à côté de la relance");
+        match &release.source {
+            GestureSource::ReleaseReceivable {
+                invoice_id: id,
+                party,
+                amount,
+                ..
+            } => {
+                assert_eq!(*id, invoice_id);
+                assert_eq!(party, "Bakari");
+                assert_eq!(*amount, Money::from_cents(420_800));
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

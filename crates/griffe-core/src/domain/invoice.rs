@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use time::Date;
 
-use super::ids::{ClientId, InvoiceId, MissionId};
+use super::ids::{ClientId, InvoiceId, MissionId, WriteOffId};
 use super::money::Money;
 use super::vat::VatRate;
 
@@ -87,6 +87,21 @@ pub struct Invoice {
     /// normale ne peut jamais être modifiée pour être annulée — seul un avoir, une nouvelle
     /// facture à part entière, en a le droit.
     pub credited_invoice_id: Option<InvoiceId>,
+}
+
+/// Perte sur créance : le reste dû d'une facture figé en centimes, sans avoir.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InvoiceWriteOff {
+    pub id: WriteOffId,
+    pub invoice_id: InvoiceId,
+    #[serde(with = "crate::domain::serde_date::date")]
+    pub written_off_on: Date,
+    pub ht: Money,
+    pub vat: Money,
+    pub ttc: Money,
+    pub recovers_vat: bool,
+    #[serde(with = "crate::domain::serde_date::date::option")]
+    pub retracted_on: Option<Date>,
 }
 
 #[cfg(test)]

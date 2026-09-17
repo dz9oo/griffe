@@ -78,7 +78,7 @@ On parle comme on parlerait à voix haute.
 | Écriture, OD, 401 | C’est le règlement d’une dette / une dépense / *C’est pour moi* / *C’est moi qui apporte* |
 | Salaire vs dividendes (jargon) | Te payer — de l’argent sur ton compte, sans casser la société |
 
-Un **geste** a un verbe : *Écrire à Camille*, *Ranger le relevé*, *Savoir pour la TVA*.
+Un **geste** a un verbe : *Écrire à Camille*, *Ranger le relevé*, *Savoir pour la TVA*, *Ne plus attendre chez N.*.
 Un **dossier** a un nom de personne, pas un type d’entité.
 Une **alarme** est une phrase en italique couleur sceau, pas un badge.
 
@@ -188,6 +188,7 @@ elle ne décide pas du texte français mot à mot — la fenêtre rédige à par
 File dérivée de ce qui existe déjà, fusionnée, **un verbe par ligne** :
 
 - relances dues (`follow_up_queue`)
+- créance qu’on n’attend plus (à côté de la relance, jamais à sa place)
 - relevé non lu (`unmatched_debits` + crédits / règlements)
 - prochaine obligation d’État dans l’horizon court (TVA, pas « CA3 »)
 

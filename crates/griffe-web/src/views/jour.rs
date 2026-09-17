@@ -269,6 +269,10 @@ fn geste_copy(
             );
             (title, body)
         }
+        GestureSource::ReleaseReceivable { party, amount, .. } => (
+            format!("Ne plus attendre {amount} chez {party}"),
+            "La confirmation se fait sur le dossier.".into(),
+        ),
     }
 }
 
@@ -327,6 +331,15 @@ fn geste_actions(g: &DayGesture, today: Date) -> Markup {
                 a class="quiet" href=(href)
                   hx-get=(href) hx-target="#content" hx-push-url="true" {
                     "Lire la lettre avant de partir"
+                }
+            }
+        }
+        GestureSource::ReleaseReceivable { party, .. } => {
+            let href = person_href(party);
+            html! {
+                a class="seal" href=(href)
+                  hx-get=(href) hx-target="#content" hx-push-url="true" {
+                    "Ouvrir son dossier"
                 }
             }
         }

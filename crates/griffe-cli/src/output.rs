@@ -16,7 +16,7 @@ use griffe_core::app::Outcome;
 use griffe_core::billing::EmittedInvoice;
 use griffe_core::domain::{
     BankTransactionId, ClientId, ContactId, ExpenseId, FiscalYearId, InteractionId, InvoiceId,
-    MissionId, OpportunityId, PaperId, PaymentId, QuoteId, TimeEntryId,
+    InvoiceWriteOff, MissionId, OpportunityId, PaperId, PaymentId, QuoteId, TimeEntryId,
 };
 use griffe_core::fiscal_year::Approval;
 use serde::Serialize;
@@ -195,6 +195,12 @@ render_by_display!(
 impl HumanRender for EmittedInvoice {
     fn render_human(&self) -> String {
         format!("{} ({})", self.number, self.id)
+    }
+}
+
+impl HumanRender for InvoiceWriteOff {
+    fn render_human(&self) -> String {
+        format!("on ne l'attend plus {} ({})", self.ttc, self.id)
     }
 }
 

@@ -19,7 +19,7 @@
 use rusqlite::Connection;
 
 use crate::app::AppError;
-use crate::billing::{VatBreakdownLine, compute_totals, list_invoices};
+use crate::billing::{VatBreakdownLine, active_write_off_for, compute_totals, list_invoices};
 use crate::company::CompanyProfile;
 use crate::domain::{ExpenseId, FiscalYear, Money, VatRate};
 use crate::expenses::expenses_between;
@@ -436,10 +436,18 @@ pub fn vat_due_for_period(
     start: time::Date,
     end: time::Date,
 ) -> Result<VatReturn, AppError> {
-    let invoices: Vec<_> = list_invoices(conn)?
-        .into_iter()
-        .filter(|inv| inv.issued_on >= start && inv.issued_on <= end)
-        .collect();
+    let mut invoices = Vec::new();
+    for inv in list_invoices(conn)? {
+        if inv.issued_on < start || inv.issued_on > end {
+            continue;
+        }
+        if let Some(write_off) = active_write_off_for(conn, inv.id)?
+            && !write_off.recovers_vat
+        {
+            continue;
+        }
+        invoices.push(inv);
+    }
     let totals: Vec<_> = invoices
         .iter()
         .map(|inv| compute_totals(&inv.lines))

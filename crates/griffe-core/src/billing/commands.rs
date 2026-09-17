@@ -7,7 +7,7 @@ use time::Date;
 use crate::app::{AppError, Command};
 use crate::domain::{
     BankTransactionId, ClientId, Invoice, InvoiceId, InvoiceLine, InvoiceOrigin, InvoiceStatus,
-    MissionId, Money, Payment, PaymentId, PaymentMethod,
+    InvoiceWriteOff, MissionId, Money, Payment, PaymentId, PaymentMethod, WriteOffId,
 };
 
 use super::error::BillingError;
@@ -208,6 +208,9 @@ impl Command for IssueCreditNote {
         if row::has_credit_note(conn, self.invoice_id)? {
             return Err(BillingError::AlreadyCredited(self.invoice_id).into());
         }
+        if row::active_write_off_for(conn, self.invoice_id)?.is_some() {
+            return Err(BillingError::CannotCreditWrittenOff(self.invoice_id).into());
+        }
 
         let negated_lines: Vec<InvoiceLine> = original
             .lines
@@ -250,6 +253,115 @@ impl Command for IssueCreditNote {
         };
         row::insert_invoice(conn, &credit_note)?;
         Ok(EmittedInvoice { id, number })
+    }
+}
+
+/// Constate que le reste dû d'une facture n'est plus attendu : une perte, jamais un avoir.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WriteOffReceivable {
+    pub invoice_id: InvoiceId,
+    #[serde(with = "crate::domain::serde_date::date")]
+    pub written_off_on: Date,
+}
+
+impl Command for WriteOffReceivable {
+    type Output = InvoiceWriteOff;
+    const NAME: &'static str = "billing.write_off_receivable";
+
+    /// Même exigence qu'un avoir ou qu'une émission : un agent ne constate pas la perte seul.
+    fn requires_confirmation(&self) -> bool {
+        true
+    }
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        let invoice = row::invoice_by_id(conn, self.invoice_id)?
+            .ok_or(BillingError::NotFound(self.invoice_id))?;
+        if invoice.credited_invoice_id.is_some() {
+            return Err(BillingError::CannotWriteOffCreditNote(self.invoice_id).into());
+        }
+        if row::has_credit_note(conn, self.invoice_id)? {
+            return Err(BillingError::CannotWriteOffAlreadyCredited(self.invoice_id).into());
+        }
+        if row::active_write_off_for(conn, self.invoice_id)?.is_some() {
+            return Err(BillingError::AlreadyWrittenOff(self.invoice_id).into());
+        }
+        if self.written_off_on < invoice.issued_on {
+            return Err(BillingError::WriteOffBeforeIssue(self.invoice_id).into());
+        }
+        if row::exercise_closed(conn, self.written_off_on)? {
+            return Err(BillingError::ExerciseClosed.into());
+        }
+        if row::ca3_filed(conn, &row::period_key_for(conn, self.written_off_on)?)? {
+            return Err(BillingError::WriteOffPeriodAlreadyFiled.into());
+        }
+
+        let totals = compute_totals(&invoice.lines);
+        let original_ttc = totals.total_ttc;
+        let credited: Money = row::all_invoices(conn)?
+            .iter()
+            .filter(|c| c.credited_invoice_id == Some(self.invoice_id))
+            .map(|c| compute_totals(&c.lines).total_ttc)
+            .sum();
+        let paid: Money = row::payments_for_invoice(conn, self.invoice_id)?
+            .iter()
+            .filter(|p| !p.is_voided())
+            .map(|p| p.amount)
+            .sum();
+        let outstanding = original_ttc + credited - paid;
+        if outstanding.is_zero() {
+            return Err(BillingError::NothingOutstanding(self.invoice_id).into());
+        }
+
+        let (ht, vat, ttc) = if outstanding == original_ttc {
+            (totals.subtotal_ht, totals.total_vat, original_ttc)
+        } else {
+            let ht = totals.subtotal_ht.scale(outstanding, original_ttc);
+            (ht, outstanding - ht, outstanding)
+        };
+        let recovers_vat = row::ca3_filed(conn, &row::period_key_for(conn, invoice.issued_on)?)?;
+
+        let write_off = InvoiceWriteOff {
+            id: WriteOffId::new(),
+            invoice_id: self.invoice_id,
+            written_off_on: self.written_off_on,
+            ht,
+            vat,
+            ttc,
+            recovers_vat,
+            retracted_on: None,
+        };
+        row::insert_write_off(conn, &write_off)?;
+        Ok(write_off)
+    }
+}
+
+/// Rétablit une créance : contre-écriture par date, pas une suppression.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetractWriteOff {
+    pub write_off_id: WriteOffId,
+    #[serde(with = "crate::domain::serde_date::date")]
+    pub retracted_on: Date,
+}
+
+impl Command for RetractWriteOff {
+    type Output = ();
+    const NAME: &'static str = "billing.retract_write_off";
+
+    fn requires_confirmation(&self) -> bool {
+        true
+    }
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        let write_off = row::write_off_by_id(conn, self.write_off_id)?
+            .ok_or(BillingError::WriteOffNotFound(self.write_off_id))?;
+        if write_off.retracted_on.is_some() {
+            return Err(BillingError::WriteOffAlreadyRetracted.into());
+        }
+        if row::ca3_filed(conn, &row::period_key_for(conn, write_off.written_off_on)?)? {
+            return Err(BillingError::WriteOffPeriodAlreadyFiled.into());
+        }
+        row::set_retracted_on(conn, self.write_off_id, self.retracted_on)?;
+        Ok(())
     }
 }
 

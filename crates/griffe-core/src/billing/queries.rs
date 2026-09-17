@@ -183,7 +183,8 @@ pub struct AgedInvoice {
 /// l'antériorité du retard par rapport à `today`. Une facture payée d'avance (solde négatif)
 /// ou pas encore échue apparaît en `Current`. Un avoir vient en déduction de la facture qu'il
 /// annule (ses lignes sont négatives) : une facture intégralement annulée n'a plus de solde et
-/// n'apparaît pas — lot 35, jusque-là elle restait comptée « non encaissée » en entier.
+/// n'apparaît pas — lot 35, jusque-là elle restait comptée « non encaissée » en entier. Une
+/// perte vivante retranche son TTC : le reste dû n'est plus attendu, sans inventer un avoir.
 ///
 /// # Errors
 pub fn aged_balance(conn: &Connection, today: Date) -> Result<Vec<AgedInvoice>, AppError> {
@@ -207,6 +208,10 @@ pub fn aged_balance(conn: &Connection, today: Date) -> Result<Vec<AgedInvoice>, 
             .map(|p| p.amount)
             .sum();
         let outstanding = totals.total_ttc + credited - paid;
+        let outstanding = match row::active_write_off_for(conn, invoice.id)? {
+            Some(write_off) => outstanding - write_off.ttc,
+            None => outstanding,
+        };
         if outstanding.is_zero() {
             continue;
         }

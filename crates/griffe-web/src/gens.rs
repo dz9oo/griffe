@@ -5,10 +5,10 @@ use axum::extract::{Multipart, Path, State};
 use axum::http::{HeaderMap, HeaderValue};
 use axum::response::{Html, IntoResponse, Response};
 use griffe_core::app::{AppError, Executor, Outcome};
-use griffe_core::billing::ImportIssuedInvoice;
+use griffe_core::billing::{ImportIssuedInvoice, RetractWriteOff, WriteOffReceivable};
 use griffe_core::domain::{
     ExpenseId, InteractionKind, InvoiceId, InvoiceLine, MissionId, Money, Probability, VatRate,
-    format_date, parse_date,
+    WriteOffId, format_date, parse_date,
 };
 use griffe_core::expenses::{AttachReceipt, expense_by_id};
 use griffe_core::follow_up::{MarkFollowUpSent, PrepareFollowUp, SnoozeFollowUp};
@@ -802,4 +802,203 @@ fn optional_id<T: std::str::FromStr>(raw: &str, err: &str) -> Result<Option<T>, 
         return Ok(None);
     }
     trimmed.parse::<T>().map(Some).map_err(|_| err.to_string())
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WriteOffForm {
+    #[serde(default)]
+    on: String,
+    #[serde(default)]
+    write_off_id: String,
+}
+
+fn parse_on(raw: &str, today: time::Date) -> Result<time::Date, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        Ok(today)
+    } else {
+        parse_date(trimmed).map_err(|_| "indiquez la date (AAAA-MM-JJ)".to_string())
+    }
+}
+
+/// Constate que le reste dû n'est plus attendu — confirmation = soumission du formulaire daté.
+pub async fn write_off_receivable(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((reference, invoice_id)): Path<(String, String)>,
+    Form(form): Form<WriteOffForm>,
+) -> Response {
+    let today = state.today();
+    let dossier = match load_dossier(&state, &reference).await {
+        None => return locked(&headers).into_response(),
+        Some(Err(_)) => return page(&headers, gens::not_found(&reference, today)).into_response(),
+        Some(Ok(dossier)) => dossier,
+    };
+    let Ok(invoice_id) = invoice_id.parse::<InvoiceId>() else {
+        return page(
+            &headers,
+            gens::dossier_markup(&dossier, today, Some("cette facture est introuvable")),
+        )
+        .into_response();
+    };
+    if !dossier
+        .papers
+        .iter()
+        .any(|p| p.invoice_id == Some(invoice_id))
+    {
+        return page(
+            &headers,
+            gens::dossier_markup(
+                &dossier,
+                today,
+                Some("cette facture n'est pas dans ce dossier"),
+            ),
+        )
+        .into_response();
+    }
+    let written_off_on = match parse_on(&form.on, today) {
+        Ok(on) => on,
+        Err(msg) => {
+            return page(&headers, gens::dossier_markup(&dossier, today, Some(&msg)))
+                .into_response();
+        }
+    };
+    let cmd = WriteOffReceivable {
+        invoice_id,
+        written_off_on,
+    };
+    let result = state
+        .with_store_mut(|store| -> Result<String, String> {
+            match Executor::new(store).execute(&cmd, &AppState::human_ctx()) {
+                Ok(Outcome::Applied(write_off)) => {
+                    if write_off.recovers_vat
+                        && let Err(e) = griffe_cli::write_uncollectible_notice(
+                            store,
+                            &AppState::human_ctx(),
+                            &write_off,
+                        )
+                    {
+                        return Ok(format!(
+                            "on ne l'attend plus {} — duplicata non figé : {e}",
+                            write_off.ttc
+                        ));
+                    }
+                    Ok(format!("on ne l'attend plus {}", write_off.ttc))
+                }
+                Ok(Outcome::AlreadyApplied(write_off)) => {
+                    Ok(format!("on ne l'attend plus {}", write_off.ttc))
+                }
+                Ok(_) => Err("la perte n'a pas été enregistrée".into()),
+                Err(e) => Err(e.to_string()),
+            }
+        })
+        .await;
+    dossier_flash(&state, &headers, &reference, today, &dossier, result).await
+}
+
+/// Rétablit une créance : contre-écriture par date, pas une suppression.
+pub async fn retract_write_off(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((reference, invoice_id)): Path<(String, String)>,
+    Form(form): Form<WriteOffForm>,
+) -> Response {
+    let today = state.today();
+    let dossier = match load_dossier(&state, &reference).await {
+        None => return locked(&headers).into_response(),
+        Some(Err(_)) => return page(&headers, gens::not_found(&reference, today)).into_response(),
+        Some(Ok(dossier)) => dossier,
+    };
+    let Ok(invoice_id) = invoice_id.parse::<InvoiceId>() else {
+        return page(
+            &headers,
+            gens::dossier_markup(&dossier, today, Some("cette facture est introuvable")),
+        )
+        .into_response();
+    };
+    let paper = dossier
+        .papers
+        .iter()
+        .find(|p| p.invoice_id == Some(invoice_id));
+    let Some(paper) = paper else {
+        return page(
+            &headers,
+            gens::dossier_markup(
+                &dossier,
+                today,
+                Some("cette facture n'est pas dans ce dossier"),
+            ),
+        )
+        .into_response();
+    };
+    let write_off_id = match form.write_off_id.trim().parse::<WriteOffId>() {
+        Ok(id) => id,
+        Err(_) => {
+            return page(
+                &headers,
+                gens::dossier_markup(&dossier, today, Some("cette perte est introuvable")),
+            )
+            .into_response();
+        }
+    };
+    if paper.write_off_id != Some(write_off_id) {
+        return page(
+            &headers,
+            gens::dossier_markup(
+                &dossier,
+                today,
+                Some("cette perte n'est pas celle du dossier"),
+            ),
+        )
+        .into_response();
+    }
+    let retracted_on = match parse_on(&form.on, today) {
+        Ok(on) => on,
+        Err(msg) => {
+            return page(&headers, gens::dossier_markup(&dossier, today, Some(&msg)))
+                .into_response();
+        }
+    };
+    let cmd = RetractWriteOff {
+        write_off_id,
+        retracted_on,
+    };
+    let result = state
+        .with_store_mut(|store| -> Result<String, String> {
+            match Executor::new(store).execute(&cmd, &AppState::human_ctx()) {
+                Ok(Outcome::Applied(()) | Outcome::AlreadyApplied(())) => {
+                    Ok("on l'attend encore".into())
+                }
+                Ok(_) => Err("la créance n'a pas été rétablie".into()),
+                Err(e) => Err(e.to_string()),
+            }
+        })
+        .await;
+    dossier_flash(&state, &headers, &reference, today, &dossier, result).await
+}
+
+async fn dossier_flash(
+    state: &AppState,
+    headers: &HeaderMap,
+    reference: &str,
+    today: time::Date,
+    dossier: &griffe_core::people::PersonDossier,
+    result: Option<Result<String, String>>,
+) -> Response {
+    match result {
+        None => locked(headers).into_response(),
+        Some(Err(msg)) => {
+            page(headers, gens::dossier_markup(dossier, today, Some(&msg))).into_response()
+        }
+        Some(Ok(flash)) => {
+            let content = state
+                .with_store(|store| match person(store.connection(), reference, today) {
+                    Ok(fresh) => gens::dossier_markup(&fresh, today, Some(&flash)),
+                    Err(err) => html! { div class="empty-state" { (err.to_string()) } },
+                })
+                .await
+                .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
+            page(headers, content).into_response()
+        }
+    }
 }

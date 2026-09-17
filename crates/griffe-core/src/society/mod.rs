@@ -31,7 +31,7 @@ use time::Date;
 
 use crate::accounting::{compute_result, vat_due_for_period};
 use crate::app::AppError;
-use crate::billing::{aged_balance, list_bank_transactions, list_invoices};
+use crate::billing::{aged_balance, list_bank_transactions, list_invoices, list_write_offs};
 use crate::clients::client_by_id;
 use crate::closing::{ClosingStage, ClosingStepKey, StepStatus, closing_checklist};
 use crate::company::company_profile;
@@ -1504,6 +1504,19 @@ fn ca3_prior_credit(
     fold_carried_credit(conn, Money::ZERO, &between)
 }
 
+fn recovered_vat_21(conn: &Connection, start: Date, end: Date) -> Result<Money, AppError> {
+    Ok(list_write_offs(conn)?
+        .into_iter()
+        .filter(|w| {
+            w.retracted_on.is_none()
+                && w.recovers_vat
+                && w.written_off_on >= start
+                && w.written_off_on <= end
+        })
+        .map(|w| w.vat)
+        .sum())
+}
+
 fn fold_carried_credit(
     conn: &Connection,
     mut credit: Money,
@@ -1512,7 +1525,8 @@ fn fold_carried_credit(
     for (start, end, period_key) in between.iter().rev() {
         let vat = vat_due_for_period(conn, *start, *end)?;
         let reversal = vat_reversal_for(conn, period_key)?.map_or(Money::ZERO, |r| r.amount);
-        let net = vat.due + reversal - credit;
+        let recovered_21 = recovered_vat_21(conn, *start, *end)?;
+        let net = vat.due + reversal - credit - recovered_21;
         credit = if net.cents() >= 0 {
             Money::ZERO
         } else {
@@ -1608,10 +1622,14 @@ pub(super) fn ca3_boxes(
         boxes.push(ca3_box("19", Some(vat.deductible_assets), BoxRole::Fill));
     }
     boxes.push(ca3_box("20", Some(vat.deductible_other), BoxRole::Fill));
+    let recovered_21 = recovered_vat_21(conn, period_start, period_end)?;
+    if !recovered_21.is_zero() {
+        boxes.push(ca3_box("21", Some(recovered_21), BoxRole::Fill));
+    }
     if !prior_credit.is_zero() {
         boxes.push(ca3_box("22", Some(prior_credit), BoxRole::Fill));
     }
-    let net = vat.due + reversal - prior_credit;
+    let net = vat.due + reversal - prior_credit - recovered_21;
     if net.cents() >= 0 {
         boxes.push(ca3_box("28", Some(net), BoxRole::Fill));
     } else {
@@ -1976,7 +1994,7 @@ mod tests {
     use crate::app::{Actor, ExecutionContext, Executor, Outcome};
     use crate::billing::{
         EmitInvoice, ImportBankTransactions, ParsedTransaction, SettleBankTransaction,
-        list_bank_transactions,
+        WriteOffReceivable, list_bank_transactions,
     };
     use crate::clients::CreateClient;
     use crate::company::SetCompanyProfile;
@@ -2706,6 +2724,197 @@ mod tests {
         assert_eq!(box_of("08").amount, Some(Money::from_cents(20_000)));
         assert_eq!(box_of("20").amount, Some(Money::from_cents(2_000)));
         assert_eq!(box_of("28").amount, Some(Money::from_cents(18_000)));
+    }
+
+    #[test]
+    fn filed_issue_period_recovers_vat_on_the_write_off_month() {
+        let mut store = test_store("ca3-case-21");
+        set_monthly_profile(&mut store);
+        let client_id = applied(
+            Executor::new(&mut store)
+                .execute(
+                    &CreateClient {
+                        name: "Bakari".into(),
+                        siren: None,
+                        vat_number: None,
+                        address: None,
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        let inv = applied(
+            Executor::new(&mut store)
+                .execute(
+                    &EmitInvoice {
+                        client_id,
+                        mission_id: None,
+                        lines: vec![InvoiceLine {
+                            description: "Mission".into(),
+                            quantity: 1.0,
+                            unit_price: Money::from_cents(350_667),
+                            vat_rate: VatRate::Standard,
+                        }],
+                        issued_on: date(2026, TimeMonth::August, 15),
+                        payment_terms_days: 30,
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &MarkDutyFiled {
+                        kind: FiscalDeadlineKind::Ca3,
+                        period_key: "2026-08".into(),
+                        due_on: date(2026, TimeMonth::September, 15),
+                        filed_on: date(2026, TimeMonth::September, 15),
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        let w = applied(
+            Executor::new(&mut store)
+                .execute(
+                    &WriteOffReceivable {
+                        invoice_id: inv.id,
+                        written_off_on: date(2026, TimeMonth::September, 17),
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        assert!(w.recovers_vat);
+        let august_vat = crate::accounting::vat_due_for_period(
+            store.connection(),
+            date(2026, TimeMonth::August, 1),
+            date(2026, TimeMonth::August, 31),
+        )
+        .unwrap();
+        assert_eq!(august_vat.collected, Money::from_cents(70_133));
+        assert_eq!(august_vat.taxable_ht, Money::from_cents(350_667));
+        let september = duty_briefing(
+            store.connection(),
+            FiscalDeadlineKind::Ca3,
+            date(2026, TimeMonth::September, 18),
+            Some("2026-09"),
+        )
+        .unwrap();
+        let case_21 = september
+            .boxes
+            .iter()
+            .find(|b| b.case == "21")
+            .unwrap_or_else(|| panic!("case 21 absente : {:?}", september.boxes));
+        assert_eq!(case_21.amount, Some(Money::from_cents(70_133)));
+        let august = duty_briefing(
+            store.connection(),
+            FiscalDeadlineKind::Ca3,
+            date(2026, TimeMonth::September, 18),
+            Some("2026-08"),
+        )
+        .unwrap();
+        assert!(
+            august.boxes.iter().all(|b| b.case != "21"),
+            "août déjà déposé ne reprend pas la taxe : {:?}",
+            august.boxes
+        );
+        let august_08 = august
+            .boxes
+            .iter()
+            .find(|b| b.case == "08")
+            .expect("case 08");
+        assert_eq!(august_08.amount, Some(Money::from_cents(70_133)));
+    }
+
+    #[test]
+    fn case_21_credit_carries_into_the_following_period() {
+        let mut store = test_store("ca3-case-21-carry");
+        set_monthly_profile(&mut store);
+        let client_id = applied(
+            Executor::new(&mut store)
+                .execute(
+                    &CreateClient {
+                        name: "Bakari".into(),
+                        siren: None,
+                        vat_number: None,
+                        address: None,
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        let inv = applied(
+            Executor::new(&mut store)
+                .execute(
+                    &EmitInvoice {
+                        client_id,
+                        mission_id: None,
+                        lines: vec![InvoiceLine {
+                            description: "Mission".into(),
+                            quantity: 1.0,
+                            unit_price: Money::from_cents(350_667),
+                            vat_rate: VatRate::Standard,
+                        }],
+                        issued_on: date(2026, TimeMonth::August, 15),
+                        payment_terms_days: 30,
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &MarkDutyFiled {
+                        kind: FiscalDeadlineKind::Ca3,
+                        period_key: "2026-08".into(),
+                        due_on: date(2026, TimeMonth::September, 15),
+                        filed_on: date(2026, TimeMonth::September, 15),
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        let w = applied(
+            Executor::new(&mut store)
+                .execute(
+                    &WriteOffReceivable {
+                        invoice_id: inv.id,
+                        written_off_on: date(2026, TimeMonth::September, 17),
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        assert!(w.recovers_vat);
+        let september = duty_briefing(
+            store.connection(),
+            FiscalDeadlineKind::Ca3,
+            date(2026, TimeMonth::September, 18),
+            Some("2026-09"),
+        )
+        .unwrap();
+        let sept_21 = september
+            .boxes
+            .iter()
+            .find(|b| b.case == "21")
+            .unwrap_or_else(|| panic!("case 21 absente : {:?}", september.boxes));
+        assert_eq!(sept_21.amount, Some(Money::from_cents(70_133)));
+        let october = duty_briefing(
+            store.connection(),
+            FiscalDeadlineKind::Ca3,
+            date(2026, TimeMonth::November, 5),
+            Some("2026-10"),
+        )
+        .unwrap();
+        let oct_22 = october
+            .boxes
+            .iter()
+            .find(|b| b.case == "22")
+            .unwrap_or_else(|| panic!("case 22 absente : {:?}", october.boxes));
+        assert_eq!(oct_22.amount, Some(Money::from_cents(70_133)));
     }
 
     #[test]

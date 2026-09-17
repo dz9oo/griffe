@@ -6952,6 +6952,280 @@ async fn the_window_has_no_emit_post_route() {
 }
 
 #[tokio::test]
+async fn the_dossier_lets_a_human_stop_waiting_for_an_invoice() {
+    let db_path = test_db_path("dossier-write-off");
+    let invoice_id = {
+        let mut store = Store::create(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+        let client_id = match Executor::new(&mut store)
+            .execute(
+                &CreateClient {
+                    name: "Kappa Software".to_string(),
+                    siren: None,
+                    vat_number: None,
+                    address: None,
+                },
+                &human_ctx(),
+            )
+            .unwrap()
+        {
+            griffe_core::app::Outcome::Applied(id) => id,
+            other => panic!("expected Applied, got {other:?}"),
+        };
+        let emitted = match Executor::new(&mut store)
+            .execute(
+                &griffe_core::billing::EmitInvoice {
+                    client_id,
+                    mission_id: None,
+                    lines: vec![griffe_core::domain::InvoiceLine {
+                        description: "Prestation".to_string(),
+                        quantity: 1.0,
+                        unit_price: Money::from_cents(350_667),
+                        vat_rate: griffe_core::domain::VatRate::Standard,
+                    }],
+                    issued_on: time::Date::from_calendar_date(2026, time::Month::September, 1)
+                        .unwrap(),
+                    payment_terms_days: 30,
+                },
+                &human_ctx(),
+            )
+            .unwrap()
+        {
+            griffe_core::app::Outcome::Applied(e) => e,
+            other => panic!("expected Applied, got {other:?}"),
+        };
+        emitted.id
+    };
+
+    let state = AppState::new(db_path.clone());
+    state
+        .unlock(&Passphrase::from(PASSPHRASE), false)
+        .await
+        .unwrap();
+    let state =
+        state.with_today(time::Date::from_calendar_date(2026, time::Month::September, 17).unwrap());
+    let router = griffe_web::router(state);
+
+    let dossier = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Kappa%20Software")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        dossier.contains("Je n'attends plus cet argent"),
+        "le geste est sur le dossier : {dossier}"
+    );
+    assert!(
+        !dossier.contains("impayé"),
+        "la lettre ne dit pas impayé : {dossier}"
+    );
+
+    let posted = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/affaires/Kappa%20Software/facture/{invoice_id}/ne-plus-attendre"
+                ))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from("on=2026-09-17"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(posted.status(), StatusCode::OK);
+    let posted_body = body_text(posted).await;
+    assert!(
+        !posted_body.is_empty(),
+        "succès : le dossier, pas un corps vide"
+    );
+    assert!(
+        posted_body.contains("on ne l'attend plus"),
+        "après le geste, le papier change de statut : {posted_body}"
+    );
+    assert!(
+        !posted_body.contains("impayé"),
+        "la lettre ne dit pas impayé : {posted_body}"
+    );
+    assert!(
+        uncollectible_notice_papers(&db_path).is_empty(),
+        "sans TVA déjà déposée, pas de duplicata"
+    );
+
+    let again = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Kappa%20Software")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        again.contains("on ne l'attend plus"),
+        "un GET ultérieur lit le même statut : {again}"
+    );
+    assert!(
+        again.contains("Finalement j'attends encore"),
+        "la rétractation est sur le dossier : {again}"
+    );
+    assert!(
+        !again.contains("impayé"),
+        "la lettre ne dit pas impayé : {again}"
+    );
+}
+
+#[tokio::test]
+async fn the_dossier_archives_a_local_notice_when_the_issue_period_was_filed() {
+    let db_path = test_db_path("dossier-write-off-notice");
+    let (invoice_id, number) = {
+        let mut store = Store::create(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+        let client_id = match Executor::new(&mut store)
+            .execute(
+                &CreateClient {
+                    name: "Kappa Software".to_string(),
+                    siren: None,
+                    vat_number: None,
+                    address: None,
+                },
+                &human_ctx(),
+            )
+            .unwrap()
+        {
+            griffe_core::app::Outcome::Applied(id) => id,
+            other => panic!("expected Applied, got {other:?}"),
+        };
+        let emitted = match Executor::new(&mut store)
+            .execute(
+                &griffe_core::billing::EmitInvoice {
+                    client_id,
+                    mission_id: None,
+                    lines: vec![griffe_core::domain::InvoiceLine {
+                        description: "Prestation".to_string(),
+                        quantity: 1.0,
+                        unit_price: Money::from_cents(350_667),
+                        vat_rate: griffe_core::domain::VatRate::Standard,
+                    }],
+                    issued_on: time::Date::from_calendar_date(2026, time::Month::August, 15)
+                        .unwrap(),
+                    payment_terms_days: 30,
+                },
+                &human_ctx(),
+            )
+            .unwrap()
+        {
+            griffe_core::app::Outcome::Applied(e) => e,
+            other => panic!("expected Applied, got {other:?}"),
+        };
+        match Executor::new(&mut store)
+            .execute(
+                &griffe_core::society::MarkDutyFiled {
+                    kind: griffe_core::fiscal::FiscalDeadlineKind::Ca3,
+                    period_key: "2026-08".into(),
+                    due_on: time::Date::from_calendar_date(2026, time::Month::September, 15)
+                        .unwrap(),
+                    filed_on: time::Date::from_calendar_date(2026, time::Month::September, 15)
+                        .unwrap(),
+                },
+                &human_ctx(),
+            )
+            .unwrap()
+        {
+            griffe_core::app::Outcome::Applied(_) => {}
+            other => panic!("expected Applied, got {other:?}"),
+        }
+        (emitted.id, emitted.number)
+    };
+
+    let state = AppState::new(db_path.clone());
+    state
+        .unlock(&Passphrase::from(PASSPHRASE), false)
+        .await
+        .unwrap();
+    let state =
+        state.with_today(time::Date::from_calendar_date(2026, time::Month::September, 17).unwrap());
+    let router = griffe_web::router(state);
+
+    let posted = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/affaires/Kappa%20Software/facture/{invoice_id}/ne-plus-attendre"
+                ))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from("on=2026-09-17"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(posted.status(), StatusCode::OK);
+    let posted_body = body_text(posted).await;
+    assert!(
+        posted_body.contains("on ne l'attend plus"),
+        "après le geste, le papier change de statut : {posted_body}"
+    );
+    assert!(
+        !posted_body.contains("impayé"),
+        "la lettre ne dit pas impayé : {posted_body}"
+    );
+
+    let expected_name = format!("facture-{number}-ne-plus-attendue.txt");
+    let papers = uncollectible_notice_papers(&db_path);
+    assert_eq!(papers.len(), 1, "un duplicata local : {papers:?}");
+    let paper = &papers[0];
+    assert_eq!(paper.kind, griffe_core::domain::PaperKind::Other);
+    assert_eq!(paper.origin, griffe_core::domain::PaperOrigin::Issued);
+    assert_eq!(paper.original_name, expected_name);
+    assert_eq!(paper.invoice_id, Some(invoice_id));
+    assert_eq!(paper.mime, "text/plain");
+
+    let store = Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    let body = String::from_utf8(griffe_core::receipts::read(&store, &paper.filename).unwrap())
+        .expect("duplicata UTF-8");
+    assert!(
+        body.contains("CGI, art. 272"),
+        "mention statutaire : {body}"
+    );
+    assert!(
+        body.contains(&number),
+        "le numéro de facture est dans le fichier : {body}"
+    );
+    assert!(
+        body.contains("impayée"),
+        "le fichier porte le mot de la notice, pas la lettre : {body}"
+    );
+}
+
+fn uncollectible_notice_papers(db_path: &Path) -> Vec<griffe_core::papers::Paper> {
+    let store = Store::open_with_passphrase(db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    griffe_core::papers::list_papers(
+        store.connection(),
+        griffe_core::papers::PaperFilter {
+            period: None,
+            kind: Some(griffe_core::domain::PaperKind::Other),
+            include_superseded: false,
+        },
+    )
+    .unwrap()
+    .into_iter()
+    .filter(|p| p.original_name.ends_with("-ne-plus-attendue.txt"))
+    .collect()
+}
+
+#[tokio::test]
 async fn facturation_empty_state_does_not_send_to_the_console() {
     let state = unlocked_state(&test_db_path("facturation-empty")).await;
     let router = griffe_web::router(state);

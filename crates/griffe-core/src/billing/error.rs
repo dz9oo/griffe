@@ -3,7 +3,7 @@
 use thiserror::Error;
 
 use crate::app::AppError;
-use crate::domain::{BankTransactionId, InvoiceId, PaymentId};
+use crate::domain::{BankTransactionId, InvoiceId, PaymentId, WriteOffId};
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum BillingError {
@@ -32,6 +32,36 @@ pub enum BillingError {
 
     #[error("la facture {0} a déjà un avoir associé")]
     AlreadyCredited(InvoiceId),
+
+    #[error("impossible de passer en perte un avoir ({0}) : ce n'est pas une créance")]
+    CannotWriteOffCreditNote(InvoiceId),
+
+    #[error("la facture {0} a déjà un avoir : on ne mélange pas avoir et perte")]
+    CannotWriteOffAlreadyCredited(InvoiceId),
+
+    #[error("la facture {0} est déjà passée en perte")]
+    AlreadyWrittenOff(InvoiceId),
+
+    #[error("rien à passer en perte : le solde de la facture {0} est déjà à zéro")]
+    NothingOutstanding(InvoiceId),
+
+    #[error("on ne peut pas constater la perte avant la date d'émission de la facture {0}")]
+    WriteOffBeforeIssue(InvoiceId),
+
+    #[error("on ne peut plus constater ni rétablir une perte : cette période est déjà déposée")]
+    WriteOffPeriodAlreadyFiled,
+
+    #[error("perte introuvable : {0}")]
+    WriteOffNotFound(WriteOffId),
+
+    #[error("cette perte est déjà rétractée")]
+    WriteOffAlreadyRetracted,
+
+    #[error("cet exercice est déjà clos")]
+    ExerciseClosed,
+
+    #[error("la facture {0} est déjà passée en perte : un avoir n'est plus le bon geste")]
+    CannotCreditWrittenOff(InvoiceId),
 
     #[error("un avoir doit porter sur une facture du même client")]
     ImportedCreditNoteWrongClient,

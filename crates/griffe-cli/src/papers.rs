@@ -1,6 +1,7 @@
 //! `freeflow papers list|show|add|rm|checklist|export` — Les papiers. Les helpers
 //! [`capture_invoice`], [`capture_imported_invoice`], [`capture_year`],
-//! [`capture_bank_statement`], [`capture_expense_receipt`] et [`write_control_pack`]
+//! [`capture_bank_statement`], [`capture_expense_receipt`],
+//! [`write_uncollectible_notice`] et [`write_control_pack`]
 //! sont publics : la fenêtre et le serveur MCP les appellent, jamais depuis un
 //! `Command::apply`.
 
@@ -12,8 +13,8 @@ use griffe_core::clock::today_local;
 use griffe_core::closing::StepStatus;
 use griffe_core::company::company_profile;
 use griffe_core::domain::{
-    ExpenseId, FiscalYearEnd, FiscalYearId, InvoiceId, InvoiceOrigin, PaperKind, PaperOrigin,
-    format_date,
+    ExpenseId, FiscalYearEnd, FiscalYearId, InvoiceId, InvoiceOrigin, InvoiceWriteOff, PaperKind,
+    PaperOrigin, format_date,
 };
 use griffe_core::expenses::{expense_by_id, hash_receipt};
 use griffe_core::fec::build_fec;
@@ -559,6 +560,49 @@ pub fn capture_imported_invoice(
         idempotency_key: Some(format!("papers:imported:{kind}:{invoice_id}")),
     };
     take_paper(archive_paper(store, spec, bytes, ctx)?)
+}
+
+/// Duplicata local art. 272 : texte UTF-8 au coffre, jamais envoyé. Uniquement si
+/// `recovers_vat` — l'appelant filtre. `PaperKind::Other`, `PaperOrigin::Issued`.
+///
+/// # Errors
+///
+/// Facture introuvable, ou erreur d'index / d'IO.
+pub fn write_uncollectible_notice(
+    store: &mut Store,
+    ctx: &ExecutionContext,
+    write_off: &InvoiceWriteOff,
+) -> Result<PathBuf, CliError> {
+    let invoice = griffe_core::billing::invoice_by_id(store.connection(), write_off.invoice_id)?
+        .ok_or_else(|| {
+            CliError::Domain(format!("facture introuvable : {}", write_off.invoice_id))
+        })?;
+    let original_name = format!("facture-{}-ne-plus-attendue.txt", invoice.number);
+    let body = format!(
+        "Facture demeurée impayée pour la somme de {ht} (prix net) et pour la somme de {vat} (TVA correspondante) qui ne peut faire l'objet d'une déduction (CGI, art. 272).\nFacture {number} du {issued_on}.\n",
+        ht = write_off.ht,
+        vat = write_off.vat,
+        number = invoice.number,
+        issued_on = format_date(invoice.issued_on),
+    );
+    let period = paper_period(store, invoice.issued_on)?;
+    let spec = NewPaper {
+        kind: PaperKind::Other,
+        origin: PaperOrigin::Issued,
+        original_name,
+        mime: "text/plain".into(),
+        period: Some(period),
+        issued_on: Some(write_off.written_off_on),
+        client_id: Some(invoice.client_id),
+        invoice_id: Some(invoice.id),
+        expense_id: None,
+        fiscal_year_id: None,
+        note: None,
+        idempotency_key: Some(format!("papers:uncollectible:{}", write_off.id)),
+    };
+    let paper = take_paper(archive_paper(store, spec, body.as_bytes(), ctx)?)?
+        .ok_or_else(|| CliError::Domain("duplicata non figé (dry-run)".into()))?;
+    Ok(griffe_core::receipts::path_of(store, &paper.filename))
 }
 
 fn year_doc_kind(kind: PaperKind) -> Option<crate::year::DocKind> {

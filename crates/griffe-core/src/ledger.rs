@@ -44,6 +44,10 @@
 //! jour. Une charge constatée d'avance reprise (486) est extournée au premier jour
 //! (`OD` 618 / 486).
 //!
+//! **Pertes sur créances** : une facture passée en perte produit une `OD` 654 / 445710 / 411
+//! datée du geste ; une rétractation l'extourne à `retracted_on`. Le 706 de la vente n'est
+//! pas touché — seul un avoir inverse le chiffre d'affaires.
+//!
 //! Limites assumées, dites dans les libellés : les dépenses non rapprochées sont réputées payées
 //! à leur date, la TVA n'est jamais liquidée (445660/445710 restent bruts, aucune CA3 n'étant
 //! un fait daté), pas de provision ni de cession d'immobilisation. Un export pour
@@ -78,13 +82,15 @@ impl From<LedgerError> for AppError {
         Self::Domain(e.to_string())
     }
 }
-use crate::billing::{compute_totals, list_bank_transactions, list_invoices, list_payments};
+use crate::billing::{
+    compute_totals, list_bank_transactions, list_invoices, list_payments, list_write_offs,
+};
 use crate::clients::list_clients;
 use crate::company::{CompanyProfile, company_profile};
 use crate::domain::{
     BankTransaction, Client, ClientId, Expense, ExpenseCategory, ExpenseId, ExpensePaidBy,
-    FiscalYear, FiscalYearEnd, FixedAsset, Invoice, InvoiceId, Money, OpeningBalance, Payment,
-    PaymentMethod, format_date,
+    FiscalYear, FiscalYearEnd, FixedAsset, Invoice, InvoiceId, InvoiceWriteOff, Money,
+    OpeningBalance, Payment, PaymentMethod, format_date,
 };
 use crate::expenses::list_expenses;
 use crate::fiscal_year::{FiscalYearRecord, fiscal_year_ending_in, list_fiscal_years};
@@ -103,7 +109,8 @@ pub enum Journal {
     Purchases,
     /// `BQ` : encaissements et leurs annulations, décaissements des dépenses rapprochées.
     Bank,
-    /// `OD` : opérations diverses — rémunération du dirigeant, IS, affectation du résultat.
+    /// `OD` : opérations diverses — rémunération du dirigeant, IS, affectation du résultat,
+    /// pertes sur créances irrécouvrables.
     Misc,
 }
 
@@ -197,6 +204,9 @@ pub mod accounts {
     pub const VAT_DEDUCTIBLE: Account =
         Account::fixed("445660", "TVA déductible sur autres biens et services");
     pub const SOFTWARE: Account = Account::fixed("651000", "Redevances pour logiciels et licences");
+    /// Pertes sur créances irrécouvrables (PCG 2025) : le HT d'une créance passée en perte,
+    /// sans inverser le 706.
+    pub const BAD_DEBT: Account = Account::fixed("654000", "Pertes sur créances irrécouvrables");
     pub const SMALL_EQUIPMENT: Account =
         Account::fixed("606300", "Fournitures d'entretien et de petit équipement");
     pub const TRAVEL: Account = Account::fixed("625100", "Voyages et déplacements");
@@ -262,7 +272,7 @@ pub mod accounts {
     /// Tout le plan fixe — la source unique du libellé d'un compte (lot 37 : un `CompteNum` du
     /// FEC n'a qu'un seul `CompteLib`, celui-ci ; un libellé saisi au bilan d'ouverture ne
     /// sert qu'à un compte hors de cette liste).
-    pub const FIXED_PLAN: [Account; 40] = [
+    pub const FIXED_PLAN: [Account; 41] = [
         SHARE_CAPITAL,
         LEGAL_RESERVE,
         RETAINED_CREDIT,
@@ -294,6 +304,7 @@ pub mod accounts {
         DIRECTOR_PAY,
         SOCIAL_CHARGES,
         SOFTWARE,
+        BAD_DEBT,
         OTHER,
         CORPORATE_TAX,
         CARRY_BACK_INCOME,
@@ -433,6 +444,9 @@ pub struct LedgerFacts<'a> {
     pub profile: &'a CompanyProfile,
     pub exercise: FiscalYear,
     pub invoices: &'a [Invoice],
+    /// Pertes sur créances, y compris rétractées : l'écriture 654 se date de
+    /// `written_off_on`, l'extourne de `retracted_on`.
+    pub write_offs: &'a [InvoiceWriteOff],
     pub clients: &'a [Client],
     pub payments: &'a [Payment],
     pub expenses: &'a [Expense],
@@ -659,6 +673,60 @@ impl Facts<'_> {
                     vec![
                         client_line(payment.amount),
                         line(accounts::BANK, -payment.amount),
+                    ],
+                ));
+            }
+        }
+        entries
+    }
+
+    /// Pertes sur créances : une `OD` 654 / 445710 / 411 datée du geste, et l'extourne
+    /// (411 / 654 / 445710) datée de la rétractation — deux écritures distinctes, qui
+    /// peuvent tomber dans deux exercices. Le 706 de la vente n'est pas touché.
+    fn write_off_entries(&self, write_offs: &[InvoiceWriteOff]) -> Vec<LedgerEntry> {
+        let mut entries = Vec::new();
+        for write_off in write_offs {
+            let number = self.invoice_number(write_off.invoice_id);
+            let client_id = self
+                .invoices_by_id
+                .get(&write_off.invoice_id)
+                .map(|i| i.client_id);
+            let client = client_id.map_or("client inconnu", |id| self.client_name(id));
+            let client_line = |amount| LedgerLine {
+                account: accounts::CLIENTS,
+                aux: client_id.map(|id| self.aux_of(id)),
+                amount,
+            };
+            let piece = format!("OD-654-{number}");
+            if self.exercise.contains(write_off.written_off_on) {
+                entries.extend(entry(
+                    Journal::Misc,
+                    write_off.written_off_on,
+                    piece.clone(),
+                    format!("Perte sur créance {number} — {client}"),
+                    vec![
+                        line(accounts::BAD_DEBT, write_off.ht),
+                        line(accounts::VAT_COLLECTED, write_off.vat),
+                        client_line(-write_off.ttc),
+                    ],
+                ));
+            }
+            let Some(retracted_on) = write_off.retracted_on else {
+                continue;
+            };
+            if self.exercise.contains(retracted_on) {
+                entries.extend(entry(
+                    Journal::Misc,
+                    retracted_on,
+                    piece,
+                    format!(
+                        "Annulation de la perte sur créance {number} du {}",
+                        format_date(write_off.written_off_on)
+                    ),
+                    vec![
+                        client_line(write_off.ttc),
+                        line(accounts::BAD_DEBT, -write_off.ht),
+                        line(accounts::VAT_COLLECTED, -write_off.vat),
                     ],
                 ));
             }
@@ -951,7 +1019,8 @@ impl Ledger {
     /// Construit le grand livre d'un exercice à partir des faits du domaine — fonction pure,
     /// testable sans base. Seuls les faits *datés dans l'exercice* sont retenus : une facture
     /// par sa date d'émission, un encaissement par sa date de réception, son annulation par sa
-    /// date d'annulation, une dépense par sa date d'engagement et son décaissement rapproché
+    /// date d'annulation, une perte sur créance par `written_off_on` et son extourne par
+    /// `retracted_on`, une dépense par sa date d'engagement et son décaissement rapproché
     /// par la date du relevé ; les opérations de clôture sont datées du dernier jour.
     ///
     /// # Errors
@@ -970,6 +1039,7 @@ impl Ledger {
         let mut entries = index.prepaid_entries(facts.opening.as_ref());
         entries.extend(index.opening_entries(facts.opening));
         entries.extend(index.sales_entries(facts.invoices));
+        entries.extend(index.write_off_entries(facts.write_offs));
         entries.extend(index.bank_entries(facts.payments));
         entries.extend(index.purchase_entries(
             facts.expenses,
@@ -1735,6 +1805,7 @@ pub fn exercise_ending_in(
 struct Loaded {
     profile: CompanyProfile,
     invoices: Vec<Invoice>,
+    write_offs: Vec<InvoiceWriteOff>,
     clients: Vec<Client>,
     payments: Vec<Payment>,
     expenses: Vec<Expense>,
@@ -1755,6 +1826,7 @@ impl Loaded {
         Ok(Self {
             profile,
             invoices: list_invoices(conn)?,
+            write_offs: list_write_offs(conn)?,
             clients: list_clients(conn)?,
             payments: list_payments(conn)?,
             expenses: list_expenses(conn)?,
@@ -1817,6 +1889,7 @@ impl Loaded {
             profile: &self.profile,
             exercise,
             invoices: &self.invoices,
+            write_offs: &self.write_offs,
             clients: &self.clients,
             payments: &self.payments,
             expenses: &self.expenses,
@@ -1862,7 +1935,7 @@ mod tests {
     use super::*;
     use crate::domain::{
         Address, BankTransactionId, FiscalYearId, InvoiceLine, InvoiceOrigin, InvoiceStatus, Siren,
-        VatRate,
+        VatRate, WriteOffId,
     };
     use proptest::prelude::*;
     use time::Month as TimeMonth;
@@ -1980,6 +2053,7 @@ mod tests {
             profile,
             exercise,
             invoices,
+            write_offs: &[],
             clients: &[],
             payments: &[],
             expenses,
@@ -2185,6 +2259,7 @@ mod tests {
             profile: &p,
             exercise: next_exercise,
             invoices: &[],
+            write_offs: &[],
             clients: &[],
             payments: &[],
             expenses: &[],
@@ -2260,6 +2335,7 @@ mod tests {
             profile: &p,
             exercise,
             invoices: &[],
+            write_offs: &[],
             clients: &[],
             payments: &[],
             expenses: &[],
@@ -3172,6 +3248,149 @@ mod tests {
             next.lines.iter().map(|l| l.amount).sum::<Money>(),
             Money::ZERO
         );
+    }
+
+    fn named_client(id: ClientId, name: &str) -> Client {
+        Client {
+            id,
+            name: name.to_string(),
+            siren: None,
+            vat_number: None,
+            address: None,
+            created_at: OffsetDateTime::UNIX_EPOCH,
+            revision: 1,
+            archived_at: None,
+        }
+    }
+
+    fn bakari_write_off(invoice_id: InvoiceId, written_off_on: Date) -> InvoiceWriteOff {
+        InvoiceWriteOff {
+            id: WriteOffId::new(),
+            invoice_id,
+            written_off_on,
+            ht: Money::from_cents(350_667),
+            vat: Money::from_cents(70_133),
+            ttc: Money::from_cents(420_800),
+            recovers_vat: false,
+            retracted_on: None,
+        }
+    }
+
+    #[test]
+    fn write_off_posts_654_and_does_not_reverse_706() {
+        // HT 3 506,67 €, TVA 701,33 €, TTC 4 208,00 € — chiffres Bakari posés à la main.
+        let p = profile(None, None);
+        let exercise = FiscalYear::calendar(2026);
+        let client_id = ClientId::new();
+        let clients = [named_client(client_id, "Bakari")];
+        let invoices = vec![invoice(
+            client_id,
+            350_667,
+            date(2026, TimeMonth::August, 15),
+        )];
+        let write_offs = [bakari_write_off(
+            invoices[0].id,
+            date(2026, TimeMonth::September, 17),
+        )];
+        let ledger = Ledger::build(LedgerFacts {
+            write_offs: &write_offs,
+            clients: &clients,
+            ..facts(&p, exercise, &invoices, &[], None)
+        })
+        .unwrap();
+
+        let sales_706: Vec<_> = ledger
+            .entries
+            .iter()
+            .filter(|e| e.journal == Journal::Sales)
+            .flat_map(|e| e.lines.iter())
+            .filter(|l| l.account == accounts::SERVICES)
+            .collect();
+        assert_eq!(sales_706.len(), 1);
+        assert_eq!(sales_706[0].amount, Money::from_cents(-350_667));
+
+        let loss = ledger
+            .entries
+            .iter()
+            .find(|e| e.piece_ref == format!("OD-654-{}", invoices[0].number))
+            .expect("écriture 654");
+        assert_eq!(loss.journal, Journal::Misc);
+        assert_eq!(loss.date, date(2026, TimeMonth::September, 17));
+        assert_eq!(
+            loss.label,
+            format!("Perte sur créance {} — Bakari", invoices[0].number)
+        );
+        assert_eq!(loss.lines[0].account, accounts::BAD_DEBT);
+        assert_eq!(loss.lines[0].amount, Money::from_cents(350_667));
+        assert_eq!(loss.lines[1].account, accounts::VAT_COLLECTED);
+        assert_eq!(loss.lines[1].amount, Money::from_cents(70_133));
+        assert_eq!(loss.lines[2].account, accounts::CLIENTS);
+        assert_eq!(loss.lines[2].amount, Money::from_cents(-420_800));
+        assert!(loss.lines[2].aux.is_some());
+        assert!(loss.is_balanced());
+
+        let clients_411: Money = ledger
+            .entries
+            .iter()
+            .flat_map(|e| e.lines.iter())
+            .filter(|l| l.account == accounts::CLIENTS)
+            .map(|l| l.amount)
+            .sum();
+        assert_eq!(clients_411, Money::ZERO);
+        assert!(
+            ledger
+                .entries
+                .iter()
+                .filter(|e| e.journal == Journal::Sales)
+                .flat_map(|e| e.lines.iter())
+                .all(|l| l.account != accounts::BAD_DEBT),
+            "sales_entries ne doit pas porter le 654"
+        );
+    }
+
+    #[test]
+    fn imported_prior_year_invoice_has_no_706_in_current_exercise() {
+        let p = profile(None, None);
+        let exercise = FiscalYear::calendar(2026);
+        let client_id = ClientId::new();
+        let clients = [named_client(client_id, "Bakari")];
+        let mut imported = invoice(client_id, 350_667, date(2024, TimeMonth::September, 30));
+        imported.origin = InvoiceOrigin::Imported;
+        imported.number = "FAC-2024-0042".to_string();
+        let write_offs = [bakari_write_off(
+            imported.id,
+            date(2026, TimeMonth::September, 17),
+        )];
+        let invoices = [imported];
+        let ledger = Ledger::build(LedgerFacts {
+            write_offs: &write_offs,
+            clients: &clients,
+            ..facts(&p, exercise, &invoices, &[], None)
+        })
+        .unwrap();
+
+        assert!(
+            ledger.entries.iter().all(|e| e.journal != Journal::Sales),
+            "aucune VE : la facture importée est hors exercice"
+        );
+        assert!(
+            ledger
+                .entries
+                .iter()
+                .flat_map(|e| e.lines.iter())
+                .all(|l| l.account != accounts::SERVICES),
+            "aucun 706 dans l'exercice en cours"
+        );
+        let loss = ledger
+            .entries
+            .iter()
+            .find(|e| e.piece_ref == "OD-654-FAC-2024-0042")
+            .expect("OD 654 dans 2026");
+        assert_eq!(loss.journal, Journal::Misc);
+        assert_eq!(loss.date, date(2026, TimeMonth::September, 17));
+        assert_eq!(loss.lines[0].account, accounts::BAD_DEBT);
+        assert_eq!(loss.lines[0].amount, Money::from_cents(350_667));
+        assert_eq!(loss.label, "Perte sur créance FAC-2024-0042 — Bakari");
     }
 
     proptest! {

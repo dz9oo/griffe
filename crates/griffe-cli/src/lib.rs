@@ -36,7 +36,7 @@ pub use griffe_core::clock::today_local as today;
 pub use papers::{
     CLEARTEXT_WARNING, ControlPackReport, YearCaptureReport, append_capture_note,
     capture_bank_statement, capture_expense_receipt, capture_imported_invoice, capture_invoice,
-    capture_year, invoice_capture_note, write_control_pack,
+    capture_year, invoice_capture_note, write_control_pack, write_uncollectible_notice,
 };
 
 use clap::{Parser, Subcommand};
