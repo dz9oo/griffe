@@ -32,10 +32,11 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use rusqlite::Connection;
-use rusqlite::backup::StepResult;
+use rusqlite::backup::{Backup, StepResult};
 use subtle::ConstantTimeEq;
 use time::OffsetDateTime;
 use zeroize::Zeroize;
@@ -150,26 +151,10 @@ impl Store {
         if db_path.exists() {
             return Err(StoreError::VaultAlreadyExists(db_path.to_path_buf()));
         }
-        let (sidecar, key) = kdf::create(db_path, passphrase)?;
-        // Atomique vu de l'extérieur (lot 36) : si la base ne peut pas être créée (répertoire
-        // non inscriptible, disque plein), le sidecar déjà écrit est retiré avec ce qui a pu
-        // l'être — sinon un `.kdf` orphelin faisait croire à un coffre existant, et bloquait
-        // toute nouvelle tentative au même chemin.
-        Self::open_with_key(db_path, key, sidecar.vault_id).inspect_err(|_| {
-            let mut candidates = vec![db_path.to_path_buf(), kdf::sidecar_path(db_path)];
-            for suffix in ["-wal", "-shm", "-journal"] {
-                let mut name = db_path.as_os_str().to_owned();
-                name.push(suffix);
-                candidates.push(PathBuf::from(name));
-            }
-            for path in candidates {
-                // Seulement ce que cette création a pu écrire : jamais un lien symbolique ou
-                // un répertoire préexistant à cet emplacement.
-                if fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_file()) {
-                    let _ = fs::remove_file(path);
-                }
-            }
-        })
+        if kdf::test_harness() {
+            return create_from_empty_template(db_path, passphrase);
+        }
+        create_fresh(db_path, passphrase)
     }
 
     /// Ouvre un coffre **existant**. Ne crée jamais rien — contrairement au comportement
@@ -891,9 +876,150 @@ fn is_busy_or_locked(e: &rusqlite::Error) -> bool {
 }
 
 fn configure(conn: &Connection) -> Result<(), StoreError> {
-    conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
+    if kdf::test_harness() {
+        // `OFF` : les tests n'ont pas de garantie de durabilité à honorer ; ça évite un
+        // fsync par commit SQLCipher (le coût restant une fois Argon2 réduit).
+        conn.execute_batch(
+            "PRAGMA journal_mode = WAL; PRAGMA synchronous = OFF; PRAGMA foreign_keys = ON;",
+        )?;
+    } else {
+        conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
+    }
     conn.busy_timeout(Duration::from_secs(5))?;
     Ok(())
+}
+
+const EMPTY_TEMPLATE_PASSPHRASE: &str = "s3cret";
+
+static EMPTY_TEMPLATE: OnceLock<PathBuf> = OnceLock::new();
+static EMPTY_TEMPLATE_SEED: Mutex<()> = Mutex::new(());
+static EMPTY_TEMPLATE_OPEN: Mutex<Option<Store>> = Mutex::new(None);
+
+/// Crée un coffre neuf (Argon2 + migrations), sans passer par le gabarit.
+fn create_fresh(db_path: &Path, passphrase: &Passphrase) -> Result<Store, StoreError> {
+    let (sidecar, key) = kdf::create(db_path, passphrase)?;
+    // Atomique vu de l'extérieur (lot 36) : si la base ne peut pas être créée (répertoire
+    // non inscriptible, disque plein), le sidecar déjà écrit est retiré avec ce qui a pu
+    // l'être — sinon un `.kdf` orphelin faisait croire à un coffre existant, et bloquait
+    // toute nouvelle tentative au même chemin.
+    Store::open_with_key(db_path, key, sidecar.vault_id).inspect_err(|_| {
+        discard_create_artifacts(db_path);
+    })
+}
+
+fn discard_create_artifacts(db_path: &Path) {
+    let mut candidates = vec![db_path.to_path_buf(), kdf::sidecar_path(db_path)];
+    for suffix in ["-wal", "-shm", "-journal"] {
+        let mut name = db_path.as_os_str().to_owned();
+        name.push(suffix);
+        candidates.push(PathBuf::from(name));
+    }
+    for path in candidates {
+        if fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_file()) {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
+/// Publie un coffre vide déjà migré, puis le recopie **page à page** vers une base
+/// chiffrée par une clé maître neuve. Un `fs::copy` du fichier `SQLCipher` partagerait
+/// la clé (et donc la clé HKDF des justificatifs) entre tous les coffres de test.
+fn create_from_empty_template(
+    db_path: &Path,
+    passphrase: &Passphrase,
+) -> Result<Store, StoreError> {
+    if let Some(parent) = db_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let template_path = publish_empty_vault_template()?;
+    let mut open = EMPTY_TEMPLATE_OPEN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if open.is_none() {
+        *open = Some(Store::open_with_passphrase(
+            &template_path,
+            &Passphrase::from(EMPTY_TEMPLATE_PASSPHRASE),
+        )?);
+    }
+    let template = open
+        .as_ref()
+        .expect("le gabarit vient d'être ouvert dans ce verrou");
+
+    let (sidecar, new_key) = kdf::create(db_path, passphrase)?;
+    (|| {
+        let mut dest = Connection::open(db_path)?;
+        apply_key(&dest, &new_key)?;
+        {
+            let backup = Backup::new(template.connection(), &mut dest)?;
+            match backup.step(-1)? {
+                StepResult::Done => {}
+                _ => return Err(StoreError::VaultBusy),
+            }
+        }
+        dest.close().map_err(|(_, e)| StoreError::from(e))?;
+        Store::open_with_key(db_path, new_key, sidecar.vault_id)
+    })()
+    .inspect_err(|_| discard_create_artifacts(db_path))
+}
+
+fn publish_empty_vault_template() -> Result<PathBuf, StoreError> {
+    if let Some(path) = EMPTY_TEMPLATE.get() {
+        return Ok(path.clone());
+    }
+    let _guard = EMPTY_TEMPLATE_SEED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(path) = EMPTY_TEMPLATE.get() {
+        return Ok(path.clone());
+    }
+    let published = seed_empty_vault_template()?;
+    let _ = EMPTY_TEMPLATE.set(published.clone());
+    Ok(published)
+}
+
+fn seed_empty_vault_template() -> Result<PathBuf, StoreError> {
+    let building = std::env::temp_dir().join(format!(
+        "griffe-empty-vault-building-{}",
+        std::process::id()
+    ));
+    let building_db = building.join("vault.db");
+    let store = create_fresh(&building_db, &Passphrase::from(EMPTY_TEMPLATE_PASSPHRASE))?;
+    let version: i64 = store
+        .connection()
+        .query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    store
+        .connection()
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+    drop(store);
+    remove_stale_wal_files(&building_db);
+
+    let dest_dir = std::env::temp_dir().join(format!("griffe-empty-vault-v{version}"));
+    let dest_db = dest_dir.join("vault.db");
+    if dest_db.exists() && kdf::sidecar_path(&dest_db).exists() {
+        let _ = fs::remove_dir_all(&building);
+        return Ok(dest_db);
+    }
+    fs::create_dir_all(&dest_dir)?;
+    match fs::rename(&building_db, &dest_db) {
+        Ok(()) => {
+            fs::rename(kdf::sidecar_path(&building_db), kdf::sidecar_path(&dest_db))?;
+            let _ = fs::remove_dir_all(&building);
+            Ok(dest_db)
+        }
+        Err(_) if dest_db.exists() && kdf::sidecar_path(&dest_db).exists() => {
+            let _ = fs::remove_dir_all(&building);
+            Ok(dest_db)
+        }
+        Err(e) => {
+            let _ = fs::remove_dir_all(&building);
+            Err(e.into())
+        }
+    }
+}
+
+#[cfg(test)]
+fn empty_vault_template_db() -> Option<PathBuf> {
+    EMPTY_TEMPLATE.get().cloned()
 }
 
 /// Applique la clé puis configure la connexion — le chemin normal d'ouverture. Le changement de
@@ -1018,6 +1144,56 @@ mod tests {
 
     fn create(db_path: &Path, passphrase: &str) -> Store {
         Store::create(db_path, &Passphrase::from(passphrase)).unwrap()
+    }
+
+    #[test]
+    fn a_second_create_under_test_kdf_reuses_the_on_disk_empty_template() {
+        // Production code that would make this fail: `Store::create` always
+        // running 64 migrations + Argon2 instead of copying a published template.
+        if !kdf::test_harness() {
+            return;
+        }
+        let first = create(&temp_db_path("template-reuse-a"), "s3cret");
+        drop(first);
+        let template = empty_vault_template_db().expect("gabarit publié après le premier create");
+        let mtime = fs::metadata(&template).unwrap().modified().unwrap();
+        thread::sleep(Duration::from_millis(30));
+        let second = create(&temp_db_path("template-reuse-b"), "s3cret");
+        drop(second);
+        let mtime_after = fs::metadata(&template).unwrap().modified().unwrap();
+        assert_eq!(
+            mtime, mtime_after,
+            "le gabarit on-disk ne doit pas être réécrit au deuxième create"
+        );
+    }
+
+    #[test]
+    fn cloned_test_vaults_do_not_share_mutations() {
+        let a = create(&temp_db_path("template-iso-a"), "s3cret");
+        a.connection()
+            .execute(
+                "INSERT INTO clients (id, name, created_at) VALUES ('c1', 'Argon Digital', '2026-01-01T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+        drop(a);
+        let b = create(&temp_db_path("template-iso-b"), "s3cret");
+        let count: i64 = b
+            .connection()
+            .query_row("SELECT count(*) FROM clients", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            count, 0,
+            "un coffre cloné ne doit pas voir les écritures d'un autre"
+        );
+    }
+
+    #[test]
+    fn a_test_vault_created_with_another_passphrase_still_opens() {
+        let db = temp_db_path("template-other-pass");
+        drop(create(&db, "other-s3cret"));
+        open(&db, "other-s3cret").unwrap();
+        assert!(open(&db, "s3cret").is_err());
     }
 
     fn open(db_path: &Path, passphrase: &str) -> Result<Store, StoreError> {

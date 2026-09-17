@@ -27,3 +27,9 @@ minimal, debug seulement) et `GRIFFE_NO_OPEN=1` (pas de `xdg-open`). Un
 `cargo nextest` lancé dans `nix develop` hérite de ces variables. Ne pas
 les exporter dans un binaire `--release` : elles y sont ignorées pour le
 KDF, et `GRIFFE_NO_OPEN` y couperait l'ouverture du client mail.
+
+Sous `GRIFFE_TEST_KDF`, `Store::create` copie un coffre gabarit déjà
+migré (partagé entre process nextest) plutôt que de rejouer les
+migrations et l'`fsync` du sidecar. La CLI de test (`unlocked`,
+`provision`) appelle `run_capturing` dans le process ; les snapshots
+`--help` restent un vrai binaire.

@@ -119,7 +119,7 @@ impl Argon2Cost {
     /// l'Argon2id de prod en exportant une variable).
     #[must_use]
     pub fn for_new_vault() -> Self {
-        if cfg!(debug_assertions) && std::env::var_os("GRIFFE_TEST_KDF").is_some() {
+        if test_harness() {
             Self::TEST
         } else {
             Self::CURRENT
@@ -137,6 +137,12 @@ impl Argon2Cost {
             .expect("paramètres Argon2id déjà validés par validate_argon2_params");
         Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
     }
+}
+
+/// Harness de test : `GRIFFE_TEST_KDF` n'agit qu'en debug (même contrat que [`Argon2Cost::for_new_vault`]).
+#[must_use]
+pub(super) fn test_harness() -> bool {
+    cfg!(debug_assertions) && std::env::var_os("GRIFFE_TEST_KDF").is_some()
 }
 
 /// Plafond mémoire accepté pour un sidecar (en Kio) : 1 Gio. Très au-dessus du profil courant
@@ -825,10 +831,14 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), StoreError> {
             file.set_permissions(fs::Permissions::from_mode(0o600))?;
         }
         file.write_all(bytes)?;
-        file.sync_all()?;
+        if !test_harness() {
+            file.sync_all()?;
+        }
     }
     fs::rename(&tmp_path, path)?;
-    sync_dir(path.parent())?;
+    if !test_harness() {
+        sync_dir(path.parent())?;
+    }
     Ok(())
 }
 
