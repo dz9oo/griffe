@@ -4,9 +4,9 @@
 //!
 //! Ces tests lancent un vrai sous-processus (`assert_cmd`), donc ne peuvent pas injecter de
 //! trousseau en mémoire (réservé aux tests dans le même process, via
-//! `griffe_core::store::testing`). [`provision`] crée le coffre avec `--passphrase-file` et
-//! `--remember` : une seule écriture dans le trousseau OS réel par coffre de test (identifié par
-//! un `vault_id` aléatoire propre au sidecar — aucune collision possible entre exécutions).
+//! `griffe_core::store::testing`). [`provision`] crée le coffre avec `--passphrase-file`.
+//! Les commandes suivantes passent le même fichier via [`unlocked`] : le trousseau OS
+//! (`--remember`) est absent du runner CI (pas de Secret Service).
 
 #![allow(dead_code)]
 
@@ -39,6 +39,17 @@ pub fn freeflow() -> Command {
     Command::cargo_bin("griffe").expect("le binaire griffe doit être compilé pour les tests")
 }
 
+/// Binaire `griffe` sur un coffre déjà [`provision`]né : `FREEFLOW_DB` + le `--passphrase-file`
+/// écrit à l'init. Ne pas l'utiliser pour prouver qu'un coffre verrouillé refuse l'accès.
+pub fn unlocked(db: &Path) -> Command {
+    let pass = db.with_extension("passphrase");
+    let mut cmd = freeflow();
+    cmd.env("FREEFLOW_DB", db)
+        .arg("--passphrase-file")
+        .arg(&pass);
+    cmd
+}
+
 /// Écrit une passphrase dans un fichier temporaire en 0600 (Unix) et renvoie son chemin.
 pub fn passphrase_file(db: &Path, passphrase: &str) -> PathBuf {
     let path = db.with_extension("passphrase");
@@ -52,9 +63,8 @@ pub fn passphrase_file(db: &Path, passphrase: &str) -> PathBuf {
     path
 }
 
-/// Crée le coffre et met la clé en cache dans le trousseau OS (`--remember`) : les commandes
-/// suivantes de ce test, chacune un nouveau sous-processus, la retrouvent via
-/// `Store::open_cached` sans avoir à repasser de passphrase.
+/// Crée le coffre. `--remember` est tenté (no-op sans trousseau). Les commandes suivantes
+/// du test doivent utiliser [`unlocked`], pas le cache OS.
 pub fn provision(db: &Path) {
     let pass_file = passphrase_file(db, "s3cret");
     freeflow()
@@ -71,8 +81,7 @@ pub fn json_result(output: &[u8]) -> serde_json::Value {
 }
 
 pub fn create_client(db: &Path, name: &str) -> String {
-    let output = freeflow()
-        .env("FREEFLOW_DB", db)
+    let output = unlocked(db)
         .args(["--json", "client", "create", "--name", name])
         .assert()
         .success()

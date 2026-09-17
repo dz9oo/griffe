@@ -68,13 +68,12 @@ use std::path::Path;
 use predicates::prelude::*;
 
 mod common;
-use common::{create_client, freeflow, json_result, provision, temp_db};
+use common::{create_client, json_result, provision, temp_db, unlocked};
 
 const SIREN: &str = "901265322";
 
 fn set_profile(db: &Path) {
-    freeflow()
-        .env("FREEFLOW_DB", db)
+    unlocked(db)
         .args([
             "company",
             "set-profile",
@@ -125,8 +124,7 @@ fn receipt(db: &Path, name: &str) -> std::path::PathBuf {
 fn import_statement(db: &Path, name: &str, csv: &str) {
     let statement = db.with_file_name(name);
     std::fs::write(&statement, csv).unwrap();
-    freeflow()
-        .env("FREEFLOW_DB", db)
+    unlocked(db)
         .args(["bank", "import", "--format", "csv"])
         .arg(&statement)
         .assert()
@@ -135,8 +133,7 @@ fn import_statement(db: &Path, name: &str, csv: &str) {
 
 /// Identifiant d'une transaction importée non rapprochée, par libellé du relevé.
 fn unmatched_transaction(db: &Path, description: &str) -> String {
-    let out = freeflow()
-        .env("FREEFLOW_DB", db)
+    let out = unlocked(db)
         .args(["--json", "bank", "list", "--unmatched"])
         .assert()
         .success()
@@ -156,8 +153,7 @@ fn unmatched_transaction(db: &Path, description: &str) -> String {
 }
 
 fn checklist(db: &Path, period: &str, today: &str) -> serde_json::Value {
-    let out = freeflow()
-        .env("FREEFLOW_DB", db)
+    let out = unlocked(db)
         .args(["--json", "year", "checklist", period, "--today", today])
         .assert()
         .success()
@@ -177,8 +173,7 @@ fn step<'a>(checklist: &'a serde_json::Value, key: &str) -> &'a serde_json::Valu
 }
 
 fn year_show(db: &Path, period: &str) -> serde_json::Value {
-    let out = freeflow()
-        .env("FREEFLOW_DB", db)
+    let out = unlocked(db)
         .args(["--json", "year", "show", period])
         .assert()
         .success()
@@ -189,8 +184,7 @@ fn year_show(db: &Path, period: &str) -> serde_json::Value {
 }
 
 fn balance(db: &Path, period: &str) -> serde_json::Value {
-    let out = freeflow()
-        .env("FREEFLOW_DB", db)
+    let out = unlocked(db)
         .args(["--json", "year", "balance", period])
         .assert()
         .success()
@@ -231,8 +225,7 @@ fn render_everything(db: &Path, period: &str) -> serde_json::Value {
     ] {
         let ext = if doc == "liasse" { "json" } else { "pdf" };
         let out = dir.join(format!("{doc}.{ext}"));
-        freeflow()
-            .env("FREEFLOW_DB", db)
+        unlocked(db)
             .args(["year", "render", period, doc, "--out"])
             .arg(&out)
             .assert()
@@ -242,8 +235,7 @@ fn render_everything(db: &Path, period: &str) -> serde_json::Value {
             assert!(bytes.starts_with(b"%PDF-"), "{doc} n'est pas un PDF");
         }
     }
-    freeflow()
-        .env("FREEFLOW_DB", db)
+    unlocked(db)
         .args(["fec", "export", period, "--out"])
         .arg(&dir)
         .assert()
@@ -307,8 +299,7 @@ fn a_preexisting_sasu_closes_two_exercises_alone_from_the_cli() {
     // ---------------------------------------------------------------------------------------
     // Reprise du bilan du cabinet au 1er octobre 2025.
     // ---------------------------------------------------------------------------------------
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "year",
             "opening",
@@ -352,8 +343,7 @@ fn a_preexisting_sasu_closes_two_exercises_alone_from_the_cli() {
     );
     // 1. Les honoraires, créés *depuis* le débit : montant et date repris du relevé.
     let fees_tx = unmatched_transaction(&db, "PRLV CABINET FIDUCIA");
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "expense",
             "record",
@@ -375,8 +365,7 @@ fn a_preexisting_sasu_closes_two_exercises_alone_from_the_cli() {
         .assert()
         .success();
     // 2. Le logiciel, saisi à sa date de facture (10/02) puis rapproché du débit du 12/02.
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "expense",
             "record",
@@ -398,8 +387,7 @@ fn a_preexisting_sasu_closes_two_exercises_alone_from_the_cli() {
         .assert()
         .success();
     let software_tx = unmatched_transaction(&db, "CB LOGICIEL FACTURE");
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "expense",
             "reconcile",
@@ -411,8 +399,7 @@ fn a_preexisting_sasu_closes_two_exercises_alone_from_the_cli() {
         .success();
     // 3. Les frais bancaires, sans justificatif pour l'instant.
     let charges_tx = unmatched_transaction(&db, "FRAIS TENUE DE COMPTE");
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "expense",
             "record",
@@ -458,8 +445,7 @@ fn a_preexisting_sasu_closes_two_exercises_alone_from_the_cli() {
         step(&missing_receipt, "result")
     );
     assert!(missing_receipt["carry_back_available_cents"].is_null());
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["year", "checklist", "2026", "--today", "2026-10-05"])
         .assert()
         .success()
@@ -468,8 +454,7 @@ fn a_preexisting_sasu_closes_two_exercises_alone_from_the_cli() {
         ));
 
     // On joint la pièce : l'étape passe au vert.
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["expense", "edit", "frais de tenue", "--receipt"])
         .arg(receipt(&db, "releve-frais-juin.pdf"))
         .assert()
@@ -532,8 +517,7 @@ fn a_preexisting_sasu_closes_two_exercises_alone_from_the_cli() {
     // ---------------------------------------------------------------------------------------
     // Clôture, puis approbation dans les délais.
     // ---------------------------------------------------------------------------------------
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["year", "close", "--period", "2026", "--today", "2026-10-05"])
         .assert()
         .success();
@@ -554,8 +538,7 @@ fn a_preexisting_sasu_closes_two_exercises_alone_from_the_cli() {
     assert_eq!(step(&draft, "approve")["status"], "todo");
     assert_eq!(step(&draft, "corporate_tax")["status"], "info");
 
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "year",
             "approve",
@@ -628,13 +611,11 @@ fn a_preexisting_sasu_closes_two_exercises_alone_from_the_cli() {
     assert!(!fec.contains("695000"), "aucun IS sur un déficit :\n{fec}");
 
     // Une dépense de l'exercice clos ne bouge plus ; le bilan d'ouverture non plus.
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["expense", "edit", "logiciel", "--amount", "150"])
         .assert()
         .failure();
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["year", "opening", "rm"])
         .assert()
         .failure()
@@ -653,8 +634,7 @@ fn a_preexisting_sasu_closes_two_exercises_alone_from_the_cli() {
          2027-06-30;FRAIS TENUE DE COMPTE;-96.00\n",
     );
     let fees_tx = unmatched_transaction(&db, "PRLV CABINET FIDUCIA");
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "expense",
             "record",
@@ -676,8 +656,7 @@ fn a_preexisting_sasu_closes_two_exercises_alone_from_the_cli() {
         .assert()
         .success();
     let charges_tx = unmatched_transaction(&db, "FRAIS TENUE DE COMPTE");
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "expense",
             "record",
@@ -701,8 +680,7 @@ fn a_preexisting_sasu_closes_two_exercises_alone_from_the_cli() {
         let lines = format!(
             r#"[{{"description":"{label}","quantity":{quantity},"unit_price":800000,"vat_rate":"Standard"}}]"#
         );
-        let out = freeflow()
-            .env("FREEFLOW_DB", &db)
+        let out = unlocked(&db)
             .args([
                 "--json",
                 "invoice",
@@ -726,8 +704,7 @@ fn a_preexisting_sasu_closes_two_exercises_alone_from_the_cli() {
     };
     let first_invoice = emit("Refonte du site — forfait", "1", "2027-03-31");
     let payment_tx = unmatched_transaction(&db, "VIR ATELIER VERDIER");
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "bank",
             "reconcile",
@@ -741,8 +718,7 @@ fn a_preexisting_sasu_closes_two_exercises_alone_from_the_cli() {
     let _second_invoice = emit("Accompagnement — 5 jours", "5", "2027-09-15");
     // Oups : 5 × 8 000 € n'est pas ce qu'on voulait. Une facture émise ne se modifie pas : on
     // l'annule par un avoir et on la refait — c'est le régime d'immuabilité, vécu de l'intérieur.
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "invoice",
             "credit-note",
@@ -754,8 +730,7 @@ fn a_preexisting_sasu_closes_two_exercises_alone_from_the_cli() {
         .assert()
         .success();
     let lines = r#"[{"description":"Accompagnement — 5 jours","quantity":5,"unit_price":80000,"vat_rate":"Standard"}]"#;
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "invoice",
             "emit",
@@ -806,8 +781,7 @@ fn a_preexisting_sasu_closes_two_exercises_alone_from_the_cli() {
     assert_eq!(ready["result"]["net_result_cents"], 964_600);
     assert_eq!(ready["minimum_legal_reserve_cents"], 10_000);
     assert_eq!(step(&ready, "close")["amount_cents"], 10_000);
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["year", "checklist", "2027", "--today", "2027-10-10"])
         .assert()
         .success()
@@ -816,8 +790,7 @@ fn a_preexisting_sasu_closes_two_exercises_alone_from_the_cli() {
         ));
 
     // Clôture avec l'affectation décidée : réserve légale minimale, 3 000 € de dividendes.
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "year",
             "close",
@@ -865,8 +838,7 @@ fn a_preexisting_sasu_closes_two_exercises_alone_from_the_cli() {
     assert_eq!(liability(&sheet, "134"), 158_400);
     assert_eq!(liability(&sheet, "136"), 964_600);
 
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args([
             "year",
             "approve",
@@ -929,29 +901,25 @@ fn a_preexisting_sasu_closes_two_exercises_alone_from_the_cli() {
         ),
         "{previous}"
     );
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["audit", "verify-chain"])
         .assert()
         .success();
 
     // Et les mots du parcours sont expliqués, sans jargon, au même endroit.
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["year", "checklist", "2028", "--today", "2027-12-15"])
         .assert()
         .success()
         .stdout(predicate::str::contains("freeflow year glossary"));
-    freeflow()
-        .env("FREEFLOW_DB", &db)
+    unlocked(&db)
         .args(["year", "glossary"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Report à nouveau"))
         .stdout(predicate::str::contains("Dépôt des comptes au greffe"));
     let glossary = json_result(
-        &freeflow()
-            .env("FREEFLOW_DB", &db)
+        &unlocked(&db)
             .args(["--json", "year", "glossary"])
             .assert()
             .success()
