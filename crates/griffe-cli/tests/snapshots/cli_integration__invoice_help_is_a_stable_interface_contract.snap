@@ -7,13 +7,15 @@ Facturation : émission, import, avoir, vérification de la chaîne, balance âg
 Usage: griffe invoice [OPTIONS] <COMMAND>
 
 Commands:
-  emit          Émet une facture — nécessite confirmation humaine quand `--actor agent:...`
-  import        Enregistre une facture née ailleurs (PA, outil tiers) — conserve son numéro, archive le fichier. Nécessite confirmation humaine quand `--actor agent:...`
-  credit-note   Émet un avoir annulant intégralement une facture — même exigence de confirmation
-  verify-chain  Revérifie la chaîne de hash de toutes les factures
-  aged-balance  Balance âgée à une date donnée
-  render        Rend une facture émise en PDF/A-3b avec le XML CII embarqué (Factur-X). Nécessite un profil d'entreprise défini (`griffe company set-profile`)
-  help          Print this message or the help of the given subcommand(s)
+  emit               Émet une facture — nécessite confirmation humaine quand `--actor agent:...`
+  import             Enregistre une facture née ailleurs (PA, outil tiers) — conserve son numéro, archive le fichier. Nécessite confirmation humaine quand `--actor agent:...`
+  credit-note        Émet un avoir annulant intégralement une facture — même exigence de confirmation
+  write-off          Enregistre que cette facture ne sera pas encaissée — confirmation si agent
+  retract-write-off  Rétablit une créance précédemment constatée comme non encaissée — confirmation si agent
+  verify-chain       Revérifie la chaîne de hash de toutes les factures
+  aged-balance       Balance âgée à une date donnée
+  render             Rend une facture émise en PDF/A-3b avec le XML CII embarqué (Factur-X). Nécessite un profil d'entreprise défini (`griffe company set-profile`)
+  help               Print this message or the help of the given subcommand(s)
 
 Options:
       --db <DB>

@@ -1,8 +1,8 @@
 //! Outils `invoice.*`, `payment.*`, `bank.*` — miroir de `freeflow invoice/payment/bank ...`
-//! (CLI, lot 7). `invoice.emit`, `invoice.import` et `invoice.credit_note` sont marqués
-//! `destructive_hint` : la politique de confirmation (lot 2) dépose une `PendingAction` plutôt
-//! que d'appliquer l'effet quand l'acteur est un agent — ce que ces outils sont,
-//! systématiquement.
+//! (CLI, lot 7). `invoice.emit`, `invoice.import`, `invoice.credit_note`, `invoice.write_off`
+//! et `invoice.retract_write_off` sont marqués `destructive_hint` : la politique de
+//! confirmation (lot 2) dépose une `PendingAction` plutôt que d'appliquer l'effet quand
+//! l'acteur est un agent — ce que ces outils sont, systématiquement.
 //!
 //! Lot 22 : `payment.list`/`payment.void` et `bank.list`/`bank.unreconcile` (corrections
 //! d'encaissement, contre-écriture), et remboursement de la dette `dry_run` des cinq outils
@@ -14,7 +14,7 @@ use griffe_core::billing::{
 };
 use griffe_core::domain::{
     BankTransactionId, ClientId, InvoiceId, InvoiceLine, InvoiceOrigin, MissionId, Money,
-    PaymentId, PaymentMethod,
+    PaymentId, PaymentMethod, WriteOffId,
 };
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
@@ -70,6 +70,24 @@ pub(crate) struct CreditNoteArgs {
     /// Identifiant de la facture annulée.
     id: String,
     issued_on: String,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct WriteOffArgs {
+    /// Identifiant de la facture.
+    id: String,
+    on: String,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct RetractWriteOffArgs {
+    /// Identifiant de la perte.
+    id: String,
+    on: String,
     #[serde(default)]
     dry_run: bool,
 }
@@ -288,6 +306,60 @@ impl FreeflowServer {
         let cmd = billing::IssueCreditNote {
             invoice_id,
             issued_on,
+        };
+        let mut store = self.store.lock().await;
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
+            Ok(outcome) => ok_json(outcome_json(&outcome)),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
+    /// Enregistre que cette facture ne sera pas encaissée. Même exigence de confirmation que
+    /// `invoice.emit`.
+    #[tool(
+        name = "invoice.write_off",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false
+        )
+    )]
+    async fn invoice_write_off(
+        &self,
+        Parameters(args): Parameters<WriteOffArgs>,
+    ) -> CallToolResult {
+        let invoice_id: InvoiceId = ok_or_return!("id", args.id.parse());
+        let written_off_on = ok_or_return!("on", griffe_core::domain::parse_date(&args.on));
+        let cmd = billing::WriteOffReceivable {
+            invoice_id,
+            written_off_on,
+        };
+        let mut store = self.store.lock().await;
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
+            Ok(outcome) => ok_json(outcome_json(&outcome)),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
+    /// Rétablit une créance précédemment constatée comme non encaissée. Même exigence de
+    /// confirmation que `invoice.write_off`.
+    #[tool(
+        name = "invoice.retract_write_off",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false
+        )
+    )]
+    async fn invoice_retract_write_off(
+        &self,
+        Parameters(args): Parameters<RetractWriteOffArgs>,
+    ) -> CallToolResult {
+        let write_off_id: WriteOffId = ok_or_return!("id", args.id.parse());
+        let retracted_on = ok_or_return!("on", griffe_core::domain::parse_date(&args.on));
+        let cmd = billing::RetractWriteOff {
+            write_off_id,
+            retracted_on,
         };
         let mut store = self.store.lock().await;
         match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {

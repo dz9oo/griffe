@@ -8,8 +8,8 @@ use clap::Subcommand;
 use griffe_core::app::{self, Actor, Command, ExecutionContext, Executor, PendingActionId};
 use griffe_core::billing::{
     DeleteBankTransaction, EmitInvoice, ImportIssuedInvoice, IssueCreditNote, ReconcileTransaction,
-    RecordPayment, SettleBankTransaction, UnreconcileTransaction, UnsettleBankTransaction,
-    VoidPayment,
+    RecordPayment, RetractWriteOff, SettleBankTransaction, UnreconcileTransaction,
+    UnsettleBankTransaction, VoidPayment, WriteOffReceivable,
 };
 use griffe_core::clients::{DeleteClient, DeleteContact};
 use griffe_core::expenses::{DeleteExpense, ReconcileExpense, RecordExpense, UpdateExpense};
@@ -119,6 +119,12 @@ pub fn confirm(store: &mut Store, id: PendingActionId, json: bool) -> Result<Str
         // `capture_invoice` fabriquerait un Factur-X Issued — interdit.
         // L'humain repose le papier via `papers archive` ou la fenêtre.
         let outcome = Executor::new(store).confirm::<ImportIssuedInvoice>(id)?;
+        Ok(format_outcome(&outcome, json))
+    } else if action.command_name == WriteOffReceivable::NAME {
+        let outcome = Executor::new(store).confirm::<WriteOffReceivable>(id)?;
+        Ok(format_outcome(&outcome, json))
+    } else if action.command_name == RetractWriteOff::NAME {
+        let outcome = Executor::new(store).confirm::<RetractWriteOff>(id)?;
         Ok(format_outcome(&outcome, json))
     } else if action.command_name == IssueCreditNote::NAME {
         let outcome = Executor::new(store).confirm::<IssueCreditNote>(id)?;

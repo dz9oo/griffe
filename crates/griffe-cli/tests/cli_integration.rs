@@ -1277,6 +1277,133 @@ fn invoice_help_is_a_stable_interface_contract() {
 }
 
 #[test]
+fn agent_write_off_stays_pending_until_a_human_confirms() {
+    let db = temp_db("write-off-pending");
+    provision(&db);
+    let client_id = create_client(&db, "Bakari");
+    let lines =
+        r#"[{"description":"Mission","quantity":1,"unit_price":350667,"vat_rate":"Standard"}]"#;
+    let emit_out = unlocked(&db)
+        .args([
+            "--json",
+            "invoice",
+            "emit",
+            "--client",
+            &client_id,
+            "--lines",
+            lines,
+            "--issued-on",
+            "2026-09-01",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let invoice_id = json_result(&emit_out)["result"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let pending_out = unlocked(&db)
+        .args([
+            "--json",
+            "--actor",
+            "agent:test-session",
+            "invoice",
+            "write-off",
+            "--id",
+            &invoice_id,
+            "--on",
+            "2026-10-15",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let pending = json_result(&pending_out);
+    assert_eq!(pending["status"], "pending_confirmation");
+    let pending_id = pending["pending_action_id"].as_str().unwrap().to_string();
+
+    let aged = json_result(
+        &unlocked(&db)
+            .args(["--json", "invoice", "aged-balance", "--today", "2026-10-16"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert_eq!(aged.as_array().unwrap().len(), 1);
+
+    let confirm_out = unlocked(&db)
+        .args(["--json", "confirm", "--id", &pending_id])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let confirmed = json_result(&confirm_out);
+    assert_eq!(confirmed["status"], "applied");
+    assert_eq!(confirmed["result"]["invoice_id"], invoice_id);
+    assert_eq!(confirmed["result"]["written_off_on"], "2026-10-15");
+    assert_eq!(confirmed["result"]["ht"], 350667);
+    assert_eq!(confirmed["result"]["vat"], 70133);
+    assert_eq!(confirmed["result"]["ttc"], 420800);
+    assert_eq!(confirmed["result"]["recovers_vat"], false);
+    assert!(confirmed["result"]["retracted_on"].is_null());
+
+    let aged_after = json_result(
+        &unlocked(&db)
+            .args(["--json", "invoice", "aged-balance", "--today", "2026-10-16"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert!(aged_after.as_array().unwrap().is_empty());
+
+    let write_off_id = confirmed["result"]["id"].as_str().unwrap().to_string();
+    let retract_pending = json_result(
+        &unlocked(&db)
+            .args([
+                "--json",
+                "--actor",
+                "agent:test-session",
+                "invoice",
+                "retract-write-off",
+                "--id",
+                &write_off_id,
+                "--on",
+                "2026-10-20",
+            ])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert_eq!(retract_pending["status"], "pending_confirmation");
+    let retract_confirm = json_result(
+        &unlocked(&db)
+            .args([
+                "--json",
+                "confirm",
+                "--id",
+                retract_pending["pending_action_id"].as_str().unwrap(),
+            ])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert_eq!(retract_confirm["status"], "applied");
+}
+
+#[test]
 fn passphrase_change_help_is_a_stable_interface_contract() {
     let output = freeflow()
         .args(["passphrase", "change", "--help"])

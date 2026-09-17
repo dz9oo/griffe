@@ -12,7 +12,7 @@ use griffe_core::billing::{
 };
 use griffe_core::domain::{
     BankTransactionId, ClientId, InvoiceId, InvoiceLine, InvoiceOrigin, MissionId, Money,
-    PaymentId, PaymentMethod,
+    PaymentId, PaymentMethod, WriteOffId,
 };
 use griffe_core::store::Store;
 use time::Date;
@@ -76,6 +76,20 @@ pub enum InvoiceCommand {
         id: InvoiceId,
         #[arg(long, value_parser = parse_date)]
         issued_on: Date,
+    },
+    /// Enregistre que cette facture ne sera pas encaissée — confirmation si agent.
+    WriteOff {
+        #[arg(long, value_parser = clap::value_parser!(InvoiceId))]
+        id: InvoiceId,
+        #[arg(long, value_parser = parse_date)]
+        on: Date,
+    },
+    /// Rétablit une créance précédemment constatée comme non encaissée — confirmation si agent.
+    RetractWriteOff {
+        #[arg(long, value_parser = clap::value_parser!(WriteOffId))]
+        id: WriteOffId,
+        #[arg(long, value_parser = parse_date)]
+        on: Date,
     },
     /// Revérifie la chaîne de hash de toutes les factures.
     VerifyChain,
@@ -285,6 +299,22 @@ pub fn run_invoice(
                 _ => None,
             };
             crate::papers::append_capture_note(rendered, json, note)
+        }
+        InvoiceCommand::WriteOff { id, on } => {
+            let command = billing::WriteOffReceivable {
+                invoice_id: id,
+                written_off_on: on,
+            };
+            let outcome = Executor::new(store).execute(&command, ctx)?;
+            format_outcome(&outcome, json)
+        }
+        InvoiceCommand::RetractWriteOff { id, on } => {
+            let command = billing::RetractWriteOff {
+                write_off_id: id,
+                retracted_on: on,
+            };
+            let outcome = Executor::new(store).execute(&command, ctx)?;
+            format_outcome(&outcome, json)
         }
         InvoiceCommand::VerifyChain => {
             let status = verify_chain(store.connection())?;
