@@ -85,8 +85,9 @@ de session, ou mode d’échec qui exige un vrai terminal). Elle exécute
 
 `direnv allow` puis `nix develop`. Le shell pose `GRIFFE_TEST_KDF=1`,
 `GRIFFE_NO_OPEN=1` et `CARGO_INCREMENTAL=0` : un `cargo nextest` nu
-n'a plus à les répéter. `just check` = fmt-check, clippy `-D warnings`,
-machete, nextest, deny+audit. `nix flake check` avant de dire « terminé ».
+n'a plus à les répéter. `just check` = fmt-check, clippy `-D warnings` (hors fenêtre), machete,
+nextest, deny+audit, puis clippy Tauri/`griffe-desktop`. `nix flake check`
+avant de dire « terminé ».
 Une invocation `nix develop -c …` longue peut être signalée « killed »
 alors que le process continue : vérifier `ps -p`.
 

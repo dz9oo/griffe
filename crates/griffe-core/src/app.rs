@@ -25,7 +25,8 @@ mod tests {
     use serde::{Deserialize, Serialize};
 
     use super::*;
-    use crate::store::{Passphrase, Store};
+    use crate::store::Store;
+    use crate::store::testing::test_store as empty_test_store;
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     struct CreateWidget {
@@ -74,12 +75,7 @@ mod tests {
     }
 
     fn test_store(label: &str) -> Store {
-        let dir = std::env::temp_dir().join(format!(
-            "freeflow-app-test-{label}-{}-{}",
-            std::process::id(),
-            uuid::Uuid::now_v7()
-        ));
-        let store = Store::create(&dir.join("vault.db"), &Passphrase::from("s3cret")).unwrap();
+        let store = empty_test_store(label);
         store
             .connection()
             .execute(

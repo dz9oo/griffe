@@ -379,17 +379,9 @@ pub fn opening_balance(conn: &Connection) -> Result<Option<OpeningBalanceRecord>
 mod tests {
     use super::*;
     use crate::app::{Actor, ExecutionContext, Executor, Outcome};
-    use crate::store::{Passphrase, Store};
+    use crate::store::Store;
+    use crate::store::testing::test_store;
     use time::Month;
-
-    fn test_store(label: &str) -> Store {
-        let dir = std::env::temp_dir().join(format!(
-            "freeflow-opening-test-{label}-{}-{}",
-            std::process::id(),
-            uuid::Uuid::now_v7()
-        ));
-        Store::create(&dir.join("vault.db"), &Passphrase::from("s3cret")).unwrap()
-    }
 
     fn human() -> ExecutionContext {
         ExecutionContext::new(Actor::Human, false)

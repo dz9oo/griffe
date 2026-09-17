@@ -200,16 +200,7 @@ pub fn migrate_legacy(store: &Store) -> Result<usize, ReceiptError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::Passphrase;
-
-    fn test_store(label: &str) -> Store {
-        let dir = std::env::temp_dir().join(format!(
-            "freeflow-receipts-test-{label}-{}-{}",
-            std::process::id(),
-            uuid::Uuid::now_v7()
-        ));
-        Store::create(&dir.join("vault.db"), &Passphrase::from("s3cret")).unwrap()
-    }
+    use crate::store::testing::test_store;
 
     #[test]
     fn a_receipt_is_stored_encrypted_beside_the_vault_and_read_back() {

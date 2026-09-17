@@ -94,7 +94,7 @@ pub fn recent_audit_entries(
 mod tests {
     use super::*;
     use crate::app::{Actor, Command, ExecutionContext, Executor, Outcome};
-    use crate::store::{Passphrase, Store};
+    use crate::store::testing::test_store;
     use rusqlite::Connection as RusqliteConnection;
     use serde::{Deserialize, Serialize};
 
@@ -110,15 +110,6 @@ mod tests {
         fn apply(&self, _conn: &RusqliteConnection) -> Result<Self::Output, AppError> {
             Ok(())
         }
-    }
-
-    fn test_store(label: &str) -> Store {
-        let dir = std::env::temp_dir().join(format!(
-            "freeflow-app-queries-test-{label}-{}-{}",
-            std::process::id(),
-            uuid::Uuid::now_v7()
-        ));
-        Store::create(&dir.join("vault.db"), &Passphrase::from("s3cret")).unwrap()
     }
 
     #[test]

@@ -575,16 +575,8 @@ pub fn list_contacts(conn: &Connection, client_id: ClientId) -> Result<Vec<Conta
 mod tests {
     use super::*;
     use crate::app::{Actor, ExecutionContext, Executor, Outcome};
-    use crate::store::{Passphrase, Store};
-
-    fn test_store(label: &str) -> Store {
-        let dir = std::env::temp_dir().join(format!(
-            "griffe-clients-test-{label}-{}-{}",
-            std::process::id(),
-            uuid::Uuid::now_v7()
-        ));
-        Store::create(&dir.join("vault.db"), &Passphrase::from("s3cret")).unwrap()
-    }
+    use crate::store::Store;
+    use crate::store::testing::test_store;
 
     fn human_ctx() -> ExecutionContext {
         ExecutionContext::new(Actor::Human, false)

@@ -1,6 +1,7 @@
-//! Parcours réels via `assert_cmd` (le binaire compilé, pas la bibliothèque), snapshots
-//! `insta` du contrat `--help` et des sorties `--json`, et vérification qu'un code de sortie
-//! distinct existe par famille d'erreur.
+//! Parcours via [`common::capturing`] (in-process) sauf le contrat binaire `--help`
+//! ([`common::freeflow`]) et les cas qui isolent l'environnement ou le cwd. Snapshots
+//! `insta` du contrat `--help` et des sorties `--json`, et un code de sortie distinct
+//! par famille d'erreur.
 //!
 //! Les aides (coffre temporaire, `provision`, lecture JSON) vivent dans `common/mod.rs`,
 //! partagées avec le scénario de preuve de bout en bout (`closing_scenario.rs`, lot 35).
@@ -10,7 +11,9 @@ use std::path::{Path, PathBuf};
 use predicates::prelude::*;
 
 mod common;
-use common::{create_client, freeflow, json_result, passphrase_file, provision, temp_db, unlocked};
+use common::{
+    capturing, create_client, freeflow, json_result, passphrase_file, provision, temp_db, unlocked,
+};
 
 fn papers_of_kind(db: &Path, kind: &str) -> serde_json::Value {
     json_result(
@@ -251,7 +254,7 @@ fn a_locked_vault_fails_with_its_own_exit_code() {
     let db = temp_db("locked-vault");
     provision(&db);
     unlocked(&db).arg("lock").assert().success();
-    freeflow()
+    capturing()
         .env("FREEFLOW_DB", &db)
         // Positionnée sur le sous-processus, pas sur ce process de test : prouve que la
         // variable n'est plus lue nulle part, pas seulement qu'elle est absente de l'environnement.
@@ -269,7 +272,7 @@ fn freeflow_passphrase_env_var_is_never_read_even_when_set() {
     unlocked(&db).arg("lock").assert().success();
     // Coffre verrouillé, FREEFLOW_PASSPHRASE positionnée mais non-interactif : doit échouer
     // avec le code « verrouillé », jamais réussir en lisant l'ancienne variable d'environnement.
-    freeflow()
+    capturing()
         .env("FREEFLOW_DB", &db)
         .env("FREEFLOW_PASSPHRASE", "s3cret")
         .args(["--non-interactive", "client", "list", "--json"])
@@ -300,7 +303,7 @@ fn invalid_lines_json_fails_with_its_own_exit_code() {
 
 #[test]
 fn a_bad_argument_fails_with_clap_s_own_usage_exit_code() {
-    freeflow()
+    capturing()
         .args(["prospect", "create", "--unknown-flag"])
         .assert()
         .failure()
@@ -312,7 +315,7 @@ fn init_refuses_an_existing_vault() {
     let db = temp_db("init-twice");
     provision(&db);
     let pass_file = passphrase_file(&db, "another");
-    freeflow()
+    capturing()
         .env("FREEFLOW_DB", &db)
         .args(["--passphrase-file"])
         .arg(&pass_file)
@@ -326,7 +329,7 @@ fn init_refuses_an_existing_vault() {
 fn unlock_never_creates_a_vault() {
     let db = temp_db("unlock-no-create");
     let pass_file = passphrase_file(&db, "s3cret");
-    freeflow()
+    capturing()
         .env("FREEFLOW_DB", &db)
         .args(["--passphrase-file"])
         .arg(&pass_file)
@@ -342,7 +345,7 @@ fn a_command_with_no_passphrase_source_and_non_interactive_exits_2() {
     let db = temp_db("no-source-non-interactive");
     provision(&db);
     unlocked(&db).arg("lock").assert().success();
-    freeflow()
+    capturing()
         .env("FREEFLOW_DB", &db)
         .args(["--non-interactive", "client", "list", "--json"])
         .assert()
@@ -359,7 +362,7 @@ fn a_passphrase_file_readable_by_others_is_refused() {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&pass_file, std::fs::Permissions::from_mode(0o644)).unwrap();
     }
-    let assertion = freeflow()
+    let assertion = capturing()
         .env("FREEFLOW_DB", &db)
         .args(["--passphrase-file"])
         .arg(&pass_file)
@@ -376,7 +379,7 @@ fn a_passphrase_file_readable_by_others_is_refused() {
 #[test]
 fn vault_status_reports_absence_then_presence() {
     let db = temp_db("vault-status");
-    let absent = freeflow()
+    let absent = capturing()
         .env("FREEFLOW_DB", &db)
         .args(["vault", "status", "--json"])
         .output()
@@ -422,7 +425,7 @@ fn passphrase_change_rotates_the_passphrase_end_to_end() {
     let old_file = passphrase_file(&db, "s3cret");
     let new_file = new_passphrase_file(&db, "new-s3cret");
 
-    freeflow()
+    capturing()
         .env("FREEFLOW_DB", &db)
         .args(["--passphrase-file"])
         .arg(&old_file)
@@ -434,7 +437,7 @@ fn passphrase_change_rotates_the_passphrase_end_to_end() {
         .success();
 
     // L'ancienne passphrase n'ouvre plus le coffre.
-    freeflow()
+    capturing()
         .env("FREEFLOW_DB", &db)
         .args(["--passphrase-file"])
         .arg(&old_file)
@@ -444,7 +447,7 @@ fn passphrase_change_rotates_the_passphrase_end_to_end() {
         .code(3); // StoreError::WrongPassphrase, via CliError::Store
 
     // La nouvelle passphrase, si.
-    freeflow()
+    capturing()
         .env("FREEFLOW_DB", &db)
         .args(["--passphrase-file"])
         .arg(&new_file)
@@ -463,7 +466,7 @@ fn passphrase_change_refuses_a_cached_session_as_proof_of_the_old_passphrase() {
     // peut pas en tenir lieu, même si elle prouve la possession de la clé.
     // Pas `unlocked()` : ce helper passe `--passphrase-file` (l'ancienne), ce qui ferait
     // réussir le changement — exactement ce que ce test refuse.
-    freeflow()
+    capturing()
         .env("FREEFLOW_DB", &db)
         .args([
             "--non-interactive",
@@ -478,7 +481,7 @@ fn passphrase_change_refuses_a_cached_session_as_proof_of_the_old_passphrase() {
 
     // Rien n'a changé : la passphrase d'origine ouvre toujours le coffre.
     let old_file = passphrase_file(&db, "s3cret");
-    freeflow()
+    capturing()
         .env("FREEFLOW_DB", &db)
         .args(["--passphrase-file"])
         .arg(&old_file)
@@ -494,7 +497,7 @@ fn passphrase_change_dry_run_writes_nothing() {
     let old_file = passphrase_file(&db, "s3cret");
     let new_file = new_passphrase_file(&db, "new-s3cret");
 
-    let output = freeflow()
+    let output = capturing()
         .env("FREEFLOW_DB", &db)
         .args(["--json", "--passphrase-file"])
         .arg(&old_file)
@@ -510,7 +513,7 @@ fn passphrase_change_dry_run_writes_nothing() {
     assert_eq!(value["bytes_to_reencrypt"], 0);
 
     // L'ancienne passphrase ouvre toujours le coffre.
-    freeflow()
+    capturing()
         .env("FREEFLOW_DB", &db)
         .args(["--passphrase-file"])
         .arg(&old_file)
@@ -549,7 +552,7 @@ fn passphrase_change_writes_a_backup_and_names_it_in_its_json_output() {
     let old_file = passphrase_file(&db, "s3cret");
     let new_file = new_passphrase_file(&db, "new-s3cret");
 
-    let output = freeflow()
+    let output = capturing()
         .env("FREEFLOW_DB", &db)
         .args(["--json", "--passphrase-file"])
         .arg(&old_file)
@@ -587,7 +590,7 @@ fn passphrase_change_without_test_kdf_uses_production_argon2() {
     let old_file = passphrase_file(&db, "s3cret");
     let new_file = new_passphrase_file(&db, "new-s3cret");
 
-    let output = freeflow()
+    let output = capturing()
         .env("FREEFLOW_DB", &db)
         .env_remove("GRIFFE_TEST_KDF")
         .args(["--json", "--passphrase-file"])
@@ -610,7 +613,7 @@ fn the_audit_chain_stays_intact_across_a_passphrase_change() {
     let old_file = passphrase_file(&db, "s3cret");
     let new_file = new_passphrase_file(&db, "new-s3cret");
 
-    freeflow()
+    capturing()
         .env("FREEFLOW_DB", &db)
         .args(["--passphrase-file"])
         .arg(&old_file)
@@ -621,7 +624,7 @@ fn the_audit_chain_stays_intact_across_a_passphrase_change() {
         .assert()
         .success();
 
-    freeflow()
+    capturing()
         .env("FREEFLOW_DB", &db)
         .args(["--passphrase-file"])
         .arg(&new_file)
@@ -641,7 +644,7 @@ fn a_new_passphrase_file_readable_by_others_is_refused() {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&new_file, std::fs::Permissions::from_mode(0o644)).unwrap();
     }
-    let assertion = freeflow()
+    let assertion = capturing()
         .env("FREEFLOW_DB", &db)
         .args(["--passphrase-file"])
         .arg(&old_file)
@@ -1900,7 +1903,7 @@ fn fec_export_writes_the_regulatory_file_for_the_exercise() {
         .stdout(predicate::str::contains("structure conforme"))
         .stdout(predicate::str::contains("régularité"));
     let regulatory = dir.join("552100554FEC20261231.txt");
-    let checked = freeflow()
+    let checked = capturing()
         .args(["--json", "fec", "check"])
         .arg(&regulatory)
         .assert()
@@ -1924,7 +1927,7 @@ fn fec_check_reads_a_file_without_a_vault() {
         format!("{header}\nVE|Ventes|1|20260310|411000|Clients|||FA-1|20260310|Facture|100.00|0,00|||20260310||\n"),
     )
     .unwrap();
-    freeflow()
+    capturing()
         .args(["fec", "check"])
         .arg(&hostile)
         .assert()
@@ -2485,7 +2488,7 @@ fn quote_lines_are_expressible_in_the_shared_text_syntax() {
 
     // `--lines` (JSON) et `--line` (texte) sont exclusifs — refusé par clap avant tout accès
     // au coffre.
-    freeflow()
+    capturing()
         .args([
             "quote",
             "create",
@@ -3148,7 +3151,7 @@ fn init_with_a_bare_file_name_creates_a_usable_vault_in_the_current_directory() 
     let dir = db.parent().unwrap();
     std::fs::create_dir_all(dir).unwrap();
     let pass_file = passphrase_file(&db, "s3cret");
-    freeflow()
+    capturing()
         .current_dir(dir)
         .args(["--passphrase-file"])
         .arg(&pass_file)
@@ -3157,7 +3160,7 @@ fn init_with_a_bare_file_name_creates_a_usable_vault_in_the_current_directory() 
         .success();
     assert!(dir.join("nom.db").exists(), "la base doit exister");
     assert!(dir.join("nom.db.kdf").exists(), "le sidecar doit exister");
-    freeflow()
+    capturing()
         .current_dir(dir)
         .args(["--passphrase-file"])
         .arg(&pass_file)

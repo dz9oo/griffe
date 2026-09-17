@@ -27,6 +27,8 @@ mod kdf;
 mod key;
 mod migrations;
 mod secret;
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing;
 
 use std::fmt;
 use std::fs;

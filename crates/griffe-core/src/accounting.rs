@@ -694,7 +694,7 @@ mod tests {
         Address, ExpenseCategory, FiscalYearEnd, InvoiceLine, Siren, VatRate, VatRegime,
     };
     use crate::expenses::RecordExpense;
-    use crate::store::{Passphrase, Store};
+    use crate::store::testing::test_store;
     use time::{Date, Month as TimeMonth};
 
     fn human() -> ExecutionContext {
@@ -733,12 +733,7 @@ mod tests {
 
     #[test]
     fn compute_result_combines_invoices_and_expenses_then_applies_is() {
-        let dir = std::env::temp_dir().join(format!(
-            "freeflow-accounting-{}-{}",
-            std::process::id(),
-            uuid::Uuid::now_v7()
-        ));
-        let mut store = Store::create(&dir.join("vault.db"), &Passphrase::from("s3cret")).unwrap();
+        let mut store = test_store("accounting-result");
         let client_id = crate::domain::ClientId::new();
         store
             .connection()

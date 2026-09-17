@@ -19,7 +19,8 @@ de l’argent, de la conformité, ou des données.
 
 ## Commande
 
-`just check` (fmt, clippy `-D warnings`, machete, nextest, deny+audit).
+`just check` (fmt, clippy `-D warnings` hors fenêtre, machete, nextest,
+deny+audit, puis clippy Tauri/`griffe-desktop`).
 `nix flake check` avant de considérer un chantier terminé.
 
 Le devShell Nix (et `just test`) posent `GRIFFE_TEST_KDF=1` (Argon2id
@@ -30,6 +31,8 @@ KDF, et `GRIFFE_NO_OPEN` y couperait l'ouverture du client mail.
 
 Sous `GRIFFE_TEST_KDF`, `Store::create` copie un coffre gabarit déjà
 migré (partagé entre process nextest) plutôt que de rejouer les
-migrations et l'`fsync` du sidecar. La CLI de test (`unlocked`,
-`provision`) appelle `run_capturing` dans le process ; les snapshots
-`--help` restent un vrai binaire.
+migrations et l'`fsync` du sidecar. Les tests de `griffe-core` ouvrent
+un coffre via `store::testing::test_store` (isolation pid + UUID, jamais
+un mock du SGBD). La CLI de test (`unlocked`, `provision`, `capturing`)
+appelle `run_capturing` dans le process ; les snapshots `--help` restent
+un vrai binaire.

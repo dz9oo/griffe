@@ -891,18 +891,9 @@ mod tests {
     use super::*;
     use crate::app::Actor;
     use crate::receipts::ReceiptError;
-    use crate::store::Passphrase;
+    use crate::store::testing::test_store;
     use std::fs;
     use time::Month;
-
-    fn test_store(label: &str) -> Store {
-        let dir = std::env::temp_dir().join(format!(
-            "freeflow-papers-test-{label}-{}-{}",
-            std::process::id(),
-            uuid::Uuid::now_v7()
-        ));
-        Store::create(&dir.join("vault.db"), &Passphrase::from("s3cret")).unwrap()
-    }
 
     fn human() -> ExecutionContext {
         ExecutionContext::new(Actor::Human, false)

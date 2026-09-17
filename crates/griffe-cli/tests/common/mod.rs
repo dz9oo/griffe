@@ -2,9 +2,9 @@
 //! `closing_scenario.rs`) : coffre temporaire propre à chaque test, invocation in-process
 //! via [`griffe_cli::run_capturing`], lecture des sorties `--json`.
 //!
-//! [`freeflow`] reste un vrai sous-processus : snapshots `--help` et les cas qui retirent
-//! `GRIFFE_TEST_KDF` (Argon2 de prod). [`unlocked`] et [`provision`] restent dans le process
-//! du test — nextest isole déjà chaque test.
+//! [`freeflow`] reste un vrai sous-processus : snapshots `--help`. [`capturing`] est
+//! in-process sauf env hors `FREEFLOW_DB`, `current_dir`, ou retrait de `GRIFFE_TEST_KDF`
+//! (Argon2 de prod). [`unlocked`] et [`provision`] restent dans le process du test.
 
 #![allow(dead_code)]
 
@@ -41,6 +41,12 @@ pub fn freeflow() -> Command {
     Command::cargo_bin("griffe").expect("le binaire griffe doit être compilé pour les tests")
 }
 
+/// Invocation in-process, sauf env hors `FREEFLOW_DB`, `current_dir` ou retrait de
+/// `GRIFFE_TEST_KDF` — ces cas passent par le binaire (isolation process).
+pub fn capturing() -> Capture {
+    Capture::new()
+}
+
 /// Invocation in-process (`run_capturing`) d'un coffre déjà [`provision`]né.
 /// Ne pas l'utiliser pour prouver qu'un coffre verrouillé refuse l'accès.
 pub fn unlocked(db: &Path) -> Capture {
@@ -56,7 +62,9 @@ pub fn unlocked(db: &Path) -> Capture {
 pub struct Capture {
     args: Vec<OsString>,
     db: Option<PathBuf>,
-    subprocess: bool,
+    extra_env: Vec<(OsString, OsString)>,
+    current_dir: Option<PathBuf>,
+    remove_test_kdf: bool,
 }
 
 impl Capture {
@@ -64,21 +72,31 @@ impl Capture {
         Self {
             args: Vec::new(),
             db: None,
-            subprocess: false,
+            extra_env: Vec::new(),
+            current_dir: None,
+            remove_test_kdf: false,
         }
     }
 
     pub fn env(&mut self, key: impl AsRef<OsStr>, val: impl AsRef<OsStr>) -> &mut Self {
         if key.as_ref() == OsStr::new("FREEFLOW_DB") {
             self.db = Some(PathBuf::from(val.as_ref()));
+        } else {
+            self.extra_env
+                .push((key.as_ref().to_os_string(), val.as_ref().to_os_string()));
         }
         self
     }
 
     pub fn env_remove(&mut self, key: impl AsRef<OsStr>) -> &mut Self {
         if key.as_ref() == OsStr::new("GRIFFE_TEST_KDF") {
-            self.subprocess = true;
+            self.remove_test_kdf = true;
         }
+        self
+    }
+
+    pub fn current_dir(&mut self, dir: impl AsRef<Path>) -> &mut Self {
+        self.current_dir = Some(dir.as_ref().to_path_buf());
         self
     }
 
@@ -98,8 +116,12 @@ impl Capture {
         self
     }
 
+    fn needs_subprocess(&self) -> bool {
+        self.remove_test_kdf || !self.extra_env.is_empty() || self.current_dir.is_some()
+    }
+
     pub fn output(&mut self) -> std::io::Result<Output> {
-        if self.subprocess {
+        if self.needs_subprocess() {
             return self.output_via_bin();
         }
         let mut argv = vec![OsString::from("griffe")];
@@ -117,7 +139,15 @@ impl Capture {
         if let Some(db) = &self.db {
             cmd.env("FREEFLOW_DB", db);
         }
-        cmd.env_remove("GRIFFE_TEST_KDF");
+        for (key, val) in &self.extra_env {
+            cmd.env(key, val);
+        }
+        if let Some(dir) = &self.current_dir {
+            cmd.current_dir(dir);
+        }
+        if self.remove_test_kdf {
+            cmd.env_remove("GRIFFE_TEST_KDF");
+        }
         cmd.args(&self.args);
         cmd.output()
     }

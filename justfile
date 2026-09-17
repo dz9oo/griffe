@@ -9,9 +9,13 @@ fmt:
 fmt-check:
     cargo fmt --all -- --check
 
-# Lint strict : aucun warning toléré.
+# Clippy `-D warnings` du workspace, sans la fenêtre Tauri (`griffe-desktop`).
 lint:
-    cargo clippy --workspace --all-targets --all-features -- -D warnings
+    cargo clippy --workspace --all-targets --all-features --exclude griffe-desktop -- -D warnings
+
+# Clippy Tauri/WebKit, recette séparée pour une CI froide.
+lint-desktop:
+    cargo clippy -p griffe-desktop --all-targets --all-features -- -D warnings
 
 # Dépendances déclarées mais jamais utilisées.
 unused:
@@ -38,8 +42,8 @@ audit:
 run:
     cargo run -p griffe-desktop
 
-# Tout ce qui doit passer avant de considérer un lot terminé.
-check: fmt-check lint unused test audit
+# Porte complète : clippy Tauri en dernier (WebKit seulement si le reste est vert).
+check: fmt-check lint unused test audit lint-desktop
 
 # Landing `site/` : présence des assets, copy Griffe, aucun CDN / sigle fiscal / CLI.
 site-check:
