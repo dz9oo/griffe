@@ -35,6 +35,18 @@ Un PR qui change une règle fiscale, un document Cerfa, le FEC ou la liasse
    le 15 d’après le SIREN a tort. S’il n’a pas la source sous la main, il
    s’arrête.
 
+## Créances irrécouvrables
+
+Geste distinct d'un avoir : le CA (706) reste ; charge 654 HT ; 411 soldé.
+Prestations : exigibilité à l'encaissement (CGI 269-2-c, BOI-TVA-BASE-20-20)
+sauf option débits. Pas encaissé et période d'émission non marquée déposée :
+cette TVA n'entre pas dans la collectée. Déjà déposée : case 21 du mois du
+geste (CGI 272-1, BOI-TVA-DED-40-10-20). Duplicata + mention seulement alors.
+
+Limite : Griffe calcule encore la collectée des périodes ouvertes sur les
+factures émises, pas sur les virements. On ne recable pas l'exigibilité ici.
+Le 445881 d'un bilan d'ouverture n'est pas reclasse.
+
 ## CODEOWNERS
 
 Ces chemins exigent une revue humaine (`@dz9oo`) :
