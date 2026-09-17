@@ -335,6 +335,36 @@ impl Command for WriteOffReceivable {
     }
 }
 
+/// Rétablit une créance : contre-écriture par date, pas une suppression.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetractWriteOff {
+    pub write_off_id: WriteOffId,
+    #[serde(with = "crate::domain::serde_date::date")]
+    pub retracted_on: Date,
+}
+
+impl Command for RetractWriteOff {
+    type Output = ();
+    const NAME: &'static str = "billing.retract_write_off";
+
+    fn requires_confirmation(&self) -> bool {
+        true
+    }
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        let write_off = row::write_off_by_id(conn, self.write_off_id)?
+            .ok_or(BillingError::WriteOffNotFound(self.write_off_id))?;
+        if write_off.retracted_on.is_some() {
+            return Err(BillingError::WriteOffAlreadyRetracted.into());
+        }
+        if row::ca3_filed(conn, &row::period_key_for(conn, write_off.written_off_on)?)? {
+            return Err(BillingError::WriteOffPeriodAlreadyFiled.into());
+        }
+        row::set_retracted_on(conn, self.write_off_id, self.retracted_on)?;
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecordPayment {
     pub invoice_id: InvoiceId,

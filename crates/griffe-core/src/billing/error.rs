@@ -3,7 +3,7 @@
 use thiserror::Error;
 
 use crate::app::AppError;
-use crate::domain::{BankTransactionId, InvoiceId, PaymentId};
+use crate::domain::{BankTransactionId, InvoiceId, PaymentId, WriteOffId};
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum BillingError {
@@ -48,8 +48,14 @@ pub enum BillingError {
     #[error("on ne peut pas constater la perte avant la date d'émission de la facture {0}")]
     WriteOffBeforeIssue(InvoiceId),
 
-    #[error("on ne peut plus constater une perte : cette période est déjà déposée")]
+    #[error("on ne peut plus constater ni rétablir une perte : cette période est déjà déposée")]
     WriteOffPeriodAlreadyFiled,
+
+    #[error("perte introuvable : {0}")]
+    WriteOffNotFound(WriteOffId),
+
+    #[error("cette perte est déjà rétractée")]
+    WriteOffAlreadyRetracted,
 
     #[error("cet exercice est déjà clos")]
     ExerciseClosed,

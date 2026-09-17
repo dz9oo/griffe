@@ -9,6 +9,7 @@ use crate::domain::{
     InvoiceStatus, InvoiceWriteOff, Money, Payment, PaymentMethod, VatRate, VatRegime, WriteOffId,
 };
 
+use super::error::BillingError;
 use super::import::ParsedTransaction;
 
 fn conv_err(e: impl std::error::Error + Send + Sync + 'static) -> rusqlite::Error {
@@ -528,7 +529,6 @@ fn row_to_write_off(row: &Row) -> rusqlite::Result<InvoiceWriteOff> {
     })
 }
 
-#[allow(dead_code)]
 pub(super) fn write_off_by_id(
     conn: &Connection,
     id: WriteOffId,
@@ -540,6 +540,21 @@ pub(super) fn write_off_by_id(
     )
     .optional()
     .map_err(AppError::from)
+}
+
+pub(super) fn set_retracted_on(
+    conn: &Connection,
+    id: WriteOffId,
+    retracted_on: Date,
+) -> Result<(), AppError> {
+    let n = conn.execute(
+        "UPDATE invoice_write_offs SET retracted_on = ?1 WHERE id = ?2",
+        params![domain::format_date(retracted_on), id.to_string()],
+    )?;
+    if n != 1 {
+        return Err(BillingError::WriteOffNotFound(id).into());
+    }
+    Ok(())
 }
 
 pub(crate) fn active_write_off_for(

@@ -13,7 +13,7 @@ mod totals;
 
 pub use commands::{
     DeleteBankTransaction, EmitInvoice, EmittedInvoice, ImportBankTransactions,
-    ImportIssuedInvoice, IssueCreditNote, ReconcileTransaction, RecordPayment,
+    ImportIssuedInvoice, IssueCreditNote, ReconcileTransaction, RecordPayment, RetractWriteOff,
     SettleBankTransaction, UnreconcileTransaction, UnsettleBankTransaction, VoidPayment,
     WriteOffReceivable,
 };
@@ -1712,6 +1712,152 @@ mod tests {
         assert!(
             matches!(err, AppError::Domain(ref msg) if msg.contains("cet exercice est déjà clos")),
             "{err}"
+        );
+    }
+
+    #[test]
+    fn retracting_a_write_off_restores_aged_balance() {
+        let (mut store, client_id) = test_store("retract-write-off-ok");
+        let inv = emit_bakari(&mut store, client_id, date(2026, Month::August, 15));
+        let Outcome::Applied(w) = Executor::new(&mut store)
+            .execute(
+                &WriteOffReceivable {
+                    invoice_id: inv.id,
+                    written_off_on: date(2026, Month::September, 17),
+                },
+                &human_ctx(),
+            )
+            .unwrap()
+        else {
+            panic!("expected Applied")
+        };
+        assert!(
+            aged_balance(store.connection(), date(2026, Month::September, 17))
+                .unwrap()
+                .is_empty()
+        );
+
+        let Outcome::Applied(()) = Executor::new(&mut store)
+            .execute(
+                &RetractWriteOff {
+                    write_off_id: w.id,
+                    retracted_on: date(2026, Month::September, 18),
+                },
+                &human_ctx(),
+            )
+            .unwrap()
+        else {
+            panic!("expected Applied")
+        };
+
+        let aged = aged_balance(store.connection(), date(2026, Month::September, 18)).unwrap();
+        assert_eq!(aged.len(), 1);
+        assert_eq!(aged[0].outstanding, Money::from_cents(420_800));
+        assert!(
+            row::active_write_off_for(store.connection(), inv.id)
+                .unwrap()
+                .is_none()
+        );
+        let by_id = row::write_off_by_id(store.connection(), w.id)
+            .unwrap()
+            .expect("la perte reste en historique");
+        assert_eq!(by_id.retracted_on, Some(date(2026, Month::September, 18)));
+    }
+
+    #[test]
+    fn cannot_retract_when_the_write_off_month_is_filed() {
+        let (mut store, client_id) = test_store("retract-write-off-filed");
+        let inv = emit_bakari(&mut store, client_id, date(2026, Month::August, 15));
+        let Outcome::Applied(w) = Executor::new(&mut store)
+            .execute(
+                &WriteOffReceivable {
+                    invoice_id: inv.id,
+                    written_off_on: date(2026, Month::September, 17),
+                },
+                &human_ctx(),
+            )
+            .unwrap()
+        else {
+            panic!("expected Applied")
+        };
+        Executor::new(&mut store)
+            .execute(
+                &crate::society::MarkDutyFiled {
+                    kind: crate::fiscal::FiscalDeadlineKind::Ca3,
+                    period_key: "2026-09".into(),
+                    due_on: date(2026, Month::October, 15),
+                    filed_on: date(2026, Month::October, 15),
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+
+        let err = Executor::new(&mut store)
+            .execute(
+                &RetractWriteOff {
+                    write_off_id: w.id,
+                    retracted_on: date(2026, Month::October, 16),
+                },
+                &human_ctx(),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(err, AppError::Domain(ref msg) if msg.contains("déposée") && !msg.to_lowercase().contains("ca3")),
+            "{err}"
+        );
+        assert!(
+            row::active_write_off_for(store.connection(), inv.id)
+                .unwrap()
+                .is_some(),
+            "la perte reste vivante"
+        );
+        assert!(
+            aged_balance(store.connection(), date(2026, Month::October, 16))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn an_agent_only_deposits_a_pending_retract() {
+        let (mut store, client_id) = test_store("retract-write-off-agent");
+        let inv = emit_bakari(&mut store, client_id, date(2026, Month::August, 15));
+        let Outcome::Applied(w) = Executor::new(&mut store)
+            .execute(
+                &WriteOffReceivable {
+                    invoice_id: inv.id,
+                    written_off_on: date(2026, Month::September, 17),
+                },
+                &human_ctx(),
+            )
+            .unwrap()
+        else {
+            panic!("expected Applied")
+        };
+        let agent_ctx = ExecutionContext::new(
+            Actor::Agent {
+                session: "sess-1".into(),
+            },
+            false,
+        );
+        let outcome = Executor::new(&mut store)
+            .execute(
+                &RetractWriteOff {
+                    write_off_id: w.id,
+                    retracted_on: date(2026, Month::September, 18),
+                },
+                &agent_ctx,
+            )
+            .unwrap();
+        assert!(matches!(outcome, Outcome::PendingConfirmation(_)));
+        let by_id = row::write_off_by_id(store.connection(), w.id)
+            .unwrap()
+            .expect("perte");
+        assert!(by_id.retracted_on.is_none());
+        assert!(
+            aged_balance(store.connection(), date(2026, Month::September, 18))
+                .unwrap()
+                .is_empty()
         );
     }
 }
