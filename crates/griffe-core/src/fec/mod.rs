@@ -113,6 +113,7 @@ impl Fec {
             profile,
             exercise,
             invoices,
+            write_offs: &[],
             clients,
             payments,
             expenses,

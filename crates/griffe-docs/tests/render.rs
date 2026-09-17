@@ -137,6 +137,7 @@ fn ledger(profile: &CompanyProfile) -> Ledger {
         profile,
         exercise: FiscalYear::calendar(2026),
         invoices: &[],
+        write_offs: &[],
         clients: &[],
         payments: &[],
         expenses: &[],
