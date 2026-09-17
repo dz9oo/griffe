@@ -5,7 +5,7 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 use crate::app::AppError;
 use crate::domain::{
     self, BankTransaction, BankTransactionId, Invoice, InvoiceId, InvoiceLine, InvoiceOrigin,
-    InvoiceStatus, Money, Payment, PaymentMethod, VatRate,
+    InvoiceStatus, InvoiceWriteOff, Money, Payment, PaymentMethod, VatRate, WriteOffId,
 };
 
 use super::import::ParsedTransaction;
@@ -448,6 +448,85 @@ pub(super) fn all_bank_transactions(conn: &Connection) -> Result<Vec<BankTransac
     let mut stmt =
         conn.prepare("SELECT * FROM bank_transactions ORDER BY occurred_on DESC, id DESC")?;
     let rows = stmt.query_map([], row_to_bank_transaction)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+}
+
+#[allow(dead_code)] // consommées par les commandes / le grand livre aux tâches suivantes
+pub(super) fn insert_write_off(conn: &Connection, w: &InvoiceWriteOff) -> Result<(), AppError> {
+    conn.execute(
+        "INSERT INTO invoice_write_offs
+            (id, invoice_id, written_off_on, ht_cents, vat_cents, ttc_cents, recovers_vat, retracted_on)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            w.id.to_string(),
+            w.invoice_id.to_string(),
+            domain::format_date(w.written_off_on),
+            w.ht.cents(),
+            w.vat.cents(),
+            w.ttc.cents(),
+            i64::from(w.recovers_vat),
+            w.retracted_on.map(domain::format_date),
+        ],
+    )?;
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn row_to_write_off(row: &Row) -> rusqlite::Result<InvoiceWriteOff> {
+    let id: String = row.get("id")?;
+    let invoice_id: String = row.get("invoice_id")?;
+    let written_off_on: String = row.get("written_off_on")?;
+    let recovers_vat: i64 = row.get("recovers_vat")?;
+    let retracted_on: Option<String> = row.get("retracted_on")?;
+    Ok(InvoiceWriteOff {
+        id: id.parse().map_err(conv_err)?,
+        invoice_id: invoice_id.parse().map_err(conv_err)?,
+        written_off_on: domain::parse_date(&written_off_on).map_err(conv_err)?,
+        ht: Money::from_cents(row.get("ht_cents")?),
+        vat: Money::from_cents(row.get("vat_cents")?),
+        ttc: Money::from_cents(row.get("ttc_cents")?),
+        recovers_vat: recovers_vat != 0,
+        retracted_on: retracted_on
+            .map(|s| domain::parse_date(&s))
+            .transpose()
+            .map_err(conv_err)?,
+    })
+}
+
+#[allow(dead_code)]
+pub(super) fn write_off_by_id(
+    conn: &Connection,
+    id: WriteOffId,
+) -> Result<Option<InvoiceWriteOff>, AppError> {
+    conn.query_row(
+        "SELECT * FROM invoice_write_offs WHERE id = ?1",
+        [id.to_string()],
+        row_to_write_off,
+    )
+    .optional()
+    .map_err(AppError::from)
+}
+
+#[allow(dead_code)]
+pub(super) fn active_write_off_for(
+    conn: &Connection,
+    invoice_id: InvoiceId,
+) -> Result<Option<InvoiceWriteOff>, AppError> {
+    conn.query_row(
+        "SELECT * FROM invoice_write_offs WHERE invoice_id = ?1 AND retracted_on IS NULL",
+        [invoice_id.to_string()],
+        row_to_write_off,
+    )
+    .optional()
+    .map_err(AppError::from)
+}
+
+/// Toutes les pertes, y compris rétractées — le grand livre a besoin de l'historique.
+#[allow(dead_code)]
+pub(super) fn list_write_offs(conn: &Connection) -> Result<Vec<InvoiceWriteOff>, AppError> {
+    let mut stmt =
+        conn.prepare("SELECT * FROM invoice_write_offs ORDER BY written_off_on ASC, id ASC")?;
+    let rows = stmt.query_map([], row_to_write_off)?;
     rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
 }
 

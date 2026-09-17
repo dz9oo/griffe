@@ -45,10 +45,12 @@ pub use follow_up::{
 pub use ids::{
     BankTransactionId, ClientId, ContactId, DutyFilingId, ExpenseId, FiscalYearId, FixedAssetId,
     FollowUpEventId, InteractionId, InvoiceId, MissionId, OpportunityId, PaperId, PaymentId,
-    QuoteId, TimeEntryId,
+    QuoteId, TimeEntryId, WriteOffId,
 };
 pub use interaction::{Interaction, InteractionKind, UnknownInteractionKind};
-pub use invoice::{Invoice, InvoiceLine, InvoiceOrigin, InvoiceStatus, UnknownInvoiceOrigin};
+pub use invoice::{
+    Invoice, InvoiceLine, InvoiceOrigin, InvoiceStatus, InvoiceWriteOff, UnknownInvoiceOrigin,
+};
 pub use mission::{Milestone, MilestoneParseError, Mission, MissionKind};
 pub use money::{Money, MoneyParseError};
 pub use opening::{

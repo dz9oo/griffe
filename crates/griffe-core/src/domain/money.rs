@@ -122,6 +122,26 @@ impl Money {
         Self(i64::try_from(rounded).expect("un montant de TVA reste dans les bornes de i64"))
     }
 
+    /// Prorata entier : `self × numerator / denominator`, division tronquée vers zéro.
+    /// Dénominateur nul → [`Self::ZERO`]. Numérateur égal au dénominateur → `self`.
+    ///
+    /// # Panics
+    ///
+    /// Panique dans le cas extrêmement improbable où le résultat dépasserait les bornes de
+    /// `i64`.
+    #[must_use]
+    pub fn scale(self, numerator: Self, denominator: Self) -> Self {
+        if denominator.is_zero() {
+            return Self::ZERO;
+        }
+        if numerator == denominator {
+            return self;
+        }
+        let product = i128::from(self.0) * i128::from(numerator.0);
+        let quotient = product / i128::from(denominator.0);
+        Self(i64::try_from(quotient).expect("un montant prorata reste dans les bornes de i64"))
+    }
+
     /// Répartit le montant en `parts` parts aussi égales que possible, sans perdre ni créer
     /// un centime : les premiers lots (dans l'ordre) reçoivent un centime de plus si besoin.
     ///
@@ -378,6 +398,14 @@ impl Sum for Money {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn scale_matches_spec_prorata() {
+        let ht = Money::from_cents(350_667);
+        let remaining = Money::from_cents(320_800);
+        let original = Money::from_cents(420_800);
+        assert_eq!(ht.scale(remaining, original), Money::from_cents(267_333));
+    }
 
     #[test]
     fn display_formats_thousands_and_cents() {

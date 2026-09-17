@@ -38,7 +38,10 @@ mod tests {
 
     use super::*;
     use crate::app::{Actor, AppError, ExecutionContext, Executor, Outcome};
-    use crate::domain::{ClientId, InvoiceLine, InvoiceOrigin, Money, PaymentMethod, VatRate};
+    use crate::domain::{
+        ClientId, InvoiceLine, InvoiceOrigin, InvoiceWriteOff, Money, PaymentMethod, VatRate,
+        WriteOffId,
+    };
     use crate::store::Store;
     use crate::store::testing::test_store as empty_test_store;
 
@@ -1330,5 +1333,36 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM invoices", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn write_off_row_round_trips() {
+        let (mut store, client_id) = test_store("write-off-row");
+        let emitted = emit(&mut store, client_id, date(2026, Month::September, 1));
+        let write_off = InvoiceWriteOff {
+            id: WriteOffId::new(),
+            invoice_id: emitted.id,
+            written_off_on: date(2026, Month::September, 17),
+            ht: Money::from_cents(267_333),
+            vat: Money::from_cents(53_467),
+            ttc: Money::from_cents(320_800),
+            recovers_vat: false,
+            retracted_on: None,
+        };
+
+        row::insert_write_off(store.connection(), &write_off).unwrap();
+
+        let active = row::active_write_off_for(store.connection(), emitted.id)
+            .unwrap()
+            .expect("perte active");
+        assert_eq!(active, write_off);
+
+        let by_id = row::write_off_by_id(store.connection(), write_off.id)
+            .unwrap()
+            .expect("perte par id");
+        assert_eq!(by_id, write_off);
+
+        let listed = row::list_write_offs(store.connection()).unwrap();
+        assert_eq!(listed, vec![write_off]);
     }
 }

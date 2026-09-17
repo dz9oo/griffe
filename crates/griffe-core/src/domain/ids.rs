@@ -69,6 +69,7 @@ define_id!(FixedAssetId);
 define_id!(FollowUpEventId);
 define_id!(DutyFilingId);
 define_id!(PaperId);
+define_id!(WriteOffId);
 
 #[cfg(test)]
 mod tests {
