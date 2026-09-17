@@ -21,6 +21,8 @@ de l’argent, de la conformité, ou des données.
 
 `just check` (fmt, clippy `-D warnings` hors fenêtre, machete, nextest,
 deny+audit, puis clippy Tauri/`griffe-desktop`).
+La CI GitHub joue la même porte en deux jobs (tests sans fenêtre, puis
+clippy Tauri) pour tenir sur le SSD du runner.
 `nix flake check` avant de considérer un chantier terminé.
 
 Le devShell Nix (et `just test`) posent `GRIFFE_TEST_KDF=1` (Argon2id
