@@ -11,8 +11,8 @@ Nix fournit Rust (voir `rust-toolchain.toml`), `cargo-nextest`, `typst`,
 ## Critère
 
 `just check` vert **en local** avant de pousser : la CI GitHub rejoue exactement
-cette recette (pas de trousseau OS, `GRIFFE_NO_OPEN=1`). Un push rouge brûle
-des minutes Actions après 10+ min de compilation.
+cette recette (pas de trousseau OS, `GRIFFE_NO_OPEN=1`, `GRIFFE_TEST_KDF=1`).
+Un push rouge brûle des minutes Actions après 10+ min de compilation.
 
 Pour un changement de schéma ou de crate visible par Nix :
 `nix flake check` après `git add` (Nix ne voit que l’index).

@@ -247,7 +247,7 @@ pub async fn write(
                     &db_path,
                     &prepared.draft.filename,
                     &prepared.draft.rfc5322,
-                    true,
+                    griffe_cli::should_open_externally(),
                 );
             }
             gens::load_card(store, subject, today)

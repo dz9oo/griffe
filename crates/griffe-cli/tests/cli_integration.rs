@@ -25,6 +25,30 @@ fn papers_of_kind(db: &Path, kind: &str) -> serde_json::Value {
 }
 
 #[test]
+fn a_plain_command_does_not_write_an_automatic_backup_under_test_kdf() {
+    // Production code that would make this fail: `dispatch` calling
+    // `auto_backup_if_stale` even when GRIFFE_TEST_KDF is set.
+    if std::env::var_os("GRIFFE_TEST_KDF").is_none() {
+        return;
+    }
+    let db = temp_db("no-auto-backup");
+    provision(&db);
+    unlocked(&db).args(["client", "list"]).assert().success();
+    let backups = db.with_file_name("backups");
+    let wrote_auto = std::fs::read_dir(&backups)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .any(|e| e.file_name().to_string_lossy().starts_with("backup-"))
+        })
+        .unwrap_or(false);
+    assert!(
+        !wrote_auto,
+        "GRIFFE_TEST_KDF ne doit pas déclencher la sauvegarde automatique"
+    );
+}
+
+#[test]
 fn golden_path_from_prospection_to_paid_invoice() {
     let db = temp_db("golden-path");
     provision(&db);
@@ -432,7 +456,7 @@ fn passphrase_change_rotates_the_passphrase_end_to_end() {
 #[test]
 fn passphrase_change_refuses_a_cached_session_as_proof_of_the_old_passphrase() {
     let db = temp_db("passphrase-change-needs-old");
-    provision(&db); // laisse une session active dans le trousseau OS
+    provision(&db);
     let new_file = new_passphrase_file(&db, "new-s3cret");
 
     // Aucune source pour l'ANCIENNE passphrase, et non-interactif : la session en cache ne
@@ -542,13 +566,41 @@ fn passphrase_change_writes_a_backup_and_names_it_in_its_json_output() {
         value["reencrypted"], false,
         "un coffre v3 change de passphrase sans ré-chiffrer la base"
     );
-    assert_eq!(value["argon2"]["m_cost"], 65536);
+    assert_eq!(
+        value["argon2"]["m_cost"], 32,
+        "le harness pose GRIFFE_TEST_KDF ; le coût de prod est l'autre test"
+    );
     let backup_path = value["backup"].as_str().unwrap();
     assert!(
         Path::new(backup_path).exists(),
         "le chemin de sauvegarde renvoyé doit exister : {backup_path}"
     );
     assert!(backup_path.contains("pre-passphrase-change-"));
+}
+
+#[test]
+fn passphrase_change_without_test_kdf_uses_production_argon2() {
+    // Production code that would make this fail: `rewrap` ignoring
+    // `for_new_vault()` when GRIFFE_TEST_KDF is absent.
+    let db = temp_db("passphrase-change-prod-kdf");
+    provision(&db);
+    let old_file = passphrase_file(&db, "s3cret");
+    let new_file = new_passphrase_file(&db, "new-s3cret");
+
+    let output = freeflow()
+        .env("FREEFLOW_DB", &db)
+        .env_remove("GRIFFE_TEST_KDF")
+        .args(["--json", "--passphrase-file"])
+        .arg(&old_file)
+        .arg("passphrase")
+        .arg("change")
+        .arg("--new-passphrase-file")
+        .arg(&new_file)
+        .output()
+        .unwrap();
+    let value = json_result(&output.stdout);
+    assert_eq!(value["changed"], true);
+    assert_eq!(value["argon2"]["m_cost"], 65536);
 }
 
 #[test]

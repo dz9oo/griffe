@@ -120,6 +120,13 @@
           '';
 
           RUST_BACKTRACE = "1";
+          # Harness de test : honorés seulement en debug (voir Argon2Cost::for_new_vault
+          # et should_open_externally). Posés ici pour qu'un `cargo nextest` nu
+          # dans le devShell ne paie pas 3 s × 64 Mio par coffre ni n'ouvre xdg-open.
+          GRIFFE_TEST_KDF = "1";
+          GRIFFE_NO_OPEN = "1";
+          # L'incrémental debug a gonflé target/debug/incremental à des dizaines de Gio.
+          CARGO_INCREMENTAL = "0";
         };
       }
     );

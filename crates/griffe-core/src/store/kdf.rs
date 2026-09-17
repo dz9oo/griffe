@@ -298,9 +298,10 @@ impl Sidecar {
     }
 
     /// Ré-enveloppe la clé maître d'un sidecar v3 sous une nouvelle passphrase : sel neuf, coûts
-    /// [`Argon2Cost::CURRENT`] (un coffre resté à d'anciens paramètres en profite pour se mettre
-    /// à niveau), nonce neuf — puis réécrit `<db>.kdf` de façon atomique. La base n'est jamais
-    /// touchée : la clé maître, le `vault_id` et le `key_id` sont conservés à l'identique.
+    /// [`Argon2Cost::for_new_vault`] (un coffre resté à d'anciens paramètres en profite pour se
+    /// mettre à niveau ; en debug, `GRIFFE_TEST_KDF` sélectionne le coût de test), nonce neuf —
+    /// puis réécrit `<db>.kdf` de façon atomique. La base n'est jamais touchée : la clé maître,
+    /// le `vault_id` et le `key_id` sont conservés à l'identique.
     ///
     /// C'est ici — au plus près des deux dérivations déjà payées — que « nouvelle passphrase
     /// identique à l'ancienne » est détectée, comme `Store::change_passphrase` le fait pour un
@@ -340,7 +341,7 @@ impl Sidecar {
 
         let mut salt = [0u8; SALT_LEN];
         rand::rng().fill_bytes(&mut salt);
-        let cost = Argon2Cost::CURRENT;
+        let cost = Argon2Cost::for_new_vault();
         let new_kek = derive_key(new, &salt, cost)?;
         let body = write_v3(&path, vault_id, &salt, cost, key_id, &new_kek, &master)?;
 
@@ -1174,6 +1175,22 @@ mod tests {
         // la même clé maître, avant comme après.
         assert!(before.verify(&master));
         assert!(reread.verify(&master));
+    }
+
+    #[test]
+    fn rewrap_follows_the_test_kdf_flag_like_create() {
+        // Production code that would make this fail: `rewrap` hard-coding
+        // `Argon2Cost::CURRENT` instead of `for_new_vault()`.
+        let db_path = temp_db_path("v3-rewrap-test-kdf");
+        let (before, _) = create(&db_path, &"old-s3cret".into()).unwrap();
+        let after = before
+            .rewrap(&db_path, &"old-s3cret".into(), &"new-s3cret".into())
+            .unwrap();
+        assert_eq!(
+            after.cost().m_cost,
+            Argon2Cost::for_new_vault().m_cost,
+            "un changement de passphrase v3 doit suivre GRIFFE_TEST_KDF, comme create"
+        );
     }
 
     #[test]

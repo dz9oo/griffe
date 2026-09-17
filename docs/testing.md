@@ -21,3 +21,9 @@ de l’argent, de la conformité, ou des données.
 
 `just check` (fmt, clippy `-D warnings`, machete, nextest, deny+audit).
 `nix flake check` avant de considérer un chantier terminé.
+
+Le devShell Nix (et `just test`) posent `GRIFFE_TEST_KDF=1` (Argon2id
+minimal, debug seulement) et `GRIFFE_NO_OPEN=1` (pas de `xdg-open`). Un
+`cargo nextest` lancé dans `nix develop` hérite de ces variables. Ne pas
+les exporter dans un binaire `--release` : elles y sont ignorées pour le
+KDF, et `GRIFFE_NO_OPEN` y couperait l'ouverture du client mail.

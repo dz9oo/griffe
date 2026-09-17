@@ -516,9 +516,9 @@ impl Store {
     /// Change la passphrase du coffre. Deux régimes selon le format du sidecar :
     ///
     /// - **coffre v3** (clé maître enveloppée) : ré-enveloppe la même clé maître sous la
-    ///   nouvelle passphrase (sel neuf, paramètres Argon2 courants) et réécrit atomiquement le
-    ///   seul sidecar — la base n'est pas touchée, il n'existe aucune fenêtre d'interruption à
-    ///   gérer ;
+    ///   nouvelle passphrase (sel neuf, mêmes paramètres qu'un coffre neuf) et réécrit
+    ///   atomiquement le seul sidecar — la base n'est pas touchée, il n'existe aucune fenêtre
+    ///   d'interruption à gérer ;
     /// - **coffre v1/v2** (clé dérivée de la passphrase) : ré-chiffre l'intégralité des pages
     ///   sous une clé maître aléatoire neuve et migre le coffre au format v3 — voir le doc de
     ///   module pour le pourquoi de la méthode copie + double `rename()`.
@@ -1698,7 +1698,7 @@ mod tests {
 
         let after = kdf::read(&db_path).unwrap().unwrap();
         assert!(!after.is_legacy());
-        assert_eq!(after.cost().m_cost, kdf::Argon2Cost::CURRENT.m_cost);
+        assert_eq!(after.cost().m_cost, kdf::Argon2Cost::for_new_vault().m_cost);
         assert_ne!(after.salt(), &salt);
     }
 

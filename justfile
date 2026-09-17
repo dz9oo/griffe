@@ -19,10 +19,15 @@ unused:
 
 # Suite de tests complète (unitaires, intégration, snapshots).
 # --no-tests=warn : un workspace sans encore aucun test (lot 0) n'est pas un échec.
-# GRIFFE_NO_OPEN : n'ouvre pas le navigateur / le client mail (`xdg-open`).
-# GRIFFE_TEST_KDF : Argon2id minimal (sinon ~3 s × 64 Mio par coffre de test).
+# GRIFFE_NO_OPEN / GRIFFE_TEST_KDF : aussi posés par le devShell Nix ; répétés ici
+# pour qu'un `just test` hors direnv ne rouvre pas xdg-open ni ne paie Argon2 de prod.
+# Suite de tests (nextest + KDF de test, sans xdg-open).
 test:
-    GRIFFE_NO_OPEN=1 GRIFFE_TEST_KDF=1 cargo nextest run --workspace --no-tests=warn
+    GRIFFE_NO_OPEN=1 GRIFFE_TEST_KDF=1 CARGO_INCREMENTAL=0 cargo nextest run --workspace --no-tests=warn
+
+# Cache incrémental rustc (debug). Sans ça il grossit sans borne (dizaines de Gio).
+clean-incremental:
+    rm -rf target/debug/incremental
 
 # Revue des licences et des CVE connues sur les dépendances.
 audit:

@@ -182,6 +182,12 @@ enum VaultCommand {
 /// [`dispatch`] n'en écrive pas une nouvelle.
 const AUTO_BACKUP_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
 
+/// La sauvegarde automatique est un geste utilisateur, pas un coût du harness. Même contrat
+/// que [`griffe_core::store`] `Argon2Cost::for_new_vault` : `GRIFFE_TEST_KDF` n'agit qu'en debug.
+fn should_auto_backup() -> bool {
+    !(cfg!(debug_assertions) && std::env::var_os("GRIFFE_TEST_KDF").is_some())
+}
+
 /// Comment [`dispatch`] obtient le `Store` sur lequel exécuter la commande.
 pub enum VaultAccess<'a> {
     /// Process CLI ordinaire : session déjà en cache en priorité, sinon sources de passphrase
@@ -354,8 +360,9 @@ fn dispatch(cli: Cli, access: VaultAccess<'_>) -> Result<String, CliError> {
             }
 
             let mut store = vault::open_or_prompt(&db_path, &passphrase)?;
-            if let Err(e) =
-                store.auto_backup_if_stale(&db_path.with_file_name("backups"), AUTO_BACKUP_MAX_AGE)
+            if should_auto_backup()
+                && let Err(e) = store
+                    .auto_backup_if_stale(&db_path.with_file_name("backups"), AUTO_BACKUP_MAX_AGE)
             {
                 eprintln!("⚠ sauvegarde automatique échouée : {e}");
             }

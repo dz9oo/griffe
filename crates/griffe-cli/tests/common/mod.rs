@@ -6,7 +6,7 @@
 //! trousseau en mémoire (réservé aux tests dans le même process, via
 //! `griffe_core::store::testing`). [`provision`] crée le coffre avec `--passphrase-file`.
 //! Les commandes suivantes passent le même fichier via [`unlocked`] : le trousseau OS
-//! (`--remember`) est absent du runner CI (pas de Secret Service).
+//! n'est pas utilisé (absent du runner CI, et en local il accumulerait des entrées).
 
 #![allow(dead_code)]
 
@@ -63,15 +63,16 @@ pub fn passphrase_file(db: &Path, passphrase: &str) -> PathBuf {
     path
 }
 
-/// Crée le coffre. `--remember` est tenté (no-op sans trousseau). Les commandes suivantes
-/// du test doivent utiliser [`unlocked`], pas le cache OS.
+/// Crée le coffre. Pas de `--remember` : les tests ne s'appuient pas sur le trousseau OS
+/// (absent en CI, et en local il accumule des entrées). Les commandes suivantes du test
+/// doivent utiliser [`unlocked`].
 pub fn provision(db: &Path) {
     let pass_file = passphrase_file(db, "s3cret");
     freeflow()
         .env("FREEFLOW_DB", db)
         .args(["--passphrase-file"])
         .arg(&pass_file)
-        .args(["init", "--remember"])
+        .args(["init"])
         .assert()
         .success();
 }

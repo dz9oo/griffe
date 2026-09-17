@@ -11,6 +11,7 @@ env:
   GRIFFE_TEST_KDF: "1"
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
+  NEXTEST_PROFILE: ci
 jobs:
   check:
     runs-on: ubuntu-latest
