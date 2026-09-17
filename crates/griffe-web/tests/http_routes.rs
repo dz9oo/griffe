@@ -6849,6 +6849,10 @@ async fn the_dossier_accepts_an_imported_invoice_and_lists_its_number() {
         dossier.contains("Poser une facture née ailleurs"),
         "le geste est sur le dossier d'une cliente : {dossier}"
     );
+    assert!(
+        dossier.contains("quantité négative"),
+        "un avoir doit se poser avec une quantité négative : {dossier}"
+    );
 
     let (content_type, form_body) = multipart_form_file(
         &[
@@ -6880,6 +6884,10 @@ async fn the_dossier_accepts_an_imported_invoice_and_lists_its_number() {
     assert!(
         posted_body.contains("FAC-2026-0042"),
         "le numéro de Tiime est collé au dossier : {posted_body}"
+    );
+    assert!(
+        posted_body.contains("original figé") || posted_body.contains("original non figé"),
+        "le flash dit si le PDF est au coffre : {posted_body}"
     );
 
     let facturation = body_text(

@@ -1245,4 +1245,94 @@ mod tests {
             .unwrap();
         assert_eq!(seq, 0);
     }
+
+    #[test]
+    fn importing_a_credit_note_with_positive_lines_is_refused() {
+        let (mut store, client_id) = test_store("import-avoir-positif");
+        let Outcome::Applied(inv) = Executor::new(&mut store)
+            .execute(&import_cmd(client_id), &human_ctx())
+            .unwrap()
+        else {
+            panic!("applied")
+        };
+        let before = aged_balance(store.connection(), date(2026, Month::September, 21)).unwrap();
+        assert_eq!(before.len(), 1);
+        // à la main : 5 000,00 HT × 20 % = 6 000,00 TTC encore dus
+        assert_eq!(before[0].outstanding, Money::from_cents(600_000));
+
+        let err = Executor::new(&mut store)
+            .execute(
+                &ImportIssuedInvoice {
+                    number: "AV-2026-0003".into(),
+                    client_id,
+                    mission_id: None,
+                    lines: vec![camille_line()],
+                    issued_on: date(2026, Month::September, 17),
+                    payment_terms_days: 0,
+                    credited_invoice_id: Some(inv.id),
+                },
+                &human_ctx(),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(err, AppError::Domain(ref msg) if msg.contains("négatif")),
+            "{err}"
+        );
+        let count: i64 = store
+            .connection()
+            .query_row("SELECT COUNT(*) FROM invoices", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "l'avoir positif ne doit pas être collé");
+        let aged = aged_balance(store.connection(), date(2026, Month::September, 21)).unwrap();
+        assert_eq!(aged.len(), 1);
+        assert_eq!(aged[0].invoice_id, inv.id);
+        assert_eq!(aged[0].outstanding, Money::from_cents(600_000));
+    }
+
+    #[test]
+    fn importing_a_credit_note_for_another_client_is_refused() {
+        let (mut store, client_id) = test_store("import-avoir-autre-client");
+        let Outcome::Applied(inv) = Executor::new(&mut store)
+            .execute(&import_cmd(client_id), &human_ctx())
+            .unwrap()
+        else {
+            panic!("applied")
+        };
+        let other = ClientId::new();
+        store
+            .connection()
+            .execute(
+                "INSERT INTO clients (id, name, created_at) VALUES (?1, 'Autre', '2026-01-01T00:00:00Z')",
+                [other.to_string()],
+            )
+            .unwrap();
+        let err = Executor::new(&mut store)
+            .execute(
+                &ImportIssuedInvoice {
+                    number: "AV-2026-0003".into(),
+                    client_id: other,
+                    mission_id: None,
+                    lines: vec![InvoiceLine {
+                        description: "Mission Camille".into(),
+                        quantity: -1.0,
+                        unit_price: Money::from_cents(500_000),
+                        vat_rate: VatRate::Standard,
+                    }],
+                    issued_on: date(2026, Month::September, 17),
+                    payment_terms_days: 0,
+                    credited_invoice_id: Some(inv.id),
+                },
+                &human_ctx(),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(err, AppError::Domain(ref msg) if msg.contains("même client")),
+            "{err}"
+        );
+        let count: i64 = store
+            .connection()
+            .query_row("SELECT COUNT(*) FROM invoices", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+    }
 }

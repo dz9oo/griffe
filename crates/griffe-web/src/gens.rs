@@ -694,14 +694,20 @@ pub async fn import_invoice(
         .with_store_mut(|store| -> Result<String, String> {
             match Executor::new(store).execute(&cmd, &AppState::human_ctx()) {
                 Ok(Outcome::Applied(emitted) | Outcome::AlreadyApplied(emitted)) => {
-                    let _ = griffe_cli::capture_imported_invoice(
-                        store,
-                        &AppState::human_ctx(),
-                        emitted.id,
-                        &original,
-                        &bytes,
-                    );
-                    Ok(emitted.number)
+                    let number = emitted.number;
+                    let note =
+                        griffe_cli::invoice_capture_note(griffe_cli::capture_imported_invoice(
+                            store,
+                            &AppState::human_ctx(),
+                            emitted.id,
+                            &original,
+                            &bytes,
+                        ));
+                    Ok(griffe_cli::append_capture_note(
+                        format!("facture {number} collée au dossier"),
+                        false,
+                        note,
+                    ))
                 }
                 Ok(_) => Err("la facture n'a pas été collée".into()),
                 Err(e) => Err(e.to_string()),
@@ -713,8 +719,7 @@ pub async fn import_invoice(
         Some(Err(msg)) => {
             page(&headers, gens::dossier_markup(&dossier, today, Some(&msg))).into_response()
         }
-        Some(Ok(number)) => {
-            let flash = format!("facture {number} collée au dossier");
+        Some(Ok(flash)) => {
             let content = state
                 .with_store(
                     |store| match person(store.connection(), &reference, today) {

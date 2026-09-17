@@ -309,7 +309,9 @@ pub fn invoice_paper(
         &format!(
             "{PAPER_SELECT}
              WHERE invoice_id = ?1 AND kind = ?2 AND superseded_by IS NULL
-             AND origin IN ('issued', 'imported')"
+             AND origin IN ('issued', 'imported')
+             ORDER BY CASE origin WHEN 'issued' THEN 0 ELSE 1 END, rowid
+             LIMIT 1"
         ),
         params![invoice_id.to_string(), kind.as_str()],
         row_to_paper,

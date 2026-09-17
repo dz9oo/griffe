@@ -540,6 +540,9 @@ fn import_invoice_form(dossier: &PersonDossier, today: Date) -> Markup {
             p class="lede" {
                 "Le numéro est celui de Tiime, Indy ou de votre plateforme. Griffe n'en invente pas un second."
             }
+            p class="lede" {
+                "Un avoir doit porter une quantité négative."
+            }
             form class="note-join" hx-encoding="multipart/form-data"
                  hx-post=(href) hx-target="#content" {
                 (form::file("file", "PDF", ".pdf,application/pdf"))

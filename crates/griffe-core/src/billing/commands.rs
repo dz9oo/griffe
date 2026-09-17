@@ -13,7 +13,7 @@ use crate::domain::{
 use super::error::BillingError;
 use super::import::ParsedTransaction;
 use super::row;
-use super::totals::{CanonicalInvoice, compute_invoice_hash};
+use super::totals::{CanonicalInvoice, compute_invoice_hash, compute_totals};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EmittedInvoice {
@@ -132,6 +132,12 @@ impl Command for ImportIssuedInvoice {
             }
             if row::has_credit_note(conn, credited_id)? {
                 return Err(BillingError::AlreadyCredited(credited_id).into());
+            }
+            if original.client_id != self.client_id {
+                return Err(BillingError::ImportedCreditNoteWrongClient.into());
+            }
+            if !compute_totals(&self.lines).total_ttc.is_negative() {
+                return Err(BillingError::ImportedCreditNoteMustBeNegative.into());
             }
         }
 
