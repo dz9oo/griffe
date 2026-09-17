@@ -200,6 +200,7 @@ fn paper_line(paper: &griffe_core::people::Paper) -> String {
         PaperStatus::InvoiceOutstanding { .. } => "à encaisser",
         PaperStatus::InvoicePaid => "encaissée",
         PaperStatus::InvoiceCredited => "annulée par avoir",
+        PaperStatus::InvoiceWrittenOff => "on ne l'attend plus",
     };
     match &paper.number {
         Some(n) => format!("{kind} {n} · {status}"),

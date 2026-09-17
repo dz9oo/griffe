@@ -87,6 +87,7 @@ fn verb_fr(verb: GestureVerb) -> &'static str {
         GestureVerb::FileStatement => "ranger le relevé",
         GestureVerb::KnowVat => "savoir pour la TVA",
         GestureVerb::KnowDuty => "savoir pour l'État",
+        GestureVerb::ReleaseReceivable => "ne plus attendre",
     }
 }
 
@@ -115,6 +116,9 @@ fn gesture_detail(g: &DayGesture) -> String {
                 .map(|m| format!("{m} · "))
                 .unwrap_or_default();
             format!("{amt}avant le {}", format_date(*due_on))
+        }
+        GestureSource::ReleaseReceivable { party, amount, .. } => {
+            format!("{amount} chez {party}")
         }
     }
 }

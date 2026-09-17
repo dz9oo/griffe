@@ -15,7 +15,8 @@ use uuid::Uuid;
 
 use crate::app::AppError;
 use crate::billing::{
-    aged_balance, invoice_by_id, list_bank_transactions, list_invoices, unmatched_debits,
+    aged_balance, invoice_by_id, list_bank_transactions, list_invoices, list_write_offs,
+    unmatched_debits,
 };
 use crate::clients::{client_by_id, list_clients, list_contacts};
 use crate::domain::{
@@ -251,6 +252,7 @@ pub enum PaperStatus {
     InvoiceOutstanding { days_overdue: i64 },
     InvoicePaid,
     InvoiceCredited,
+    InvoiceWrittenOff,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -554,6 +556,7 @@ struct Snapshot {
     quotes: Vec<Quote>,
     invoices: Vec<Invoice>,
     aged: Vec<crate::billing::AgedInvoice>,
+    written_off: HashSet<InvoiceId>,
     expenses: Vec<Expense>,
     unmatched: Vec<BankTransaction>,
     bank: Vec<BankTransaction>,
@@ -579,6 +582,11 @@ impl Snapshot {
         let quotes = list_quotes(conn)?;
         let invoices = list_invoices(conn)?;
         let aged = aged_balance(conn, today)?;
+        let written_off = list_write_offs(conn)?
+            .into_iter()
+            .filter(|w| w.retracted_on.is_none())
+            .map(|w| w.invoice_id)
+            .collect();
         let expenses = list_expenses(conn)?;
         let unmatched = unmatched_debits(conn)?;
         let bank = list_bank_transactions(conn)?;
@@ -610,6 +618,7 @@ impl Snapshot {
             quotes,
             invoices,
             aged,
+            written_off,
             expenses,
             unmatched,
             bank,
@@ -1157,6 +1166,8 @@ impl Snapshot {
                 .any(|c| c.credited_invoice_id == Some(invoice.id));
             let status = if credited {
                 PaperStatus::InvoiceCredited
+            } else if self.written_off.contains(&invoice.id) {
+                PaperStatus::InvoiceWrittenOff
             } else if let Some(a) = aged {
                 PaperStatus::InvoiceOutstanding {
                     days_overdue: a.days_overdue,
@@ -1350,7 +1361,9 @@ mod tests {
 
     use super::*;
     use crate::app::{Actor, ExecutionContext, Executor, Outcome};
-    use crate::billing::{EmitInvoice, ImportBankTransactions, ParsedTransaction};
+    use crate::billing::{
+        EmitInvoice, ImportBankTransactions, ParsedTransaction, WriteOffReceivable,
+    };
     use crate::clients::CreateClient;
     use crate::domain::{
         InvoiceLine, LineKind, Milestone, MissionKind, OpeningBalanceLine, Probability, VatRate,
@@ -1843,6 +1856,57 @@ mod tests {
                 PaperStatus::InvoiceOutstanding { days_overdue: 7 }
             )),
             "{:?}",
+            dossier.current.invoice
+        );
+    }
+
+    #[test]
+    fn dossier_paper_says_no_longer_expected_not_credited() {
+        let mut store = test_store("written-off-paper");
+        seed_people(&mut store);
+        let before = person(store.connection(), "Atlas", today()).unwrap();
+        let paper = before
+            .papers
+            .iter()
+            .find(|p| p.kind == PaperKind::Invoice)
+            .expect("facture Atlas");
+        let invoice_id = paper.invoice_id.expect("id");
+        let ttc = paper.amount;
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &WriteOffReceivable {
+                        invoice_id,
+                        written_off_on: today(),
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        let dossier = person(store.connection(), "Atlas", today()).unwrap();
+        let paper = dossier
+            .papers
+            .iter()
+            .find(|p| p.invoice_id == Some(invoice_id))
+            .expect("facture Atlas");
+        assert_eq!(
+            paper.status,
+            PaperStatus::InvoiceWrittenOff,
+            "une perte n'est ni un avoir ni un encaissement : {:?}",
+            paper.status
+        );
+        assert_eq!(paper.amount, ttc);
+        assert!(
+            !matches!(
+                paper.status,
+                PaperStatus::InvoicePaid | PaperStatus::InvoiceCredited
+            ),
+            "{:?}",
+            paper.status
+        );
+        assert!(
+            dossier.current.invoice.is_none(),
+            "plus une créance courante : {:?}",
             dossier.current.invoice
         );
     }
