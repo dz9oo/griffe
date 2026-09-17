@@ -199,6 +199,13 @@ pub enum FollowUpCommand {
     },
 }
 
+/// Les tests posent `GRIFFE_NO_OPEN` : on écrit le fichier, on n'ouvre pas le visualiseur
+/// (`xdg-open` / `open` ouvriraient le navigateur ou le client mail).
+#[must_use]
+pub fn should_open_externally() -> bool {
+    std::env::var_os("GRIFFE_NO_OPEN").is_none()
+}
+
 /// Écrit le `.eml` à côté du coffre (`<coffre>.drafts/`, 0700/0600) et l'ouvre. Partagé avec
 /// la fenêtre.
 ///
@@ -227,7 +234,7 @@ pub fn write_and_open_draft(
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
     }
-    if open {
+    if open && should_open_externally() {
         let opener = if cfg!(target_os = "macos") {
             "open"
         } else {

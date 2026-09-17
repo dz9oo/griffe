@@ -31,7 +31,7 @@ mod year;
 
 use std::path::{Path, PathBuf};
 
-pub use follow_up::write_and_open_draft;
+pub use follow_up::{should_open_externally, write_and_open_draft};
 pub use griffe_core::clock::today_local as today;
 pub use papers::{
     CLEARTEXT_WARNING, ControlPackReport, YearCaptureReport, append_capture_note,

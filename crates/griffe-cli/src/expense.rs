@@ -540,6 +540,9 @@ fn write_private(path: &std::path::Path, content: &[u8]) -> Result<(), CliError>
 /// best-effort : `false` si aucun ouvreur n'est disponible, le chemin est de toute façon
 /// affiché.
 fn open_with_default_viewer(path: &std::path::Path) -> bool {
+    if !crate::follow_up::should_open_externally() {
+        return false;
+    }
     let opener = if cfg!(target_os = "macos") {
         "open"
     } else {

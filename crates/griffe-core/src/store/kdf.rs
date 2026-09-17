@@ -105,6 +105,27 @@ impl Argon2Cost {
         p_cost: 1,
     };
 
+    /// Coût de test : le minimum Argon2id valide. Un coffre de prod ne l'utilise jamais
+    /// (`for_new_vault` exige `GRIFFE_TEST_KDF` *et* un binaire debug). Sans ça, chaque
+    /// `Store::create` paie ~3 s / 64 Mio — 800 tests = une demi-heure.
+    pub const TEST: Self = Self {
+        m_cost: 32,
+        t_cost: 1,
+        p_cost: 1,
+    };
+
+    /// Coût d'un coffre neuf. En debug, `GRIFFE_TEST_KDF` sélectionne [`Self::TEST`].
+    /// Un binaire `--release` ignore le drapeau (un utilisateur ne peut pas affaiblir
+    /// l'Argon2id de prod en exportant une variable).
+    #[must_use]
+    pub fn for_new_vault() -> Self {
+        if cfg!(debug_assertions) && std::env::var_os("GRIFFE_TEST_KDF").is_some() {
+            Self::TEST
+        } else {
+            Self::CURRENT
+        }
+    }
+
     /// # Panics
     ///
     /// Ne panique jamais : `m_cost`/`t_cost`/`p_cost` proviennent soit des constantes ci-dessus,
@@ -634,7 +655,7 @@ fn write_fresh_v3(
 ) -> Result<(Sidecar, VaultKey), StoreError> {
     let mut salt = [0u8; SALT_LEN];
     rand::rng().fill_bytes(&mut salt);
-    let cost = Argon2Cost::CURRENT;
+    let cost = Argon2Cost::for_new_vault();
 
     let mut master_bytes = [0u8; VaultKey::LEN];
     rand::rng().fill_bytes(&mut master_bytes);
@@ -894,6 +915,22 @@ mod tests {
             hex::encode(hmac_sha256(b"Jefe", b"what do ya want for nothing?")),
             "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
         );
+    }
+
+    #[test]
+    fn a_new_vault_follows_the_test_kdf_flag() {
+        let expected = Argon2Cost::for_new_vault();
+        assert_eq!(
+            expected.m_cost,
+            if std::env::var_os("GRIFFE_TEST_KDF").is_some() {
+                Argon2Cost::TEST.m_cost
+            } else {
+                Argon2Cost::CURRENT.m_cost
+            }
+        );
+        let db_path = temp_db_path("test-kdf-flag");
+        let (sidecar, _) = create(&db_path, &"s3cret".into()).unwrap();
+        assert_eq!(sidecar.cost().m_cost, expected.m_cost);
     }
 
     #[test]

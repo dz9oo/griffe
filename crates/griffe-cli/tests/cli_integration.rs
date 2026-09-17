@@ -437,7 +437,10 @@ fn passphrase_change_refuses_a_cached_session_as_proof_of_the_old_passphrase() {
 
     // Aucune source pour l'ANCIENNE passphrase, et non-interactif : la session en cache ne
     // peut pas en tenir lieu, même si elle prouve la possession de la clé.
-    unlocked(&db)
+    // Pas `unlocked()` : ce helper passe `--passphrase-file` (l'ancienne), ce qui ferait
+    // réussir le changement — exactement ce que ce test refuse.
+    freeflow()
+        .env("FREEFLOW_DB", &db)
         .args([
             "--non-interactive",
             "passphrase",

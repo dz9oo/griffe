@@ -742,6 +742,9 @@ fn parse_external_kind(raw: &str) -> Option<FiscalDeadlineKind> {
 
 fn open_allowed_url(url: &str) {
     const ALLOWED: &[&str] = &["https://www.impots.gouv.fr/", "https://procedures.inpi.fr/"];
+    if !griffe_cli::should_open_externally() {
+        return;
+    }
     if !ALLOWED.iter().any(|prefix| url.starts_with(prefix)) {
         return;
     }
