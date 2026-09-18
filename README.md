@@ -17,6 +17,14 @@ plateforme agréée. Griffe calcule et rappelle ; tu déposes ailleurs.
 
 ## Installation
 
+Linux (x86_64) : télécharger l’AppImage de la
+[dernière version](https://github.com/dz9oo/freeflow/releases/latest),
+le marquer exécutable, double-clic. WebKit et Typst sont dans le fichier.
+Tes données restent dans `~/.local/share/freeflow/` : remplacer l’AppImage
+ne touche pas au coffre.
+
+Pour compiler depuis les sources :
+
 ```bash
 nix develop
 just check

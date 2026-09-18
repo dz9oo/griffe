@@ -17,3 +17,6 @@ Textes : crates/griffe-web/assets/fonts/OFL-newsreader.txt
 
 Schémas XML EN 16931 vendorisés : European Union Public Licence
 1.2 — crates/griffe-invoice/spec/EUPL-1.2-LICENSE.txt
+
+Typst (https://typst.app), Apache License 2.0 — binaire redistribué
+dans l’AppImage Linux. https://github.com/typst/typst
