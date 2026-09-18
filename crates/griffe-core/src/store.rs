@@ -203,6 +203,12 @@ impl Store {
                     // Schéma plus récent que ce binaire : la clé est bonne, ne pas masquer en
                     // WrongPassphrase.
                     Err(StoreError::SchemaTooNew) => Err(StoreError::SchemaTooNew),
+                    // Clé bonne, échec après unlock (sauvegarde pre-migrate, SQLite, …).
+                    Err(
+                        e @ (StoreError::Io(_)
+                        | StoreError::BackupDestinationExists(_)
+                        | StoreError::Sqlite(_)),
+                    ) => Err(e),
                     // Le sidecar committé accepte cette passphrase mais la base elle-même la
                     // refuse : la seule façon dont ça arrive légitimement est une base déjà
                     // basculée sur une nouvelle clé pendant un changement de passphrase
@@ -235,6 +241,11 @@ impl Store {
                             Ok(store)
                         }
                         Err(StoreError::SchemaTooNew) => Err(StoreError::SchemaTooNew),
+                        Err(
+                            e @ (StoreError::Io(_)
+                            | StoreError::BackupDestinationExists(_)
+                            | StoreError::Sqlite(_)),
+                        ) => Err(e),
                         Err(_) => Err(StoreError::PassphraseChangeInterrupted(
                             db_path.to_path_buf(),
                         )),
@@ -1428,7 +1439,15 @@ mod tests {
         drop(store);
         let backups = db_path.with_file_name("backups");
         std::fs::write(&backups, b"not-a-dir").unwrap();
-        assert!(open(&db_path, "s3cret").is_err());
+        let err = open(&db_path, "s3cret").unwrap_err();
+        assert!(
+            matches!(err, StoreError::Io(_)),
+            "échec pre-migrate (backups fichier) doit rester Io, pas WrongPassphrase : {err}"
+        );
+        assert!(
+            !matches!(err, StoreError::WrongPassphrase | StoreError::SchemaTooNew),
+            "ce n'est ni une mauvaise clé ni un schéma trop neuf : {err}"
+        );
         std::fs::remove_file(&backups).unwrap();
         open(&db_path, "s3cret").unwrap();
         let found = std::fs::read_dir(&backups)
