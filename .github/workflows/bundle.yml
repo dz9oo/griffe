@@ -12,11 +12,11 @@ env:
   APPIMAGE_EXTRACT_AND_RUN: "1"
   # Séparateur « ; » : linuxdeploy splitEnv. Ces libs sont sur l'excludelist
   # AppImage ; les bundler quand même casse EGL (EGL_BAD_PARAMETER) sur
-  # Wayland/Mesa plus récent que Ubuntu 22.04. L'hôte fournit libwayland.
+  # Wayland/Mesa plus récent que le runner. L'hôte fournit libwayland.
   LINUXDEPLOY_EXCLUDED_LIBRARIES: "libwayland-client.so.0;libwayland-cursor.so.0;libwayland-egl.so.1;libwayland-server.so.0"
 jobs:
   appimage:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 60
     steps:
       - name: Libérer l'espace disque du runner
