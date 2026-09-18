@@ -1418,7 +1418,7 @@ mod tests {
         let backups = db_path.with_file_name("backups");
         let found = std::fs::read_dir(&backups)
             .unwrap()
-            .filter_map(|e| e.ok())
+            .filter_map(Result::ok)
             .any(|e| {
                 e.file_name().to_string_lossy().starts_with("pre-migrate-")
                     && e.path().extension().is_some_and(|x| x == "db")
@@ -1469,7 +1469,7 @@ mod tests {
         open(&db_path, "s3cret").unwrap();
         let found = std::fs::read_dir(&backups)
             .unwrap()
-            .filter_map(|e| e.ok())
+            .filter_map(Result::ok)
             .any(|e| e.file_name().to_string_lossy().starts_with("pre-migrate-"));
         assert!(
             found,
