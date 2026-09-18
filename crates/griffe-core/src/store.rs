@@ -824,9 +824,7 @@ fn write_vault_copy(
     src_db: &Path,
     dest_db: &Path,
 ) -> Result<(), StoreError> {
-    if dest_db.exists()
-        || kdf::sidecar_path(dest_db).exists()
-        || receipts_dir_of(dest_db).exists()
+    if dest_db.exists() || kdf::sidecar_path(dest_db).exists() || receipts_dir_of(dest_db).exists()
     {
         return Err(StoreError::BackupDestinationExists(dest_db.to_path_buf()));
     }
@@ -1422,12 +1420,13 @@ mod tests {
             .unwrap()
             .filter_map(|e| e.ok())
             .any(|e| {
-                e.file_name()
-                    .to_string_lossy()
-                    .starts_with("pre-migrate-")
+                e.file_name().to_string_lossy().starts_with("pre-migrate-")
                     && e.path().extension().is_some_and(|x| x == "db")
             });
-        assert!(found, "une sauvegarde pre-migrate-* doit exister dans {backups:?}");
+        assert!(
+            found,
+            "une sauvegarde pre-migrate-* doit exister dans {backups:?}"
+        );
     }
 
     #[test]
