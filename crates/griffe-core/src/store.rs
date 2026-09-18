@@ -199,6 +199,9 @@ impl Store {
                 return match Self::finish_open_with_committed_sidecar(db_path, key, sidecar, cache)
                 {
                     Ok(store) => Ok(store),
+                    // Schéma plus récent que ce binaire : la clé est bonne, ne pas masquer en
+                    // WrongPassphrase.
+                    Err(StoreError::SchemaTooNew) => Err(StoreError::SchemaTooNew),
                     // Le sidecar committé accepte cette passphrase mais la base elle-même la
                     // refuse : la seule façon dont ça arrive légitimement est une base déjà
                     // basculée sur une nouvelle clé pendant un changement de passphrase
@@ -281,7 +284,12 @@ impl Store {
         }
         let mut conn = Connection::open(db_path)?;
         unlock(&conn, &key)?;
-        migrations::migrations().to_latest(&mut conn)?;
+        let migrations = migrations::migrations();
+        let pending = migrations.pending_migrations(&conn)?;
+        if pending < 0 {
+            return Err(StoreError::SchemaTooNew);
+        }
+        migrations.to_latest(&mut conn)?;
         tighten_permissions(db_path);
         Ok(Self {
             conn,
@@ -1334,6 +1342,22 @@ mod tests {
             )
             .unwrap();
         assert_eq!(remaining, 0);
+    }
+
+    #[test]
+    fn opening_a_vault_newer_than_this_binary_returns_schema_too_new() {
+        let db_path = temp_db_path("schema-too-new");
+        let store = create(&db_path, "s3cret");
+        store
+            .connection()
+            .pragma_update(None, "user_version", 9999)
+            .unwrap();
+        drop(store);
+        let err = open(&db_path, "s3cret").unwrap_err();
+        assert!(
+            matches!(err, StoreError::SchemaTooNew),
+            "attendu SchemaTooNew, obtenu : {err}"
+        );
     }
 
     #[test]

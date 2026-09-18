@@ -44,7 +44,10 @@ pub enum StoreError {
     Sqlite(#[from] rusqlite::Error),
 
     #[error("échec de migration : {0}")]
-    Migration(#[from] rusqlite_migration::Error),
+    Migration(rusqlite_migration::Error),
+
+    #[error("cette version est trop ancienne pour ce coffre — téléchargez la dernière")]
+    SchemaTooNew,
 
     #[error(
         "le coffre est ouvert par un autre process : fermez la fenêtre FreeFlow et les autres \
@@ -57,4 +60,15 @@ pub enum StoreError {
          passphrase, ou restaurez la sauvegarde écrite juste avant le changement"
     )]
     PassphraseChangeInterrupted(PathBuf),
+}
+
+impl From<rusqlite_migration::Error> for StoreError {
+    fn from(err: rusqlite_migration::Error) -> Self {
+        match err {
+            rusqlite_migration::Error::MigrationDefinition(
+                rusqlite_migration::MigrationDefinitionError::DatabaseTooFarAhead,
+            ) => Self::SchemaTooNew,
+            other => Self::Migration(other),
+        }
+    }
 }
