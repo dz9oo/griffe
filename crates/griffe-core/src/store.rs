@@ -131,6 +131,7 @@ impl Store {
                 discard_rekey_orphans(db_path);
                 Ok(store)
             }
+            Err(StoreError::SchemaTooNew) => Err(StoreError::SchemaTooNew),
             // La clé en cache est valide pour le sidecar committé mais la base la refuse : la
             // seule façon légitime dont ça arrive est une base déjà basculée sur une nouvelle
             // clé pendant un changement de passphrase interrompu avant la bascule du sidecar
@@ -224,18 +225,19 @@ impl Store {
         if let Some(staged) = kdf::read_staged(db_path)? {
             return match staged.key_from_passphrase(passphrase) {
                 Ok(staged_key) => {
-                    if let Ok(store) =
-                        Self::open_with_key(db_path, staged_key, staged.vault_id.clone())
-                    {
-                        // La base ouvre déjà sous la clé du sidecar en attente : le changement
-                        // avait réellement abouti, seule la bascule du sidecar restait à faire.
-                        // La terminer silencieusement — aucune action requise de l'utilisateur.
-                        kdf::commit_staged(db_path)?;
-                        Ok(store)
-                    } else {
-                        Err(StoreError::PassphraseChangeInterrupted(
+                    match Self::open_with_key(db_path, staged_key, staged.vault_id.clone()) {
+                        Ok(store) => {
+                            // La base ouvre déjà sous la clé du sidecar en attente : le
+                            // changement avait réellement abouti, seule la bascule du sidecar
+                            // restait à faire. La terminer silencieusement — aucune action
+                            // requise de l'utilisateur.
+                            kdf::commit_staged(db_path)?;
+                            Ok(store)
+                        }
+                        Err(StoreError::SchemaTooNew) => Err(StoreError::SchemaTooNew),
+                        Err(_) => Err(StoreError::PassphraseChangeInterrupted(
                             db_path.to_path_buf(),
-                        ))
+                        )),
                     }
                 }
                 Err(StoreError::WrongPassphrase) => Err(StoreError::PassphraseChangeInterrupted(
@@ -1354,6 +1356,63 @@ mod tests {
             .unwrap();
         drop(store);
         let err = open(&db_path, "s3cret").unwrap_err();
+        assert!(
+            matches!(err, StoreError::SchemaTooNew),
+            "attendu SchemaTooNew, obtenu : {err}"
+        );
+    }
+
+    #[test]
+    fn open_cached_with_a_staged_sidecar_still_returns_schema_too_new() {
+        let db_path = temp_db_path("schema-too-new-cached-staged");
+        let cache = InMemoryKeyCache::new();
+        let store = create(&db_path, "s3cret");
+        store
+            .remember_with(Duration::from_secs(3600), &cache)
+            .unwrap();
+        let sidecar = kdf::read(&db_path).unwrap().unwrap();
+        kdf::stage_rekey(&db_path, &sidecar.vault_id, &Passphrase::from("unused")).unwrap();
+        store
+            .connection()
+            .pragma_update(None, "user_version", 9999)
+            .unwrap();
+        drop(store);
+        let err = Store::open_cached_with(&db_path, &cache).unwrap_err();
+        assert!(
+            matches!(err, StoreError::SchemaTooNew),
+            "attendu SchemaTooNew, obtenu : {err}"
+        );
+    }
+
+    #[test]
+    fn opening_with_staged_passphrase_still_returns_schema_too_new() {
+        // Fenêtre F4 (v2→v3) : base déjà sous la nouvelle clé, sidecar committé encore ancien,
+        // `.kdf.new` = nouveau. Ouverture avec la *nouvelle* passphrase emprunte le chemin
+        // staged — SchemaTooNew ne doit pas devenir PassphraseChangeInterrupted.
+        let db_path = temp_db_path("schema-too-new-staged");
+        let mut store = create_v2(&db_path, "old-s3cret");
+        let backups_dir = backups_dir_for("schema-too-new-staged");
+        let backup_path = store
+            .change_passphrase(
+                &Passphrase::from("old-s3cret"),
+                &Passphrase::from("new-s3cret"),
+                &backups_dir,
+            )
+            .unwrap()
+            .backup_path;
+        store
+            .connection()
+            .pragma_update(None, "user_version", 9999)
+            .unwrap();
+        fs::copy(
+            kdf::sidecar_path(&db_path),
+            kdf::staged_sidecar_path(&db_path),
+        )
+        .unwrap();
+        fs::copy(kdf::sidecar_path(&backup_path), kdf::sidecar_path(&db_path)).unwrap();
+        drop(store);
+
+        let err = open(&db_path, "new-s3cret").unwrap_err();
         assert!(
             matches!(err, StoreError::SchemaTooNew),
             "attendu SchemaTooNew, obtenu : {err}"
