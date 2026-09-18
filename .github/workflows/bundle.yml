@@ -34,6 +34,7 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
+          prefix-key: fhs-appimage
           cache-on-failure: true
       - name: Typst sidecar
         run: |
@@ -43,7 +44,8 @@ jobs:
             https://github.com/typst/typst/releases/download/v0.13.1/typst-x86_64-unknown-linux-musl.tar.xz
           tar -xJf /tmp/typst.tar.xz -C /tmp
           # l'archive pose typst-x86_64-unknown-linux-musl/typst
-          src=$(find /tmp -type f -name typst | head -1)
+          src=/tmp/typst-x86_64-unknown-linux-musl/typst
+          test -f "$src"
           cp "$src" crates/griffe-desktop/binaries/typst-x86_64-unknown-linux-gnu
           chmod +x crates/griffe-desktop/binaries/typst-x86_64-unknown-linux-gnu
       - name: tauri-cli
@@ -57,9 +59,9 @@ jobs:
           shopt -s nullglob
           img=(${{ github.workspace }}/target/release/bundle/appimage/*.AppImage)
           test "${#img[@]}" -eq 1
-          sha256sum "${img[0]}" | tee "${img[0]}.sha256"
-          chmod +x "${img[0]}"
           cd "$(dirname "${img[0]}")"
+          sha256sum "$(basename "${img[0]}")" | tee "$(basename "${img[0]}").sha256"
+          chmod +x "$(basename "${img[0]}")"
           ./$(basename "${img[0]}") --appimage-extract
           test -x squashfs-root/usr/bin/griffe-desktop
           ldd squashfs-root/usr/bin/griffe-desktop | tee /tmp/ldd.txt
