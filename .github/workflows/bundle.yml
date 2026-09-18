@@ -10,6 +10,10 @@ env:
   CARGO_INCREMENTAL: "0"
   NO_STRIP: "1"
   APPIMAGE_EXTRACT_AND_RUN: "1"
+  # Séparateur « ; » : linuxdeploy splitEnv. Ces libs sont sur l'excludelist
+  # AppImage ; les bundler quand même casse EGL (EGL_BAD_PARAMETER) sur
+  # Wayland/Mesa plus récent que Ubuntu 22.04. L'hôte fournit libwayland.
+  LINUXDEPLOY_EXCLUDED_LIBRARIES: "libwayland-client.so.0;libwayland-cursor.so.0;libwayland-egl.so.1;libwayland-server.so.0"
 jobs:
   appimage:
     runs-on: ubuntu-22.04
@@ -64,6 +68,22 @@ jobs:
           chmod +x "$(basename "${img[0]}")"
           ./$(basename "${img[0]}") --appimage-extract
           test -x squashfs-root/usr/bin/griffe-desktop
+          # linuxdeploy-plugin-gtk peut encore copier libwayland malgré l'env.
+          # Les retirer et recompresser : le Mesa de l'hôte parle au
+          # libwayland de l'hôte (double-clic, pas de LD_PRELOAD).
+          if find squashfs-root -name 'libwayland-client.so*' | grep -q .; then
+            find squashfs-root -name 'libwayland-*.so*' -print -delete
+            curl -sSL -o /tmp/appimagetool.AppImage \
+              https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+            chmod +x /tmp/appimagetool.AppImage
+            ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 \
+              /tmp/appimagetool.AppImage squashfs-root "$(basename "${img[0]}")"
+          fi
+          if find squashfs-root -name 'libwayland-client.so*' | grep -q .; then
+            echo "libwayland-client ne doit pas être dans l'AppImage" >&2
+            find squashfs-root -name 'libwayland-client.so*' >&2
+            exit 1
+          fi
           ldd squashfs-root/usr/bin/griffe-desktop | tee /tmp/ldd.txt
           if grep -q /nix/store /tmp/ldd.txt; then
             echo "l'AppImage est lié au store Nix" >&2
