@@ -19,9 +19,51 @@ plateforme agréée. Griffe calcule et rappelle ; tu déposes ailleurs.
 
 Linux (x86_64) : télécharger l’AppImage de la
 [dernière version](https://github.com/dz9oo/freeflow/releases/latest),
-le marquer exécutable, double-clic. WebKit et Typst sont dans le fichier.
-Tes données restent dans `~/.local/share/freeflow/` : remplacer l’AppImage
-ne touche pas au coffre.
+`chmod +x`, puis l’installer dans `~/.local` et le menu / Walker :
+
+```bash
+chmod +x ./Griffe_*.AppImage
+scripts/install-griffe.sh ./Griffe_*.AppImage
+```
+
+Le script copie l’AppImage vers `~/.local/bin/griffe` (un fichier, pas un
+lien), écrit l’icône et la fiche `.desktop`. Pas de `sudo`, pas de réseau.
+WebKit et Typst sont dans l’AppImage. Tes données restent dans
+`~/.local/share/freeflow/` : rejouer le script ne touche pas au coffre.
+
+Mise à jour : télécharger le nouvel AppImage et rejouer le script (même
+chemin). Désinstall : `rm` des trois chemins, coffre intact.
+
+```bash
+rm ~/.local/bin/griffe \
+  ~/.local/share/applications/io.github.dz9oo.griffe.desktop \
+  ~/.local/share/icons/hicolor/256x256/apps/io.github.dz9oo.griffe.png
+```
+
+Sans le clone, copie [`scripts/install-griffe.sh`](scripts/install-griffe.sh)
+depuis ce dépôt (source de vérité), ou colle les trois `install` / `cat` :
+
+```sh
+chmod +x ./Griffe_*.AppImage
+install -D ./Griffe_*.AppImage "$HOME/.local/bin/griffe"
+chmod +x "$HOME/.local/bin/griffe"
+tmp=$(mktemp -d)
+(cd "$tmp" && "$HOME/.local/bin/griffe" --appimage-extract >/dev/null)
+install -D "$tmp"/squashfs-root/usr/share/icons/hicolor/256x256/apps/*.png \
+  "$HOME/.local/share/icons/hicolor/256x256/apps/io.github.dz9oo.griffe.png"
+rm -rf "$tmp"
+mkdir -p "$HOME/.local/share/applications"
+cat >"$HOME/.local/share/applications/io.github.dz9oo.griffe.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Griffe
+Exec=$HOME/.local/bin/griffe
+Icon=io.github.dz9oo.griffe
+StartupWMClass=Griffe-desktop
+Terminal=false
+Categories=Office;Finance;
+EOF
+```
 
 Pour compiler depuis les sources :
 
