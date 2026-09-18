@@ -291,6 +291,15 @@ impl Store {
         if pending < 0 {
             return Err(StoreError::SchemaTooNew);
         }
+        if pending > 0 {
+            let current = migrations.current_version(&conn)?;
+            if !matches!(current, rusqlite_migration::SchemaVersion::NoneSet) {
+                let backups = db_path.with_file_name("backups");
+                let stamp = timestamp_now()?;
+                let dest = backups.join(format!("pre-migrate-{stamp}.db"));
+                write_vault_copy(&conn, &key, db_path, &dest)?;
+            }
+        }
         migrations.to_latest(&mut conn)?;
         tighten_permissions(db_path);
         Ok(Self {
@@ -401,37 +410,7 @@ impl Store {
     ///
     /// Retourne une erreur si l'écriture du fichier de sauvegarde ou son chiffrement échoue.
     pub fn backup_to(&self, dest_db_path: &Path) -> Result<(), StoreError> {
-        // Refuse d'écraser un fichier existant : sans ce garde-fou, la copie du sidecar écrasait
-        // d'abord le `.kdf` d'un éventuel coffre à cette destination (détruisant son sel et son
-        // vérificateur, donc le rendant illisible) avant même que la copie de la base n'échoue.
-        // Une destination de sauvegarde est toujours un fichier neuf.
-        if dest_db_path.exists()
-            || kdf::sidecar_path(dest_db_path).exists()
-            || receipts_dir_of(dest_db_path).exists()
-        {
-            return Err(StoreError::BackupDestinationExists(
-                dest_db_path.to_path_buf(),
-            ));
-        }
-        if let Some(parent) = dest_db_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        let mut dest = Connection::open(dest_db_path)?;
-        unlock(&dest, &self.key)?;
-
-        let backup = rusqlite::backup::Backup::new(&self.conn, &mut dest)?;
-        backup.run_to_completion(16, Duration::from_millis(250), None)?;
-        // Le sidecar n'est copié qu'après le succès de la copie de la base : une base sauvegardée
-        // sans son `.kdf` serait inutilisable, mais on préfère ne rien laisser d'incohérent à la
-        // destination si le backup lui-même échoue.
-        fs::copy(
-            kdf::sidecar_path(&self.db_path),
-            kdf::sidecar_path(dest_db_path),
-        )?;
-        copy_receipts_sidecar(&self.db_path, dest_db_path)?;
-        tighten_permissions(dest_db_path);
-        Ok(())
+        write_vault_copy(&self.conn, &self.key, &self.db_path, dest_db_path)
     }
 
     /// Restaure une sauvegarde produite par [`Self::backup_to`] : copie le fichier de
@@ -817,6 +796,36 @@ fn rekeyed_path(db_path: &Path) -> PathBuf {
     let mut os_string = db_path.as_os_str().to_owned();
     os_string.push(".rekeyed");
     PathBuf::from(os_string)
+}
+
+/// Copie un coffre ouvert (`src_conn` + clé) vers `dest_db` : base SQLCipher, sidecar `.kdf`,
+/// puis receipts. Refuse d'écraser une destination existante. Le sidecar n'est copié qu'après
+/// le succès de la copie de la base.
+fn write_vault_copy(
+    src_conn: &Connection,
+    key: &VaultKey,
+    src_db: &Path,
+    dest_db: &Path,
+) -> Result<(), StoreError> {
+    if dest_db.exists()
+        || kdf::sidecar_path(dest_db).exists()
+        || receipts_dir_of(dest_db).exists()
+    {
+        return Err(StoreError::BackupDestinationExists(dest_db.to_path_buf()));
+    }
+    if let Some(parent) = dest_db.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut dest = Connection::open(dest_db)?;
+    unlock(&dest, key)?;
+
+    let backup = Backup::new(src_conn, &mut dest)?;
+    backup.run_to_completion(16, Duration::from_millis(250), None)?;
+    fs::copy(kdf::sidecar_path(src_db), kdf::sidecar_path(dest_db))?;
+    copy_receipts_sidecar(src_db, dest_db)?;
+    tighten_permissions(dest_db);
+    Ok(())
 }
 
 /// Horodatage `YYYYMMDD-HHMMSS` pour un nom de fichier de sauvegarde.
@@ -1359,6 +1368,76 @@ mod tests {
         assert!(
             matches!(err, StoreError::SchemaTooNew),
             "attendu SchemaTooNew, obtenu : {err}"
+        );
+    }
+
+    #[test]
+    fn opening_an_older_schema_writes_pre_migrate_backup_then_migrates() {
+        let db_path = temp_db_path("pre-migrate-ok");
+        let mut store = create(&db_path, "s3cret");
+        migrations::migrations()
+            .to_version(store.connection_mut(), 32)
+            .unwrap();
+        drop(store);
+
+        let reopened = open(&db_path, "s3cret").unwrap();
+        let version: i64 = reopened
+            .connection()
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 33);
+        drop(reopened);
+
+        let backups = db_path.with_file_name("backups");
+        let found = std::fs::read_dir(&backups)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .any(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("pre-migrate-")
+                    && e.path().extension().is_some_and(|x| x == "db")
+            });
+        assert!(found, "une sauvegarde pre-migrate-* doit exister dans {backups:?}");
+    }
+
+    #[test]
+    fn opening_current_schema_does_not_write_pre_migrate() {
+        let db_path = temp_db_path("pre-migrate-skip");
+        create(&db_path, "s3cret");
+        open(&db_path, "s3cret").unwrap();
+        let backups = db_path.with_file_name("backups");
+        if backups.is_dir() {
+            for e in std::fs::read_dir(&backups).unwrap() {
+                let name = e.unwrap().file_name();
+                assert!(
+                    !name.to_string_lossy().starts_with("pre-migrate-"),
+                    "pas de pre-migrate sur un coffre déjà à jour : {name:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn failed_pre_migrate_backup_does_not_apply_migrations() {
+        let db_path = temp_db_path("pre-migrate-fail");
+        let mut store = create(&db_path, "s3cret");
+        migrations::migrations()
+            .to_version(store.connection_mut(), 32)
+            .unwrap();
+        drop(store);
+        let backups = db_path.with_file_name("backups");
+        std::fs::write(&backups, b"not-a-dir").unwrap();
+        assert!(open(&db_path, "s3cret").is_err());
+        std::fs::remove_file(&backups).unwrap();
+        open(&db_path, "s3cret").unwrap();
+        let found = std::fs::read_dir(&backups)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .any(|e| e.file_name().to_string_lossy().starts_with("pre-migrate-"));
+        assert!(
+            found,
+            "si la première ouverture avait migré, la seconde n'écrirait pas de pre-migrate"
         );
     }
 
