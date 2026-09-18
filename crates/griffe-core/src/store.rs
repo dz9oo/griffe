@@ -49,6 +49,11 @@ pub use key::InMemoryKeyCache;
 pub use key::{KeyCache, OsKeyring};
 pub use secret::{Passphrase, VaultKey};
 
+/// Âge au-delà duquel [`Store::auto_backup_if_stale`] écrit une nouvelle sauvegarde périodique
+/// (CLI `dispatch` et ouverture GUI). Sept jours, partagé pour que les adaptateurs ne
+/// divergent pas.
+pub const AUTO_BACKUP_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 3600);
+
 /// État d'un emplacement de coffre, sans le déverrouiller — pour `vault status` et l'écran
 /// d'accueil de la GUI.
 #[derive(Debug, Clone, PartialEq, Eq)]

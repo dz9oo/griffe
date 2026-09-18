@@ -41,7 +41,7 @@ pub use papers::{
 
 use clap::{Parser, Subcommand};
 use griffe_core::app::{Actor, ExecutionContext, PendingActionId};
-use griffe_core::store::Store;
+use griffe_core::store::{AUTO_BACKUP_MAX_AGE, Store};
 
 use error::CliError;
 use vault::PassphraseOpts;
@@ -177,10 +177,6 @@ enum VaultCommand {
     /// Chemin résolu, existence du coffre, version du sidecar, session en cache.
     Status,
 }
-
-/// Durée en-dessous de laquelle une sauvegarde existante est considérée assez fraîche pour que
-/// [`dispatch`] n'en écrive pas une nouvelle.
-const AUTO_BACKUP_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
 
 /// La sauvegarde automatique est un geste utilisateur, pas un coût du harness. Même contrat
 /// que [`griffe_core::store`] `Argon2Cost::for_new_vault` : `GRIFFE_TEST_KDF` n'agit qu'en debug.

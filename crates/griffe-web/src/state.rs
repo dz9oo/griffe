@@ -14,12 +14,25 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use griffe_core::app::{Actor, ExecutionContext};
-use griffe_core::store::{Passphrase, Store, StoreError, VaultStatus};
+use griffe_core::store::{AUTO_BACKUP_MAX_AGE, Passphrase, Store, StoreError, VaultStatus};
 use tokio::sync::Mutex;
 
 /// Durée par défaut d'une session mise en cache dans le trousseau OS quand l'utilisateur coche
 /// « se souvenir de moi » — même valeur par défaut que `freeflow unlock --remember` en CLI.
 const DEFAULT_SESSION_TTL: Duration = Duration::from_secs(12 * 3600);
+
+/// Sauvegarde périodique après ouverture réussie — même contrat que la CLI (`GRIFFE_TEST_KDF`
+/// en debug saute la copie SQLCipher pour le harness). Un échec n'empêche pas l'unlock.
+fn maybe_auto_backup(store: &Store, db_path: &Path) {
+    if cfg!(debug_assertions) && std::env::var_os("GRIFFE_TEST_KDF").is_some() {
+        return;
+    }
+    if let Err(e) =
+        store.auto_backup_if_stale(&db_path.with_file_name("backups"), AUTO_BACKUP_MAX_AGE)
+    {
+        eprintln!("⚠ sauvegarde automatique échouée : {e}");
+    }
+}
 
 /// Délai d'inactivité au-delà duquel la fenêtre se reverrouille toute seule, sans démon : c'est
 /// le polling du rail d'audit lui-même (`hx-trigger="load, every 2s"`, *exclu* du calcul
@@ -119,6 +132,7 @@ impl AppState {
     /// N'échoue jamais bruyamment : à défaut, l'écran de déverrouillage s'affiche normalement.
     pub async fn try_open_cached(&self) {
         if let Ok(store) = Store::open_cached(&self.db_path) {
+            maybe_auto_backup(&store, &self.db_path);
             *self.session.lock().await = VaultSession::Unlocked {
                 store: Box::new(store),
                 last_activity: Instant::now(),
@@ -138,6 +152,7 @@ impl AppState {
             // indisponible, seule la mise en cache pour la prochaine ouverture est perdue.
             let _ = store.remember(DEFAULT_SESSION_TTL);
         }
+        maybe_auto_backup(&store, &self.db_path);
         // Lot 39 : les justificatifs en clair d'avant sont chiffrés au premier déverrouillage
         // (idempotent, silencieux — une pièce qui résiste sera reprise la prochaine fois).
         let _ = griffe_core::receipts::migrate_legacy(&store);
