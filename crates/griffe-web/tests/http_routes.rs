@@ -2721,6 +2721,37 @@ async fn posting_a_wrong_passphrase_re_renders_the_form_and_stays_locked() {
     );
 }
 
+#[tokio::test]
+async fn unlock_with_a_newer_schema_shows_the_download_message() {
+    let db_path = test_db_path("unlock-schema-too-new");
+    let store = Store::create(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    store
+        .connection()
+        .pragma_update(None, "user_version", 9999)
+        .unwrap();
+    drop(store);
+    let state = AppState::new(db_path);
+    let router = griffe_web::router(state);
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/unlock")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(format!("passphrase={PASSPHRASE}")))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = body_text(response).await;
+    assert!(body.contains("trop ancienne pour ce coffre"), "{body}");
+    assert!(body.contains("téléchargez la dernière"), "{body}");
+    assert!(
+        !body.contains("MigrationDefinition"),
+        "pas le dump rusqlite_migration : {body}"
+    );
+}
+
 fn sidecar_path_for(db_path: &Path) -> PathBuf {
     let mut os_string = db_path.as_os_str().to_owned();
     os_string.push(".kdf");

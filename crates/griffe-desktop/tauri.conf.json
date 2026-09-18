@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Griffe",
   "version": "0.1.0",
-  "identifier": "dev.freeflow.desktop",
+  "identifier": "io.github.dz9oo.griffe",
   "build": {
     "frontendDist": "dist"
   },
@@ -23,6 +23,15 @@
     }
   },
   "bundle": {
-    "icon": ["icons/icon.png"]
+    "active": true,
+    "targets": ["appimage"],
+    "icon": ["icons/icon.png"],
+    "licenseFile": "../../LICENSE",
+    "resources": ["../../NOTICE"],
+    "linux": {
+      "appimage": {
+        "bundleMediaFramework": false
+      }
+    }
   }
 }

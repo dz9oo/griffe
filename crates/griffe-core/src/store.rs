@@ -49,6 +49,12 @@ pub use key::InMemoryKeyCache;
 pub use key::{KeyCache, OsKeyring};
 pub use secret::{Passphrase, VaultKey};
 
+/// Âge au-delà duquel [`Store::auto_backup_if_stale`] écrit une nouvelle sauvegarde périodique
+/// (CLI `dispatch` et ouverture GUI). Sept jours, partagé pour que les adaptateurs ne
+/// divergent pas.
+#[allow(clippy::duration_suboptimal_units)] // from_days / from_hours encore instables
+pub const AUTO_BACKUP_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 3600);
+
 /// État d'un emplacement de coffre, sans le déverrouiller — pour `vault status` et l'écran
 /// d'accueil de la GUI.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -131,6 +137,7 @@ impl Store {
                 discard_rekey_orphans(db_path);
                 Ok(store)
             }
+            Err(StoreError::SchemaTooNew) => Err(StoreError::SchemaTooNew),
             // La clé en cache est valide pour le sidecar committé mais la base la refuse : la
             // seule façon légitime dont ça arrive est une base déjà basculée sur une nouvelle
             // clé pendant un changement de passphrase interrompu avant la bascule du sidecar
@@ -199,6 +206,15 @@ impl Store {
                 return match Self::finish_open_with_committed_sidecar(db_path, key, sidecar, cache)
                 {
                     Ok(store) => Ok(store),
+                    // Schéma plus récent que ce binaire : la clé est bonne, ne pas masquer en
+                    // WrongPassphrase.
+                    Err(StoreError::SchemaTooNew) => Err(StoreError::SchemaTooNew),
+                    // Clé bonne, échec après unlock (sauvegarde pre-migrate, SQLite, …).
+                    Err(
+                        e @ (StoreError::Io(_)
+                        | StoreError::BackupDestinationExists(_)
+                        | StoreError::Sqlite(_)),
+                    ) => Err(e),
                     // Le sidecar committé accepte cette passphrase mais la base elle-même la
                     // refuse : la seule façon dont ça arrive légitimement est une base déjà
                     // basculée sur une nouvelle clé pendant un changement de passphrase
@@ -221,18 +237,24 @@ impl Store {
         if let Some(staged) = kdf::read_staged(db_path)? {
             return match staged.key_from_passphrase(passphrase) {
                 Ok(staged_key) => {
-                    if let Ok(store) =
-                        Self::open_with_key(db_path, staged_key, staged.vault_id.clone())
-                    {
-                        // La base ouvre déjà sous la clé du sidecar en attente : le changement
-                        // avait réellement abouti, seule la bascule du sidecar restait à faire.
-                        // La terminer silencieusement — aucune action requise de l'utilisateur.
-                        kdf::commit_staged(db_path)?;
-                        Ok(store)
-                    } else {
-                        Err(StoreError::PassphraseChangeInterrupted(
+                    match Self::open_with_key(db_path, staged_key, staged.vault_id.clone()) {
+                        Ok(store) => {
+                            // La base ouvre déjà sous la clé du sidecar en attente : le
+                            // changement avait réellement abouti, seule la bascule du sidecar
+                            // restait à faire. La terminer silencieusement — aucune action
+                            // requise de l'utilisateur.
+                            kdf::commit_staged(db_path)?;
+                            Ok(store)
+                        }
+                        Err(StoreError::SchemaTooNew) => Err(StoreError::SchemaTooNew),
+                        Err(
+                            e @ (StoreError::Io(_)
+                            | StoreError::BackupDestinationExists(_)
+                            | StoreError::Sqlite(_)),
+                        ) => Err(e),
+                        Err(_) => Err(StoreError::PassphraseChangeInterrupted(
                             db_path.to_path_buf(),
-                        ))
+                        )),
                     }
                 }
                 Err(StoreError::WrongPassphrase) => Err(StoreError::PassphraseChangeInterrupted(
@@ -281,7 +303,21 @@ impl Store {
         }
         let mut conn = Connection::open(db_path)?;
         unlock(&conn, &key)?;
-        migrations::migrations().to_latest(&mut conn)?;
+        let migrations = migrations::migrations();
+        let pending = migrations.pending_migrations(&conn)?;
+        if pending < 0 {
+            return Err(StoreError::SchemaTooNew);
+        }
+        if pending > 0 {
+            let current = migrations.current_version(&conn)?;
+            if !matches!(current, rusqlite_migration::SchemaVersion::NoneSet) {
+                let backups = db_path.with_file_name("backups");
+                let stamp = timestamp_now()?;
+                let dest = backups.join(format!("pre-migrate-{stamp}.db"));
+                write_vault_copy(&conn, &key, db_path, &dest)?;
+            }
+        }
+        migrations.to_latest(&mut conn)?;
         tighten_permissions(db_path);
         Ok(Self {
             conn,
@@ -391,37 +427,7 @@ impl Store {
     ///
     /// Retourne une erreur si l'écriture du fichier de sauvegarde ou son chiffrement échoue.
     pub fn backup_to(&self, dest_db_path: &Path) -> Result<(), StoreError> {
-        // Refuse d'écraser un fichier existant : sans ce garde-fou, la copie du sidecar écrasait
-        // d'abord le `.kdf` d'un éventuel coffre à cette destination (détruisant son sel et son
-        // vérificateur, donc le rendant illisible) avant même que la copie de la base n'échoue.
-        // Une destination de sauvegarde est toujours un fichier neuf.
-        if dest_db_path.exists()
-            || kdf::sidecar_path(dest_db_path).exists()
-            || receipts_dir_of(dest_db_path).exists()
-        {
-            return Err(StoreError::BackupDestinationExists(
-                dest_db_path.to_path_buf(),
-            ));
-        }
-        if let Some(parent) = dest_db_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        let mut dest = Connection::open(dest_db_path)?;
-        unlock(&dest, &self.key)?;
-
-        let backup = rusqlite::backup::Backup::new(&self.conn, &mut dest)?;
-        backup.run_to_completion(16, Duration::from_millis(250), None)?;
-        // Le sidecar n'est copié qu'après le succès de la copie de la base : une base sauvegardée
-        // sans son `.kdf` serait inutilisable, mais on préfère ne rien laisser d'incohérent à la
-        // destination si le backup lui-même échoue.
-        fs::copy(
-            kdf::sidecar_path(&self.db_path),
-            kdf::sidecar_path(dest_db_path),
-        )?;
-        copy_receipts_sidecar(&self.db_path, dest_db_path)?;
-        tighten_permissions(dest_db_path);
-        Ok(())
+        write_vault_copy(&self.conn, &self.key, &self.db_path, dest_db_path)
     }
 
     /// Restaure une sauvegarde produite par [`Self::backup_to`] : copie le fichier de
@@ -809,6 +815,34 @@ fn rekeyed_path(db_path: &Path) -> PathBuf {
     PathBuf::from(os_string)
 }
 
+/// Copie un coffre ouvert (`src_conn` + clé) vers `dest_db` : base `SQLCipher`, sidecar `.kdf`,
+/// puis receipts. Refuse d'écraser une destination existante. Le sidecar n'est copié qu'après
+/// le succès de la copie de la base.
+fn write_vault_copy(
+    src_conn: &Connection,
+    key: &VaultKey,
+    src_db: &Path,
+    dest_db: &Path,
+) -> Result<(), StoreError> {
+    if dest_db.exists() || kdf::sidecar_path(dest_db).exists() || receipts_dir_of(dest_db).exists()
+    {
+        return Err(StoreError::BackupDestinationExists(dest_db.to_path_buf()));
+    }
+    if let Some(parent) = dest_db.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut dest = Connection::open(dest_db)?;
+    unlock(&dest, key)?;
+
+    let backup = Backup::new(src_conn, &mut dest)?;
+    backup.run_to_completion(16, Duration::from_millis(250), None)?;
+    fs::copy(kdf::sidecar_path(src_db), kdf::sidecar_path(dest_db))?;
+    copy_receipts_sidecar(src_db, dest_db)?;
+    tighten_permissions(dest_db);
+    Ok(())
+}
+
 /// Horodatage `YYYYMMDD-HHMMSS` pour un nom de fichier de sauvegarde.
 ///
 /// # Panics
@@ -1149,6 +1183,18 @@ mod tests {
     }
 
     #[test]
+    fn default_vault_path_stays_under_freeflow_not_the_tauri_identifier() {
+        let path = Store::default_vault_path().unwrap();
+        let s = path.to_string_lossy();
+        assert!(
+            s.ends_with("freeflow/vault.db") || s.ends_with("FreeFlow/vault.db"),
+            "le coffre ne doit pas suivre l'id Tauri : {s}"
+        );
+        assert!(!s.contains("io.github.dz9oo.griffe"), "{s}");
+        assert!(!s.contains("dev.freeflow.desktop"), "{s}");
+    }
+
+    #[test]
     fn a_second_create_under_test_kdf_reuses_the_on_disk_empty_template() {
         // Production code that would make this fail: `Store::create` always
         // running 64 migrations + Argon2 instead of copying a published template.
@@ -1334,6 +1380,158 @@ mod tests {
             )
             .unwrap();
         assert_eq!(remaining, 0);
+    }
+
+    #[test]
+    fn opening_a_vault_newer_than_this_binary_returns_schema_too_new() {
+        let db_path = temp_db_path("schema-too-new");
+        let store = create(&db_path, "s3cret");
+        store
+            .connection()
+            .pragma_update(None, "user_version", 9999)
+            .unwrap();
+        drop(store);
+        let err = open(&db_path, "s3cret").unwrap_err();
+        assert!(
+            matches!(err, StoreError::SchemaTooNew),
+            "attendu SchemaTooNew, obtenu : {err}"
+        );
+    }
+
+    #[test]
+    fn opening_an_older_schema_writes_pre_migrate_backup_then_migrates() {
+        let db_path = temp_db_path("pre-migrate-ok");
+        let mut store = create(&db_path, "s3cret");
+        migrations::migrations()
+            .to_version(store.connection_mut(), 32)
+            .unwrap();
+        drop(store);
+
+        let reopened = open(&db_path, "s3cret").unwrap();
+        let version: i64 = reopened
+            .connection()
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 33);
+        drop(reopened);
+
+        let backups = db_path.with_file_name("backups");
+        let found = std::fs::read_dir(&backups)
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|e| {
+                e.file_name().to_string_lossy().starts_with("pre-migrate-")
+                    && e.path().extension().is_some_and(|x| x == "db")
+            });
+        assert!(
+            found,
+            "une sauvegarde pre-migrate-* doit exister dans {backups:?}"
+        );
+    }
+
+    #[test]
+    fn opening_current_schema_does_not_write_pre_migrate() {
+        let db_path = temp_db_path("pre-migrate-skip");
+        create(&db_path, "s3cret");
+        open(&db_path, "s3cret").unwrap();
+        let backups = db_path.with_file_name("backups");
+        if backups.is_dir() {
+            for e in std::fs::read_dir(&backups).unwrap() {
+                let name = e.unwrap().file_name();
+                assert!(
+                    !name.to_string_lossy().starts_with("pre-migrate-"),
+                    "pas de pre-migrate sur un coffre déjà à jour : {name:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn failed_pre_migrate_backup_does_not_apply_migrations() {
+        let db_path = temp_db_path("pre-migrate-fail");
+        let mut store = create(&db_path, "s3cret");
+        migrations::migrations()
+            .to_version(store.connection_mut(), 32)
+            .unwrap();
+        drop(store);
+        let backups = db_path.with_file_name("backups");
+        std::fs::write(&backups, b"not-a-dir").unwrap();
+        let err = open(&db_path, "s3cret").unwrap_err();
+        assert!(
+            matches!(err, StoreError::Io(_)),
+            "échec pre-migrate (backups fichier) doit rester Io, pas WrongPassphrase : {err}"
+        );
+        assert!(
+            !matches!(err, StoreError::WrongPassphrase | StoreError::SchemaTooNew),
+            "ce n'est ni une mauvaise clé ni un schéma trop neuf : {err}"
+        );
+        std::fs::remove_file(&backups).unwrap();
+        open(&db_path, "s3cret").unwrap();
+        let found = std::fs::read_dir(&backups)
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|e| e.file_name().to_string_lossy().starts_with("pre-migrate-"));
+        assert!(
+            found,
+            "si la première ouverture avait migré, la seconde n'écrirait pas de pre-migrate"
+        );
+    }
+
+    #[test]
+    fn open_cached_with_a_staged_sidecar_still_returns_schema_too_new() {
+        let db_path = temp_db_path("schema-too-new-cached-staged");
+        let cache = InMemoryKeyCache::new();
+        let store = create(&db_path, "s3cret");
+        store
+            .remember_with(Duration::from_secs(3600), &cache)
+            .unwrap();
+        let sidecar = kdf::read(&db_path).unwrap().unwrap();
+        kdf::stage_rekey(&db_path, &sidecar.vault_id, &Passphrase::from("unused")).unwrap();
+        store
+            .connection()
+            .pragma_update(None, "user_version", 9999)
+            .unwrap();
+        drop(store);
+        let err = Store::open_cached_with(&db_path, &cache).unwrap_err();
+        assert!(
+            matches!(err, StoreError::SchemaTooNew),
+            "attendu SchemaTooNew, obtenu : {err}"
+        );
+    }
+
+    #[test]
+    fn opening_with_staged_passphrase_still_returns_schema_too_new() {
+        // Fenêtre F4 (v2→v3) : base déjà sous la nouvelle clé, sidecar committé encore ancien,
+        // `.kdf.new` = nouveau. Ouverture avec la *nouvelle* passphrase emprunte le chemin
+        // staged — SchemaTooNew ne doit pas devenir PassphraseChangeInterrupted.
+        let db_path = temp_db_path("schema-too-new-staged");
+        let mut store = create_v2(&db_path, "old-s3cret");
+        let backups_dir = backups_dir_for("schema-too-new-staged");
+        let backup_path = store
+            .change_passphrase(
+                &Passphrase::from("old-s3cret"),
+                &Passphrase::from("new-s3cret"),
+                &backups_dir,
+            )
+            .unwrap()
+            .backup_path;
+        store
+            .connection()
+            .pragma_update(None, "user_version", 9999)
+            .unwrap();
+        fs::copy(
+            kdf::sidecar_path(&db_path),
+            kdf::staged_sidecar_path(&db_path),
+        )
+        .unwrap();
+        fs::copy(kdf::sidecar_path(&backup_path), kdf::sidecar_path(&db_path)).unwrap();
+        drop(store);
+
+        let err = open(&db_path, "new-s3cret").unwrap_err();
+        assert!(
+            matches!(err, StoreError::SchemaTooNew),
+            "attendu SchemaTooNew, obtenu : {err}"
+        );
     }
 
     #[test]

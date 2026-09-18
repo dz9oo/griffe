@@ -59,3 +59,5 @@ site-check:
     grep -q 'La société' site/index.html
     ! grep -E 'licence MIT|license MIT' site/index.html
     grep -q 'PolyForm Shield' site/index.html
+    grep -q 'Linux · AppImage' site/index.html
+    grep -q 'releases/latest' site/index.html
