@@ -5,12 +5,27 @@
 //! documents de clôture sont des PDF simples : pas de `--pdf-standard a-3b`, pas de pièce
 //! jointe.
 
-use std::process::Command;
-
 use griffe_core::company::CompanyProfile;
 use time::Date;
 
 use crate::error::DocsError;
+
+fn typst_command() -> std::process::Command {
+    if let Some(explicit) = std::env::var_os("GRIFFE_TYPST") {
+        return std::process::Command::new(explicit);
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            for name in ["typst", "typst-x86_64-unknown-linux-gnu"] {
+                let candidate = dir.join(name);
+                if candidate.is_file() {
+                    return std::process::Command::new(candidate);
+                }
+            }
+        }
+    }
+    std::process::Command::new("typst")
+}
 
 /// Avertissement apposé au pied de chaque document : ce sont des modèles générés depuis les
 /// données saisies, pas des actes garantis conformes — même statut que les échéances
@@ -106,7 +121,7 @@ pub(crate) fn compile(source: &str) -> Result<Vec<u8>, DocsError> {
     std::fs::write(workdir.path().join("doc.typ"), source)?;
     let output_path = workdir.path().join("doc.pdf");
 
-    let output = Command::new("typst")
+    let output = typst_command()
         .arg("compile")
         .arg("doc.typ")
         .arg(&output_path)

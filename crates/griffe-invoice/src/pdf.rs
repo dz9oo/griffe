@@ -13,13 +13,28 @@
 //! évite de parier sur une syntaxe de boucle/fermeture Typst qu'on ne peut pas vérifier ici
 //! aussi facilement que le squelette déjà validé par le spike.
 
-use std::process::Command;
-
 use griffe_core::company::CompanyProfile;
 use griffe_core::domain::{Address, Client, Invoice, InvoiceLine, VatRate, format_date};
 
 use crate::cii::cii_xml;
 use crate::error::InvoiceError;
+
+fn typst_command() -> std::process::Command {
+    if let Some(explicit) = std::env::var_os("GRIFFE_TYPST") {
+        return std::process::Command::new(explicit);
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            for name in ["typst", "typst-x86_64-unknown-linux-gnu"] {
+                let candidate = dir.join(name);
+                if candidate.is_file() {
+                    return std::process::Command::new(candidate);
+                }
+            }
+        }
+    }
+    std::process::Command::new("typst")
+}
 
 fn typst_string(s: &str) -> String {
     let escaped = s
@@ -267,7 +282,7 @@ pub fn render_pdf(
     std::fs::write(workdir.path().join("invoice.typ"), &source)?;
     let output_path = workdir.path().join("invoice.pdf");
 
-    let output = Command::new("typst")
+    let output = typst_command()
         .arg("compile")
         .arg("--pdf-standard")
         .arg("a-3b")
@@ -285,3 +300,20 @@ pub fn render_pdf(
 
     Ok(std::fs::read(&output_path)?)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::typst_command;
+
+    #[test]
+    fn typst_command_falls_back_to_bare_typst_name() {
+        let prog = typst_command().get_program().to_string_lossy().into_owned();
+        assert!(
+            prog == "typst"
+                || prog.ends_with("/typst")
+                || prog.ends_with("typst-x86_64-unknown-linux-gnu"),
+            "programme typst inattendu : {prog}"
+        );
+    }
+}
+
