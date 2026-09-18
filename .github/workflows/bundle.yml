@@ -47,7 +47,7 @@ jobs:
           cp "$src" crates/griffe-desktop/binaries/typst-x86_64-unknown-linux-gnu
           chmod +x crates/griffe-desktop/binaries/typst-x86_64-unknown-linux-gnu
       - name: tauri-cli
-        run: cargo install tauri-cli --locked --version 2.6.3
+        run: cargo install tauri-cli --locked --version 2.11.4
       - name: AppImage
         working-directory: crates/griffe-desktop
         run: cargo tauri build --bundles appimage --config bundle-typst.json
