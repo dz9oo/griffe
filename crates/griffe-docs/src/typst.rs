@@ -14,13 +14,13 @@ fn typst_command() -> std::process::Command {
     if let Some(explicit) = std::env::var_os("GRIFFE_TYPST") {
         return std::process::Command::new(explicit);
     }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            for name in ["typst", "typst-x86_64-unknown-linux-gnu"] {
-                let candidate = dir.join(name);
-                if candidate.is_file() {
-                    return std::process::Command::new(candidate);
-                }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        for name in ["typst", "typst-x86_64-unknown-linux-gnu"] {
+            let candidate = dir.join(name);
+            if candidate.is_file() {
+                return std::process::Command::new(candidate);
             }
         }
     }

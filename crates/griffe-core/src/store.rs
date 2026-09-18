@@ -52,6 +52,7 @@ pub use secret::{Passphrase, VaultKey};
 /// Âge au-delà duquel [`Store::auto_backup_if_stale`] écrit une nouvelle sauvegarde périodique
 /// (CLI `dispatch` et ouverture GUI). Sept jours, partagé pour que les adaptateurs ne
 /// divergent pas.
+#[allow(clippy::duration_suboptimal_units)] // from_days / from_hours encore instables
 pub const AUTO_BACKUP_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 3600);
 
 /// État d'un emplacement de coffre, sans le déverrouiller — pour `vault status` et l'écran
@@ -814,7 +815,7 @@ fn rekeyed_path(db_path: &Path) -> PathBuf {
     PathBuf::from(os_string)
 }
 
-/// Copie un coffre ouvert (`src_conn` + clé) vers `dest_db` : base SQLCipher, sidecar `.kdf`,
+/// Copie un coffre ouvert (`src_conn` + clé) vers `dest_db` : base `SQLCipher`, sidecar `.kdf`,
 /// puis receipts. Refuse d'écraser une destination existante. Le sidecar n'est copié qu'après
 /// le succès de la copie de la base.
 fn write_vault_copy(
@@ -1181,6 +1182,18 @@ mod tests {
 
     fn create(db_path: &Path, passphrase: &str) -> Store {
         Store::create(db_path, &Passphrase::from(passphrase)).unwrap()
+    }
+
+    #[test]
+    fn default_vault_path_stays_under_freeflow_not_the_tauri_identifier() {
+        let path = Store::default_vault_path().unwrap();
+        let s = path.to_string_lossy();
+        assert!(
+            s.ends_with("freeflow/vault.db") || s.ends_with("FreeFlow/vault.db"),
+            "le coffre ne doit pas suivre l'id Tauri : {s}"
+        );
+        assert!(!s.contains("io.github.dz9oo.griffe"), "{s}");
+        assert!(!s.contains("dev.freeflow.desktop"), "{s}");
     }
 
     #[test]

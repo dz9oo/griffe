@@ -11,3 +11,5 @@
 /.superpowers
 /crates/griffe-desktop/gen
 /notes-perso/
+
+/crates/griffe-desktop/binaries/typst*
