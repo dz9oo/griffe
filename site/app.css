@@ -130,13 +130,23 @@ h1 {
   color: var(--paper);
   padding: 12px 22px;
   border: none;
-  margin-bottom: 40px;
+  margin-bottom: 8px;
 }
 
 .btn:hover,
 .btn:focus-visible {
   background: var(--ink);
   color: var(--paper);
+}
+
+.dl-meta {
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  margin-bottom: 40px;
 }
 
 .shot {
