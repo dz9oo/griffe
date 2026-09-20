@@ -21,9 +21,10 @@ Linux (x86_64) : télécharger l’AppImage de la
 [dernière version](https://github.com/dz9oo/freeflow/releases/latest),
 `chmod +x`, puis l’installer dans `~/.local` et le menu / Walker :
 
-Sur Arch / Omarchy, un second fichier de la même Release (`.tar.xz`)
-utilise le WebKit du système : plus fluide, pas de squashfs. Il faut
-`webkit2gtk-4.1` (pacman). L’AppImage reste le geste sans paquet.
+Sur Arch / Omarchy, le daily driver est le paquet `griffe-bin`
+(`.pkg.tar.zst` de la même Release) : WebKit du système, `pacman -U` /
+`pacman -Rns`. L’AppImage reste le geste sans paquet. Un tarball
+`.tar.xz` existe encore pour une install `~/.local` sans pacman.
 
 ```bash
 chmod +x ./Griffe_*.AppImage
@@ -44,32 +45,27 @@ rm ~/.local/bin/griffe \
   ~/.local/share/icons/hicolor/256x256/apps/io.github.dz9oo.griffe.png
 ```
 
-### Arch / Omarchy (binaire natif)
+### Arch / Omarchy (paquet pacman)
+
+Daily driver : le `.pkg.tar.zst` de la Release. Si une install XDG
+native (`~/.local/lib/griffe/`) existe, la retirer **avant** `pacman -U`
+(même id de fiche `io.github.dz9oo.griffe.desktop`) :
 
 ```bash
-pacman -S webkit2gtk-4.1
-# télécharger griffe-*-x86_64-linux.tar.xz depuis la Release
-scripts/install-griffe-native.sh ./griffe-*-x86_64-linux.tar.xz
+rm -f ~/.local/bin/griffe-desktop \
+  ~/.local/lib/griffe/griffe-desktop ~/.local/lib/griffe/typst
+sudo pacman -U ./griffe-bin-0.3.0-1-x86_64.pkg.tar.zst
 ```
 
-Le script pose l’ELF et Typst dans `~/.local/lib/griffe/`, un lien
-`~/.local/bin/griffe-desktop`, l’icône et la fiche menu. Pas de `sudo`,
-pas de réseau. Un ancien `~/.local/bin/griffe` (AppImage) est retiré ;
-le coffre `~/.local/share/freeflow/` ne bouge pas.
+Désinstall : `sudo pacman -Rns griffe-bin`. Le coffre
+`~/.local/share/freeflow/` ne bouge pas. Mise à jour : `pacman -U` le
+nouveau fichier.
 
-Mise à jour : télécharger le nouveau tarball et rejouer le script.
-Désinstall :
+Sans pacman, le tarball `griffe-*-x86_64-linux.tar.xz` et
+`scripts/install-griffe-native.sh` restent le geste `~/.local`.
 
-```bash
-rm ~/.local/bin/griffe-desktop \
-  ~/.local/lib/griffe/griffe-desktop \
-  ~/.local/lib/griffe/typst \
-  ~/.local/share/applications/io.github.dz9oo.griffe.desktop \
-  ~/.local/share/icons/hicolor/256x256/apps/io.github.dz9oo.griffe.png
-```
-
-Un gabarit AUR (`packaging/arch/griffe-bin/`, non publié) installe le
-même tarball dans `/usr`.
+L’AUR `griffe-bin` n’est pas soumis pour l’instant : le binaire pacman
+vit sur la GitHub Release, pas dans l’AUR.
 
 Sans le clone, copie [`scripts/install-griffe.sh`](scripts/install-griffe.sh)
 depuis ce dépôt (source de vérité), ou colle les trois `install` / `cat` :
