@@ -167,3 +167,46 @@ jobs:
             target/release/bundle/appimage/*.sha256
             target/release/bundle/native/*.tar.xz
             target/release/bundle/native/*.sha256
+  griffe-bin:
+    needs: appimage
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    container:
+      # linux/amd64, library/archlinux:base-devel (2026-09-18).
+      # Renouveler : GET https://hub.docker.com/v2/repositories/library/archlinux/tags/base-devel
+      # → images[architecture=amd64].digest
+      image: archlinux:base-devel@sha256:305558d2bce0b33170f7f7e4ee690633df4b1e0bdfd8194fe45a6545172319ce
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: griffe-linux-native
+          path: native-tarball
+      - name: Paquet pacman (makepkg, namcap, fumée)
+        run: packaging/arch/griffe-bin/ci-makepkg.sh
+        env:
+          GRIFFE_NATIVE_DIR: ${{ github.workspace }}/native-tarball
+          GRIFFE_ARCH_OUT: ${{ github.workspace }}/arch-pkg
+          GRIFFE_AUR_OUT: ${{ github.workspace }}/aur-src
+      - uses: actions/upload-artifact@v4
+        with:
+          name: griffe-linux-arch
+          path: |
+            arch-pkg/*.pkg.tar.zst
+            arch-pkg/*.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: griffe-aur-src
+          path: |
+            aur-src/PKGBUILD
+            aur-src/.SRCINFO
+            aur-src/LICENSE
+      - name: GitHub Release (paquet Arch)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            arch-pkg/*.pkg.tar.zst
+            arch-pkg/*.sha256
+

@@ -108,3 +108,30 @@ pkg_fn() { awk '/^package\(\)/,/^}/' "$1"; }
 [ "$(pkg_fn "$pkgbuild")" = "$(pkg_fn "$aur_pb")" ] || fail "package() AUR divergé"
 
 echo "OK rewrite"
+
+wf="$root/.github/workflows/bundle.yml"
+[ -f "$wf" ] || fail "bundle.yml manquant"
+grep -q 'griffe-linux-native' "$wf" || fail "artefact natif 68"
+awk '/^  griffe-bin:/{found=1} END{exit found?0:1}' "$wf" \
+  || fail "job griffe-bin manquant"
+grep -q 'needs: appimage' "$wf" || fail "needs: appimage"
+grep -q 'archlinux:base-devel@sha256:305558d2bce0b33170f7f7e4ee690633df4b1e0bdfd8194fe45a6545172319ce' \
+  "$wf" || fail "digest épinglé"
+grep -q 'timeout-minutes: 20' "$wf" || fail "timeout 20"
+grep -q -- '--privileged' "$wf" || fail "privileged (pacman-key)"
+grep -q 'name: griffe-linux-arch' "$wf" || fail "artefact griffe-linux-arch"
+grep -q 'name: griffe-aur-src' "$wf" || fail "artefact griffe-aur-src"
+grep -q 'packaging/arch/griffe-bin/ci-makepkg.sh' "$wf" || fail "appel du script"
+if grep -nE 'uses: .*makepkg|uses: .*namcap' "$wf"; then
+  fail "pas d'action Marketplace makepkg/namcap"
+fi
+if grep -n 'DeterminateSystems\|nix develop' "$wf" | grep -q griffe-bin; then
+  fail "pas de Nix dans griffe-bin"
+fi
+# le job appimage continue de publier AppImage + tar.xz
+grep -q 'name: griffe-linux-appimage' "$wf" || fail "artefact AppImage"
+grep -Fq 'target/release/bundle/native/*.tar.xz' "$wf" \
+  || fail "Release tar.xz appimage inchangée"
+
+echo "OK yaml-griffe-bin"
+
