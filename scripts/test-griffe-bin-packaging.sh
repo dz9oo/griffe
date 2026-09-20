@@ -135,3 +135,44 @@ grep -Fq 'target/release/bundle/native/*.tar.xz' "$wf" \
 
 echo "OK yaml-griffe-bin"
 
+# input publish_aur défaut false
+grep -A6 'workflow_dispatch:' "$wf" | grep -q 'publish_aur' \
+  || fail "input publish_aur manquant"
+grep -A20 'publish_aur:' "$wf" | grep -q 'default: false' \
+  || fail "publish_aur default false"
+
+awk '/^  aur-publish:/{found=1} END{exit found?0:1}' "$wf" \
+  || fail "job aur-publish manquant"
+# le if du job : dispatch + input, pas un tag
+aur_if=$(awk '/^  aur-publish:/{p=1} p&&/if:/{print; exit}' "$wf")
+printf '%s\n' "$aur_if" | grep -q 'workflow_dispatch' \
+  || fail "aur-publish if: workflow_dispatch"
+printf '%s\n' "$aur_if" | grep -q 'publish_aur' \
+  || fail "aur-publish if: publish_aur"
+if printf '%s\n' "$aur_if" | grep -q 'refs/tags'; then
+  fail "aur-publish ne doit pas tourner sur un tag"
+fi
+grep -q 'needs: griffe-bin' "$wf" || fail "aur-publish needs griffe-bin"
+grep -q 'packaging/arch/griffe-bin/ci-aur-publish.sh' "$wf" \
+  || fail "script publish"
+
+pub="$root/packaging/arch/griffe-bin/ci-aur-publish.sh"
+[ -x "$pub" ] || fail "ci-aur-publish.sh manquant"
+grep -q 'aur.archlinux.org/griffe-bin.git' "$pub" || fail "clone AUR"
+grep -q 'AUR_SSH_PRIVATE_KEY' "$pub" || fail "secret"
+# refuse de pousser le .pkg.tar.zst comme livrable
+# (commentaire + rm défensif du script autorisés)
+if grep -nE '(^|[[:space:]])(cp|git[[:space:]]+add|git[[:space:]]+push)[[:space:]].*pkg\.tar' "$pub" \
+  | grep -vqE '^[[:space:]]*#|^[0-9]+:[[:space:]]*#'; then
+  fail "l'AUR ne reçoit pas le paquet binaire"
+fi
+
+# secret manquant → échec clair, sans réseau (avant même de lire les fichiers)
+if err=$(AUR_SSH_PRIVATE_KEY= bash "$pub" 2>&1); then
+  fail "publish sans secret doit échouer"
+fi
+printf '%s\n' "$err" | grep -q AUR_SSH_PRIVATE_KEY \
+  || fail "message d'échec du secret attendu"
+
+echo "OK yaml-aur-publish"
+
