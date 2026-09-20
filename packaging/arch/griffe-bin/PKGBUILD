@@ -1,0 +1,31 @@
+# Maintainer: dz9oo
+# Gabarit : ne pas soumettre tant que sha256sums n'est pas celui d'une Release réelle.
+pkgname=griffe-bin
+pkgver=0.3.0
+pkgrel=1
+pkgdesc="Lettre du matin pour un indépendant en SASU/EURL à l'IS"
+arch=('x86_64')
+url='https://github.com/dz9oo/freeflow'
+license=('LicenseRef-PolyForm-Shield-1.0.0')
+depends=('webkit2gtk-4.1' 'gtk3' 'hicolor-icon-theme')
+provides=('griffe')
+conflicts=('griffe')
+options=('!strip')
+source=("https://github.com/dz9oo/freeflow/releases/download/v${pkgver}/griffe-${pkgver}-x86_64-linux.tar.xz")
+sha256sums=('CHANGEME')
+
+package() {
+  cd "$srcdir/griffe-${pkgver}-x86_64-linux"
+  install -Dm755 griffe-desktop "$pkgdir/usr/lib/griffe/griffe-desktop"
+  install -Dm755 typst "$pkgdir/usr/lib/griffe/typst"
+  install -d "$pkgdir/usr/bin"
+  ln -s /usr/lib/griffe/griffe-desktop "$pkgdir/usr/bin/griffe-desktop"
+  install -Dm644 io.github.dz9oo.griffe.png \
+    "$pkgdir/usr/share/icons/hicolor/256x256/apps/io.github.dz9oo.griffe.png"
+  install -Dm644 io.github.dz9oo.griffe.desktop \
+    "$pkgdir/usr/share/applications/io.github.dz9oo.griffe.desktop"
+  sed -i 's|^Exec=.*|Exec=/usr/bin/griffe-desktop|' \
+    "$pkgdir/usr/share/applications/io.github.dz9oo.griffe.desktop"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 NOTICE "$pkgdir/usr/share/licenses/$pkgname/NOTICE"
+}

@@ -21,6 +21,10 @@ Linux (x86_64) : télécharger l’AppImage de la
 [dernière version](https://github.com/dz9oo/freeflow/releases/latest),
 `chmod +x`, puis l’installer dans `~/.local` et le menu / Walker :
 
+Sur Arch / Omarchy, un second fichier de la même Release (`.tar.xz`)
+utilise le WebKit du système : plus fluide, pas de squashfs. Il faut
+`webkit2gtk-4.1` (pacman). L’AppImage reste le geste sans paquet.
+
 ```bash
 chmod +x ./Griffe_*.AppImage
 scripts/install-griffe.sh ./Griffe_*.AppImage
@@ -39,6 +43,33 @@ rm ~/.local/bin/griffe \
   ~/.local/share/applications/io.github.dz9oo.griffe.desktop \
   ~/.local/share/icons/hicolor/256x256/apps/io.github.dz9oo.griffe.png
 ```
+
+### Arch / Omarchy (binaire natif)
+
+```bash
+pacman -S webkit2gtk-4.1
+# télécharger griffe-*-x86_64-linux.tar.xz depuis la Release
+scripts/install-griffe-native.sh ./griffe-*-x86_64-linux.tar.xz
+```
+
+Le script pose l’ELF et Typst dans `~/.local/lib/griffe/`, un lien
+`~/.local/bin/griffe-desktop`, l’icône et la fiche menu. Pas de `sudo`,
+pas de réseau. Un ancien `~/.local/bin/griffe` (AppImage) est retiré ;
+le coffre `~/.local/share/freeflow/` ne bouge pas.
+
+Mise à jour : télécharger le nouveau tarball et rejouer le script.
+Désinstall :
+
+```bash
+rm ~/.local/bin/griffe-desktop \
+  ~/.local/lib/griffe/griffe-desktop \
+  ~/.local/lib/griffe/typst \
+  ~/.local/share/applications/io.github.dz9oo.griffe.desktop \
+  ~/.local/share/icons/hicolor/256x256/apps/io.github.dz9oo.griffe.png
+```
+
+Un gabarit AUR (`packaging/arch/griffe-bin/`, non publié) installe le
+même tarball dans `/usr`.
 
 Sans le clone, copie [`scripts/install-griffe.sh`](scripts/install-griffe.sh)
 depuis ce dépôt (source de vérité), ou colle les trois `install` / `cat` :
