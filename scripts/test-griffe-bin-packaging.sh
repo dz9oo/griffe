@@ -52,3 +52,59 @@ if [ -f "$root/packaging/arch/griffe-bin/.SRCINFO" ]; then
 fi
 
 echo "OK PKGBUILD"
+
+# --- réécriture CI / AUR, sans makepkg ---
+[ -x "$ci_script" ] || fail "ci-makepkg.sh manquant ou non exécutable"
+if grep -nE '(^|[[:space:]])(curl|wget)([[:space:]]|$)' "$ci_script" \
+  | grep -vq '^[[:space:]]*#'; then
+  fail "ci-makepkg.sh ne doit pas appeler curl/wget"
+fi
+grep -q 'set -eu' "$ci_script" || fail "set -eu"
+if grep -qE 'cargo |tauri |nix develop' "$ci_script"; then
+  fail "pas de compile dans ci-makepkg.sh"
+fi
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+mkdir -p "$tmp/native/griffe-0.3.0-x86_64-linux"
+printf 'stub\n' > "$tmp/native/griffe-0.3.0-x86_64-linux/griffe-desktop"
+tar -C "$tmp/native" -cJf "$tmp/native/griffe-0.3.0-x86_64-linux.tar.xz" \
+  griffe-0.3.0-x86_64-linux
+want_sha=$(sha256sum "$tmp/native/griffe-0.3.0-x86_64-linux.tar.xz" | awk '{print $1}')
+[ "${#want_sha}" -eq 64 ] || fail "sha de test"
+
+export GRIFFE_BIN_PREPARE_ONLY=1
+export GRIFFE_NATIVE_DIR="$tmp/native"
+export GRIFFE_AUR_OUT="$tmp/aur-src"
+export GRIFFE_ARCH_OUT="$tmp/arch-pkg"
+export GRIFFE_WORK="$tmp/work"
+if ! bash "$ci_script"; then
+  fail "PREPARE_ONLY doit réussir sans makepkg"
+fi
+
+ci_pb="$tmp/work/ci/PKGBUILD"
+aur_pb="$tmp/aur-src/PKGBUILD"
+[ -f "$ci_pb" ] || fail "PKGBUILD CI non écrit"
+[ -f "$aur_pb" ] || fail "PKGBUILD AUR non écrit"
+grep -q 'source=("griffe-${pkgver}-x86_64-linux.tar.xz")' "$ci_pb" \
+  || fail "CI source= doit être le nom de fichier"
+if grep -q 'releases/download' "$ci_pb"; then
+  fail "CI source= ne doit pas être l'URL GitHub"
+fi
+grep -q "sha256sums=('$want_sha')" "$ci_pb" || fail "CI sha256sums réel"
+grep -q 'releases/download/v${pkgver}/griffe-${pkgver}-x86_64-linux.tar.xz' \
+  "$aur_pb" || fail "AUR source= URL GitHub"
+grep -q "sha256sums=('$want_sha')" "$aur_pb" || fail "AUR même SHA"
+if grep -q CHANGEME "$ci_pb" "$aur_pb"; then
+  fail "plus de CHANGEME sur les copies"
+fi
+grep -q "sha256sums=('CHANGEME')" "$pkgbuild" \
+  || fail "le gabarit commité garde CHANGEME"
+test -f "$tmp/work/ci/griffe-0.3.0-x86_64-linux.tar.xz" \
+  || fail "tarball copié à côté du PKGBUILD CI"
+# package() identique
+pkg_fn() { awk '/^package\(\)/,/^}/' "$1"; }
+[ "$(pkg_fn "$pkgbuild")" = "$(pkg_fn "$ci_pb")" ] || fail "package() CI divergé"
+[ "$(pkg_fn "$pkgbuild")" = "$(pkg_fn "$aur_pb")" ] || fail "package() AUR divergé"
+
+echo "OK rewrite"
