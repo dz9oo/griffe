@@ -8,7 +8,7 @@ arch=('x86_64')
 url='https://github.com/dz9oo/freeflow'
 license=('LicenseRef-PolyForm-Shield-1.0.0')
 depends=('webkit2gtk-4.1' 'gtk3' 'hicolor-icon-theme')
-provides=('griffe')
+provides=("griffe=${pkgver}")
 conflicts=('griffe')
 options=('!strip')
 source=("https://github.com/dz9oo/freeflow/releases/download/v${pkgver}/griffe-${pkgver}-x86_64-linux.tar.xz")
