@@ -93,12 +93,71 @@ jobs:
           # Après un éventuel recompress : le SHA publié doit matcher le fichier.
           sha256sum "$(basename "${img[0]}")" | tee "$(basename "${img[0]}").sha256"
           sha256sum -c "$(basename "${img[0]}").sha256"
+      - name: Tarball natif (ELF + Typst, WebKit hôte)
+        run: |
+          set -euo pipefail
+          ver=$(python3 -c 'import json; print(json.load(open("crates/griffe-desktop/tauri.conf.json"))["version"])')
+          test -n "$ver"
+          elf="${{ github.workspace }}/target/release/griffe-desktop"
+          typst="${{ github.workspace }}/crates/griffe-desktop/binaries/typst-x86_64-unknown-linux-gnu"
+          icon="${{ github.workspace }}/crates/griffe-desktop/icons/icon.png"
+          test -x "$elf"
+          test -x "$typst"
+          test -f "$icon"
+          # Magie ELF, pas de store Nix, WebKit en DT_NEEDED, pas de .so bundlé.
+          od -An -N4 -tx1 "$elf" | tr -d ' \n' | grep -qx '7f454c46'
+          ldd "$elf" | tee /tmp/ldd-native.txt
+          if grep -q /nix/store /tmp/ldd-native.txt; then
+            echo "l'ELF natif est lié au store Nix" >&2
+            exit 1
+          fi
+          grep -q 'libwebkit2gtk-4.1.so.0' /tmp/ldd-native.txt
+          if grep -E 'not found' /tmp/ldd-native.txt; then
+            echo "dépendance manquante sur le runner" >&2
+            exit 1
+          fi
+          file "$elf" | grep -qi 'dynamically linked'
+          staging="${{ github.workspace }}/target/release/bundle/native"
+          root="$staging/griffe-${ver}-x86_64-linux"
+          rm -rf "$staging"
+          mkdir -p "$root"
+          cp "$elf" "$root/griffe-desktop"
+          cp "$typst" "$root/typst"
+          chmod +x "$root/griffe-desktop" "$root/typst"
+          cp "$icon" "$root/io.github.dz9oo.griffe.png"
+          cp "${{ github.workspace }}/LICENSE" "$root/LICENSE"
+          cp "${{ github.workspace }}/NOTICE" "$root/NOTICE"
+          printf '%s\n' \
+            '[Desktop Entry]' \
+            'Type=Application' \
+            'Name=Griffe' \
+            'Exec=griffe-desktop' \
+            'Icon=io.github.dz9oo.griffe' \
+            'StartupWMClass=Griffe-desktop' \
+            'Terminal=false' \
+            'Categories=Office;Finance;' \
+            >"$root/io.github.dz9oo.griffe.desktop"
+          if find "$root" \( -name 'libwebkit*' -o -name '*.so' \) | grep -q .; then
+            echo "le tarball ne doit pas embarquer de .so" >&2
+            find "$root" -name '*.so' >&2
+            exit 1
+          fi
+          tar -C "$staging" -cJf "$staging/griffe-${ver}-x86_64-linux.tar.xz" "griffe-${ver}-x86_64-linux"
+          cd "$staging"
+          sha256sum "griffe-${ver}-x86_64-linux.tar.xz" | tee "griffe-${ver}-x86_64-linux.tar.xz.sha256"
+          sha256sum -c "griffe-${ver}-x86_64-linux.tar.xz.sha256"
       - uses: actions/upload-artifact@v4
         with:
           name: griffe-linux-appimage
           path: |
             target/release/bundle/appimage/*.AppImage
             target/release/bundle/appimage/*.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: griffe-linux-native
+          path: |
+            target/release/bundle/native/*.tar.xz
+            target/release/bundle/native/*.sha256
       - name: GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
@@ -106,3 +165,5 @@ jobs:
           files: |
             target/release/bundle/appimage/*.AppImage
             target/release/bundle/appimage/*.sha256
+            target/release/bundle/native/*.tar.xz
+            target/release/bundle/native/*.sha256
