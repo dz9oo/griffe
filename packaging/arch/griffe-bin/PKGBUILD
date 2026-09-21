@@ -1,17 +1,17 @@
 # Maintainer: dz9oo
 # Gabarit : ne pas soumettre tant que sha256sums n'est pas celui d'une Release réelle.
 pkgname=griffe-bin
-pkgver=0.3.0
+pkgver=0.3.1
 pkgrel=1
-pkgdesc="Lettre du matin pour un indépendant en SASU/EURL à l'IS"
+pkgdesc="Lettre du matin pour un indépendant en SASU à l'IS"
 arch=('x86_64')
-url='https://github.com/dz9oo/freeflow'
+url='https://github.com/dz9oo/griffe'
 license=('LicenseRef-PolyForm-Shield-1.0.0')
 depends=('webkit2gtk-4.1' 'gtk3' 'hicolor-icon-theme')
 provides=("griffe=${pkgver}")
 conflicts=('griffe')
 options=('!strip')
-source=("https://github.com/dz9oo/freeflow/releases/download/v${pkgver}/griffe-${pkgver}-x86_64-linux.tar.xz")
+source=("https://github.com/dz9oo/griffe/releases/download/v${pkgver}/griffe-${pkgver}-x86_64-linux.tar.xz")
 sha256sums=('CHANGEME')
 
 package() {

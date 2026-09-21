@@ -119,6 +119,16 @@ h1 {
   margin-bottom: 28px;
 }
 
+.lede a {
+  color: var(--seal);
+  text-decoration: none;
+}
+
+.lede a:hover,
+.lede a:focus-visible {
+  box-shadow: inset 0 -1px 0 var(--seal);
+}
+
 .btn {
   display: inline-block;
   font-family: var(--sans);
@@ -204,6 +214,20 @@ h1 {
   max-width: 52ch;
 }
 
+.chez-toi p + p {
+  margin-top: 12px;
+}
+
+.chez-toi a {
+  color: var(--seal);
+  text-decoration: none;
+}
+
+.chez-toi a:hover,
+.chez-toi a:focus-visible {
+  box-shadow: inset 0 -1px 0 var(--seal);
+}
+
 .site-footer {
   border-top: 1px solid var(--rule);
   padding-top: 24px;
@@ -212,6 +236,10 @@ h1 {
   justify-content: space-between;
   gap: 16px;
   flex-wrap: wrap;
+}
+
+.site-footer a + a {
+  margin-left: 16px;
 }
 
 .site-footer a {

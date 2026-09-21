@@ -394,8 +394,10 @@ impl Store {
     }
 
     /// Emplacement de coffre par défaut, si l'appelant n'en fournit pas explicitement :
-    /// `$XDG_DATA_HOME/freeflow/vault.db` sur Linux (défaut `~/.local/share/freeflow/vault.db`),
-    /// `~/Library/Application Support/FreeFlow/vault.db` sur macOS.
+    /// `$XDG_DATA_HOME/griffe/vault.db` sur Linux (défaut `~/.local/share/griffe/vault.db`),
+    /// `~/Library/Application Support/Griffe/vault.db` sur macOS.
+    ///
+    /// Ne déplace pas un ancien coffre `freeflow/` : voir [`Self::resolve_default_vault_path`].
     ///
     /// # Errors
     ///
@@ -403,12 +405,71 @@ impl Store {
     /// utilisateur (`HOME` absent, par exemple).
     pub fn default_vault_path() -> Result<PathBuf, StoreError> {
         let data_dir = dirs::data_dir().ok_or(StoreError::NoDefaultVaultPath)?;
-        let app_dir = if cfg!(target_os = "macos") {
+        Ok(data_dir.join(Self::default_app_dir()).join("vault.db"))
+    }
+
+    /// Même emplacement que [`Self::default_vault_path`], après avoir déplacé un coffre
+    /// `freeflow/` (ou `FreeFlow/` sur macOS) s'il est le seul présent.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::NoDefaultVaultPath`] si le répertoire de données utilisateur est
+    /// introuvable, ou [`StoreError::Io`] si le déplacement échoue.
+    pub fn resolve_default_vault_path() -> Result<PathBuf, StoreError> {
+        let data_dir = dirs::data_dir().ok_or(StoreError::NoDefaultVaultPath)?;
+        Self::migrate_legacy_default_vault(&data_dir)?;
+        Ok(data_dir.join(Self::default_app_dir()).join("vault.db"))
+    }
+
+    /// Déplace `$data_dir/freeflow/` vers `$data_dir/griffe/` quand le nouveau coffre n'existe
+    /// pas encore. No-op si la destination a déjà un coffre, ou s'il n'y a rien à déplacer.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Io`] si un `rename` ou une lecture de répertoire échoue.
+    pub fn migrate_legacy_default_vault(data_dir: &Path) -> Result<(), StoreError> {
+        let dest_dir = data_dir.join(Self::default_app_dir());
+        let dest_db = dest_dir.join("vault.db");
+        let src_dir = data_dir.join(Self::legacy_app_dir());
+        let src_db = src_dir.join("vault.db");
+        if vault_files_present(&dest_db) {
+            return Ok(());
+        }
+        if !vault_files_present(&src_db) {
+            return Ok(());
+        }
+        if dest_dir.exists() {
+            for entry in fs::read_dir(&src_dir)? {
+                let entry = entry?;
+                let dest = dest_dir.join(entry.file_name());
+                if dest.exists() {
+                    continue;
+                }
+                fs::rename(entry.path(), dest)?;
+            }
+            if fs::read_dir(&src_dir)?.next().is_none() {
+                fs::remove_dir(&src_dir)?;
+            }
+            return Ok(());
+        }
+        fs::rename(&src_dir, &dest_dir)?;
+        Ok(())
+    }
+
+    fn default_app_dir() -> &'static str {
+        if cfg!(target_os = "macos") {
+            "Griffe"
+        } else {
+            "griffe"
+        }
+    }
+
+    fn legacy_app_dir() -> &'static str {
+        if cfg!(target_os = "macos") {
             "FreeFlow"
         } else {
             "freeflow"
-        };
-        Ok(data_dir.join(app_dir).join("vault.db"))
+        }
     }
 
     /// Écrit une copie chiffrée, transactionnellement cohérente, du coffre vers `dest_db_path`
@@ -1067,6 +1128,13 @@ fn unlock(conn: &Connection, key: &VaultKey) -> Result<(), StoreError> {
     configure(conn)
 }
 
+fn vault_files_present(db_path: &Path) -> bool {
+    db_path.exists()
+        || kdf::sidecar_path(db_path).exists()
+        || kdf::staged_sidecar_path(db_path).exists()
+        || receipts_dir_of(db_path).exists()
+}
+
 /// `<coffre>.receipts/` — un dossier par fichier de coffre, pièces et archives légales.
 #[must_use]
 pub(crate) fn receipts_dir_of(db_path: &Path) -> PathBuf {
@@ -1184,16 +1252,86 @@ mod tests {
         Store::create(db_path, &Passphrase::from(passphrase)).unwrap()
     }
 
+    fn legacy_layout(data_dir: &Path) -> PathBuf {
+        let dir = data_dir.join(Store::legacy_app_dir());
+        fs::create_dir_all(&dir).unwrap();
+        dir.join("vault.db")
+    }
+
+    fn write_dummy_vault(db: &Path) {
+        fs::write(db, b"vault").unwrap();
+        fs::write(kdf::sidecar_path(db), b"kdf").unwrap();
+        fs::create_dir_all(receipts_dir_of(db)).unwrap();
+        fs::write(receipts_dir_of(db).join("piece"), b"x").unwrap();
+        let backups = db.with_file_name("backups");
+        fs::create_dir_all(&backups).unwrap();
+        fs::write(backups.join("backup-1.db"), b"b").unwrap();
+    }
+
     #[test]
-    fn default_vault_path_stays_under_freeflow_not_the_tauri_identifier() {
+    fn migrating_legacy_vault_renames_the_whole_directory() {
+        let data_dir = temp_db_path("migrate-rename")
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let _ = fs::remove_dir_all(&data_dir);
+        let src = legacy_layout(&data_dir);
+        write_dummy_vault(&src);
+        Store::migrate_legacy_default_vault(&data_dir).unwrap();
+        let dest = data_dir.join(Store::default_app_dir()).join("vault.db");
+        assert!(dest.is_file(), "{dest:?}");
+        assert!(kdf::sidecar_path(&dest).is_file());
+        assert!(receipts_dir_of(&dest).join("piece").is_file());
+        assert!(dest.with_file_name("backups").join("backup-1.db").is_file());
+        assert!(
+            !data_dir.join(Store::legacy_app_dir()).exists(),
+            "l'ancien répertoire doit disparaître"
+        );
+    }
+
+    #[test]
+    fn migrating_is_a_noop_when_the_new_vault_already_exists() {
+        let data_dir = temp_db_path("migrate-keep").parent().unwrap().to_path_buf();
+        let _ = fs::remove_dir_all(&data_dir);
+        let src = legacy_layout(&data_dir);
+        fs::write(&src, b"old").unwrap();
+        let dest_dir = data_dir.join(Store::default_app_dir());
+        fs::create_dir_all(&dest_dir).unwrap();
+        let dest = dest_dir.join("vault.db");
+        fs::write(&dest, b"new").unwrap();
+        Store::migrate_legacy_default_vault(&data_dir).unwrap();
+        assert_eq!(fs::read(&dest).unwrap(), b"new");
+        assert_eq!(fs::read(&src).unwrap(), b"old");
+    }
+
+    #[test]
+    fn migrating_is_a_noop_when_there_is_no_legacy_vault() {
+        let data_dir = temp_db_path("migrate-absent")
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let _ = fs::remove_dir_all(&data_dir);
+        fs::create_dir_all(&data_dir).unwrap();
+        Store::migrate_legacy_default_vault(&data_dir).unwrap();
+        assert!(
+            !data_dir.join(Store::default_app_dir()).exists(),
+            "ne crée pas le nouveau répertoire à vide"
+        );
+    }
+
+    #[test]
+    fn default_vault_path_stays_under_griffe_not_the_tauri_identifier() {
         let path = Store::default_vault_path().unwrap();
         let s = path.to_string_lossy();
         assert!(
-            s.ends_with("freeflow/vault.db") || s.ends_with("FreeFlow/vault.db"),
+            s.ends_with("griffe/vault.db") || s.ends_with("Griffe/vault.db"),
             "le coffre ne doit pas suivre l'id Tauri : {s}"
         );
         assert!(!s.contains("io.github.dz9oo.griffe"), "{s}");
-        assert!(!s.contains("dev.freeflow.desktop"), "{s}");
+        assert!(
+            !s.contains("freeflow/vault.db") && !s.contains("FreeFlow/vault.db"),
+            "{s}"
+        );
     }
 
     #[test]

@@ -3,15 +3,55 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Griffe — la lettre du matin</title>
-  <meta name="description" content="Quoi faire aujourd’hui, si l’argent tiendra, qui relancer. Sur ta machine. Sans serveur.">
-  <link rel="stylesheet" href="./app.css">
+  <title>Griffe — lettre du matin pour une SASU (alpha)</title>
+  <meta name="description" content="Alpha. Lettre du matin pour un indépendant en SASU à l’IS : local, chiffré, sans serveur. Linux x86_64. Griffe calcule et rappelle ; tu déposes ailleurs.">
+  <meta name="robots" content="index, follow">
+  <meta name="author" content="Nicolas Collier">
+  <meta name="theme-color" content="#f1ebe0">
+  <link rel="canonical" href="https://dz9oo.github.io/griffe/">
   <link rel="icon" href="./mark.svg" type="image/svg+xml">
+  <link rel="sitemap" type="application/xml" href="./sitemap.xml">
+  <meta property="og:type" content="website">
+  <meta property="og:locale" content="fr_FR">
+  <meta property="og:site_name" content="Griffe">
+  <meta property="og:title" content="Griffe — lettre du matin pour une SASU (alpha)">
+  <meta property="og:description" content="Alpha. Lettre du matin pour un indépendant en SASU à l’IS : local, chiffré, sans serveur. Linux x86_64.">
+  <meta property="og:url" content="https://dz9oo.github.io/griffe/">
+  <meta property="og:image" content="https://dz9oo.github.io/griffe/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Griffe — la lettre du matin">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Griffe — lettre du matin pour une SASU (alpha)">
+  <meta name="twitter:description" content="Alpha. Lettre du matin pour un indépendant en SASU à l’IS : local, chiffré, sans serveur. Linux x86_64.">
+  <meta name="twitter:image" content="https://dz9oo.github.io/griffe/og.png">
+  <link rel="stylesheet" href="./app.css">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "Griffe",
+    "applicationCategory": "FinanceApplication",
+    "operatingSystem": "Linux",
+    "softwareVersion": "0.3.1",
+    "inLanguage": "fr-FR",
+    "isAccessibleForFree": true,
+    "license": "https://polyformproject.org/licenses/shield/1.0.0",
+    "url": "https://dz9oo.github.io/griffe/",
+    "downloadUrl": "https://github.com/dz9oo/griffe/releases/latest",
+    "description": "Alpha. Lettre du matin pour un indépendant en SASU à l’IS : local, chiffré, sans serveur. Linux x86_64. Griffe calcule et rappelle ; tu déposes ailleurs.",
+    "author": {
+      "@type": "Person",
+      "name": "Nicolas Collier",
+      "url": "https://nicolascollier.dev"
+    }
+  }
+  </script>
 </head>
 <body>
   <main class="letter">
     <header>
-      <p class="kicker">L’atelier de l’indépendant</p>
+      <p class="kicker">Alpha · L’atelier de l’indépendant</p>
       <div class="wordmark">
         <span class="word">Griffe</span>
         <span class="paraphe" aria-hidden="true">
@@ -24,38 +64,39 @@
       <h1>La lettre du matin.</h1>
       <p class="lede">Quoi faire aujourd’hui, si l’argent tiendra, qui relancer. Sur ta machine. Sans serveur.</p>
       <p>
-        <a class="btn" href="https://github.com/dz9oo/freeflow/releases/latest">Télécharger</a>
+        <a class="btn" href="https://github.com/dz9oo/griffe/releases/latest">Télécharger</a>
       </p>
-      <p class="dl-meta">Linux · AppImage</p>
-      <img class="shot" src="./shots/jour.png" alt="Le jour, dans Griffe" width="1200" height="800">
+      <p class="dl-meta">Alpha · Linux · AppImage</p>
+      <img class="shot" src="./shots/jour.png" alt="Griffe, pièce Le jour : lettre du matin et piste" width="1200" height="800">
     </header>
 
     <section class="pieces" aria-label="Les trois pièces">
       <article class="piece">
         <h2>Le jour</h2>
         <p>La date, la banque, les gestes.</p>
-        <img class="shot" src="./shots/jour.png" alt="Le jour" width="1200" height="800">
+        <img class="shot" src="./shots/jour.png" alt="Griffe, pièce Le jour : la date, la banque, les gestes" width="1200" height="800">
       </article>
       <article class="piece">
         <h2>Les affaires</h2>
         <p>Une liste, un dossier par personne.</p>
-        <img class="shot" src="./shots/affaires.png" alt="Les affaires" width="1200" height="800">
+        <img class="shot" src="./shots/affaires.png" alt="Griffe, pièce Les affaires : une liste, un dossier par personne" width="1200" height="800">
       </article>
       <article class="piece">
         <h2>La société</h2>
         <p>Se payer, les impôts, le relevé, clore.</p>
-        <img class="shot" src="./shots/societe.png" alt="La société" width="1200" height="800">
+        <img class="shot" src="./shots/societe.png" alt="Griffe, pièce La société : se payer, les impôts, le relevé, clore" width="1200" height="800">
       </article>
     </section>
 
     <section class="chez-toi">
       <h2>Chez toi</h2>
-      <p>Un fichier sur ta machine. <a href="https://github.com/dz9oo/freeflow">Le code est ouvert</a>, licence PolyForm Shield.</p>
-      <p>SASU et EURL à l’impôt sur les sociétés : c’est déjà là. Une micro, une société à plusieurs associés, un autre régime : le code est sur GitHub, licence PolyForm Shield. Tu peux t’en servir pour ta propre activité ; tu ne peux pas vendre Griffe ni le proposer en service hébergé sans accord. Griffe s’améliore si d’autres indépendants — et d’autres développeurs — y touchent.</p>
+      <p>Un fichier sur ta machine. <a href="https://github.com/dz9oo/griffe">Le code est ouvert</a>, licence PolyForm Shield.</p>
+      <p>Alpha, Linux, SASU à l’impôt sur les sociétés. Une EURL, une micro, l’impôt sur le revenu, Windows ou un Mac : plus tard. Tu peux t’en servir pour ta propre activité ; tu ne peux pas vendre Griffe ni le proposer en service hébergé sans accord.</p>
     </section>
 
     <footer class="site-footer">
-      <a href="https://github.com/dz9oo/freeflow">GitHub</a>
+      <a href="https://github.com/dz9oo/griffe">GitHub</a>
+      <a href="https://github.com/dz9oo/griffe#statut">Statut</a>
       <span class="paraphe" aria-hidden="true">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 22" fill="none" aria-hidden="true">
           <path d="M8 16c-4 0-6-3-6-6 0-5 4-8 9-8 3 0 6 1.5 7 5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>

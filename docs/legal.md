@@ -23,9 +23,9 @@ Un PR qui change une règle fiscale, un document Cerfa, le FEC ou la liasse
 4. **Limite connue à côté de la règle.** Si on ne modélise pas (DAS2
    natures de somme, cession d’immo, régime 2027 non précisé…), on le dit
    dans le même module. Pas une checklist perso dans le README.
-5. **Périmètre v1.** SASU / EURL à l’IS, TVA au réel (normal, trimestriel,
-   simplifié jusqu’à sa fin). Micro, IR, multi-associés, stock, étranger :
-   hors PR « au passage ».
+5. **Périmètre actuel.** SASU à l’IS, TVA au réel (normal, trimestriel,
+   simplifié jusqu’à sa fin). EURL comme régime distinct, micro, IR,
+   multi-associés, stock, étranger : hors PR « au passage ».
 6. **Loi datée.** Une bascule (ex. suppression du RSI au 1er janv. 2027)
    est une constante nommée (`SIMPLIFIED_REGIME_REPEAL`), pas un
    `if year > 2026` magique.

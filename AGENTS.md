@@ -1,6 +1,6 @@
 # AGENTS.md — Griffe
 
-Application desktop de gestion pour un indépendant en SASU/EURL à l’IS
+Application desktop de gestion pour un indépendant en SASU à l’IS
 (prospection, missions, devis, facturation Factur-X, dépenses, obligations
 fiscales indicatives, prévisionnel de trésorerie). Local-only, chiffré, sans
 serveur.

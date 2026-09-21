@@ -7,4 +7,7 @@ Pas d’issue GitHub publique.
 
 J’accuserai réception. Pas de SLA d’entreprise.
 
+Quand le dépôt est public, le signalement privé GitHub (Security
+advisories) est aussi ouvert. L’e-mail reste le chemin principal.
+
 Le reste (bug métier, copy, build) va dans les issues.

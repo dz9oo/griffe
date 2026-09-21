@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Sème le coffre mock Lumen Conseil. Jamais le coffre ENGIT.
+# Sème le coffre mock Lumen Conseil. Jamais le coffre par défaut.
 set -euo pipefail
 root=$(git rev-parse --show-toplevel)
 cd "$root"
 out=${GRIFFE_LUMEN_OUT:-"$root/testdata/lumen/vault.db"}
 case "$out" in
-  *'/.local/share/freeflow/vault.db')
-    echo "✗ refuse d'écrire le coffre par défaut (ENGIT)" >&2
+  *'/.local/share/freeflow/vault.db' | *'/.local/share/griffe/vault.db')
+    echo "✗ refuse d'écrire le coffre par défaut" >&2
     exit 1
     ;;
 esac

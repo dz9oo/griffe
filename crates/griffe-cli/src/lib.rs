@@ -53,7 +53,7 @@ use vault::PassphraseOpts;
     about = "Gestion pour indépendant — pilotable en CLI et par un agent LLM (MCP)."
 )]
 struct Cli {
-    /// Chemin du coffre chiffré. Sinon, lu depuis `FREEFLOW_DB`.
+    /// Chemin du coffre chiffré. Sinon, lu depuis `GRIFFE_DB` (ou `FREEFLOW_DB`).
     #[arg(long, global = true)]
     db: Option<PathBuf>,
     /// Imprime le résultat en JSON plutôt qu'en texte lisible — le contrat que consomme un agent.
