@@ -1270,7 +1270,10 @@ mod tests {
 
     #[test]
     fn migrating_legacy_vault_renames_the_whole_directory() {
-        let data_dir = temp_db_path("migrate-rename").parent().unwrap().to_path_buf();
+        let data_dir = temp_db_path("migrate-rename")
+            .parent()
+            .unwrap()
+            .to_path_buf();
         let _ = fs::remove_dir_all(&data_dir);
         let src = legacy_layout(&data_dir);
         write_dummy_vault(&src);
@@ -1303,7 +1306,10 @@ mod tests {
 
     #[test]
     fn migrating_is_a_noop_when_there_is_no_legacy_vault() {
-        let data_dir = temp_db_path("migrate-absent").parent().unwrap().to_path_buf();
+        let data_dir = temp_db_path("migrate-absent")
+            .parent()
+            .unwrap()
+            .to_path_buf();
         let _ = fs::remove_dir_all(&data_dir);
         fs::create_dir_all(&data_dir).unwrap();
         Store::migrate_legacy_default_vault(&data_dir).unwrap();
