@@ -49,7 +49,10 @@ Le 445881 d'un bilan d'ouverture n'est pas reclasse.
 
 ## CODEOWNERS
 
-Ces chemins exigent une revue humaine (`@dz9oo`) :
+Le ruleset `MasterProtect` exige une revue CODEOWNERS (`@dz9oo`) sur
+toute PR. Le fichier `.github/CODEOWNERS` commence par `* @dz9oo`.
+
+Les chemins fiscaux restent listés pour le lecteur humain :
 
 ```
 /crates/griffe-core/src/accounting.rs    @dz9oo
@@ -71,5 +74,5 @@ Ces chemins exigent une revue humaine (`@dz9oo`) :
 /docs/legal.md                          @dz9oo
 ```
 
-Sans reviewers GitHub configurés, CODEOWNERS est documentaire jusqu’à la
-publication ; le message est déjà celui du dépôt.
+Une PR qui touche ces fichiers, ou n’importe quel autre chemin, attend
+une revue `@dz9oo` avant merge.

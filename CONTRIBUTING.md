@@ -21,6 +21,20 @@ Un push rouge brûle des minutes Actions après 10+ min de compilation.
 Pour un changement de schéma ou de crate visible par Nix :
 `nix flake check` après `git add` (Nix ne voit que l’index).
 
+## Dépôt
+
+`master` est protégée. Une PR, une revue `@dz9oo`, CI `check` et `desktop`
+vertes. Les tags `v*` aussi : création, suppression et force-push réservés
+à `@dz9oo`.
+
+Les contributeurs externes travaillent depuis un **fork**. Un coup de
+main sur les issues se fait en rôle Triage. Write et Admin restent à
+`@dz9oo`, qui merge.
+
+Tu peux pousser autant de correctifs que besoin sur la branche de la PR.
+Chaque nouveau push retire les revues déjà données : le code à jour est
+relu avant le merge.
+
 ## Patch
 
 Une intention par PR. L’UI est en français. Le métier va dans `griffe-core`,

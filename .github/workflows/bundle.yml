@@ -30,7 +30,7 @@ jobs:
             /opt/hostedtoolcache/CodeQL /usr/local/share/powershell \
             /usr/share/swift /usr/local/.ghcup
           df -h
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Dépendances FHS WebKit/GTK
         run: |
           sudo apt-get update
@@ -38,10 +38,10 @@ jobs:
             libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
             librsvg2-dev patchelf libssl-dev pkg-config \
             build-essential curl file wget xz-utils
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           prefix-key: fhs-appimage
           cache-on-failure: true
@@ -151,13 +151,13 @@ jobs:
           cd "$staging"
           sha256sum "griffe-${ver}-x86_64-linux.tar.xz" | tee "griffe-${ver}-x86_64-linux.tar.xz.sha256"
           sha256sum -c "griffe-${ver}-x86_64-linux.tar.xz.sha256"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: griffe-linux-appimage
           path: |
             target/release/bundle/appimage/*.AppImage
             target/release/bundle/appimage/*.sha256
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: griffe-linux-native
           path: |
@@ -165,7 +165,7 @@ jobs:
             target/release/bundle/native/*.sha256
       - name: GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: |
             target/release/bundle/appimage/*.AppImage
@@ -183,8 +183,8 @@ jobs:
       image: archlinux:base-devel@sha256:305558d2bce0b33170f7f7e4ee690633df4b1e0bdfd8194fe45a6545172319ce
       options: --privileged
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: griffe-linux-native
           path: native-tarball
@@ -194,13 +194,13 @@ jobs:
           GRIFFE_NATIVE_DIR: ${{ github.workspace }}/native-tarball
           GRIFFE_ARCH_OUT: ${{ github.workspace }}/arch-pkg
           GRIFFE_AUR_OUT: ${{ github.workspace }}/aur-src
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: griffe-linux-arch
           path: |
             arch-pkg/*.pkg.tar.zst
             arch-pkg/*.sha256
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: griffe-aur-src
           path: |
@@ -209,7 +209,7 @@ jobs:
             aur-src/LICENSE
       - name: GitHub Release (paquet Arch)
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: |
             arch-pkg/*.pkg.tar.zst
@@ -220,8 +220,8 @@ jobs:
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: griffe-aur-src
           path: aur-src
