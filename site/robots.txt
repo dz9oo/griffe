@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://dz9oo.github.io/griffe/sitemap.xml

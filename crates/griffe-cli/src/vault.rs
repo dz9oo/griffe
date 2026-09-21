@@ -65,20 +65,21 @@ impl PassphraseOpts {
     }
 }
 
-/// Chemin du coffre : `--db`, sinon `FREEFLOW_DB`, sinon l'emplacement XDG par défaut.
+/// Chemin du coffre : `--db`, sinon `GRIFFE_DB` / `FREEFLOW_DB`, sinon l'emplacement XDG
+/// (`~/.local/share/griffe/`), après migration d'un ancien `freeflow/` s'il est seul.
 ///
 /// # Errors
 pub fn resolve_db_path(explicit: Option<PathBuf>) -> Result<PathBuf, CliError> {
     if let Some(path) = explicit {
         return Ok(path);
     }
-    if let Ok(from_env) = std::env::var("FREEFLOW_DB") {
+    if let Ok(from_env) = std::env::var("GRIFFE_DB").or_else(|_| std::env::var("FREEFLOW_DB")) {
         return Ok(PathBuf::from(from_env));
     }
-    Store::default_vault_path().map_err(|e| {
+    Store::resolve_default_vault_path().map_err(|e| {
         CliError::Unexpected(format!(
             "aucun coffre indiqué et pas d'emplacement par défaut disponible : {e} \
-             (utilisez --db ou FREEFLOW_DB)"
+             (utilisez --db, GRIFFE_DB ou FREEFLOW_DB)"
         ))
     })
 }

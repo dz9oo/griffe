@@ -21,15 +21,15 @@ use tauri::http;
 use tower::ServiceExt;
 
 fn resolve_db_path() -> PathBuf {
-    if let Ok(from_env) = std::env::var("FREEFLOW_DB") {
+    if let Ok(from_env) = std::env::var("GRIFFE_DB").or_else(|_| std::env::var("FREEFLOW_DB")) {
         return PathBuf::from(from_env);
     }
-    Store::default_vault_path().unwrap_or_else(|e| {
+    Store::resolve_default_vault_path().unwrap_or_else(|e| {
         // Chemin extrêmement rare (pas de répertoire de données utilisateur du tout) : un
         // chemin invalide dans le répertoire courant fera échouer l'écran de création avec un
         // message clair plutôt que de faire disparaître la fenêtre avant même de s'afficher.
         eprintln!("⚠ {e} — utilisation d'un chemin relatif au répertoire courant");
-        PathBuf::from("freeflow-vault.db")
+        PathBuf::from("griffe-vault.db")
     })
 }
 

@@ -19,7 +19,7 @@ assert_no_install() {
     || [ -e "$HOME/.local/share/icons/hicolor/256x256/apps/io.github.dz9oo.griffe.png" ]; then
     fail "ne doit pas écrire une install ($1)"
   fi
-  if [ -e "$HOME/.local/share/freeflow" ]; then
+  if [ -e "$HOME/.local/share/freeflow" ] || [ -e "$HOME/.local/share/griffe" ]; then
     fail "ne doit pas toucher le coffre ($1)"
   fi
 }
@@ -45,8 +45,8 @@ assert_five_paths() {
   [ "$target" = "$elf" ] || fail "le lien ne pointe pas vers le libdir"
   [ -f "$icon" ] || fail "icône absente"
   [ -f "$desktop" ] || fail "fiche .desktop absente"
-  if [ -e "$HOME/.local/share/freeflow" ]; then
-    fail "ne doit pas créer ~/.local/share/freeflow/"
+  if [ -e "$HOME/.local/share/freeflow" ] || [ -e "$HOME/.local/share/griffe" ]; then
+    fail "ne doit pas créer le répertoire du coffre"
   fi
   grep -qx 'Type=Application' "$desktop" || fail "Type= manquant"
   grep -qx 'Name=Griffe' "$desktop" || fail "Name=Griffe manquant"
@@ -159,10 +159,10 @@ if webkit_present; then
   # tarball .tar.xz avec racine versionnée
   dir2=$(mktemp -d)
   export HOME="$dir2"
-  staged="$dir/griffe-0.3.0-x86_64-linux"
+  staged="$dir/griffe-0.3.1-x86_64-linux"
   make_payload_dir "$staged"
-  tar -C "$(dirname "$staged")" -cJf "$dir/griffe-0.3.0-x86_64-linux.tar.xz" "$(basename "$staged")"
-  out=$("$installer" "$dir/griffe-0.3.0-x86_64-linux.tar.xz")
+  tar -C "$(dirname "$staged")" -cJf "$dir/griffe-0.3.1-x86_64-linux.tar.xz" "$(basename "$staged")"
+  out=$("$installer" "$dir/griffe-0.3.1-x86_64-linux.tar.xz")
   assert_five_paths "$out"
 
   # rollback : icône absente
@@ -181,7 +181,7 @@ if webkit_present; then
   if [ -e "$HOME/.local/lib/griffe/griffe-desktop" ]; then
     fail "rollback : ELF ne doit pas rester"
   fi
-  if [ -e "$HOME/.local/share/freeflow" ]; then
+  if [ -e "$HOME/.local/share/freeflow" ] || [ -e "$HOME/.local/share/griffe" ]; then
     fail "rollback : ne doit pas toucher le coffre"
   fi
 else

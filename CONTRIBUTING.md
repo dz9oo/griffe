@@ -1,5 +1,9 @@
 # Contribuer
 
+Griffe est en **alpha** (Linux, SASU à l’IS). Attends-toi à des aspérités.
+N’ouvre pas une issue avec un coffre, un SIREN réel, une passphrase ou un
+relevé de production.
+
 ## Setup
 
     direnv allow    # ou : nix develop

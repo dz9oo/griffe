@@ -8,7 +8,7 @@ Usage: griffe passphrase change [OPTIONS]
 
 Options:
       --db <DB>
-          Chemin du coffre chiffré. Sinon, lu depuis `FREEFLOW_DB`
+          Chemin du coffre chiffré. Sinon, lu depuis `GRIFFE_DB` (ou `FREEFLOW_DB`)
       --new-passphrase-file <NEW_PASSPHRASE_FILE>
           Lit la NOUVELLE passphrase dans ce fichier (refusé si son mode est plus ouvert que 0600)
       --json

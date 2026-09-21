@@ -10,11 +10,11 @@ use griffe_core::store::Store;
 use griffe_web::AppState;
 
 fn resolve_db_path() -> PathBuf {
-    if let Ok(from_env) = std::env::var("FREEFLOW_DB") {
+    if let Ok(from_env) = std::env::var("GRIFFE_DB").or_else(|_| std::env::var("FREEFLOW_DB")) {
         return PathBuf::from(from_env);
     }
-    Store::default_vault_path().unwrap_or_else(|e| {
-        eprintln!("✗ {e} — utilisez FREEFLOW_DB");
+    Store::resolve_default_vault_path().unwrap_or_else(|e| {
+        eprintln!("✗ {e} — utilisez GRIFFE_DB");
         std::process::exit(1);
     })
 }

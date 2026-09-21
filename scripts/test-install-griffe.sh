@@ -21,7 +21,7 @@ assert_no_install() {
   if [ -e "$HOME/.local/share/icons/hicolor/256x256/apps/io.github.dz9oo.griffe.png" ]; then
     fail "ne doit pas écrire l'icône ($1)"
   fi
-  if [ -e "$HOME/.local/share/freeflow" ]; then
+  if [ -e "$HOME/.local/share/freeflow" ] || [ -e "$HOME/.local/share/griffe" ]; then
     fail "ne doit pas toucher le coffre ($1)"
   fi
 }
@@ -41,8 +41,8 @@ assert_three_paths() {
   [ -x "$bin" ] || fail "binaire installé non exécutable"
   [ -f "$icon" ] || fail "icône absente"
   [ -f "$desktop" ] || fail "fiche .desktop absente"
-  if [ -e "$HOME/.local/share/freeflow" ]; then
-    fail "ne doit pas créer ~/.local/share/freeflow/"
+  if [ -e "$HOME/.local/share/freeflow" ] || [ -e "$HOME/.local/share/griffe" ]; then
+    fail "ne doit pas créer le répertoire du coffre"
   fi
   grep -qx 'Type=Application' "$desktop" || fail "Type= manquant"
   grep -qx 'Name=Griffe' "$desktop" || fail "Name=Griffe manquant"
@@ -152,7 +152,7 @@ fi
 if [ -e "$HOME/.local/share/applications/io.github.dz9oo.griffe.desktop" ]; then
   fail "rollback : .desktop ne doit pas rester"
 fi
-if [ -e "$HOME/.local/share/freeflow" ]; then
+if [ -e "$HOME/.local/share/freeflow" ] || [ -e "$HOME/.local/share/griffe" ]; then
   fail "rollback : ne doit pas toucher le coffre"
 fi
 

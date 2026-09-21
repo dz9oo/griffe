@@ -4,7 +4,8 @@ Société fictionnelle pour captures marketing. Aucune donnée réelle.
 
 ## Recette
 
-Jamais `~/.local/share/freeflow/vault.db` (coffre ENGIT).
+Jamais `~/.local/share/griffe/vault.db` ni l’ancien
+`~/.local/share/freeflow/vault.db` (coffre par défaut).
 
 ```bash
 # 1. Semer le coffre (KDF de test, jobs 1)

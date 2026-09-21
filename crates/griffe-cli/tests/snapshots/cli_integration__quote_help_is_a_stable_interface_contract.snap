@@ -18,7 +18,7 @@ Commands:
 
 Options:
       --db <DB>
-          Chemin du coffre chiffré. Sinon, lu depuis `FREEFLOW_DB`
+          Chemin du coffre chiffré. Sinon, lu depuis `GRIFFE_DB` (ou `FREEFLOW_DB`)
       --json
           Imprime le résultat en JSON plutôt qu'en texte lisible — le contrat que consomme un agent
       --actor <ACTOR>

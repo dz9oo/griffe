@@ -50,14 +50,30 @@ site-check:
     test -f site/index.html
     test -f site/lockup.svg
     test -f site/fonts/newsreader-latin-400-italic.woff2
-    ! grep -E 'googleapis|fonts.gstatic|CA3|3514|2777' site/index.html site/app.css
+    test -f site/og.png
+    test -f site/robots.txt
+    test -f site/sitemap.xml
+    test -f site/404.html
+    test -f site/.nojekyll
+    ! grep -E 'googleapis|fonts.gstatic|CA3|3514|2777' site/index.html site/app.css site/404.html
     ! grep -F 'freeflow ' site/index.html
+    ! grep -E 'dz9oo/freeflow|github.io/freeflow' site/index.html README.md site/robots.txt site/sitemap.xml site/404.html
+    ! grep -E 'licence MIT|license MIT' site/index.html
+    ! grep -F "c'est déjà là" site/index.html
+    ! grep -E 'open source|Open Source|OSI' site/index.html README.md
     grep -q 'Griffe' site/index.html
     grep -q 'La lettre du matin' site/index.html
     grep -q 'Le jour' site/index.html
     grep -q 'Les affaires' site/index.html
     grep -q 'La société' site/index.html
-    ! grep -E 'licence MIT|license MIT' site/index.html
     grep -q 'PolyForm Shield' site/index.html
-    grep -q 'Linux · AppImage' site/index.html
+    grep -q 'Alpha · L’atelier de l’indépendant' site/index.html
+    grep -q 'Alpha · Linux · AppImage' site/index.html
+    grep -q 'github.com/dz9oo/griffe' site/index.html
+    grep -q 'github.io/griffe' site/index.html
     grep -q 'releases/latest' site/index.html
+    grep -q 'rel="canonical"' site/index.html
+    grep -q 'og:image' site/index.html
+    grep -q 'application/ld+json' site/index.html
+    grep -q 'github.io/griffe' site/robots.txt
+    grep -q 'github.io/griffe' site/sitemap.xml

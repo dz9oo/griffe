@@ -1,0 +1,31 @@
+name: Périmètre
+description: Griffe ne gère pas encore mon régime ou mon système.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        L’alpha vise une SASU à l’IS sur Linux x86_64.
+        Windows, macOS, EURL, micro-entreprise et IR sont hors de la v1.
+        Une issue ici dit que tu attends ce régime. Ce n’est pas un PR « au passage ».
+        Pas de SIREN réel, pas d’extrait de coffre.
+  - type: dropdown
+    id: quoi
+    attributes:
+      label: Ce qui manque
+      options:
+        - Windows
+        - macOS
+        - EURL
+        - Micro-entreprise
+        - Impôt sur le revenu
+        - autre
+    validations:
+      required: true
+  - type: textarea
+    id: precis
+    attributes:
+      label: Précision
+      description: Ton cas, sans donnée de production.
+    validations:
+      required: true

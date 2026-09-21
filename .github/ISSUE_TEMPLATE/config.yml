@@ -1,1 +1,5 @@
 blank_issues_enabled: true
+contact_links:
+  - name: Vulnérabilité coffre / crypto
+    url: mailto:hello@nicolascollier.dev
+    about: Pas d’issue publique. Voir SECURITY.md.

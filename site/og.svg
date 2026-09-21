@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-label="Griffe — la lettre du matin">
+  <defs>
+    <style>
+      @font-face {
+        font-family: "Newsreader";
+        font-style: italic;
+        font-weight: 400;
+        src: url("./fonts/newsreader-latin-400-italic.woff2") format("woff2");
+      }
+      @font-face {
+        font-family: "Source Sans 3";
+        font-style: normal;
+        font-weight: 600;
+        src: url("./fonts/source-sans-3-latin-600-normal.woff2") format("woff2");
+      }
+    </style>
+    <radialGradient id="paper" cx="50%" cy="0%" r="80%">
+      <stop offset="0%" stop-color="#f7f1e6"/>
+      <stop offset="55%" stop-color="#f1ebe0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#paper)"/>
+  <text x="120" y="268" font-family="Newsreader, 'Liberation Serif', 'Noto Serif', serif" font-style="italic" font-size="92" fill="#1c1814" letter-spacing="-0.03em">Griffe</text>
+  <g transform="translate(120, 286)" fill="none" stroke="#9f3218" stroke-width="2.2" stroke-linecap="round">
+    <g transform="scale(1.8)">
+      <path d="M8 16c-4 0-6-3-6-6 0-5 4-8 9-8 3 0 6 1.5 7 5"/>
+      <path d="M12 12h8c0 4-3 7-8 7 8 1 22-4 48-10 18-4 40-4 58 2"/>
+    </g>
+  </g>
+  <text x="120" y="420" font-family="Newsreader, 'Liberation Serif', 'Noto Serif', serif" font-style="italic" font-size="36" fill="#6a635a">La lettre du matin.</text>
+  <text x="120" y="520" font-family="'Source Sans 3', 'Adwaita Sans', 'Noto Sans', sans-serif" font-size="18" font-weight="600" fill="#6a635a" letter-spacing="0.18em">ALPHA · SASU À L’IS · LINUX</text>
+</svg>

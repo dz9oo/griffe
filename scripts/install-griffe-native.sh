@@ -1,6 +1,6 @@
 #!/bin/sh
 # Copie un ELF Griffe et Typst déjà fournis vers ~/.local et écrit le menu.
-# Aucun réseau, pas de sudo, ne touche pas ~/.local/share/freeflow/.
+# Aucun réseau, pas de sudo, ne touche pas ~/.local/share/griffe/.
 set -eu
 
 usage() {
