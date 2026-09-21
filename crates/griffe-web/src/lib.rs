@@ -24,14 +24,14 @@ mod state;
 mod unlock;
 mod views;
 
-pub use state::AppState;
+pub use state::{AppState, parse_today_opt};
 
 use axum::Router;
 use axum::routing::{get, post};
 
-/// Construit le routeur complet — la seule fonction publique de ce crate, réutilisée telle
-/// quelle par un binaire de dev (`griffe-web-dev`), les tests `tower::ServiceExt::oneshot`,
-/// et la coque Tauri (via un protocole URI custom in-process, pas de port réseau).
+/// Construit le routeur complet — réutilisé tel quel par un binaire de dev (`griffe-web-dev`),
+/// les tests `tower::ServiceExt::oneshot`, et la coque Tauri (via un protocole URI custom
+/// in-process, pas de port réseau).
 ///
 /// Toute route à l'exception de `/unlock`, `/setup` et `/assets/*` est protégée par
 /// [`unlock::require_unlocked`] : tant que le coffre n'est pas déverrouillé, elle redirige vers

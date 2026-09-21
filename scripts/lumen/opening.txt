@@ -1,0 +1,4 @@
+# Bilan d'ouverture Lumen Conseil — 1er octobre 2025 (reprise cabinet Leroy).
+101000:Capital social:C:1000.00
+110000:Report à nouveau:C:14200.00
+512000:Banque:D:15200.00

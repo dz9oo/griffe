@@ -14,8 +14,29 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use griffe_core::app::{Actor, ExecutionContext};
+use griffe_core::domain::parse_date;
 use griffe_core::store::{AUTO_BACKUP_MAX_AGE, Passphrase, Store, StoreError, VaultStatus};
 use tokio::sync::Mutex;
+
+/// Lit `GRIFFE_TODAY` (`AAAA-MM-JJ`). `None` ou une chaîne vide : horloge locale. Une valeur
+/// illisible est une erreur — le binaire de dev refuse de démarrer plutôt que de photographier
+/// « aujourd'hui » en silence.
+///
+/// # Errors
+///
+/// Chaîne non vide qui n'est pas une date `AAAA-MM-JJ`.
+pub fn parse_today_opt(raw: Option<&str>) -> Result<Option<time::Date>, String> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let s = raw.trim();
+    if s.is_empty() {
+        return Ok(None);
+    }
+    parse_date(s)
+        .map(Some)
+        .map_err(|e| format!("GRIFFE_TODAY invalide ({s}) : {e}"))
+}
 
 /// Durée par défaut d'une session mise en cache dans le trousseau OS quand l'utilisateur coche
 /// « se souvenir de moi » — même valeur par défaut que `freeflow unlock --remember` en CLI.
@@ -242,5 +263,33 @@ impl AppState {
             VaultSession::Unlocked { store, .. } => Some(f(store)),
             VaultSession::Locked => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_today_opt;
+    use time::{Date, Month};
+
+    #[test]
+    fn parse_today_opt_reads_iso_date() {
+        let expected = Date::from_calendar_date(2026, Month::September, 5).unwrap();
+        assert_eq!(parse_today_opt(Some("2026-09-05")).unwrap(), Some(expected));
+    }
+
+    #[test]
+    fn parse_today_opt_treats_blank_as_clock() {
+        assert_eq!(parse_today_opt(Some("")).unwrap(), None);
+        assert_eq!(parse_today_opt(Some("   ")).unwrap(), None);
+        assert_eq!(parse_today_opt(None).unwrap(), None);
+    }
+
+    #[test]
+    fn parse_today_opt_rejects_garbage() {
+        let err = parse_today_opt(Some("hier")).unwrap_err();
+        assert!(
+            err.contains("GRIFFE_TODAY") && err.contains("hier"),
+            "{err}"
+        );
     }
 }
