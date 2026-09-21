@@ -22,7 +22,15 @@ fn resolve_db_path() -> PathBuf {
 #[tokio::main]
 async fn main() {
     let db_path = resolve_db_path();
-    let state = AppState::new(db_path);
+    let mut state = AppState::new(db_path);
+    match griffe_web::parse_today_opt(std::env::var("GRIFFE_TODAY").ok().as_deref()) {
+        Ok(Some(today)) => state = state.with_today(today),
+        Ok(None) => {}
+        Err(e) => {
+            eprintln!("✗ {e} — attendu AAAA-MM-JJ");
+            std::process::exit(1);
+        }
+    }
     state.try_open_cached().await;
     let router = griffe_web::router(state);
 

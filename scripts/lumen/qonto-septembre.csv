@@ -1,0 +1,67 @@
+Transaction ID,Reference,Counterparty name,Card holder name,Category,Amount,Currency,Local amount,Local currency,Payment date,Settlement date,Operation type,Payment method,Status
+lumen-in-001,FA-oct,Atlas Digital oct 2025,,income,6240.00,EUR,6240.00,EUR,2025-11-18 10:02:00,2025-11-18 10:02:00,income,SEPA,completed
+lumen-in-002,FA-nov,Atlas Digital nov 2025,,income,5460.00,EUR,5460.00,EUR,2025-12-16 11:10:00,2025-12-16 11:10:00,income,SEPA,completed
+lumen-in-003,FA-dec,Atlas Digital dec 2025,,income,6240.00,EUR,6240.00,EUR,2026-01-15 09:40:00,2026-01-15 09:40:00,income,SEPA,completed
+lumen-in-004,FA-jan,Atlas Digital jan 2026,,income,4680.00,EUR,4680.00,EUR,2026-02-17 14:22:00,2026-02-17 14:22:00,income,SEPA,completed
+lumen-in-005,FA-feb,Atlas Digital feb 2026,,income,6240.00,EUR,6240.00,EUR,2026-03-16 16:05:00,2026-03-16 16:05:00,income,SEPA,completed
+lumen-in-006,FA-mar,Atlas Digital mar 2026,,income,5460.00,EUR,5460.00,EUR,2026-04-14 10:18:00,2026-04-14 10:18:00,income,SEPA,completed
+lumen-in-007,FA-apr,Atlas Digital apr 2026,,income,6240.00,EUR,6240.00,EUR,2026-05-19 11:44:00,2026-05-19 11:44:00,income,SEPA,completed
+lumen-in-008,FA-may,Atlas Digital may 2026,,income,4680.00,EUR,4680.00,EUR,2026-06-16 09:12:00,2026-06-16 09:12:00,income,SEPA,completed
+lumen-in-009,FA-jun,Atlas Digital jun 2026,,income,6240.00,EUR,6240.00,EUR,2026-07-15 15:30:00,2026-07-15 15:30:00,income,SEPA,completed
+lumen-in-010,FA-hume,Studio Hume maquettes,,income,6360.00,EUR,6360.00,EUR,2026-08-28 13:05:00,2026-08-28 13:05:00,income,SEPA,completed
+lumen-qonto-001,QONTO,Qonto oct 2025,,fees,-12.50,EUR,-12.50,EUR,2025-10-03 08:00:12,2025-10-03 08:00:12,direct_debit,SEPA,completed
+lumen-qonto-002,QONTO,Qonto nov 2025,,fees,-12.50,EUR,-12.50,EUR,2025-11-03 08:00:12,2025-11-03 08:00:12,direct_debit,SEPA,completed
+lumen-qonto-003,QONTO,Qonto dec 2025,,fees,-12.50,EUR,-12.50,EUR,2025-12-03 08:00:12,2025-12-03 08:00:12,direct_debit,SEPA,completed
+lumen-qonto-004,QONTO,Qonto jan 2026,,fees,-12.50,EUR,-12.50,EUR,2026-01-03 08:00:12,2026-01-03 08:00:12,direct_debit,SEPA,completed
+lumen-qonto-005,QONTO,Qonto feb 2026,,fees,-12.50,EUR,-12.50,EUR,2026-02-03 08:00:12,2026-02-03 08:00:12,direct_debit,SEPA,completed
+lumen-qonto-006,QONTO,Qonto mar 2026,,fees,-12.50,EUR,-12.50,EUR,2026-03-03 08:00:12,2026-03-03 08:00:12,direct_debit,SEPA,completed
+lumen-qonto-007,QONTO,Qonto apr 2026,,fees,-12.50,EUR,-12.50,EUR,2026-04-03 08:00:12,2026-04-03 08:00:12,direct_debit,SEPA,completed
+lumen-qonto-008,QONTO,Qonto may 2026,,fees,-12.50,EUR,-12.50,EUR,2026-05-03 08:00:12,2026-05-03 08:00:12,direct_debit,SEPA,completed
+lumen-qonto-009,QONTO,Qonto jun 2026,,fees,-12.50,EUR,-12.50,EUR,2026-06-03 08:00:12,2026-06-03 08:00:12,direct_debit,SEPA,completed
+lumen-qonto-010,QONTO,Qonto jul 2026,,fees,-12.50,EUR,-12.50,EUR,2026-07-03 08:00:12,2026-07-03 08:00:12,direct_debit,SEPA,completed
+lumen-qonto-011,QONTO,Qonto aug 2026,,fees,-12.50,EUR,-12.50,EUR,2026-08-03 08:00:12,2026-08-03 08:00:12,direct_debit,SEPA,completed
+lumen-mail-001,LOYER,Atelier du Mail oct 2025,,rent,-420.00,EUR,-420.00,EUR,2025-10-05 09:00:00,2025-10-05 09:00:00,transfer,SEPA,completed
+lumen-mail-002,LOYER,Atelier du Mail nov 2025,,rent,-420.00,EUR,-420.00,EUR,2025-11-05 09:00:00,2025-11-05 09:00:00,transfer,SEPA,completed
+lumen-mail-003,LOYER,Atelier du Mail dec 2025,,rent,-420.00,EUR,-420.00,EUR,2025-12-05 09:00:00,2025-12-05 09:00:00,transfer,SEPA,completed
+lumen-mail-004,LOYER,Atelier du Mail jan 2026,,rent,-420.00,EUR,-420.00,EUR,2026-01-05 09:00:00,2026-01-05 09:00:00,transfer,SEPA,completed
+lumen-mail-005,LOYER,Atelier du Mail feb 2026,,rent,-420.00,EUR,-420.00,EUR,2026-02-05 09:00:00,2026-02-05 09:00:00,transfer,SEPA,completed
+lumen-mail-006,LOYER,Atelier du Mail mar 2026,,rent,-420.00,EUR,-420.00,EUR,2026-03-05 09:00:00,2026-03-05 09:00:00,transfer,SEPA,completed
+lumen-mail-007,LOYER,Atelier du Mail apr 2026,,rent,-420.00,EUR,-420.00,EUR,2026-04-05 09:00:00,2026-04-05 09:00:00,transfer,SEPA,completed
+lumen-mail-008,LOYER,Atelier du Mail may 2026,,rent,-420.00,EUR,-420.00,EUR,2026-05-05 09:00:00,2026-05-05 09:00:00,transfer,SEPA,completed
+lumen-mail-009,LOYER,Atelier du Mail jun 2026,,rent,-420.00,EUR,-420.00,EUR,2026-06-05 09:00:00,2026-06-05 09:00:00,transfer,SEPA,completed
+lumen-mail-010,LOYER,Atelier du Mail jul 2026,,rent,-420.00,EUR,-420.00,EUR,2026-07-05 09:00:00,2026-07-05 09:00:00,transfer,SEPA,completed
+lumen-mail-011,LOYER,Atelier du Mail aug 2026,,rent,-420.00,EUR,-420.00,EUR,2026-08-05 09:00:00,2026-08-05 09:00:00,transfer,SEPA,completed
+lumen-sw-001,NOTION,Notion Labs oct 2025,,software,-29.00,EUR,-29.00,EUR,2025-10-08 12:00:00,2025-10-08 12:00:00,card,card,completed
+lumen-sw-002,NOTION,Notion Labs nov 2025,,software,-29.00,EUR,-29.00,EUR,2025-11-08 12:00:00,2025-11-08 12:00:00,card,card,completed
+lumen-sw-003,NOTION,Notion Labs dec 2025,,software,-29.00,EUR,-29.00,EUR,2025-12-08 12:00:00,2025-12-08 12:00:00,card,card,completed
+lumen-sw-004,NOTION,Notion Labs jan 2026,,software,-29.00,EUR,-29.00,EUR,2026-01-08 12:00:00,2026-01-08 12:00:00,card,card,completed
+lumen-sw-005,NOTION,Notion Labs feb 2026,,software,-29.00,EUR,-29.00,EUR,2026-02-08 12:00:00,2026-02-08 12:00:00,card,card,completed
+lumen-sw-006,NOTION,Notion Labs mar 2026,,software,-29.00,EUR,-29.00,EUR,2026-03-08 12:00:00,2026-03-08 12:00:00,card,card,completed
+lumen-sw-007,NOTION,Notion Labs apr 2026,,software,-29.00,EUR,-29.00,EUR,2026-04-08 12:00:00,2026-04-08 12:00:00,card,card,completed
+lumen-sw-008,NOTION,Notion Labs may 2026,,software,-29.00,EUR,-29.00,EUR,2026-05-08 12:00:00,2026-05-08 12:00:00,card,card,completed
+lumen-sw-009,NOTION,Notion Labs jun 2026,,software,-29.00,EUR,-29.00,EUR,2026-06-08 12:00:00,2026-06-08 12:00:00,card,card,completed
+lumen-sw-010,NOTION,Notion Labs jul 2026,,software,-29.00,EUR,-29.00,EUR,2026-07-08 12:00:00,2026-07-08 12:00:00,card,card,completed
+lumen-sw-011,NOTION,Notion Labs aug 2026,,software,-29.00,EUR,-29.00,EUR,2026-08-08 12:00:00,2026-08-08 12:00:00,card,card,completed
+lumen-pay-001,SALAIRE,Nora Lumen oct 2025,,other,-2800.00,EUR,-2800.00,EUR,2025-10-28 08:30:00,2025-10-28 08:30:00,transfer,SEPA,completed
+lumen-pay-002,SALAIRE,Nora Lumen nov 2025,,other,-2800.00,EUR,-2800.00,EUR,2025-11-28 08:30:00,2025-11-28 08:30:00,transfer,SEPA,completed
+lumen-pay-003,SALAIRE,Nora Lumen dec 2025,,other,-2800.00,EUR,-2800.00,EUR,2025-12-28 08:30:00,2025-12-28 08:30:00,transfer,SEPA,completed
+lumen-pay-004,SALAIRE,Nora Lumen jan 2026,,other,-2800.00,EUR,-2800.00,EUR,2026-01-28 08:30:00,2026-01-28 08:30:00,transfer,SEPA,completed
+lumen-pay-005,SALAIRE,Nora Lumen feb 2026,,other,-2800.00,EUR,-2800.00,EUR,2026-02-28 08:30:00,2026-02-28 08:30:00,transfer,SEPA,completed
+lumen-pay-006,SALAIRE,Nora Lumen mar 2026,,other,-2800.00,EUR,-2800.00,EUR,2026-03-28 08:30:00,2026-03-28 08:30:00,transfer,SEPA,completed
+lumen-pay-007,SALAIRE,Nora Lumen apr 2026,,other,-2800.00,EUR,-2800.00,EUR,2026-04-28 08:30:00,2026-04-28 08:30:00,transfer,SEPA,completed
+lumen-pay-008,SALAIRE,Nora Lumen may 2026,,other,-2800.00,EUR,-2800.00,EUR,2026-05-28 08:30:00,2026-05-28 08:30:00,transfer,SEPA,completed
+lumen-pay-009,SALAIRE,Nora Lumen jun 2026,,other,-2800.00,EUR,-2800.00,EUR,2026-06-28 08:30:00,2026-06-28 08:30:00,transfer,SEPA,completed
+lumen-pay-010,SALAIRE,Nora Lumen jul 2026,,other,-2800.00,EUR,-2800.00,EUR,2026-07-28 08:30:00,2026-07-28 08:30:00,transfer,SEPA,completed
+lumen-pay-011,SALAIRE,Nora Lumen aug 2026,,other,-2800.00,EUR,-2800.00,EUR,2026-08-28 08:30:00,2026-08-28 08:30:00,transfer,SEPA,completed
+lumen-urssaf-001,URSSAF,URSSAF oct 2025,,taxes,-2680.00,EUR,-2680.00,EUR,2025-10-15 07:00:00,2025-10-15 07:00:00,direct_debit,SEPA,completed
+lumen-urssaf-002,URSSAF,URSSAF nov 2025,,taxes,-2680.00,EUR,-2680.00,EUR,2025-11-15 07:00:00,2025-11-15 07:00:00,direct_debit,SEPA,completed
+lumen-urssaf-003,URSSAF,URSSAF dec 2025,,taxes,-2680.00,EUR,-2680.00,EUR,2025-12-15 07:00:00,2025-12-15 07:00:00,direct_debit,SEPA,completed
+lumen-urssaf-004,URSSAF,URSSAF jan 2026,,taxes,-2680.00,EUR,-2680.00,EUR,2026-01-15 07:00:00,2026-01-15 07:00:00,direct_debit,SEPA,completed
+lumen-urssaf-005,URSSAF,URSSAF feb 2026,,taxes,-2680.00,EUR,-2680.00,EUR,2026-02-15 07:00:00,2026-02-15 07:00:00,direct_debit,SEPA,completed
+lumen-urssaf-006,URSSAF,URSSAF mar 2026,,taxes,-2680.00,EUR,-2680.00,EUR,2026-03-15 07:00:00,2026-03-15 07:00:00,direct_debit,SEPA,completed
+lumen-urssaf-007,URSSAF,URSSAF apr 2026,,taxes,-2680.00,EUR,-2680.00,EUR,2026-04-15 07:00:00,2026-04-15 07:00:00,direct_debit,SEPA,completed
+lumen-urssaf-008,URSSAF,URSSAF may 2026,,taxes,-2680.00,EUR,-2680.00,EUR,2026-05-15 07:00:00,2026-05-15 07:00:00,direct_debit,SEPA,completed
+lumen-leroy-001,FIDUCIE,Cabinet Leroy 2025,,fees,-1440.00,EUR,-1440.00,EUR,2025-12-10 10:22:00,2025-12-10 10:22:00,transfer,SEPA,completed
+lumen-leroy-002,FIDUCIE,Cabinet Leroy 2026,,fees,-1440.00,EUR,-1440.00,EUR,2026-09-02 10:22:00,2026-09-02 10:22:00,transfer,SEPA,completed
+lumen-open-001,CB,Librairie Mollat,,other,-42.80,EUR,-42.80,EUR,2026-09-03 18:12:00,2026-09-03 18:12:00,card,card,completed
+lumen-open-002,QONTO,Qonto sept 2026,,fees,-12.50,EUR,-12.50,EUR,2026-09-04 08:00:12,2026-09-04 08:00:12,direct_debit,SEPA,completed
