@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Griffe — lettre du matin pour une SASU (alpha)</title>
-  <meta name="description" content="Alpha. Lettre du matin pour un indépendant en SASU à l’IS : local, chiffré, sans serveur. Linux x86_64. Griffe calcule et rappelle ; tu déposes ailleurs.">
+  <title>Griffe — tout le tour de ta SASU, chez toi (alpha)</title>
+  <meta name="description" content="Alpha. De la conversation au dépôt, sans cabinet. Devis, factures, relevé, impôts, PV, clôture. Un fichier chiffré sur ta machine. Linux x86_64. Licence PolyForm Shield.">
   <meta name="robots" content="index, follow">
   <meta name="author" content="Nicolas Collier">
   <meta name="theme-color" content="#f1ebe0">
@@ -14,16 +14,16 @@
   <meta property="og:type" content="website">
   <meta property="og:locale" content="fr_FR">
   <meta property="og:site_name" content="Griffe">
-  <meta property="og:title" content="Griffe — lettre du matin pour une SASU (alpha)">
-  <meta property="og:description" content="Alpha. Lettre du matin pour un indépendant en SASU à l’IS : local, chiffré, sans serveur. Linux x86_64.">
+  <meta property="og:title" content="Griffe — tout le tour de ta SASU, chez toi (alpha)">
+  <meta property="og:description" content="Alpha. La lettre du matin pour un indépendant en SASU à l’IS : local, chiffré, sans serveur. Linux x86_64.">
   <meta property="og:url" content="https://dz9oo.github.io/griffe/">
   <meta property="og:image" content="https://dz9oo.github.io/griffe/og.png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
   <meta property="og:image:alt" content="Griffe — la lettre du matin">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="Griffe — lettre du matin pour une SASU (alpha)">
-  <meta name="twitter:description" content="Alpha. Lettre du matin pour un indépendant en SASU à l’IS : local, chiffré, sans serveur. Linux x86_64.">
+  <meta name="twitter:title" content="Griffe — tout le tour de ta SASU, chez toi (alpha)">
+  <meta name="twitter:description" content="Alpha. La lettre du matin pour un indépendant en SASU à l’IS : local, chiffré, sans serveur. Linux x86_64.">
   <meta name="twitter:image" content="https://dz9oo.github.io/griffe/og.png">
   <link rel="stylesheet" href="./app.css">
   <script type="application/ld+json">
@@ -49,56 +49,236 @@
   </script>
 </head>
 <body>
-  <main class="letter">
-    <header>
-      <p class="kicker">Alpha · L’atelier de l’indépendant</p>
-      <div class="wordmark">
+  <a class="skip" href="#ouverture">Aller au contenu</a>
+
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="wordmark" href="#ouverture">
         <span class="word">Griffe</span>
         <span class="paraphe" aria-hidden="true">
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 22" fill="none" aria-hidden="true">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 22" fill="none">
             <path d="M8 16c-4 0-6-3-6-6 0-5 4-8 9-8 3 0 6 1.5 7 5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
             <path d="M12 12h8c0 4-3 7-8 7 8 1 22-4 48-10 18-4 40-4 58 2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
           </svg>
         </span>
+      </a>
+      <nav class="toc" aria-label="Sur cette page">
+        <a href="#tour">Le tour</a>
+        <a href="#economies">Économies</a>
+        <a href="#confiance">Confiance</a>
+        <a href="#code">Le code</a>
+      </nav>
+      <a class="btn btn-sm" href="https://github.com/dz9oo/griffe/releases/latest">Télécharger</a>
+    </div>
+  </header>
+
+  <main class="page">
+    <div class="hero-row">
+      <header class="hero" id="ouverture">
+        <p class="kicker">Alpha · L’atelier de l’indépendant</p>
+        <h1>Tout le tour de ta SASU, chez toi.</h1>
+        <p class="lede">La lettre du matin : de la conversation au dépôt. Un fichier chiffré sur ta machine — pas de cabinet, pas de compte, pas d’abonnement.</p>
+        <p class="actions">
+          <a class="btn" href="https://github.com/dz9oo/griffe/releases/latest">Télécharger</a>
+          <a class="btn btn-ghost" href="https://github.com/dz9oo/griffe">Voir le code</a>
+        </p>
+        <p class="meta">Toi, seul, en SASU à l’impôt sur les sociétés. Alpha · Linux · AppImage. Rien ne quitte ta machine.</p>
+      </header>
+      <figure class="shot-frame hero-shot">
+        <img class="shot" src="./shots/jour.png" alt="Le jour dans Griffe : la banque, la piste, trois gestes pour ce matin." width="1200" height="800">
+        <figcaption>Ce matin : 12 788,20 € en banque, trois de piste, 6 240 € chez Atlas — et trois gestes, dont écrire à Camille.</figcaption>
+      </figure>
+    </div>
+
+    <section class="plate savings" id="economies" aria-labelledby="economies-titre">
+      <p class="kicker">Ce que tu ne paies pas</p>
+      <h2 id="economies-titre">Autour de <em>1 000 € HT</em> par an.</h2>
+      <p>Un cabinet en ligne, pour une SASU simple sans salarié, c’est aujourd’hui autour de <strong>1 000 € HT par an</strong> — plutôt 1 500 à 1 800 € en cabinet de ville. Un logiciel qui télétransmet : environ 600 €. Griffe est gratuit.</p>
+      <div class="split">
+        <div>
+          <h3>Évité</h3>
+          <ul>
+            <li>Honoraires de tenue, bilan, liasse, PV</li>
+            <li>Loyer d’un logiciel de compta</li>
+            <li>Un compte « chez eux » pour tes factures</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Pas évité</h3>
+          <ul>
+            <li>L’impôt lui-même (IS, CFE, TVA due)</li>
+            <li>Le dépôt au greffe, une quarantaine d’euros</li>
+            <li>Le temps de ranger, recopier, déposer</li>
+            <li>Une plateforme pour <em>recevoir</em> les factures électroniques</li>
+          </ul>
+        </div>
       </div>
-      <h1>La lettre du matin.</h1>
-      <p class="lede">Quoi faire aujourd’hui, si l’argent tiendra, qui relancer. Sur ta machine. Sans serveur.</p>
-      <p>
-        <a class="btn" href="https://github.com/dz9oo/griffe/releases/latest">Télécharger</a>
-      </p>
-      <p class="dl-meta">Alpha · Linux · AppImage</p>
-      <img class="shot" src="./shots/jour.png" alt="Griffe, pièce Le jour : lettre du matin et piste" width="1200" height="800">
-    </header>
+      <p class="note">Les fourchettes sont celles du marché 2026. On sous-estime exprès. Un cas complexe, un contrôle, un salarié : un cabinet reste le bon recours.</p>
+    </section>
+
+    <section class="block tour" id="tour" aria-labelledby="tour-titre">
+      <h2 id="tour-titre">Le tour</h2>
+      <p class="section-lede">Ce n’est pas quatre boutons. C’est l’année d’une société, dans l’ordre où elle se vit.</p>
+      <ol class="tour-grid">
+        <li>
+          <strong>Prospecter</strong>
+          <span>Une conversation, un devis, une relance. Le brouillon s’ouvre dans ton client mail. Griffe n’envoie rien.</span>
+        </li>
+        <li>
+          <strong>Facturer</strong>
+          <span>Devis, mission, facture Factur-X. Une fois émise, elle ne se change plus.</span>
+        </li>
+        <li>
+          <strong>Ranger</strong>
+          <span>Tu importes le relevé — Qonto, Shine, et les autres. Chaque mouvement se lie à une dépense ou un justificatif. On n’interroge pas ta banque.</span>
+        </li>
+        <li>
+          <strong>Déclarer</strong>
+          <span>La TVA, l’impôt sur les sociétés, les cases : en français, avec le montant. Tu recopies encore toi-même, sur les sites d’État.</span>
+        </li>
+        <li>
+          <strong>Signer</strong>
+          <span>Le PV de l’assemblée, la décision d’affectation, l’inventaire, le bilan, la liasse, le fichier d’écritures. Les originaux nés ici se classent dans tes papiers.</span>
+        </li>
+        <li>
+          <strong>Clore</strong>
+          <span>Un parcours dit où tu en es, et ce qu’il reste. Tu déposes encore toi-même. Griffe ne télétransmet rien.</span>
+        </li>
+      </ol>
+    </section>
+
+    <section class="block confiance" id="confiance" aria-labelledby="confiance-titre">
+      <h2 id="confiance-titre">Une SASU, c’est lourd. Tu peux clore ici.</h2>
+      <p>Bilan, PV, liasse, dépôt au greffe, papiers à garder dix ans : ce n’est pas une micro. Griffe porte ce tour — les montants, les cases, les documents. Tu confirmes. Tu déposes. Pour une SASU simple, tu n’as pas besoin d’un cabinet pour tenir, déclarer et clore.</p>
+      <div class="split">
+        <div>
+          <h3>Ici</h3>
+          <ul>
+            <li>Tenir : factures, dépenses, relevé, justificatifs</li>
+            <li>Préparer la TVA et l’impôt, case par case</li>
+            <li>Clore : PV, affectation, inventaire, bilan, liasse</li>
+            <li>Garder les papiers nés ici, et ceux que tu déposes</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Pas ici</h3>
+          <ul>
+            <li>Créer la société</li>
+            <li>La paie</li>
+            <li>Recevoir les factures électroniques — tu gardes une plateforme, souvent gratuite</li>
+            <li>Stocks, associés, étranger, salariés : un cabinet</li>
+          </ul>
+        </div>
+      </div>
+    </section>
 
     <section class="pieces" aria-label="Les trois pièces">
       <article class="piece">
         <h2>Le jour</h2>
-        <p>La date, la banque, les gestes.</p>
-        <img class="shot" src="./shots/jour.png" alt="Griffe, pièce Le jour : la date, la banque, les gestes" width="1200" height="800">
+        <p>Tu ouvres Griffe, tu vois quoi faire. La banque, la piste, qui relancer, un relevé à ranger, une échéance. Un verbe par ligne.</p>
+        <figure class="shot-frame">
+          <img class="shot" src="./shots/jour.png" alt="Trois gestes du matin : écrire à Camille, ranger le relevé, savoir pour la TVA." width="1200" height="800">
+          <figcaption>Trois gestes. Rien d’autre n’est urgent.</figcaption>
+        </figure>
       </article>
       <article class="piece">
         <h2>Les affaires</h2>
-        <p>Une liste, un dossier par personne.</p>
-        <img class="shot" src="./shots/affaires.png" alt="Griffe, pièce Les affaires : une liste, un dossier par personne" width="1200" height="800">
+        <p>Une personne, un dossier. La conversation, le devis, la mission, les factures : la même feuille. On ouvre Camille, pas un écran Devis.</p>
+        <figure class="shot-frame">
+          <img class="shot" src="./shots/affaires.png" alt="Les affaires : cinq noms, Camille Rivière à relancer aujourd’hui." width="1200" height="800">
+          <figcaption>Camille Rivière : devis envoyé, à relancer aujourd’hui. Derrière, personne.</figcaption>
+        </figure>
       </article>
       <article class="piece">
         <h2>La société</h2>
-        <p>Se payer, les impôts, le relevé, clore.</p>
-        <img class="shot" src="./shots/societe.png" alt="Griffe, pièce La société : se payer, les impôts, le relevé, clore" width="1200" height="800">
+        <p>Est-ce que ça tient, et que dois-tu à l’État. Combien tu peux te verser ce mois-ci sans casser trois mois de piste.</p>
+        <figure class="shot-frame">
+          <img class="shot" src="./shots/societe.png" alt="La société : paysage de trésorerie, se payer, ce que tu dois à l’État, le relevé." width="1200" height="800">
+          <figcaption>1 563,70 € possibles ce mois-ci, et la piste tient.</figcaption>
+        </figure>
       </article>
     </section>
 
-    <section class="chez-toi">
-      <h2>Chez toi</h2>
-      <p>Un fichier sur ta machine. <a href="https://github.com/dz9oo/griffe">Le code est ouvert</a>, licence PolyForm Shield.</p>
-      <p>Alpha, Linux, SASU à l’impôt sur les sociétés. Une EURL, une micro, l’impôt sur le revenu, Windows ou un Mac : plus tard. Tu peux t’en servir pour ta propre activité ; tu ne peux pas vendre Griffe ni le proposer en service hébergé sans accord.</p>
+    <section class="plate code" id="code" aria-labelledby="code-titre">
+      <p class="kicker">Le code</p>
+      <h2 id="code-titre">Le code est ouvert. Viens l’écrire.</h2>
+      <p>Alpha, Linux, SASU à l’impôt sur les sociétés. Une EURL, une micro, l’impôt sur le revenu, Windows ou un Mac : plus tard. Le code est sur GitHub, licence PolyForm Shield. Tu peux t’en servir pour ta propre activité ; tu ne peux pas vendre Griffe ni le proposer en service hébergé sans accord. Griffe s’améliore si d’autres indépendants — et d’autres développeurs — y touchent.</p>
+      <p class="actions">
+        <a class="btn" href="https://github.com/dz9oo/griffe">Voir le code</a>
+        <a class="btn btn-ghost" href="https://github.com/dz9oo/griffe/issues">Ouvrir une issue</a>
+      </p>
+    </section>
+
+    <section class="block from" aria-labelledby="ailleurs">
+      <h2 id="ailleurs">Si tu viens de Tiime, d’Indy ou de Pennylane</h2>
+      <p>Chez eux, l’écran est un cockpit et la banque est dans l’abonnement. Ici, trois pièces, ta banque, et la réforme de la facture électronique avec la plateforme que tu as déjà.</p>
+      <dl class="map">
+        <div>
+          <dt>Tableau de bord, tuiles, relances</dt>
+          <dd><strong>Le jour</strong> — la date, la banque, trois à cinq gestes.</dd>
+        </div>
+        <div>
+          <dt>Clients, devis, missions, factures</dt>
+          <dd><strong>Les affaires</strong> — un dossier par personne.</dd>
+        </div>
+        <div>
+          <dt>Banque, dépenses, impôts, clôture</dt>
+          <dd><strong>La société</strong> — se payer, le relevé, l’État, les papiers.</dd>
+        </div>
+        <div>
+          <dt>Compte pro, synchro bancaire</dt>
+          <dd>Tu importes le relevé. On ne devient pas ta banque.</dd>
+        </div>
+        <div>
+          <dt>Plateforme agréée, e-facture</dt>
+          <dd>On produit du Factur-X. Le tuyau vers l’administration, c’est celle que tu as — souvent gratuite.</dd>
+        </div>
+        <div>
+          <dt>Mon expert-comptable dans l’app</dt>
+          <dd>On n’en exige pas un. Si tu en as un, tu lui tends la liasse, le fichier d’écritures, le dossier.</dd>
+        </div>
+      </dl>
+    </section>
+
+    <section class="block honest" id="limites" aria-labelledby="limites-titre">
+      <h2 id="limites-titre">Ce que Griffe ne fait pas</h2>
+      <p>On n’envoie pas tes mails. On n’interroge pas ta banque. On ne télétransmet rien. Tu importes le relevé. Tu postes le brouillon. Tu recopies sur le site.</p>
+      <p>Aujourd’hui : SASU à l’impôt sur les sociétés, Linux. Une EURL, une micro, Windows ou un Mac : plus tard. Du stock, des associés, de l’étranger : un cabinet. Toi, tes missions, un ordinateur : tu peux clore ici.</p>
+    </section>
+
+    <section class="block faq" aria-labelledby="questions">
+      <h2 id="questions">Questions</h2>
+      <details>
+        <summary>Et la facture électronique ?</summary>
+        <p>Griffe produit un vrai Factur-X (PDF et XML). Ce n’est pas une plateforme agréée : pour <em>recevoir</em> les factures de tes fournisseurs depuis septembre 2026, tu gardes celle que tu as — Tiime, Indy, Pennylane ou une autre, souvent gratuite. On ne te demande pas d’en changer.</p>
+      </details>
+      <details>
+        <summary>Et mon expert-comptable ?</summary>
+        <p>Pour une SASU simple, tu n’en as pas besoin, c’est la thèse. Si tu en as un, tu ne l’invites pas dans un nuage : tu lui tends la liasse, le fichier d’écritures, le pack d’un contrôle. On n’atteste rien à sa place.</p>
+      </details>
+      <details>
+        <summary>Mes données ?</summary>
+        <p>Un coffre sur ta machine, chiffré. Aucune connexion sortante. La sauvegarde, c’est un fichier que tu copies où tu veux — un disque, Syncthing, ce que tu as déjà.</p>
+      </details>
+      <details>
+        <summary>Je ne suis pas en SASU ?</summary>
+        <p>Une EURL, une micro, une SARL à plusieurs, un autre régime : pas encore. Le code est ouvert — c’est exactement le genre de chose qu’on espère voir arriver d’ailleurs que d’ici.</p>
+      </details>
+    </section>
+
+    <section class="cta-band" aria-label="Télécharger">
+      <h2>Ouvre le coffre.</h2>
+      <p>Pas une minute : le temps d’installer, de choisir une phrase secrète, de dire qui tu es. Ensuite, le matin.</p>
+      <p class="actions">
+        <a class="btn" href="https://github.com/dz9oo/griffe/releases/latest">Télécharger</a>
+        <a class="btn btn-ghost" href="https://github.com/dz9oo/griffe">GitHub</a>
+      </p>
     </section>
 
     <footer class="site-footer">
-      <a href="https://github.com/dz9oo/griffe">GitHub</a>
-      <a href="https://github.com/dz9oo/griffe#statut">Statut</a>
+      <p>Un fichier sur ta machine. <a href="https://github.com/dz9oo/griffe">Le code est ouvert</a>, licence PolyForm Shield.</p>
       <span class="paraphe" aria-hidden="true">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 22" fill="none" aria-hidden="true">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 22" fill="none">
           <path d="M8 16c-4 0-6-3-6-6 0-5 4-8 9-8 3 0 6 1.5 7 5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
           <path d="M12 12h8c0 4-3 7-8 7 8 1 22-4 48-10 18-4 40-4 58 2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
         </svg>

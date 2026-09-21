@@ -63,9 +63,16 @@ site-check:
     ! grep -E 'open source|Open Source|OSI' site/index.html README.md
     grep -q 'Griffe' site/index.html
     grep -q 'La lettre du matin' site/index.html
+    grep -q 'Tout le tour de ta SASU' site/index.html
     grep -q 'Le jour' site/index.html
     grep -q 'Les affaires' site/index.html
     grep -q 'La société' site/index.html
+    grep -q 'Prospecter' site/index.html
+    grep -q 'Ranger' site/index.html
+    grep -q 'Signer' site/index.html
+    grep -q 'Tiime' site/index.html
+    grep -q '1 000' site/index.html
+    grep -q 'Le code est ouvert' site/index.html
     grep -q 'PolyForm Shield' site/index.html
     grep -q 'Alpha · L’atelier de l’indépendant' site/index.html
     grep -q 'Alpha · Linux · AppImage' site/index.html
@@ -75,5 +82,6 @@ site-check:
     grep -q 'rel="canonical"' site/index.html
     grep -q 'og:image' site/index.html
     grep -q 'application/ld+json' site/index.html
+    grep -q 'body:has(#tour:target)' site/app.css
     grep -q 'github.io/griffe' site/robots.txt
     grep -q 'github.io/griffe' site/sitemap.xml
