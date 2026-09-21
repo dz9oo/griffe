@@ -101,7 +101,7 @@ invariant d’argent, de conformité, ou de données.
 Lire `docs/legal.md`. Tu ne « corriges » pas une règle de TVA, d’IS, de
 liasse ou de FEC sur ta culture générale. Source primaire (BOFIP, CGI,
 C. com., notice Cerfa) + montant attendu posé à la main dans le test.
-Les chemins CODEOWNERS exigent une revue humaine (`@dz9oo`).
+CODEOWNERS (`* @dz9oo`, plus les chemins fiscaux) exige une revue humaine.
 
 ## UI Atelier
 
@@ -114,6 +114,9 @@ pas de sigle (CA3, 3514, 2777) dans la lettre. Pas de `hx-on--*` (CSP
 ## Ce que tu ne fais pas
 
 - Commit, force-push, publication, filter-repo, sans demande explicite.
+- Pousser sur `master` : une PR, revue `@dz9oo`. Bypass seulement via l’UI
+  GitHub, sur demande explicite.
+- Inviter un collaborateur Write ou Admin.
 - Inventer une licence, un calcul fiscal, ou un écran « module ».
 - Réintroduire `FREEFLOW_PASSPHRASE`, un import Google Fonts, un socket.
 - Écrire du métier dans `griffe-cli` / `griffe-mcp` / `griffe-web`.

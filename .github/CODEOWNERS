@@ -1,3 +1,7 @@
+# Toute PR demande une revue @dz9oo (ruleset MasterProtect).
+* @dz9oo
+
+# Cœur fiscal : listé aussi dans docs/legal.md.
 /crates/griffe-core/src/accounting.rs    @dz9oo
 /crates/griffe-core/src/fiscal.rs        @dz9oo
 /crates/griffe-core/src/fiscal_year.rs   @dz9oo
