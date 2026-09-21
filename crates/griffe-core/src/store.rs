@@ -1035,13 +1035,15 @@ fn seed_empty_vault_template() -> Result<PathBuf, StoreError> {
         let _ = fs::remove_dir_all(&building);
         return Ok(dest_db);
     }
-    fs::create_dir_all(&dest_dir)?;
-    match fs::rename(&building_db, &dest_db) {
-        Ok(()) => {
-            fs::rename(kdf::sidecar_path(&building_db), kdf::sidecar_path(&dest_db))?;
-            let _ = fs::remove_dir_all(&building);
-            Ok(dest_db)
-        }
+    // Publier le *répertoire* d'un seul `rename`. Un `rename` du fichier
+    // `vault.db` sur un dest déjà publié (course nextest : deux `create_fresh`
+    // avec des clés maître distinctes) remplaçait le gabarit ouvert par les
+    // autres process → HMAC page 1 → `WrongPassphrase` dans `provision()`.
+    if dest_dir.exists() && !(dest_db.exists() && kdf::sidecar_path(&dest_db).exists()) {
+        let _ = fs::remove_dir_all(&dest_dir);
+    }
+    match fs::rename(&building, &dest_dir) {
+        Ok(()) => Ok(dest_db),
         Err(_) if dest_db.exists() && kdf::sidecar_path(&dest_db).exists() => {
             let _ = fs::remove_dir_all(&building);
             Ok(dest_db)
