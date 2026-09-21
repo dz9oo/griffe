@@ -1,6 +1,6 @@
-//! Le gabarit SQLCipher `/tmp/griffe-empty-vault-v*` est partagé entre process
+//! Le gabarit `SQLCipher` `/tmp/griffe-empty-vault-v*` est partagé entre process
 //! nextest. Un `rename` du *fichier* `.db` par-dessus un gabarit déjà publié
-//! remplace la clé maître (HMAC page 1 → `WrongPassphrase` dans `provision()`).
+//! remplace la clé maître (`HMAC` page 1 → `WrongPassphrase` dans `provision()`).
 
 use std::env;
 use std::path::PathBuf;
