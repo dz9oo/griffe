@@ -228,10 +228,22 @@ impl PeopleList {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PersonAction {
-    Write { subject: FollowUpSubject },
-    Quote { client_id: ClientId },
-    LogMeeting { opportunity_id: OpportunityId },
-    Snooze { subject: FollowUpSubject },
+    Write {
+        subject: FollowUpSubject,
+    },
+    /// Identité de la fiche (nom, adresse, contact) — sans pièce commerciale.
+    Fiche {
+        client_id: ClientId,
+    },
+    Quote {
+        client_id: ClientId,
+    },
+    LogMeeting {
+        opportunity_id: OpportunityId,
+    },
+    Snooze {
+        subject: FollowUpSubject,
+    },
     FileStatement,
 }
 
@@ -1049,6 +1061,7 @@ impl Snapshot {
         if let Some(subject) = follow_subject {
             actions.push(PersonAction::Write { subject });
         }
+        actions.push(PersonAction::Fiche { client_id: id });
         actions.push(PersonAction::Quote { client_id: id });
         if let Some(o) = opp {
             actions.push(PersonAction::LogMeeting {
@@ -1816,6 +1829,14 @@ mod tests {
                 .actions
                 .iter()
                 .any(|a| matches!(a, PersonAction::Write { .. })),
+            "{:?}",
+            dossier.actions
+        );
+        assert!(
+            dossier
+                .actions
+                .iter()
+                .any(|a| matches!(a, PersonAction::Fiche { .. })),
             "{:?}",
             dossier.actions
         );

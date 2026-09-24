@@ -81,6 +81,14 @@ fn people_routes() -> Router<AppState> {
             "/{reference}/rencontre",
             get(gens::meeting_get).post(gens::meeting_post),
         )
+        .route(
+            "/{reference}/fiche",
+            get(gens::fiche_get).post(gens::fiche_post),
+        )
+        .route(
+            "/{reference}/estimation",
+            get(gens::estimate_get).post(gens::estimate_post),
+        )
         .route("/{reference}/reporter", post(gens::snooze))
         .route("/{reference}/devis", get(gens::quote_panel))
         .route(

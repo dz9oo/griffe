@@ -11,6 +11,8 @@ pub enum InteractionKind {
     Call,
     Email,
     Meeting,
+    /// Visioconférence — distincte d'une rencontre physique (`Meeting`) et d'un appel (`Call`).
+    Visio,
     Note,
 }
 
@@ -25,6 +27,7 @@ impl InteractionKind {
             Self::Call => "call",
             Self::Email => "email",
             Self::Meeting => "meeting",
+            Self::Visio => "visio",
             Self::Note => "note",
         }
     }
@@ -37,9 +40,22 @@ impl std::str::FromStr for InteractionKind {
             "call" => Ok(Self::Call),
             "email" => Ok(Self::Email),
             "meeting" => Ok(Self::Meeting),
+            "visio" => Ok(Self::Visio),
             "note" => Ok(Self::Note),
             other => Err(UnknownInteractionKind(other.to_string())),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::InteractionKind;
+
+    #[test]
+    fn visio_round_trips_through_the_stored_label() {
+        let kind: InteractionKind = "visio".parse().unwrap();
+        assert_eq!(kind, InteractionKind::Visio);
+        assert_eq!(kind.as_str(), "visio");
     }
 }
 

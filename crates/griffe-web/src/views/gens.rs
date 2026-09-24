@@ -145,7 +145,7 @@ fn cues_fr(cues: &[PersonCue]) -> String {
 
 fn cue_fr(cue: &PersonCue) -> String {
     match cue {
-        PersonCue::QuoteSent { .. } => "devis envoyé".into(),
+        PersonCue::QuoteSent { .. } => "estimation envoyée".into(),
         PersonCue::FollowUpDue { today: true, .. } => "à relancer aujourd'hui".into(),
         PersonCue::FollowUpDue { on, .. } => format!("à relancer le {}", format_date_fr(*on)),
         PersonCue::FirstExchange { on } => format!("premier échange le {}", format_date_fr(*on)),
@@ -338,7 +338,7 @@ fn current_paragraph(current: &CurrentSituation, dossier: &PersonDossier) -> Opt
             .as_deref()
             .unwrap_or("accompagnement");
         sentences.push(format!(
-            "Devis {name}, {} HT, envoyé le {}.",
+            "Estimation {name}, {} HT, posée le {}.",
             quote.amount,
             format_date_fr(quote.on)
         ));
@@ -362,9 +362,6 @@ fn current_paragraph(current: &CurrentSituation, dossier: &PersonDossier) -> Opt
             .map(|a| format!(", autour de {a}"))
             .unwrap_or_default();
         sentences.push(format!("{name}{amount}."));
-        if current.quote.is_none() && current.amount.is_some_and(|a| a.cents() != 0) {
-            sentences.push("Pas de devis posé.".into());
-        }
     }
     if let Some(PersonCue::FollowUpDue { today: true, .. }) = &current.follow_up {
         sentences.push("À relancer aujourd'hui.".into());
@@ -618,7 +615,7 @@ fn paper_write_off_form(paper: &Paper, dossier_href: &str, today: Date) -> Marku
 
 fn paper_line(paper: &Paper) -> String {
     let kind = match paper.kind {
-        PaperKind::Quote => "Devis",
+        PaperKind::Quote => "Estimation",
         PaperKind::Invoice => "Facture",
     };
     let number = paper.number.as_deref().unwrap_or("");
@@ -647,36 +644,80 @@ fn history_item(event: &HistoryEvent) -> Markup {
     html! {
         li {
             time { (format_date_fr(event.on)) }
-            @if let HistoryKind::Letter { subject, body } = &event.kind {
-                details class="letter-fold" {
-                    summary { (subject) }
-                    pre { (body) }
-                }
-            } @else {
-                span { (history_fr(event)) }
-            }
+            (history_body(event))
         }
     }
 }
 
-fn history_fr(event: &HistoryEvent) -> String {
+fn nature_fr(kind: InteractionKind) -> &'static str {
+    match kind {
+        InteractionKind::Call => "Téléphone",
+        InteractionKind::Email => "E-mail",
+        InteractionKind::Meeting => "Rencontre physique",
+        InteractionKind::Visio => "Visioconférence",
+        InteractionKind::Note => "Note",
+    }
+}
+
+/// Au-delà, l'historique ne montre qu'un aperçu : le texte entier s'ouvre au clic.
+fn note_is_long(note: &str) -> bool {
+    note.contains('\n') || note.chars().count() > 80
+}
+
+fn note_preview(note: &str) -> String {
+    let line = note.lines().next().unwrap_or("").trim();
+    let mut preview: String = line.chars().take(80).collect();
+    if line.chars().count() > 80 || note.lines().nth(1).is_some() {
+        preview.push('…');
+    }
+    preview
+}
+
+fn fold(summary: Markup, body: &str) -> Markup {
+    html! {
+        details class="letter-fold" {
+            summary {
+                (summary)
+                span class="fold-mark" aria-hidden="true" {}
+            }
+            pre { (body) }
+        }
+    }
+}
+
+fn history_body(event: &HistoryEvent) -> Markup {
     match &event.kind {
-        HistoryKind::Interaction { interaction } => {
-            let kind = match interaction {
-                InteractionKind::Call => "Appel",
-                InteractionKind::Email => "E-mail",
-                InteractionKind::Meeting => "Rencontre",
-                InteractionKind::Note => "Note",
+        HistoryKind::Letter { subject, body } => {
+            let title = if subject.is_empty() {
+                "Lettre".to_string()
+            } else {
+                subject.clone()
             };
-            match &event.note {
-                Some(n) => format!("{kind}. {n}"),
-                None => format!("{kind}."),
+            fold(html! { span class="preview" { (title) } }, body)
+        }
+        HistoryKind::Interaction { interaction } => {
+            let nature = nature_fr(*interaction);
+            match event.note.as_deref().filter(|n| !n.is_empty()) {
+                Some(note) if note_is_long(note) => fold(
+                    html! {
+                        span class="nature" { (nature) }
+                        span class="preview" { (note_preview(note)) }
+                    },
+                    note,
+                ),
+                Some(note) => html! {
+                    span {
+                        span class="nature" { (nature) }
+                        " "
+                        (note)
+                    }
+                },
+                None => html! { span class="nature" { (nature) } },
             }
         }
-        HistoryKind::Letter { subject, .. } => format!("Lettre. {subject}"),
-        HistoryKind::QuoteSent { .. } => "Devis envoyé.".into(),
-        HistoryKind::QuoteAccepted => "Devis accepté.".into(),
-        HistoryKind::InvoiceIssued { number } => format!("Facture {number}."),
+        HistoryKind::QuoteSent { .. } => html! { span { "Estimation envoyée." } },
+        HistoryKind::QuoteAccepted => html! { span { "Estimation acceptée." } },
+        HistoryKind::InvoiceIssued { number } => html! { span { "Facture " (number) "." } },
     }
 }
 
@@ -695,12 +736,24 @@ fn action_button(action: &PersonAction, dossier_href: &str, today: Date) -> Mark
                 }
             }
         }
-        PersonAction::Quote { .. } => html! {
-            a class="quiet" href=(format!("{dossier_href}/devis"))
-              hx-get=(format!("{dossier_href}/devis")) hx-target="#panel" hx-swap="innerHTML" {
-                "Le devis"
+        PersonAction::Fiche { .. } => {
+            let href = format!("{dossier_href}/fiche");
+            html! {
+                a class="quiet" href=(href)
+                  hx-get=(href) hx-target="#content" hx-push-url="true" {
+                    "La fiche"
+                }
             }
-        },
+        }
+        PersonAction::Quote { .. } => {
+            let href = format!("{dossier_href}/estimation");
+            html! {
+                a class="quiet" href=(href)
+                  hx-get=(href) hx-target="#content" hx-push-url="true" {
+                    "L'estimation"
+                }
+            }
+        }
         PersonAction::LogMeeting { .. } => html! {
             a class="quiet" href=(format!("{dossier_href}/rencontre"))
               hx-get=(format!("{dossier_href}/rencontre")) hx-target="#content" hx-push-url="true" {
@@ -759,9 +812,19 @@ pub fn new_conversation(
     }
 }
 
+const MEETING_NATURES: &[(&str, &str)] = &[
+    ("", "Choisir"),
+    ("call", "Téléphone"),
+    ("visio", "Visioconférence"),
+    ("email", "E-mail"),
+    ("meeting", "Rencontre physique"),
+    ("note", "Note"),
+];
+
 pub fn meeting_form(
     dossier: &PersonDossier,
     today: Date,
+    kind: &str,
     note: &str,
     error: Option<&str>,
 ) -> Markup {
@@ -777,10 +840,103 @@ pub fn meeting_form(
                 p class="mast-note" role="alert" { (msg) }
             }
             form hx-post=(format!("{href}/rencontre")) hx-target="#content" hx-push-url="true" {
+                (form::select("kind", "Nature", MEETING_NATURES, kind, None))
                 (form::date("when", "Quand", &format_date(today), None))
                 (form::textarea("note", "Ce qu'on s'est dit", note, 6, None))
                 div class="row-actions" {
                     button class="seal" type="submit" { "Poser la note" }
+                }
+            }
+        }
+    }
+}
+
+pub struct FicheValues {
+    pub who: String,
+    pub street: String,
+    pub postal_code: String,
+    pub city: String,
+    pub representative: String,
+    pub email: String,
+    pub phone: String,
+    pub client_revision: i64,
+    pub contact_id: String,
+    pub contact_revision: String,
+}
+
+pub struct FicheErrors {
+    pub who: Option<String>,
+    pub address: Option<String>,
+    pub banner: Option<String>,
+}
+
+pub fn fiche_page(dossier: &PersonDossier, values: &FicheValues, errors: &FicheErrors) -> Markup {
+    let href = person_href(&dossier.name);
+    html! {
+        div class="letter" data-view=(ViewId::Gens.slug()) {
+            a class="back" href=(href) hx-get=(href) hx-target="#content" hx-push-url="true" {
+                "← " (dossier.name)
+            }
+            h1 { "La fiche." }
+            p class="lede" { "Qui c'est, pour leur écrire plus tard. Pas besoin d'une estimation pour ça." }
+            @if let Some(msg) = &errors.banner {
+                p class="mast-note" role="alert" { (msg) }
+            }
+            form hx-post=(format!("{href}/fiche")) hx-target="#content" hx-push-url="true" {
+                (form::hidden("client_revision", &values.client_revision.to_string()))
+                (form::hidden("contact_id", &values.contact_id))
+                (form::hidden("contact_revision", &values.contact_revision))
+                (form::text("who", "Qui", &values.who, errors.who.as_deref()))
+                (form::text("street", "Rue", &values.street, errors.address.as_deref()))
+                (form::text("postal_code", "Code postal", &values.postal_code, None))
+                (form::text("city", "Ville", &values.city, None))
+                (form::text("representative", "Qui répond", &values.representative, None))
+                (form::text("email", "Courriel", &values.email, None))
+                (form::text("phone", "Téléphone", &values.phone, None))
+                div class="row-actions" {
+                    button class="seal" type="submit" { "Enregistrer la fiche" }
+                }
+            }
+        }
+    }
+}
+
+pub struct EstimateValues {
+    pub phrase: String,
+    pub amount: String,
+    pub revision: String,
+}
+
+pub struct EstimateErrors {
+    pub phrase: Option<String>,
+    pub amount: Option<String>,
+    pub banner: Option<String>,
+}
+
+pub fn estimate_page(
+    dossier: &PersonDossier,
+    values: &EstimateValues,
+    errors: &EstimateErrors,
+) -> Markup {
+    let href = person_href(&dossier.name);
+    html! {
+        div class="letter" data-view=(ViewId::Gens.slug()) {
+            a class="back" href=(href) hx-get=(href) hx-target="#content" hx-push-url="true" {
+                "← " (dossier.name)
+            }
+            h1 { "L'estimation." }
+            p class="lede" {
+                "Ce que ça pourrait valoir. Griffe ne rédige pas le devis : elle garde le sujet et le montant dans le coffre."
+            }
+            @if let Some(msg) = &errors.banner {
+                p class="mast-note" role="alert" { (msg) }
+            }
+            form hx-post=(format!("{href}/estimation")) hx-target="#content" hx-push-url="true" {
+                (form::hidden("revision", &values.revision))
+                (form::text("phrase", "Ce dont il s'agit", &values.phrase, errors.phrase.as_deref()))
+                (form::text("amount", "Autour de (€ HT)", &values.amount, errors.amount.as_deref()))
+                div class="row-actions" {
+                    button class="seal" type="submit" { "Noter l'estimation" }
                 }
             }
         }
@@ -814,7 +970,7 @@ pub fn letter_page(
             }
             h1 { "Une lettre, pas un envoi." }
             p class="lede" {
-                "Tu écris ici. Le client mail n'est que la poste. Le double classé est celui de cette page — un mot changé dans le client ne s'y met que si tu le rectifies en classant."
+                "Tu écris ici. « C'est parti » classe le double dans l'historique. Griffe n'envoie pas."
             }
             @if let Some(msg) = flash {
                 p class="mast-note" role="status" { (msg) }
@@ -828,13 +984,6 @@ pub fn letter_page(
                     (form::textarea("body", "Lettre", body, 12, None))
                     div class="row-actions" {
                         button class="seal" type="submit"
-                               formaction=(format!("{href}/ecrire"))
-                               formmethod="post"
-                               hx-post=(format!("{href}/ecrire"))
-                               hx-target="#content" {
-                            "Poster"
-                        }
-                        button class="quiet" type="submit"
                                formaction=(format!("{href}/envoye"))
                                formmethod="post"
                                hx-post=(format!("{href}/envoye"))
@@ -876,6 +1025,10 @@ pub fn not_found(needle: &str, today: Date) -> Markup {
 #[must_use]
 pub fn href_for_party(party: &str) -> String {
     person_href(party)
+}
+
+pub(crate) fn person_line(row: &PersonRow) -> Markup {
+    row_link(row)
 }
 
 pub fn load_card(

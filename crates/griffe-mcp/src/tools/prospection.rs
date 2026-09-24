@@ -610,7 +610,7 @@ impl FreeflowServer {
         }
     }
 
-    /// Journalise une interaction (appel, email, réunion, note) sur une opportunité.
+    /// Journalise une interaction (téléphone, e-mail, rencontre physique, visioconférence, note).
     #[tool(
         name = "prospect.log_interaction",
         annotations(

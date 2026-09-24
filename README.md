@@ -105,7 +105,7 @@ native (`~/.local/lib/griffe/`) existe, la retirer **avant** `pacman -U`
 ```bash
 rm -f ~/.local/bin/griffe-desktop \
   ~/.local/lib/griffe/griffe-desktop ~/.local/lib/griffe/typst
-sudo pacman -U ./griffe-bin-0.3.1-1-x86_64.pkg.tar.zst
+sudo pacman -U ./griffe-bin-0.3.2-1-x86_64.pkg.tar.zst
 ```
 
 Désinstall : `sudo pacman -Rns griffe-bin`. Le coffre

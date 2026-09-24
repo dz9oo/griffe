@@ -391,9 +391,10 @@ pub struct InteractionFormErrors {
 }
 
 const INTERACTION_KINDS: &[(&str, &str)] = &[
-    ("call", "Appel"),
-    ("email", "Email"),
-    ("meeting", "Réunion"),
+    ("call", "Téléphone"),
+    ("email", "E-mail"),
+    ("meeting", "Rencontre physique"),
+    ("visio", "Visioconférence"),
     ("note", "Note"),
 ];
 

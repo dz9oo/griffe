@@ -43,7 +43,7 @@ const CONVERSATION: Recipe = Recipe {
     steps: &[
         "Les affaires → Nouvelle conversation.",
         "Un nom, une phrase. C'est tout.",
-        "La fiche client n'apparaît qu'à la première pièce (devis ou facture).",
+        "La fiche — nom, adresse, courriel — se complète sur le dossier, sans estimation.",
     ],
     does_not: None,
     href: Some("/affaires/nouvelle"),
@@ -53,15 +53,15 @@ const CONVERSATION: Recipe = Recipe {
 const DEVIS: Recipe = Recipe {
     slug: "devis",
     kicker: "Au quotidien",
-    title: "Le devis, puis la mission.",
+    title: "L'estimation, sur le dossier.",
     lede: "On n'ouvre pas un écran Devis. On ouvre la personne.",
     steps: &[
         "Dans Les affaires, ouvrez le dossier.",
-        "Le devis se rédige depuis le dossier.",
-        "S'il est accepté, il devient une mission — encore sur le même dossier.",
+        "L'estimation se note là : le sujet, et autour de combien. Griffe ne rédige pas le devis.",
+        "La mission, quand elle existe, se lit sur le même dossier.",
         "Une facture se lit là aussi. Celle que vous avez émise dans Tiime (ou votre plateforme), vous la posez sur le dossier. L'émission depuis cette lettre n'existe pas.",
     ],
-    does_not: Some("Griffe n'envoie pas le devis à votre place."),
+    does_not: Some("Griffe ne compose pas le devis et ne l'envoie pas."),
     href: Some("/affaires"),
     action: Some("Ouvrir Les affaires"),
 };
@@ -213,7 +213,7 @@ pub fn index() -> Markup {
         ul class="chapters" {
             (chapter_link("/aide/relancer", "Écrire à quelqu'un.", "un geste du Jour, un brouillon, on n'envoie pas"))
             (chapter_link("/aide/conversation", "Commencer une conversation.", "un nom, une phrase"))
-            (chapter_link("/aide/devis", "Le devis, puis la mission.", "sur le dossier de la personne"))
+            (chapter_link("/aide/devis", "L'estimation, sur le dossier.", "le sujet et le montant, pas un devis rédigé ici"))
             (chapter_link("/aide/releve", "Ranger le relevé.", "dépense, dette, ou vous"))
         }
         p class="section-label" { "L'État, une fois l'an" }

@@ -11,6 +11,7 @@ use griffe_core::domain::{
     FiscalYearEnd, FollowUpSubject, Money, Month, SnoozePreset, format_date, format_date_fr,
     snooze_date,
 };
+use griffe_core::people::{PeopleList, people_list};
 use griffe_core::setup::setup_status;
 use griffe_core::store::Store;
 use maud::{Markup, html};
@@ -24,12 +25,13 @@ use crate::views::copy::{
     deadline_fr, duty_href, duty_occurrence_fr, event_kind_fr, gestes_title, is_vat, letter_date,
     month_fr, month_title,
 };
-use crate::views::gens::{href_for_party, person_href};
+use crate::views::gens::{href_for_party, person_href, person_line};
 
 pub fn render(store: &Store, today: Date) -> Result<Markup, AppError> {
     let conn = store.connection();
     let setup = setup_status(conn)?;
     let mast = day_mast(conn, today)?;
+    let people = people_list(conn, today)?;
     let gestes = day_gestures(conn, today)?;
     let month = Month::new(today.year(), u8::from(today.month()))
         .expect("le mois courant est toujours valide");
@@ -90,6 +92,7 @@ pub fn render(store: &Store, today: Date) -> Result<Markup, AppError> {
                     p class="mast-note" id="next-step" { (setup.next_step.text()) }
                 }
             }
+            (day_people(&people))
             h1 { (title) }
             p class="lede" { (lede) }
             @if !gestes.is_empty() {
@@ -102,6 +105,32 @@ pub fn render(store: &Store, today: Date) -> Result<Markup, AppError> {
             (month_section(&month_view, today, vat_scheme))
         }
     })
+}
+
+fn day_people(list: &PeopleList) -> Markup {
+    if list.conversations.is_empty() && list.missions.is_empty() {
+        return html! {};
+    }
+    html! {
+        div class="day-who" {
+            @if !list.conversations.is_empty() {
+                p class="section-label" { "En conversation" }
+                ul class="people" {
+                    @for row in &list.conversations {
+                        li { (person_line(row)) }
+                    }
+                }
+            }
+            @if !list.missions.is_empty() {
+                p class="section-label" { "En mission" }
+                ul class="people" {
+                    @for row in &list.missions {
+                        li { (person_line(row)) }
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn runway_is_bad(mast: &Mast) -> bool {
@@ -563,6 +592,15 @@ fn agenda_row(event: &MonthEvent, today: Date, vat_scheme: VatFilingScheme) -> M
     }
 }
 
+fn preview_note(note: &str) -> String {
+    let line = note.lines().next().unwrap_or("").trim();
+    let mut preview: String = line.chars().take(80).collect();
+    if line.chars().count() > 80 || note.lines().nth(1).is_some() {
+        preview.push('…');
+    }
+    preview
+}
+
 fn agenda_title(event: &MonthEvent, vat_scheme: VatFilingScheme) -> String {
     match event.kind {
         MonthEventKind::StateDuty => {
@@ -597,12 +635,13 @@ fn agenda_title(event: &MonthEvent, vat_scheme: VatFilingScheme) -> String {
         }
         MonthEventKind::Meeting => {
             let who = event.party.as_deref().unwrap_or("");
-            if event.title.is_empty() {
+            let note = preview_note(&event.title);
+            if note.is_empty() {
                 who.to_string()
             } else if who.is_empty() {
-                event.title.clone()
+                note
             } else {
-                format!("{who} · {}", event.title)
+                format!("{who} · {note}")
             }
         }
         _ => {

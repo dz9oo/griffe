@@ -6,14 +6,19 @@ use axum::http::{HeaderMap, HeaderValue};
 use axum::response::{Html, IntoResponse, Response};
 use griffe_core::app::{AppError, Executor, Outcome};
 use griffe_core::billing::{ImportIssuedInvoice, RetractWriteOff, WriteOffReceivable};
+use griffe_core::clients::{
+    CreateContact, UpdateClient, UpdateContact, client_by_id, list_contacts,
+};
 use griffe_core::domain::{
-    ExpenseId, InteractionKind, InvoiceId, InvoiceLine, MissionId, Money, Probability, VatRate,
-    WriteOffId, format_date, parse_date,
+    Address, ExpenseId, InteractionKind, InvoiceId, InvoiceLine, MissionId, Money, Probability,
+    VatRate, WriteOffId, format_date, parse_date,
 };
 use griffe_core::expenses::{AttachReceipt, expense_by_id};
 use griffe_core::follow_up::{MarkFollowUpSent, PrepareFollowUp, SnoozeFollowUp};
 use griffe_core::people::{PersonKey, person};
-use griffe_core::prospection::{CreateProspect, LogInteraction};
+use griffe_core::prospection::{
+    CreateOpportunity, CreateProspect, LogInteraction, UpdateOpportunity, opportunity_by_id,
+};
 use maud::{Markup, html};
 use serde::Deserialize;
 use time::{Duration, OffsetDateTime};
@@ -333,13 +338,15 @@ pub async fn meeting_get(
 ) -> Html<String> {
     let today = state.today();
     match load_dossier(&state, &reference).await {
-        Some(Ok(dossier)) => page(&headers, gens::meeting_form(&dossier, today, "", None)),
+        Some(Ok(dossier)) => page(&headers, gens::meeting_form(&dossier, today, "", "", None)),
         _ => page(&headers, gens::not_found(&reference, today)),
     }
 }
 
 #[derive(Debug, Deserialize)]
 pub struct MeetingForm {
+    #[serde(default)]
+    kind: String,
     #[serde(default)]
     when: String,
     #[serde(default)]
@@ -362,11 +369,28 @@ pub async fn meeting_post(
             gens::meeting_form(
                 &dossier,
                 today,
+                &form.kind,
                 &form.note,
                 Some("pas de conversation ouverte"),
             ),
         )
         .into_response();
+    };
+    let kind = match form.kind.parse::<InteractionKind>() {
+        Ok(kind) => kind,
+        Err(_) => {
+            return page(
+                &headers,
+                gens::meeting_form(
+                    &dossier,
+                    today,
+                    &form.kind,
+                    &form.note,
+                    Some("la nature de la rencontre"),
+                ),
+            )
+            .into_response();
+        }
     };
     let occurred_on = parse_date(&form.when).unwrap_or(today);
     let occurred_at = occurred_on
@@ -375,7 +399,7 @@ pub async fn meeting_post(
         .map(|t| t.assume_offset(OffsetDateTime::now_utc().offset()));
     let cmd = LogInteraction {
         opportunity_id,
-        kind: InteractionKind::Meeting,
+        kind,
         note: form.note.trim().to_string(),
         occurred_at,
     };
@@ -386,10 +410,498 @@ pub async fn meeting_post(
         None => locked(&headers).into_response(),
         Some(Err(e)) => page(
             &headers,
-            gens::meeting_form(&dossier, today, &form.note, Some(&e.to_string())),
+            gens::meeting_form(
+                &dossier,
+                today,
+                &form.kind,
+                &form.note,
+                Some(&e.to_string()),
+            ),
         )
         .into_response(),
         Some(Ok(_)) => {
+            let href = person_href(&dossier.name);
+            let content = state
+                .with_store(|store| {
+                    gens::dossier_page(store, &reference, today).unwrap_or_else(
+                        |err| html! { div class="empty-state" { (err.to_string()) } },
+                    )
+                })
+                .await
+                .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
+            with_push(&headers, &href, content)
+        }
+    }
+}
+
+fn blank(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn parse_address(street: &str, postal_code: &str, city: &str) -> Result<Option<Address>, String> {
+    let street = street.trim();
+    let postal_code = postal_code.trim();
+    let city = city.trim();
+    if street.is_empty() && postal_code.is_empty() && city.is_empty() {
+        return Ok(None);
+    }
+    if street.is_empty() || postal_code.is_empty() || city.is_empty() {
+        return Err("rue, code et ville — ou rien".into());
+    }
+    Ok(Some(Address {
+        street: street.to_string(),
+        postal_code: postal_code.to_string(),
+        city: city.to_string(),
+        country: "FR".into(),
+    }))
+}
+
+fn fiche_values_from(
+    client: &griffe_core::domain::Client,
+    contact: Option<&griffe_core::domain::Contact>,
+) -> gens::FicheValues {
+    let (street, postal_code, city) = client.address.as_ref().map_or_else(
+        || (String::new(), String::new(), String::new()),
+        |a| (a.street.clone(), a.postal_code.clone(), a.city.clone()),
+    );
+    let representative = contact
+        .filter(|c| c.name != client.name)
+        .map(|c| c.name.clone())
+        .unwrap_or_default();
+    gens::FicheValues {
+        who: client.name.clone(),
+        street,
+        postal_code,
+        city,
+        representative,
+        email: contact.and_then(|c| c.email.clone()).unwrap_or_default(),
+        phone: contact.and_then(|c| c.phone.clone()).unwrap_or_default(),
+        client_revision: client.revision,
+        contact_id: contact.map(|c| c.id.to_string()).unwrap_or_default(),
+        contact_revision: contact.map(|c| c.revision.to_string()).unwrap_or_default(),
+    }
+}
+
+pub async fn fiche_get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(reference): Path<String>,
+) -> Html<String> {
+    let today = state.today();
+    let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
+        return page(&headers, gens::not_found(&reference, today));
+    };
+    let PersonKey::Client { id } = dossier.key else {
+        return page(
+            &headers,
+            gens::dossier_markup(&dossier, today, Some("cette chemise n'a pas de fiche")),
+        );
+    };
+    let loaded = state
+        .with_store(|store| -> Result<_, AppError> {
+            let client = client_by_id(store.connection(), id)?
+                .ok_or_else(|| AppError::from(griffe_core::clients::ClientError::NotFound(id)))?;
+            let contact = list_contacts(store.connection(), id)?.into_iter().next();
+            Ok((client, contact))
+        })
+        .await;
+    match loaded {
+        None => locked(&headers),
+        Some(Err(e)) => page(
+            &headers,
+            gens::dossier_markup(&dossier, today, Some(&e.to_string())),
+        ),
+        Some(Ok((client, contact))) => {
+            let values = fiche_values_from(&client, contact.as_ref());
+            page(
+                &headers,
+                gens::fiche_page(
+                    &dossier,
+                    &values,
+                    &gens::FicheErrors {
+                        who: None,
+                        address: None,
+                        banner: None,
+                    },
+                ),
+            )
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FicheForm {
+    #[serde(default)]
+    who: String,
+    #[serde(default)]
+    street: String,
+    #[serde(default)]
+    postal_code: String,
+    #[serde(default)]
+    city: String,
+    #[serde(default)]
+    representative: String,
+    #[serde(default)]
+    email: String,
+    #[serde(default)]
+    phone: String,
+    #[serde(default)]
+    client_revision: String,
+    #[serde(default)]
+    contact_id: String,
+    #[serde(default)]
+    contact_revision: String,
+}
+
+pub async fn fiche_post(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(reference): Path<String>,
+    Form(form): Form<FicheForm>,
+) -> Response {
+    let today = state.today();
+    let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
+        return page(&headers, gens::not_found(&reference, today)).into_response();
+    };
+    let PersonKey::Client { id } = dossier.key else {
+        return page(
+            &headers,
+            gens::dossier_markup(&dossier, today, Some("cette chemise n'a pas de fiche")),
+        )
+        .into_response();
+    };
+    let who = form.who.trim().to_string();
+    let address = match parse_address(&form.street, &form.postal_code, &form.city) {
+        Ok(address) => address,
+        Err(msg) => {
+            let values = gens::FicheValues {
+                who,
+                street: form.street,
+                postal_code: form.postal_code,
+                city: form.city,
+                representative: form.representative,
+                email: form.email,
+                phone: form.phone,
+                client_revision: form.client_revision.parse().unwrap_or(0),
+                contact_id: form.contact_id,
+                contact_revision: form.contact_revision,
+            };
+            return page(
+                &headers,
+                gens::fiche_page(
+                    &dossier,
+                    &values,
+                    &gens::FicheErrors {
+                        who: None,
+                        address: Some(msg),
+                        banner: None,
+                    },
+                ),
+            )
+            .into_response();
+        }
+    };
+    if who.is_empty() {
+        let values = gens::FicheValues {
+            who,
+            street: form.street,
+            postal_code: form.postal_code,
+            city: form.city,
+            representative: form.representative,
+            email: form.email,
+            phone: form.phone,
+            client_revision: form.client_revision.parse().unwrap_or(0),
+            contact_id: form.contact_id,
+            contact_revision: form.contact_revision,
+        };
+        return page(
+            &headers,
+            gens::fiche_page(
+                &dossier,
+                &values,
+                &gens::FicheErrors {
+                    who: Some("un nom, pour commencer".into()),
+                    address: None,
+                    banner: None,
+                },
+            ),
+        )
+        .into_response();
+    }
+    let Some(client_revision) = form.client_revision.parse::<i64>().ok() else {
+        return page(
+            &headers,
+            gens::dossier_markup(&dossier, today, Some("la fiche a changé, rechargez")),
+        )
+        .into_response();
+    };
+    let representative = blank(&form.representative);
+    let email = blank(&form.email);
+    let phone = blank(&form.phone);
+    let contact_name = representative.clone().unwrap_or_else(|| who.clone());
+    let posted_contact_revision = form.contact_revision.parse::<i64>().ok();
+    let result = state
+        .with_store_mut(|store| -> Result<(), AppError> {
+            let client = client_by_id(store.connection(), id)?
+                .ok_or_else(|| AppError::from(griffe_core::clients::ClientError::NotFound(id)))?;
+            let contact = list_contacts(store.connection(), id)?.into_iter().next();
+            Executor::new(store).execute(
+                &UpdateClient {
+                    id,
+                    revision: client_revision,
+                    name: who.clone(),
+                    siren: client.siren,
+                    vat_number: client.vat_number,
+                    address: address.clone(),
+                },
+                &AppState::human_ctx(),
+            )?;
+            match contact {
+                Some(current) => {
+                    let revision = posted_contact_revision.unwrap_or(current.revision);
+                    Executor::new(store).execute(
+                        &UpdateContact {
+                            id: current.id,
+                            revision,
+                            name: contact_name.clone(),
+                            email: email.clone(),
+                            phone: phone.clone(),
+                            role: current.role,
+                        },
+                        &AppState::human_ctx(),
+                    )?;
+                }
+                None if representative.is_some() || email.is_some() || phone.is_some() => {
+                    Executor::new(store).execute(
+                        &CreateContact {
+                            client_id: id,
+                            name: contact_name.clone(),
+                            email: email.clone(),
+                            phone: phone.clone(),
+                            role: None,
+                        },
+                        &AppState::human_ctx(),
+                    )?;
+                }
+                None => {}
+            }
+            Ok(())
+        })
+        .await;
+    match result {
+        None => locked(&headers).into_response(),
+        Some(Err(e)) => {
+            let values = gens::FicheValues {
+                who,
+                street: form.street,
+                postal_code: form.postal_code,
+                city: form.city,
+                representative: form.representative,
+                email: form.email,
+                phone: form.phone,
+                client_revision,
+                contact_id: form.contact_id,
+                contact_revision: form.contact_revision,
+            };
+            page(
+                &headers,
+                gens::fiche_page(
+                    &dossier,
+                    &values,
+                    &gens::FicheErrors {
+                        who: None,
+                        address: None,
+                        banner: Some(e.to_string()),
+                    },
+                ),
+            )
+            .into_response()
+        }
+        Some(Ok(())) => {
+            let rendered = state
+                .with_store(|store| -> Result<_, AppError> {
+                    let dossier = person(store.connection(), &id.to_string(), today)?;
+                    let href = person_href(&dossier.name);
+                    let markup = gens::dossier_markup(&dossier, today, Some("Fiche à jour."));
+                    Ok((href, markup))
+                })
+                .await;
+            match rendered {
+                None => locked(&headers).into_response(),
+                Some(Err(e)) => page(
+                    &headers,
+                    gens::dossier_markup(&dossier, today, Some(&e.to_string())),
+                )
+                .into_response(),
+                Some(Ok((href, markup))) => with_push(&headers, &href, markup),
+            }
+        }
+    }
+}
+
+pub async fn estimate_get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(reference): Path<String>,
+) -> Html<String> {
+    let today = state.today();
+    let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
+        return page(&headers, gens::not_found(&reference, today));
+    };
+    let values = state
+        .with_store(|store| -> Result<gens::EstimateValues, AppError> {
+            let opp = dossier
+                .current
+                .opportunity_id
+                .and_then(|id| opportunity_by_id(store.connection(), id).ok().flatten());
+            Ok(match opp {
+                Some(opp) => gens::EstimateValues {
+                    phrase: opp.name,
+                    amount: if opp.amount.cents() == 0 {
+                        String::new()
+                    } else {
+                        opp.amount.to_decimal_string()
+                    },
+                    revision: opp.revision.to_string(),
+                },
+                None => gens::EstimateValues {
+                    phrase: dossier.current.opportunity_name.clone().unwrap_or_default(),
+                    amount: String::new(),
+                    revision: String::new(),
+                },
+            })
+        })
+        .await;
+    match values {
+        None => locked(&headers),
+        Some(Err(e)) => page(
+            &headers,
+            gens::dossier_markup(&dossier, today, Some(&e.to_string())),
+        ),
+        Some(Ok(values)) => page(
+            &headers,
+            gens::estimate_page(
+                &dossier,
+                &values,
+                &gens::EstimateErrors {
+                    phrase: None,
+                    amount: None,
+                    banner: None,
+                },
+            ),
+        ),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct EstimateForm {
+    #[serde(default)]
+    phrase: String,
+    #[serde(default)]
+    amount: String,
+    #[serde(default)]
+    revision: String,
+}
+
+pub async fn estimate_post(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(reference): Path<String>,
+    Form(form): Form<EstimateForm>,
+) -> Response {
+    let today = state.today();
+    let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
+        return page(&headers, gens::not_found(&reference, today)).into_response();
+    };
+    let PersonKey::Client { id: client_id } = dossier.key else {
+        return page(
+            &headers,
+            gens::dossier_markup(&dossier, today, Some("cette chemise n'est pas une cliente")),
+        )
+        .into_response();
+    };
+    let phrase = form.phrase.trim().to_string();
+    let mut errors = gens::EstimateErrors {
+        phrase: None,
+        amount: None,
+        banner: None,
+    };
+    if phrase.is_empty() {
+        errors.phrase = Some("ce dont il s'agit".into());
+    }
+    let amount = match Money::parse_decimal(form.amount.trim()) {
+        Ok(amount) if amount.cents() > 0 => Some(amount),
+        Ok(_) => {
+            errors.amount = Some("un montant, même approximatif".into());
+            None
+        }
+        Err(_) => {
+            errors.amount = Some("un montant en euros".into());
+            None
+        }
+    };
+    if errors.phrase.is_some() || errors.amount.is_some() {
+        let values = gens::EstimateValues {
+            phrase,
+            amount: form.amount,
+            revision: form.revision,
+        };
+        return page(&headers, gens::estimate_page(&dossier, &values, &errors)).into_response();
+    }
+    let amount = amount.expect("le montant est validé juste au-dessus");
+    let opportunity_id = dossier.current.opportunity_id;
+    let revision = form.revision.parse::<i64>().ok();
+    let result = state
+        .with_store_mut(|store| -> Result<(), AppError> {
+            if let Some(id) = opportunity_id {
+                let opp = opportunity_by_id(store.connection(), id)?.ok_or_else(|| {
+                    AppError::from(griffe_core::prospection::ProspectionError::NotFound(id))
+                })?;
+                Executor::new(store).execute(
+                    &UpdateOpportunity {
+                        id,
+                        revision: revision.unwrap_or(opp.revision),
+                        name: phrase.clone(),
+                        amount,
+                        probability: opp.probability,
+                        next_action_at: opp.next_action_at,
+                        source: opp.source.clone(),
+                    },
+                    &AppState::human_ctx(),
+                )?;
+            } else {
+                Executor::new(store).execute(
+                    &CreateOpportunity {
+                        client_id,
+                        name: phrase.clone(),
+                        amount,
+                        probability: Probability::new(50).expect("50 ≤ 100"),
+                        next_action_at: today,
+                        source: None,
+                    },
+                    &AppState::human_ctx(),
+                )?;
+            }
+            Ok(())
+        })
+        .await;
+    match result {
+        None => locked(&headers).into_response(),
+        Some(Err(e)) => {
+            let values = gens::EstimateValues {
+                phrase,
+                amount: form.amount,
+                revision: form.revision,
+            };
+            errors.banner = Some(e.to_string());
+            page(&headers, gens::estimate_page(&dossier, &values, &errors)).into_response()
+        }
+        Some(Ok(())) => {
             let href = person_href(&dossier.name);
             let content = state
                 .with_store(|store| {

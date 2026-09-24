@@ -1,7 +1,7 @@
 # Maintainer: dz9oo
 # Gabarit : ne pas soumettre tant que sha256sums n'est pas celui d'une Release réelle.
 pkgname=griffe-bin
-pkgver=0.3.1
+pkgver=0.3.2
 pkgrel=1
 pkgdesc="Lettre du matin pour un indépendant en SASU à l'IS"
 arch=('x86_64')
