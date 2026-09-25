@@ -1913,6 +1913,95 @@ pub fn statement_moves(conn: &Connection, today: Date) -> Result<Vec<StatementMo
     Ok(moves)
 }
 
+/// Lecture déjà donnée à un mouvement, ou l'absence de lecture.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum JournalReading {
+    Unread,
+    Expense {
+        supplier: Option<String>,
+        label: String,
+    },
+    Invoice {
+        party: String,
+        number: String,
+    },
+    /// Sortie vers le dirigeant.
+    ForMe,
+    /// Apport du dirigeant.
+    Contribution,
+    /// Règlement d'une dette reprise, ou autre compte de bilan.
+    Debt {
+        label: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct JournalEntry {
+    pub id: BankTransactionId,
+    #[serde(with = "crate::domain::serde_date::date")]
+    pub occurred_on: Date,
+    pub amount: Money,
+    pub description: String,
+    pub reading: JournalReading,
+}
+
+/// Tous les mouvements importés jusqu'à `today`, du plus récent au plus ancien,
+/// avec la lecture qui leur a été donnée.
+///
+/// # Errors
+pub fn statement_journal(conn: &Connection, today: Date) -> Result<Vec<JournalEntry>, AppError> {
+    let expenses = crate::expenses::list_expenses(conn)?;
+    let invoices = crate::billing::list_invoices(conn)?;
+    let clients = crate::clients::list_clients(conn)?;
+    let mut entries: Vec<JournalEntry> = list_bank_transactions(conn)?
+        .into_iter()
+        .filter(|tx| tx.occurred_on <= today)
+        .map(|tx| {
+            let reading = if let Some(expense_id) = tx.matched_expense_id {
+                let expense = expenses.iter().find(|e| e.id == expense_id);
+                JournalReading::Expense {
+                    supplier: expense.and_then(|e| e.supplier.clone()),
+                    label: expense.map_or_else(|| tx.description.clone(), |e| e.label.clone()),
+                }
+            } else if let Some(invoice_id) = tx.matched_invoice_id {
+                let invoice = invoices.iter().find(|i| i.id == invoice_id);
+                let party = invoice
+                    .and_then(|i| clients.iter().find(|c| c.id == i.client_id))
+                    .map_or_else(|| "un client".to_string(), |c| c.name.clone());
+                let number = invoice.map_or_else(|| "facture".to_string(), |i| i.number.clone());
+                JournalReading::Invoice { party, number }
+            } else if let Some(account) = tx.settlement_account {
+                if account.as_str() == "455000" {
+                    if tx.amount_cents < 0 {
+                        JournalReading::ForMe
+                    } else {
+                        JournalReading::Contribution
+                    }
+                } else {
+                    JournalReading::Debt {
+                        label: tx
+                            .settlement_label
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or_else(|| "règlement d'une dette".to_string()),
+                    }
+                }
+            } else {
+                JournalReading::Unread
+            };
+            JournalEntry {
+                id: tx.id,
+                occurred_on: tx.occurred_on,
+                amount: Money::from_cents(tx.amount_cents),
+                description: tx.description,
+                reading,
+            }
+        })
+        .collect();
+    entries.sort_by(|a, b| b.occurred_on.cmp(&a.occurred_on).then(b.id.cmp(&a.id)));
+    Ok(entries)
+}
+
 fn suggested_reading(
     tx: &BankTransaction,
     lines: &[crate::domain::OpeningBalanceLine],

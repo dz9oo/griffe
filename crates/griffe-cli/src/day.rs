@@ -103,8 +103,13 @@ fn gesture_detail(g: &DayGesture) -> String {
             let who = contact_name.as_deref().unwrap_or(party.as_str());
             format!("{who} — {title}")
         }
-        GestureSource::BankStatement { unmatched } => {
-            if *unmatched == 1 {
+        GestureSource::BankStatement {
+            unmatched,
+            deposited,
+        } => {
+            if !deposited {
+                "aucun relevé déposé".into()
+            } else if *unmatched == 1 {
                 "1 mouvement sans lecture".into()
             } else {
                 format!("{unmatched} mouvements sans lecture")

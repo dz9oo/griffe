@@ -699,6 +699,7 @@ async fn the_day_letter_shows_the_mast_gestures_and_the_month_grid() {
     assert!(jour.contains("class=\"mast\""), "mât visible : {jour}");
     assert!(jour.contains("en banque"), "{jour}");
     assert!(jour.contains("de piste"), "{jour}");
+    assert!(jour.contains("0 prospects / 0 clients"), "{jour}");
     assert!(jour.contains("Samedi 5 septembre 2026"), "{jour}");
     assert!(jour.contains("class=\"gestes\""), "{jour}");
     assert!(
@@ -1137,6 +1138,8 @@ async fn le_jour_nomme_les_conversations_et_le_dossier_note_fiche_estimation_ren
     )
     .await;
     assert!(jour.contains("de piste"), "{jour}");
+    assert!(jour.contains("2 prospects / 1 client"), "{jour}");
+    assert!(jour.contains("class=\"day-split\""), "{jour}");
     assert!(jour.contains("En conversation"), "{jour}");
     assert!(jour.contains("Le porc du Val"), "{jour}");
     assert!(jour.contains("Ferme du Nord"), "{jour}");

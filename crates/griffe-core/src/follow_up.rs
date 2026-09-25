@@ -18,6 +18,31 @@ pub use queries::{
     follow_up_sender,
 };
 
+/// Pose une frontière de cadence sans effacer les lettres déjà classées.
+///
+/// # Errors
+pub(crate) fn open_cycle(
+    conn: &rusqlite::Connection,
+    id: crate::domain::OpportunityId,
+    today: time::Date,
+) -> Result<(), crate::app::AppError> {
+    use crate::domain::{FollowUpEvent, FollowUpEventId, FollowUpFact, FollowUpSubject};
+
+    let events = row::events_for(conn, crate::domain::FollowUpSubject::Opportunity(id))?;
+    let event = FollowUpEvent {
+        id: FollowUpEventId::new(),
+        subject: FollowUpSubject::Opportunity(id),
+        fact: FollowUpFact::CycleOpened,
+        at: commands::stamp_after(today, &events),
+        until: None,
+        rendered_subject: None,
+        rendered_body: None,
+        retracts: None,
+        interaction_id: None,
+    };
+    row::insert_event(conn, &event)
+}
+
 #[cfg(test)]
 mod tests {
     use time::{Date, Month};

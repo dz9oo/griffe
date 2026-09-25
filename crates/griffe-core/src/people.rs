@@ -21,16 +21,17 @@ use crate::billing::{
 use crate::clients::{client_by_id, list_clients, list_contacts};
 use crate::domain::{
     BankTransaction, Client, ClientId, Expense, ExpenseId, ExpensePaidBy, FollowUpFact,
-    FollowUpSubject, InteractionId, InteractionKind, Invoice, InvoiceId, Milestone, Mission,
-    MissionId, MissionKind, Money, Opportunity, OpportunityId, Quote, QuoteId, QuoteStatus,
-    WriteOffId,
+    FollowUpSubject, InteractionId, InteractionKind, Invoice, InvoiceId, LossReason, Milestone,
+    Mission, MissionId, MissionKind, Money, Opportunity, OpportunityId, OpportunityStage, Quote,
+    QuoteId, QuoteStatus, WriteOffId,
 };
 use crate::expenses::list_expenses;
 use crate::follow_up::{CardStatus, FollowUpCard, events_for, follow_up_board};
 use crate::missions::{MissionFilter, list_missions_with, list_time_entries, mission_by_id};
 use crate::opening_balance::opening_balance;
 use crate::prospection::{
-    list_interactions, list_open_opportunities, list_opportunities, opportunity_by_id,
+    OpportunityFilter, list_interactions, list_open_opportunities, list_opportunities,
+    list_opportunities_with, opportunity_by_id,
 };
 use crate::quotes::{list_quotes, priced_lines, quote_by_id};
 use crate::reference::{RefMatch, resolve_among, resolve_client};
@@ -77,6 +78,8 @@ pub enum PersonChapter {
     Mission,
     /// Chez qui l'argent est déjà sorti — une dépense à un nom, pas une dette.
     Outgoing,
+    /// Conversation perdue, encore consultable.
+    Stopped,
 }
 
 /// Forme d'une mission, sans les montants — la fenêtre dit « régie » / « forfait ».
@@ -112,11 +115,22 @@ pub enum PersonCue {
         on: Date,
         today: bool,
     },
-    FirstExchange {
-        #[serde(with = "crate::domain::serde_date::date")]
-        on: Date,
+    /// Rien n'a encore été envoyé.
+    FirstMessage,
+    /// Une lettre classée, ou un e-mail noté, sans suite.
+    FirstContact,
+    /// Plusieurs échanges, ou une rencontre, sans estimation.
+    InExchange,
+    /// Montant noté, devis formel non envoyé.
+    EstimateNoted,
+    /// Brouillon prêt, pas encore classé.
+    DraftReady,
+    /// Conversation rouverte, rien de nouveau depuis.
+    Resumed,
+    /// Conversation arrêtée. Le motif est celui posé à la clôture.
+    Lost {
+        reason: Option<LossReason>,
     },
-    NothingScheduled,
     InvoiceOverdue {
         days: i64,
     },
@@ -215,12 +229,17 @@ pub struct PeopleList {
     pub conversations: Vec<PersonRow>,
     pub missions: Vec<PersonRow>,
     pub outgoing: Vec<PersonRow>,
+    /// Hors du compte « X noms » : on les relit, on peut les rouvrir.
+    pub stopped: Vec<PersonRow>,
 }
 
 impl PeopleList {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.conversations.is_empty() && self.missions.is_empty() && self.outgoing.is_empty()
+        self.conversations.is_empty()
+            && self.missions.is_empty()
+            && self.outgoing.is_empty()
+            && self.stopped.is_empty()
     }
 }
 
@@ -245,6 +264,18 @@ pub enum PersonAction {
         subject: FollowUpSubject,
     },
     FileStatement,
+    /// Le prospect ne donne pas suite.
+    Stop {
+        opportunity_id: OpportunityId,
+    },
+    /// La conversation devient une mission au forfait.
+    Win {
+        opportunity_id: OpportunityId,
+    },
+    /// Une conversation arrêtée reprend, sur le même dossier.
+    Reopen {
+        opportunity_id: OpportunityId,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -356,6 +387,18 @@ pub struct PersonDossier {
     pub actions: Vec<PersonAction>,
     pub follow_up_subject: Option<FollowUpSubject>,
     pub outgoing: Option<OutgoingChapter>,
+    /// Posé seulement tant que la conversation est arrêtée.
+    #[serde(default)]
+    pub loss_reason: Option<LossReason>,
+    /// Travaux notés sur l'estimation. Vide tant que l'historique n'est pas chargé.
+    #[serde(default)]
+    pub work: Vec<WorkLine>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkLine {
+    pub label: String,
+    pub amount: Money,
 }
 
 /// Liste unique, trois chapitres. Un client en mission n'apparaît pas aussi en conversation.
@@ -551,6 +594,48 @@ fn cadence_of(dates: &[Date]) -> OutgoingCadence {
     }
 }
 
+const CYCLE_OPENED: &str = "cycle_opened";
+
+fn sent_letters(card: &FollowUpCard) -> u32 {
+    u32::try_from(
+        card.history
+            .iter()
+            .filter(|item| item.fact == FollowUpFact::MarkedSent.as_str())
+            .count(),
+    )
+    .unwrap_or(u32::MAX)
+}
+
+fn cycle_opened_on(card: &FollowUpCard) -> Option<Date> {
+    card.history
+        .iter()
+        .rev()
+        .find(|item| item.fact == CYCLE_OPENED)
+        .map(|item| item.on)
+}
+
+/// Reprise sans lettre, brouillon ni rencontre plus récente que la frontière.
+fn resumed_quiet(card: &FollowUpCard, touch: Option<&Touch>) -> bool {
+    let Some(idx) = card
+        .history
+        .iter()
+        .rposition(|item| item.fact == CYCLE_OPENED)
+    else {
+        return false;
+    };
+    let on = card.history[idx].on;
+    // Les lettres sont datées du `today` du coffre. L'interaction e-mail, elle, prend
+    // l'horloge : on ne s'en sert pas pour savoir si quelque chose est plus récent.
+    let newer = card.history[idx + 1..].iter().any(|item| {
+        item.fact == FollowUpFact::MarkedSent.as_str()
+            || item.fact == FollowUpFact::DraftPrepared.as_str()
+    });
+    if newer {
+        return false;
+    }
+    touch.is_none_or(|t| t.last_meeting.is_none_or(|d| d <= on))
+}
+
 fn quote_net(quote: &Quote) -> Money {
     priced_lines(&quote.lines, quote.discount)
         .into_iter()
@@ -578,6 +663,16 @@ struct Snapshot {
     opening_opens_on: Option<Date>,
     follow_ups: Vec<FollowUpCard>,
     prospect_ids: HashSet<ClientId>,
+    touches: HashMap<OpportunityId, Touch>,
+    stopped: Vec<Opportunity>,
+}
+
+/// Échanges déjà notés sur une opportunité. Les notes internes ne comptent pas.
+struct Touch {
+    emails: u32,
+    meetings: u32,
+    last_email: Option<Date>,
+    last_meeting: Option<Date>,
 }
 
 impl Snapshot {
@@ -592,6 +687,16 @@ impl Snapshot {
             }
         }
         let opportunities = list_open_opportunities(conn)?;
+        let stopped = list_opportunities_with(
+            conn,
+            OpportunityFilter {
+                include_closed: true,
+                include_archived: false,
+            },
+        )?
+        .into_iter()
+        .filter(|opp| opp.stage == OpportunityStage::Lost)
+        .collect();
         let missions = list_missions_with(conn, MissionFilter::ACTIVE)?;
         let quotes = list_quotes(conn)?;
         let invoices = list_invoices(conn)?;
@@ -624,6 +729,30 @@ impl Snapshot {
             None => (Vec::new(), None),
         };
         let follow_ups = follow_up_board(conn, today)?;
+        let mut touches = HashMap::new();
+        for opp in &opportunities {
+            let mut touch = Touch {
+                emails: 0,
+                meetings: 0,
+                last_email: None,
+                last_meeting: None,
+            };
+            for interaction in list_interactions(conn, opp.id)? {
+                let on = interaction.occurred_at.date();
+                match interaction.kind {
+                    InteractionKind::Email => {
+                        touch.emails += 1;
+                        touch.last_email = Some(touch.last_email.map_or(on, |d| d.max(on)));
+                    }
+                    InteractionKind::Call | InteractionKind::Meeting | InteractionKind::Visio => {
+                        touch.meetings += 1;
+                        touch.last_meeting = Some(touch.last_meeting.map_or(on, |d| d.max(on)));
+                    }
+                    InteractionKind::Note => {}
+                }
+            }
+            touches.insert(opp.id, touch);
+        }
         Ok(Self {
             clients,
             contacts,
@@ -640,6 +769,8 @@ impl Snapshot {
             opening_opens_on,
             follow_ups,
             prospect_ids,
+            touches,
+            stopped,
         })
     }
 
@@ -717,10 +848,37 @@ impl Snapshot {
         });
         let outgoing: Vec<PersonRow> = outgoing.into_iter().map(|(_, _, row)| row).collect();
 
+        let mut stopped: Vec<PersonRow> = self
+            .stopped
+            .iter()
+            .map(|opp| self.stopped_row(opp))
+            .collect();
+        stopped.sort_by(|a, b| a.name.cmp(&b.name));
+
         PeopleList {
             conversations,
             missions,
             outgoing,
+            stopped,
+        }
+    }
+
+    fn stopped_row(&self, opp: &Opportunity) -> PersonRow {
+        let party = self.name_of(opp.client_id);
+        let name = self.display_name(opp.client_id);
+        let figure =
+            (opp.amount.cents() != 0).then_some(PersonFigure::Around { amount: opp.amount });
+        PersonRow {
+            key: PersonKey::Client { id: opp.client_id },
+            name,
+            party,
+            chapter: PersonChapter::Stopped,
+            figure,
+            cues: vec![PersonCue::Lost {
+                reason: opp.loss_reason.clone(),
+            }],
+            client_id: Some(opp.client_id),
+            opportunity_id: Some(opp.id),
         }
     }
 
@@ -728,35 +886,53 @@ impl Snapshot {
         let party = self.name_of(opp.client_id);
         let name = self.display_name(opp.client_id);
         let quote = self.latest_quote(opp.client_id);
+        let sent = quote.as_ref().filter(|q| q.status == QuoteStatus::Sent);
         let mut cues = Vec::new();
         let mut figure =
             (opp.amount.cents() != 0).then_some(PersonFigure::Around { amount: opp.amount });
-        if let Some(q) = quote.filter(|q| q.status == QuoteStatus::Sent) {
+        let card = self.follow_up_for_opportunity(opp.id);
+        let touch = self.touches.get(&opp.id);
+        let letters = card.map_or(0, sent_letters);
+        let emails = touch.map_or(letters, |t| t.emails.max(letters));
+        let meetings = touch.map_or(0, |t| t.meetings);
+        let drafted = card.is_some_and(|c| c.status == CardStatus::Drafted);
+        let estimate = opp.amount.cents() != 0;
+        let resumed = card.is_some_and(|c| resumed_quiet(c, touch));
+        if drafted {
+            cues.push(PersonCue::DraftReady);
+        } else if let Some(q) = sent {
             cues.push(PersonCue::QuoteSent {
                 on: q.created_at.date(),
             });
             figure = Some(PersonFigure::Money {
-                amount: quote_net(&q),
+                amount: quote_net(q),
             });
+        } else if resumed {
+            cues.push(PersonCue::Resumed);
+            if estimate {
+                cues.push(PersonCue::EstimateNoted);
+            }
+        } else if estimate {
+            cues.push(PersonCue::EstimateNoted);
+        } else if meetings >= 1 || emails >= 2 {
+            cues.push(PersonCue::InExchange);
+        } else if emails == 1 {
+            cues.push(PersonCue::FirstContact);
+        } else {
+            cues.push(PersonCue::FirstMessage);
         }
-        if let Some(card) = self.follow_up_for_opportunity(opp.id)
-            && let Some(on) = card.due_on
-            && matches!(
-                card.status,
-                CardStatus::Due | CardStatus::Overdue | CardStatus::Drafted
-            )
-        {
-            cues.push(PersonCue::FollowUpDue {
-                on,
-                today: on <= today,
-            });
-        } else if let Some(on) = opp.next_action_at
-            && on <= today
-        {
-            cues.push(PersonCue::FollowUpDue { on, today: true });
-        }
-        if cues.is_empty() {
-            cues.push(PersonCue::NothingScheduled);
+        if let Some(on) = card.and_then(|c| c.due_on).or(opp.next_action_at) {
+            let stage_says_today = on <= today
+                && (cues.contains(&PersonCue::FirstMessage)
+                    || cues.contains(&PersonCue::DraftReady));
+            let resumed_today = cues.contains(&PersonCue::Resumed)
+                && card.is_some_and(|c| cycle_opened_on(c) == Some(today));
+            if !stage_says_today && !resumed_today {
+                cues.push(PersonCue::FollowUpDue {
+                    on,
+                    today: on <= today,
+                });
+            }
         }
         PersonRow {
             key: PersonKey::Client { id: opp.client_id },
@@ -978,9 +1154,14 @@ impl Snapshot {
         let contact_name = self.contact_name(id);
         let name = self.display_name(id);
         let mission = self.missions.iter().find(|m| m.client_id == id);
-        let opp = self.opportunities.iter().find(|o| o.client_id == id);
+        let open = self.opportunities.iter().find(|o| o.client_id == id);
+        let stopped_opp = self.stopped.iter().find(|o| o.client_id == id);
+        let opp = open.or(stopped_opp);
+        let is_stopped = open.is_none() && stopped_opp.is_some();
         let chapter = if mission.is_some() {
             PersonChapter::Mission
+        } else if is_stopped {
+            PersonChapter::Stopped
         } else {
             PersonChapter::Conversation
         };
@@ -1058,18 +1239,36 @@ impl Snapshot {
         });
 
         let mut actions = Vec::new();
-        if let Some(subject) = follow_subject {
-            actions.push(PersonAction::Write { subject });
-        }
-        actions.push(PersonAction::Fiche { client_id: id });
-        actions.push(PersonAction::Quote { client_id: id });
-        if let Some(o) = opp {
-            actions.push(PersonAction::LogMeeting {
-                opportunity_id: o.id,
-            });
-        }
-        if let Some(subject) = follow_subject {
-            actions.push(PersonAction::Snooze { subject });
+        if is_stopped {
+            if let Some(o) = opp {
+                actions.push(PersonAction::Reopen {
+                    opportunity_id: o.id,
+                });
+            }
+        } else {
+            if let Some(subject) = follow_subject {
+                actions.push(PersonAction::Write { subject });
+            }
+            actions.push(PersonAction::Fiche { client_id: id });
+            actions.push(PersonAction::Quote { client_id: id });
+            if let Some(o) = opp {
+                actions.push(PersonAction::LogMeeting {
+                    opportunity_id: o.id,
+                });
+                if mission.is_none() {
+                    if o.amount.cents() != 0 {
+                        actions.push(PersonAction::Win {
+                            opportunity_id: o.id,
+                        });
+                    }
+                    actions.push(PersonAction::Stop {
+                        opportunity_id: o.id,
+                    });
+                }
+            }
+            if let Some(subject) = follow_subject {
+                actions.push(PersonAction::Snooze { subject });
+            }
         }
 
         Some(PersonDossier {
@@ -1087,6 +1286,8 @@ impl Snapshot {
             actions,
             follow_up_subject: follow_subject,
             outgoing: None,
+            loss_reason: stopped_opp.and_then(|o| o.loss_reason.clone()),
+            work: Vec::new(),
         })
     }
 
@@ -1136,6 +1337,8 @@ impl Snapshot {
             actions,
             follow_up_subject: None,
             outgoing: Some(facts),
+            loss_reason: None,
+            work: Vec::new(),
         })
     }
 
@@ -1231,6 +1434,12 @@ pub fn people_dossier_with_history(
 ) -> Result<PersonDossier, AppError> {
     let mut dossier = people_dossier(conn, needle, today)?;
     fill_history(conn, &mut dossier, today)?;
+    if let Some(id) = dossier.current.opportunity_id {
+        dossier.work = crate::prospection::estimation_lines(conn, id)?
+            .into_iter()
+            .map(|(label, amount)| WorkLine { label, amount })
+            .collect();
+    }
     Ok(dossier)
 }
 
@@ -1669,6 +1878,246 @@ mod tests {
                             due_on: Some(date(2026, TimeMonth::September, 22)),
                         }],
                         started_on: date(2026, TimeMonth::June, 1),
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+    }
+
+    #[test]
+    fn a_fresh_prospect_is_a_first_message_and_a_filed_letter_is_first_contact() {
+        let mut store = test_store("cues-stage");
+        let today = today();
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &SetFollowUpSender {
+                        email: "moi@lumen.test".into(),
+                        name: Some("Moi".into()),
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &CreateProspect {
+                        prospect_name: "Ferme du Nord".into(),
+                        address: None,
+                        representative: None,
+                        email: Some("ferme@nord.test".into()),
+                        phone: None,
+                        name: "visite".into(),
+                        amount: Money::ZERO,
+                        probability: Probability::new(10).unwrap(),
+                        next_action_at: today,
+                        source: None,
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        let porc = applied(
+            Executor::new(&mut store)
+                .execute(
+                    &CreateProspect {
+                        prospect_name: "Le porc du Val".into(),
+                        address: None,
+                        representative: None,
+                        email: Some("porc@val.test".into()),
+                        phone: None,
+                        name: "charcuterie".into(),
+                        amount: Money::ZERO,
+                        probability: Probability::new(10).unwrap(),
+                        next_action_at: today,
+                        source: None,
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &crate::follow_up::MarkFollowUpSent {
+                        subject: FollowUpSubject::Opportunity(porc),
+                        today,
+                        subject_line: Some("Premier contact".into()),
+                        body: Some("Bonjour,\n\nJe me permets un premier message.\n".into()),
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+
+        let list = people_list(store.connection(), today).unwrap();
+        let ferme = list
+            .conversations
+            .iter()
+            .find(|r| r.name.contains("Ferme"))
+            .expect("Ferme");
+        assert!(
+            ferme
+                .cues
+                .iter()
+                .any(|c| matches!(c, PersonCue::FirstMessage)),
+            "{:?}",
+            ferme.cues
+        );
+        assert!(
+            !ferme
+                .cues
+                .iter()
+                .any(|c| matches!(c, PersonCue::FollowUpDue { .. })),
+            "le premier message ne se dit pas comme une relance : {:?}",
+            ferme.cues
+        );
+        let porc = list
+            .conversations
+            .iter()
+            .find(|r| r.name.contains("porc"))
+            .expect("porc");
+        assert!(
+            porc.cues
+                .iter()
+                .any(|c| matches!(c, PersonCue::FirstContact)),
+            "{:?}",
+            porc.cues
+        );
+        assert!(
+            porc.cues
+                .iter()
+                .any(|c| matches!(c, PersonCue::FollowUpDue { today: false, .. })),
+            "le prochain pas est dans trois jours : {:?}",
+            porc.cues
+        );
+    }
+
+    #[test]
+    fn a_lost_conversation_can_be_reopened_with_its_letter_and_its_estimate() {
+        let mut store = test_store("reopen");
+        let today = today();
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &SetFollowUpSender {
+                        email: "moi@lumen.test".into(),
+                        name: Some("Moi".into()),
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        let id = applied(
+            Executor::new(&mut store)
+                .execute(
+                    &CreateProspect {
+                        prospect_name: "Le porc du Val".into(),
+                        address: None,
+                        representative: None,
+                        email: Some("porc@val.test".into()),
+                        phone: None,
+                        name: "charcuterie".into(),
+                        amount: Money::from_cents(180_000),
+                        probability: Probability::new(20).unwrap(),
+                        next_action_at: today,
+                        source: None,
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &crate::follow_up::MarkFollowUpSent {
+                        subject: FollowUpSubject::Opportunity(id),
+                        today,
+                        subject_line: Some("Premier contact".into()),
+                        body: Some("Bonjour,\n\nPremier message.\n".into()),
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &crate::prospection::LoseOpportunity {
+                        opportunity_id: id,
+                        reason: crate::domain::LossReason::NoResponse,
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        let lost = people_list(store.connection(), today).unwrap();
+        assert!(lost.conversations.is_empty());
+        assert_eq!(lost.stopped.len(), 1);
+        assert!(
+            lost.stopped[0]
+                .cues
+                .iter()
+                .any(|c| matches!(c, PersonCue::Lost { .. })),
+            "{:?}",
+            lost.stopped[0].cues
+        );
+
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &crate::prospection::ReopenOpportunity {
+                        opportunity_id: id,
+                        next_action_at: today,
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        let back = people_list(store.connection(), today).unwrap();
+        assert!(back.stopped.is_empty());
+        let row = back
+            .conversations
+            .iter()
+            .find(|r| r.name.contains("porc"))
+            .expect("porc");
+        assert!(
+            row.cues.iter().any(|c| matches!(c, PersonCue::Resumed)),
+            "{:?}",
+            row.cues
+        );
+        assert!(
+            row.cues
+                .iter()
+                .any(|c| matches!(c, PersonCue::EstimateNoted)),
+            "{:?}",
+            row.cues
+        );
+        assert!(
+            !row.cues
+                .iter()
+                .any(|c| matches!(c, PersonCue::FollowUpDue { .. })),
+            "le jour de la reprise ne dit pas à reprendre : {:?}",
+            row.cues
+        );
+        let dossier = person(store.connection(), "Le porc du Val", today).unwrap();
+        assert!(
+            dossier
+                .history
+                .iter()
+                .any(|event| matches!(event.kind, HistoryKind::Letter { .. })),
+            "la lettre classée est toujours là"
+        );
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &crate::follow_up::MarkFollowUpSent {
+                        subject: FollowUpSubject::Opportunity(id),
+                        today,
+                        subject_line: Some("Reprise".into()),
+                        body: Some("Bonjour,\n\nOn reprend.\n".into()),
                     },
                     &human(),
                 )

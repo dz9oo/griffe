@@ -17,7 +17,8 @@ use griffe_core::expenses::{AttachReceipt, expense_by_id};
 use griffe_core::follow_up::{MarkFollowUpSent, PrepareFollowUp, SnoozeFollowUp};
 use griffe_core::people::{PersonKey, person};
 use griffe_core::prospection::{
-    CreateOpportunity, CreateProspect, LogInteraction, UpdateOpportunity, opportunity_by_id,
+    CreateOpportunity, CreateProspect, EstimationLineInput, LogInteraction, LoseOpportunity,
+    ReopenOpportunity, SetEstimation, WinOpportunity, estimation_lines, opportunity_by_id,
 };
 use maud::{Markup, html};
 use serde::Deserialize;
@@ -434,6 +435,235 @@ pub async fn meeting_post(
     }
 }
 
+pub async fn stop_get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(reference): Path<String>,
+) -> Html<String> {
+    let today = state.today();
+    match load_dossier(&state, &reference).await {
+        Some(Ok(dossier)) => page(&headers, gens::stop_page(&dossier, "", "", None)),
+        _ => page(&headers, gens::not_found(&reference, today)),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct StopForm {
+    #[serde(default)]
+    reason: String,
+    #[serde(default)]
+    detail: String,
+}
+
+pub async fn stop_post(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(reference): Path<String>,
+    Form(form): Form<StopForm>,
+) -> Response {
+    let today = state.today();
+    let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
+        return page(&headers, gens::not_found(&reference, today)).into_response();
+    };
+    let Some(opportunity_id) = dossier.current.opportunity_id else {
+        return page(
+            &headers,
+            gens::stop_page(
+                &dossier,
+                &form.reason,
+                &form.detail,
+                Some("pas de conversation"),
+            ),
+        )
+        .into_response();
+    };
+    let reason = match crate::views::prospection::parse_loss_reason(&form.reason, &form.detail) {
+        Ok(reason) => reason,
+        Err(msg) => {
+            return page(
+                &headers,
+                gens::stop_page(&dossier, &form.reason, &form.detail, Some(&msg)),
+            )
+            .into_response();
+        }
+    };
+    if matches!(reason, griffe_core::domain::LossReason::Other(ref text) if text.is_empty()) {
+        return page(
+            &headers,
+            gens::stop_page(
+                &dossier,
+                &form.reason,
+                &form.detail,
+                Some("précise le motif"),
+            ),
+        )
+        .into_response();
+    }
+    let cmd = LoseOpportunity {
+        opportunity_id,
+        reason,
+    };
+    let result = state
+        .with_store_mut(|store| Executor::new(store).execute(&cmd, &AppState::human_ctx()))
+        .await;
+    match result {
+        None => locked(&headers).into_response(),
+        Some(Err(e)) => page(
+            &headers,
+            gens::stop_page(&dossier, &form.reason, &form.detail, Some(&e.to_string())),
+        )
+        .into_response(),
+        Some(Ok(_)) => dossier_after(&state, &headers, &reference, &dossier.name).await,
+    }
+}
+
+pub async fn win_get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(reference): Path<String>,
+) -> Html<String> {
+    let today = state.today();
+    match load_dossier(&state, &reference).await {
+        Some(Ok(dossier)) => page(
+            &headers,
+            gens::win_page(&dossier, &format_date(today), None),
+        ),
+        _ => page(&headers, gens::not_found(&reference, today)),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WinForm {
+    #[serde(default)]
+    started_on: String,
+}
+
+pub async fn win_post(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(reference): Path<String>,
+    Form(form): Form<WinForm>,
+) -> Response {
+    let today = state.today();
+    let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
+        return page(&headers, gens::not_found(&reference, today)).into_response();
+    };
+    let Some(opportunity_id) = dossier.current.opportunity_id else {
+        return page(
+            &headers,
+            gens::win_page(&dossier, &form.started_on, Some("pas de conversation")),
+        )
+        .into_response();
+    };
+    if dossier
+        .current
+        .amount
+        .is_none_or(|amount| amount.cents() == 0)
+    {
+        return page(
+            &headers,
+            gens::win_page(
+                &dossier,
+                &form.started_on,
+                Some("note d'abord une estimation"),
+            ),
+        )
+        .into_response();
+    }
+    let started_on = parse_date(&form.started_on).unwrap_or(today);
+    let cmd = WinOpportunity {
+        opportunity_id,
+        started_on,
+    };
+    let result = state
+        .with_store_mut(|store| Executor::new(store).execute(&cmd, &AppState::human_ctx()))
+        .await;
+    match result {
+        None => locked(&headers).into_response(),
+        Some(Err(e)) => page(
+            &headers,
+            gens::win_page(&dossier, &form.started_on, Some(&e.to_string())),
+        )
+        .into_response(),
+        Some(Ok(_)) => dossier_after(&state, &headers, &reference, &dossier.name).await,
+    }
+}
+
+pub async fn reopen_get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(reference): Path<String>,
+) -> Html<String> {
+    let today = state.today();
+    match load_dossier(&state, &reference).await {
+        Some(Ok(dossier)) => page(
+            &headers,
+            gens::reopen_page(&dossier, &format_date(today), None),
+        ),
+        _ => page(&headers, gens::not_found(&reference, today)),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ReopenForm {
+    #[serde(default)]
+    when: String,
+}
+
+pub async fn reopen_post(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(reference): Path<String>,
+    Form(form): Form<ReopenForm>,
+) -> Response {
+    let today = state.today();
+    let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
+        return page(&headers, gens::not_found(&reference, today)).into_response();
+    };
+    let Some(opportunity_id) = dossier.current.opportunity_id else {
+        return page(
+            &headers,
+            gens::reopen_page(&dossier, &form.when, Some("pas de conversation arrêtée")),
+        )
+        .into_response();
+    };
+    let when = parse_date(&form.when).unwrap_or(today);
+    let cmd = ReopenOpportunity {
+        opportunity_id,
+        next_action_at: when,
+    };
+    let result = state
+        .with_store_mut(|store| Executor::new(store).execute(&cmd, &AppState::human_ctx()))
+        .await;
+    match result {
+        None => locked(&headers).into_response(),
+        Some(Err(e)) => page(
+            &headers,
+            gens::reopen_page(&dossier, &form.when, Some(&e.to_string())),
+        )
+        .into_response(),
+        Some(Ok(_)) => dossier_after(&state, &headers, &reference, &dossier.name).await,
+    }
+}
+
+async fn dossier_after(
+    state: &AppState,
+    headers: &HeaderMap,
+    reference: &str,
+    name: &str,
+) -> Response {
+    let today = state.today();
+    let href = person_href(name);
+    let content = state
+        .with_store(|store| {
+            gens::dossier_page(store, reference, today)
+                .unwrap_or_else(|err| html! { div class="empty-state" { (err.to_string()) } })
+        })
+        .await
+        .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
+    with_push(headers, &href, content)
+}
+
 fn blank(value: &str) -> Option<String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -760,18 +990,27 @@ pub async fn estimate_get(
                 .opportunity_id
                 .and_then(|id| opportunity_by_id(store.connection(), id).ok().flatten());
             Ok(match opp {
-                Some(opp) => gens::EstimateValues {
-                    phrase: opp.name,
-                    amount: if opp.amount.cents() == 0 {
-                        String::new()
-                    } else {
-                        opp.amount.to_decimal_string()
-                    },
-                    revision: opp.revision.to_string(),
-                },
+                Some(opp) => {
+                    let stored = estimation_lines(store.connection(), opp.id)?;
+                    let mut lines: Vec<(String, String)> = stored
+                        .into_iter()
+                        .map(|(label, amount)| (label, amount.to_decimal_string()))
+                        .collect();
+                    if lines.is_empty() && opp.amount.cents() > 0 {
+                        lines.push((opp.name.clone(), opp.amount.to_decimal_string()));
+                    }
+                    if lines.is_empty() {
+                        lines.push((String::new(), String::new()));
+                    }
+                    gens::EstimateValues {
+                        phrase: opp.name,
+                        lines,
+                        revision: opp.revision.to_string(),
+                    }
+                }
                 None => gens::EstimateValues {
                     phrase: dossier.current.opportunity_name.clone().unwrap_or_default(),
-                    amount: String::new(),
+                    lines: vec![(String::new(), String::new())],
                     revision: String::new(),
                 },
             })
@@ -790,7 +1029,7 @@ pub async fn estimate_get(
                 &values,
                 &gens::EstimateErrors {
                     phrase: None,
-                    amount: None,
+                    lines: None,
                     banner: None,
                 },
             ),
@@ -803,9 +1042,16 @@ pub struct EstimateForm {
     #[serde(default)]
     phrase: String,
     #[serde(default)]
+    label: Vec<String>,
+    /// Ancien formulaire : un seul montant.
+    #[serde(default)]
     amount: String,
     #[serde(default)]
+    euros: Vec<String>,
+    #[serde(default)]
     revision: String,
+    #[serde(default)]
+    add: String,
 }
 
 pub async fn estimate_post(
@@ -826,67 +1072,116 @@ pub async fn estimate_post(
         .into_response();
     };
     let phrase = form.phrase.trim().to_string();
+    let mut paired: Vec<(String, String)> = if form.label.is_empty() && !form.amount.trim().is_empty()
+    {
+        vec![(phrase.clone(), form.amount.clone())]
+    } else {
+        form.label
+            .iter()
+            .zip(form.euros.iter())
+            .map(|(label, amount)| (label.clone(), amount.clone()))
+            .filter(|(label, amount)| !label.trim().is_empty() || !amount.trim().is_empty())
+            .collect()
+    };
+    if !form.add.is_empty() {
+        paired.push((String::new(), String::new()));
+        let values = gens::EstimateValues {
+            phrase,
+            lines: if paired.is_empty() {
+                vec![(String::new(), String::new())]
+            } else {
+                paired
+            },
+            revision: form.revision,
+        };
+        return page(
+            &headers,
+            gens::estimate_page(
+                &dossier,
+                &values,
+                &gens::EstimateErrors {
+                    phrase: None,
+                    lines: None,
+                    banner: None,
+                },
+            ),
+        )
+        .into_response();
+    }
     let mut errors = gens::EstimateErrors {
         phrase: None,
-        amount: None,
+        lines: None,
         banner: None,
     };
     if phrase.is_empty() {
         errors.phrase = Some("ce dont il s'agit".into());
     }
-    let amount = match Money::parse_decimal(form.amount.trim()) {
-        Ok(amount) if amount.cents() > 0 => Some(amount),
-        Ok(_) => {
-            errors.amount = Some("un montant, même approximatif".into());
-            None
+    let mut parsed = Vec::new();
+    for (label, amount) in &paired {
+        match Money::parse_decimal(amount.trim()) {
+            Ok(amount) if amount.cents() > 0 && !label.trim().is_empty() => {
+                parsed.push(EstimationLineInput {
+                    label: label.trim().to_string(),
+                    amount,
+                });
+            }
+            _ => errors.lines = Some("chaque ligne a un libellé et un montant".into()),
         }
-        Err(_) => {
-            errors.amount = Some("un montant en euros".into());
-            None
-        }
-    };
-    if errors.phrase.is_some() || errors.amount.is_some() {
+    }
+    if parsed.is_empty() {
+        errors.lines = Some("au moins une ligne de travaux".into());
+    }
+    if errors.phrase.is_some() || errors.lines.is_some() {
         let values = gens::EstimateValues {
             phrase,
-            amount: form.amount,
+            lines: if paired.is_empty() {
+                vec![(String::new(), String::new())]
+            } else {
+                paired
+            },
             revision: form.revision,
         };
         return page(&headers, gens::estimate_page(&dossier, &values, &errors)).into_response();
     }
-    let amount = amount.expect("le montant est validé juste au-dessus");
     let opportunity_id = dossier.current.opportunity_id;
     let revision = form.revision.parse::<i64>().ok();
     let result = state
         .with_store_mut(|store| -> Result<(), AppError> {
-            if let Some(id) = opportunity_id {
-                let opp = opportunity_by_id(store.connection(), id)?.ok_or_else(|| {
-                    AppError::from(griffe_core::prospection::ProspectionError::NotFound(id))
-                })?;
-                Executor::new(store).execute(
-                    &UpdateOpportunity {
-                        id,
-                        revision: revision.unwrap_or(opp.revision),
-                        name: phrase.clone(),
-                        amount,
-                        probability: opp.probability,
-                        next_action_at: opp.next_action_at,
-                        source: opp.source.clone(),
-                    },
-                    &AppState::human_ctx(),
-                )?;
+            let id = if let Some(id) = opportunity_id {
+                id
             } else {
-                Executor::new(store).execute(
+                let outcome = Executor::new(store).execute(
                     &CreateOpportunity {
                         client_id,
                         name: phrase.clone(),
-                        amount,
+                        amount: Money::from_cents(1),
                         probability: Probability::new(50).expect("50 ≤ 100"),
                         next_action_at: today,
                         source: None,
                     },
                     &AppState::human_ctx(),
                 )?;
-            }
+                match outcome {
+                    Outcome::Applied(id) | Outcome::AlreadyApplied(id) => id,
+                    Outcome::DryRun | Outcome::PendingConfirmation(_) => {
+                        return Err(AppError::from(
+                            griffe_core::prospection::ProspectionError::EstimationRequired,
+                        ));
+                    }
+                }
+            };
+            let opp = opportunity_by_id(store.connection(), id)?.ok_or_else(|| {
+                AppError::from(griffe_core::prospection::ProspectionError::NotFound(id))
+            })?;
+            Executor::new(store).execute(
+                &SetEstimation {
+                    id,
+                    revision: revision.unwrap_or(opp.revision),
+                    name: phrase.clone(),
+                    lines: parsed.clone(),
+                },
+                &AppState::human_ctx(),
+            )?;
             Ok(())
         })
         .await;
@@ -895,7 +1190,7 @@ pub async fn estimate_post(
         Some(Err(e)) => {
             let values = gens::EstimateValues {
                 phrase,
-                amount: form.amount,
+                lines: paired,
                 revision: form.revision,
             };
             errors.banner = Some(e.to_string());

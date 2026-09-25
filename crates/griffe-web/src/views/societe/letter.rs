@@ -9,10 +9,11 @@ use griffe_core::papers::papers_checklist;
 use griffe_core::society::{
     AmountBasis, AmountStory, BeatKind, BeatWhen, BoxCoverage, BoxRole, ClosingBeat, ClosingStory,
     ConversationBar, CurrentAccount, CurrentAccountBalance, DividendClosed, DividendDoor, Duty,
-    DutyBriefing, Expect, FormBox, IdentityCard, IdentityShort, Landscape, PayYourself,
-    SocietyHome, StatementMove, StatementReading, UnknownReason, VatCarryInRecord, VatPosition,
-    VatRefundStatus, WaiverReason, closing_story, current_account, duty_briefing, pay_yourself,
-    society_duties, society_home, society_identity, statement_moves, vat_carry_in,
+    DutyBriefing, Expect, FormBox, IdentityCard, IdentityShort, JournalReading, Landscape,
+    PayYourself, SocietyHome, StatementMove, StatementReading, UnknownReason, VatCarryInRecord,
+    VatPosition, VatRefundStatus, WaiverReason, closing_story, current_account, duty_briefing,
+    pay_yourself, society_duties, society_home, society_identity, statement_journal,
+    statement_moves, vat_carry_in,
 };
 use griffe_core::store::Store;
 use maud::{Markup, PreEscaped, html};
@@ -1228,31 +1229,74 @@ fn beat_text(beat: &ClosingBeat) -> String {
 }
 
 pub fn statement(store: &Store, today: Date) -> Result<Markup, AppError> {
-    let moves = statement_moves(store.connection(), today)?;
-    Ok(statement_markup(&moves))
+    let journal = statement_journal(store.connection(), today)?;
+    let pending = statement_moves(store.connection(), today)?;
+    Ok(statement_markup(&journal, &pending))
 }
 
-fn statement_markup(moves: &[StatementMove]) -> Markup {
+fn statement_markup(
+    journal: &[griffe_core::society::JournalEntry],
+    pending: &[StatementMove],
+) -> Markup {
+    let last = journal.iter().map(|e| e.occurred_on).max();
+    let unread = journal
+        .iter()
+        .filter(|e| matches!(e.reading, JournalReading::Unread))
+        .count();
     html! {
-        div class="letter" data-view=(ViewId::Societe.slug())
+        div class="letter spread" data-view=(ViewId::Societe.slug())
             hx-get="/societe/releve"
             hx-trigger="griffe:saved from:body"
             hx-swap="outerHTML"
             hx-disinherit="hx-swap" {
             (back())
             h1 { "Le relevé." }
-            p class="lede" { "Chaque mouvement est une phrase. Tu lui donnes une lecture. Rien n'est une « écriture »." }
-            @if moves.is_empty() {
-                p class="prose" { "Tout est lu." }
+            p class="lede" {
+                @if let Some(on) = last {
+                    "Dernier mouvement au " (format_date_fr(on)) ". "
+                }
+                "Tu déposes l'export de la banque quand il y a du nouveau. Griffe ne va pas le chercher."
             }
-            @for m in moves {
+            div class="row-actions" {
+                button class="seal" type="button"
+                    hx-get="/banque/import" hx-target="#panel" hx-swap="innerHTML" {
+                    "Déposer un export"
+                }
+            }
+            @if journal.is_empty() {
+                p class="prose" { "Aucun mouvement dans le coffre." }
+            } @else if unread == 0 {
+                p class="prose" { "Tout est lu. L'historique reste là." }
+            }
+            @for entry in journal {
                 article class="block" {
-                    h3 { (format_date_fr(m.occurred_on)) " · " (m.amount) }
-                    p { (move_phrase(m)) }
-                    div class="row-actions" { (reading_actions(m)) }
+                    h3 {
+                        (format_date_fr(entry.occurred_on)) " · " (entry.amount)
+                        " · " (reading_fr(&entry.reading))
+                    }
+                    @if let Some(m) = pending.iter().find(|m| m.id == entry.id) {
+                        p { (move_phrase(m)) }
+                        div class="row-actions" { (reading_actions(m)) }
+                    } @else {
+                        p { (entry.description) }
+                    }
                 }
             }
         }
+    }
+}
+
+fn reading_fr(reading: &JournalReading) -> String {
+    match reading {
+        JournalReading::Unread => "sans lecture".into(),
+        JournalReading::Expense { supplier, label } => match supplier {
+            Some(name) if !name.is_empty() => format!("dépense · {name} · {label}"),
+            _ => format!("dépense · {label}"),
+        },
+        JournalReading::Invoice { party, number } => format!("encaissement · {party} · {number}"),
+        JournalReading::ForMe => "c'est pour moi".into(),
+        JournalReading::Contribution => "c'est moi qui apporte".into(),
+        JournalReading::Debt { label } => format!("règlement d'une dette · {label}"),
     }
 }
 

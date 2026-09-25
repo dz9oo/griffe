@@ -82,6 +82,8 @@ pub enum FollowUpFact {
     Snoozed,
     DateSet,
     Retracted,
+    /// Frontière de reprise : les faits d'avant restent dans l'historique, la cadence repart.
+    CycleOpened,
 }
 
 impl FollowUpFact {
@@ -94,6 +96,7 @@ impl FollowUpFact {
             Self::Snoozed => "snoozed",
             Self::DateSet => "date_set",
             Self::Retracted => "retracted",
+            Self::CycleOpened => "cycle_opened",
         }
     }
 
@@ -122,6 +125,7 @@ impl FromStr for FollowUpFact {
             "snoozed" => Ok(Self::Snoozed),
             "date_set" => Ok(Self::DateSet),
             "retracted" => Ok(Self::Retracted),
+            "cycle_opened" => Ok(Self::CycleOpened),
             other => Err(UnknownFollowUpFact(other.to_string())),
         }
     }
@@ -270,7 +274,15 @@ pub fn derive_cursor(
     _today: Date,
 ) -> FollowUpCursor {
     let cadence = CadenceStep::cadence(kind);
-    let active = active_events(events);
+    let active_all = active_events(events);
+    // Une reprise garde les lettres d'avant et remet le compteur à zéro.
+    let active: Vec<&FollowUpEvent> = match active_all
+        .iter()
+        .rposition(|event| event.fact == FollowUpFact::CycleOpened)
+    {
+        Some(idx) => active_all[idx + 1..].to_vec(),
+        None => active_all,
+    };
     let position = active.iter().filter(|e| e.fact.advances()).count();
     let exhausted = position >= cadence.len();
     let step = cadence.get(position).copied();

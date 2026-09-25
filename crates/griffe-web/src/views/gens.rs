@@ -9,8 +9,8 @@ use griffe_core::domain::{
 use griffe_core::follow_up::{FollowUpCard, card_for, follow_up_sender};
 use griffe_core::people::{
     CurrentSituation, HistoryEvent, HistoryKind, MissionShape, OutgoingCadence, OutgoingChapter,
-    OutgoingNote, Paper, PaperKind, PaperStatus, PeopleList, PersonAction, PersonCue,
-    PersonDossier, PersonFigure, PersonKey, PersonRow, people_list, person,
+    OutgoingNote, Paper, PaperKind, PaperStatus, PeopleList, PersonAction, PersonChapter,
+    PersonCue, PersonDossier, PersonFigure, PersonKey, PersonRow, people_list, person,
 };
 use griffe_core::store::Store;
 use maud::{Markup, html};
@@ -65,13 +65,53 @@ pub fn list_markup(list: &PeopleList, today: Date, flash: Option<&str>) -> Marku
             }
             (chapter("En conversation", &list.conversations, "Aucune conversation ouverte."))
             (chapter("En mission", &list.missions, "Aucune mission en cours."))
-            (chapter("Chez qui ça sort", &list.outgoing, "Personne pour l'instant. Une dépense à un nom apparaîtra ici."))
+            (outgoing_chapter(&list.outgoing))
+            (stopped_chapter(&list.stopped))
+        }
+    }
+}
+
+fn outgoing_chapter(rows: &[PersonRow]) -> Markup {
+    html! {
+        p class="section-label" { "Chez qui ça sort" }
+        @if rows.is_empty() {
+            p class="empty-state" {
+                "Un nom apparaît ici quand une dépense le porte. En rangeant un débit du relevé, ou en notant une sortie."
+            }
+            div class="row-actions" {
+                button class="quiet" type="button"
+                    hx-get="/depenses/new" hx-target="#panel" hx-swap="innerHTML" {
+                    "Noter une sortie"
+                }
+            }
+        } @else {
+            ul class="people" {
+                @for row in rows {
+                    li { (row_link(row)) }
+                }
+            }
+        }
+    }
+}
+
+fn stopped_chapter(rows: &[PersonRow]) -> Markup {
+    if rows.is_empty() {
+        return html! {};
+    }
+    html! {
+        details class="stopped" {
+            summary class="section-label" { "Arrêtées" }
+            ul class="people" {
+                @for row in rows {
+                    li { (row_link(row)) }
+                }
+            }
         }
     }
 }
 
 fn list_title(list: &PeopleList) -> String {
-    let n = list.conversations.len() + list.missions.len() + list.outgoing.len();
+    let n = list.conversations.len() + list.missions.len();
     match n {
         0 => "Les affaires.".into(),
         1 => "Un nom.".into(),
@@ -143,13 +183,32 @@ fn cues_fr(cues: &[PersonCue]) -> String {
     cues.iter().map(cue_fr).collect::<Vec<_>>().join(" · ")
 }
 
+fn loss_fr(reason: Option<&griffe_core::domain::LossReason>) -> String {
+    use griffe_core::domain::LossReason;
+    let why = match reason {
+        Some(LossReason::Budget) => "le budget ne suivait pas",
+        Some(LossReason::Timing) => "pas le bon moment",
+        Some(LossReason::Competitor) => "quelqu'un d'autre a été choisi",
+        Some(LossReason::NoResponse) => "pas de réponse",
+        Some(LossReason::ScopeMismatch) => "ce n'était pas le bon sujet",
+        Some(LossReason::Other(text)) => text.as_str(),
+        None => "sans motif",
+    };
+    format!("arrêtée · {why}")
+}
+
 fn cue_fr(cue: &PersonCue) -> String {
     match cue {
         PersonCue::QuoteSent { .. } => "estimation envoyée".into(),
-        PersonCue::FollowUpDue { today: true, .. } => "à relancer aujourd'hui".into(),
-        PersonCue::FollowUpDue { on, .. } => format!("à relancer le {}", format_date_fr(*on)),
-        PersonCue::FirstExchange { on } => format!("premier échange le {}", format_date_fr(*on)),
-        PersonCue::NothingScheduled => "rien de posé".into(),
+        PersonCue::FollowUpDue { today: true, .. } => "à reprendre aujourd'hui".into(),
+        PersonCue::FollowUpDue { on, .. } => format!("prochain pas le {}", format_date_fr(*on)),
+        PersonCue::FirstMessage => "premier message à écrire".into(),
+        PersonCue::FirstContact => "premier contact".into(),
+        PersonCue::InExchange => "en échange".into(),
+        PersonCue::EstimateNoted => "estimation posée".into(),
+        PersonCue::DraftReady => "brouillon prêt".into(),
+        PersonCue::Resumed => "repris".into(),
+        PersonCue::Lost { reason } => loss_fr(reason.as_ref()),
         PersonCue::InvoiceOverdue { days } => format!("facture en retard · {days} jours"),
         PersonCue::InvoiceOutstanding => "facture à encaisser".into(),
         PersonCue::NextMilestone { on, label } => {
@@ -191,6 +250,16 @@ pub fn dossier_markup(dossier: &PersonDossier, today: Date, flash: Option<&str>)
                 div class="block" {
                     h3 { "En cours" }
                     p { (body) }
+                    @if !dossier.work.is_empty() {
+                        ul class="hist" {
+                            @for line in &dossier.work {
+                                li {
+                                    span class="when" { (line.amount) }
+                                    span { (line.label) }
+                                }
+                            }
+                        }
+                    }
                 }
             }
             @if let Some(outgoing) = &dossier.outgoing {
@@ -243,6 +312,9 @@ pub fn dossier_markup(dossier: &PersonDossier, today: Date, flash: Option<&str>)
 }
 
 fn subtitle(d: &PersonDossier, today: Date) -> String {
+    if d.chapter == PersonChapter::Stopped {
+        return loss_fr(d.loss_reason.as_ref());
+    }
     if let Some(outgoing) = &d.outgoing {
         return outgoing_subtitle(outgoing, today);
     }
@@ -364,7 +436,7 @@ fn current_paragraph(current: &CurrentSituation, dossier: &PersonDossier) -> Opt
         sentences.push(format!("{name}{amount}."));
     }
     if let Some(PersonCue::FollowUpDue { today: true, .. }) = &current.follow_up {
-        sentences.push("À relancer aujourd'hui.".into());
+        sentences.push("À reprendre aujourd'hui.".into());
     }
     if current.nothing_scheduled && sentences.is_empty() {
         sentences.push("Rien n'est encore écrit.".into());
@@ -776,6 +848,120 @@ fn action_button(action: &PersonAction, dossier_href: &str, today: Date) -> Mark
                 "Ranger le mouvement"
             }
         },
+        PersonAction::Stop { .. } => {
+            let href = format!("{dossier_href}/arreter");
+            html! {
+                a class="quiet" href=(href)
+                  hx-get=(href) hx-target="#content" hx-push-url="true" {
+                    "Cette conversation s'arrête"
+                }
+            }
+        }
+        PersonAction::Win { .. } => {
+            let href = format!("{dossier_href}/client");
+            html! {
+                a class="quiet" href=(href)
+                  hx-get=(href) hx-target="#content" hx-push-url="true" {
+                    "C'est un client"
+                }
+            }
+        }
+        PersonAction::Reopen { .. } => {
+            let href = format!("{dossier_href}/reprise");
+            html! {
+                a class="seal" href=(href)
+                  hx-get=(href) hx-target="#content" hx-push-url="true" {
+                    "Ils reviennent"
+                }
+            }
+        }
+    }
+}
+
+const LOSS_REASONS: &[(&str, &str)] = &[
+    ("", "Choisir"),
+    ("budget", "Le budget ne suit pas"),
+    ("timing", "Pas le bon moment"),
+    ("competitor", "Quelqu'un d'autre a été choisi"),
+    ("no-response", "Pas de réponse"),
+    ("scope-mismatch", "Ce n'est pas le bon sujet"),
+    ("other", "Autre motif"),
+];
+
+pub fn stop_page(
+    dossier: &PersonDossier,
+    reason: &str,
+    detail: &str,
+    error: Option<&str>,
+) -> Markup {
+    let href = person_href(&dossier.name);
+    html! {
+        div class="letter" data-view=(ViewId::Gens.slug()) {
+            a class="back" href=(href) hx-get=(href) hx-target="#content" hx-push-url="true" {
+                "← " (dossier.name)
+            }
+            h1 { "Cette conversation s'arrête." }
+            p class="lede" { "Le dossier quitte la liste du jour. Les lettres, les rencontres et l'estimation restent. On pourra le rouvrir." }
+            @if let Some(msg) = error {
+                p class="mast-note" role="alert" { (msg) }
+            }
+            form hx-post=(format!("{href}/arreter")) hx-target="#content" hx-push-url="true" {
+                (form::select("reason", "Pourquoi", LOSS_REASONS, reason, None))
+                (form::text("detail", "Préciser, si besoin", detail, None))
+                div class="row-actions" {
+                    button class="seal" type="submit" { "Arrêter la conversation" }
+                }
+            }
+        }
+    }
+}
+
+pub fn win_page(dossier: &PersonDossier, when: &str, error: Option<&str>) -> Markup {
+    let href = person_href(&dossier.name);
+    let amount = dossier
+        .current
+        .amount
+        .map(|m| m.to_string())
+        .unwrap_or_else(|| "—".into());
+    html! {
+        div class="letter" data-view=(ViewId::Gens.slug()) {
+            a class="back" href=(href) hx-get=(href) hx-target="#content" hx-push-url="true" {
+                "← " (dossier.name)
+            }
+            h1 { "C'est un client." }
+            p class="lede" { (format!("{amount} HT deviennent le forfait de la mission. Griffe ne rédige pas le devis.")) }
+            @if let Some(msg) = error {
+                p class="mast-note" role="alert" { (msg) }
+            }
+            form hx-post=(format!("{href}/client")) hx-target="#content" hx-push-url="true" {
+                (form::date("started_on", "À partir du", when, None))
+                div class="row-actions" {
+                    button class="seal" type="submit" { "Ouvrir la mission" }
+                }
+            }
+        }
+    }
+}
+
+pub fn reopen_page(dossier: &PersonDossier, when: &str, error: Option<&str>) -> Markup {
+    let href = person_href(&dossier.name);
+    html! {
+        div class="letter" data-view=(ViewId::Gens.slug()) {
+            a class="back" href=(href) hx-get=(href) hx-target="#content" hx-push-url="true" {
+                "← " (dossier.name)
+            }
+            h1 { "Ils reviennent." }
+            p class="lede" { "Même dossier : les lettres, les rencontres et l'estimation sont toujours là. La relance repart du premier message." }
+            @if let Some(msg) = error {
+                p class="mast-note" role="alert" { (msg) }
+            }
+            form hx-post=(format!("{href}/reprise")) hx-target="#content" hx-push-url="true" {
+                (form::date("when", "Prochain pas", when, None))
+                div class="row-actions" {
+                    button class="seal" type="submit" { "Rouvrir la conversation" }
+                }
+            }
+        }
     }
 }
 
@@ -903,13 +1089,13 @@ pub fn fiche_page(dossier: &PersonDossier, values: &FicheValues, errors: &FicheE
 
 pub struct EstimateValues {
     pub phrase: String,
-    pub amount: String,
+    pub lines: Vec<(String, String)>,
     pub revision: String,
 }
 
 pub struct EstimateErrors {
     pub phrase: Option<String>,
-    pub amount: Option<String>,
+    pub lines: Option<String>,
     pub banner: Option<String>,
 }
 
@@ -920,22 +1106,31 @@ pub fn estimate_page(
 ) -> Markup {
     let href = person_href(&dossier.name);
     html! {
-        div class="letter" data-view=(ViewId::Gens.slug()) {
+        div class="letter spread" data-view=(ViewId::Gens.slug()) {
             a class="back" href=(href) hx-get=(href) hx-target="#content" hx-push-url="true" {
                 "← " (dossier.name)
             }
             h1 { "L'estimation." }
             p class="lede" {
-                "Ce que ça pourrait valoir. Griffe ne rédige pas le devis : elle garde le sujet et le montant dans le coffre."
+                "Les travaux, et ce que chacun vaut. Le total reste dans le coffre. Le devis, tu le rédiges ailleurs."
             }
             @if let Some(msg) = &errors.banner {
+                p class="mast-note" role="alert" { (msg) }
+            }
+            @if let Some(msg) = &errors.lines {
                 p class="mast-note" role="alert" { (msg) }
             }
             form hx-post=(format!("{href}/estimation")) hx-target="#content" hx-push-url="true" {
                 (form::hidden("revision", &values.revision))
                 (form::text("phrase", "Ce dont il s'agit", &values.phrase, errors.phrase.as_deref()))
-                (form::text("amount", "Autour de (€ HT)", &values.amount, errors.amount.as_deref()))
+                @for (label, amount) in &values.lines {
+                    div class="field-inline" {
+                        (form::text("label", "Travail", label, None))
+                        (form::text("euros", "€ HT", amount, None))
+                    }
+                }
                 div class="row-actions" {
+                    button class="quiet" type="submit" name="add" value="1" { "Ajouter une ligne" }
                     button class="seal" type="submit" { "Noter l'estimation" }
                 }
             }
@@ -964,7 +1159,7 @@ pub fn letter_page(
         .filter(|e| matches!(e.kind, HistoryKind::Letter { .. }))
         .collect();
     Ok(html! {
-        div class="letter" data-view=(ViewId::Gens.slug()) {
+        div class="letter spread" data-view=(ViewId::Gens.slug()) {
             a class="back" href=(href) hx-get=(href) hx-target="#content" hx-push-url="true" {
                 "← " (dossier.name)
             }
