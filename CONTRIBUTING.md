@@ -27,6 +27,11 @@ Pour un changement de schéma ou de crate visible par Nix :
 vertes. Les tags `v*` aussi : création, suppression et force-push réservés
 à `@dz9oo`.
 
+Couper un tag `vX.Y.Z` exige une section `## X.Y.Z` dans `CHANGELOG.md`,
+rédigée pour qui utilise Griffe : ce qui change à l'écran, pas le détail
+d'implémentation. Le corps de la release GitHub et le commit AUR reprennent
+cette section. `packaging/release-notes.sh X.Y.Z` échoue si elle manque.
+
 Les contributeurs externes travaillent depuis un **fork**. Un coup de
 main sur les issues se fait en rôle Triage. Write et Admin restent à
 `@dz9oo`, qui merge.

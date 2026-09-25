@@ -204,6 +204,25 @@ pub fn opportunity_references(
     Ok(OpportunityReferences { quotes, missions })
 }
 
+/// Lignes de travaux d'une estimation, dans l'ordre de saisie.
+///
+/// # Errors
+pub fn estimation_lines(
+    conn: &Connection,
+    opportunity_id: OpportunityId,
+) -> Result<Vec<(String, Money)>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT label, amount_cents FROM estimation_lines
+          WHERE opportunity_id = ?1 ORDER BY position ASC",
+    )?;
+    let rows = stmt.query_map([opportunity_id.to_string()], |row| {
+        let label: String = row.get(0)?;
+        let cents: i64 = row.get(1)?;
+        Ok((label, Money::from_cents(cents)))
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+}
+
 /// Interactions d'une opportunité, les plus anciennes d'abord.
 ///
 /// # Errors

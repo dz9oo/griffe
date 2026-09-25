@@ -56,8 +56,11 @@ pub fn render(store: &Store, today: Date) -> Result<Markup, AppError> {
     let note = mast_note(&mast, setup.is_done());
     let alarming = mast.is_alarming();
 
+    let roster = roster_label(people.conversations.len(), people.missions.len());
+    let has_people = !people.conversations.is_empty() || !people.missions.is_empty();
+
     Ok(html! {
-        div class="letter" data-view=(ViewId::Jour.slug()) {
+        div class="letter spread" data-view=(ViewId::Jour.slug()) {
             div class="date" { (letter_date(today)) }
             div class={ "mast" @if alarming { " alarm" } } {
                 div class="mast-facts" {
@@ -72,6 +75,9 @@ pub fn render(store: &Store, today: Date) -> Result<Markup, AppError> {
                         }
                         " "
                         span class="dim" { "de piste" }
+                    }
+                    span {
+                        b { (roster) }
                     }
                     span {
                         b class={ @if receivable_is_bad(&mast) { "bad" } } {
@@ -92,19 +98,40 @@ pub fn render(store: &Store, today: Date) -> Result<Markup, AppError> {
                     p class="mast-note" id="next-step" { (setup.next_step.text()) }
                 }
             }
-            (day_people(&people))
-            h1 { (title) }
-            p class="lede" { (lede) }
-            @if !gestes.is_empty() {
-                ol class="gestes" {
-                    @for (i, g) in gestes.iter().enumerate() {
-                        (geste_li(i + 1, g, store, today, vat_scheme))
+            @if has_people {
+                div class="day-split" {
+                    (day_people(&people))
+                    div class="day-gestes" {
+                        (gestes_block(title, lede.as_str(), gestes.as_slice(), store, today, vat_scheme))
                     }
                 }
+            } @else {
+                (gestes_block(title, lede.as_str(), gestes.as_slice(), store, today, vat_scheme))
             }
             (month_section(&month_view, today, vat_scheme))
         }
     })
+}
+
+fn gestes_block(
+    title: &str,
+    lede: &str,
+    gestes: &[DayGesture],
+    store: &Store,
+    today: Date,
+    vat_scheme: VatFilingScheme,
+) -> Markup {
+    html! {
+        h1 { (title) }
+        p class="lede" { (lede) }
+        @if !gestes.is_empty() {
+            ol class="gestes" {
+                @for (i, g) in gestes.iter().enumerate() {
+                    (geste_li(i + 1, g, store, today, vat_scheme))
+                }
+            }
+        }
+    }
 }
 
 fn day_people(list: &PeopleList) -> Markup {
@@ -147,8 +174,25 @@ fn receivable_is_bad(mast: &Mast) -> bool {
 
 fn runway_label(months: Option<u32>) -> String {
     match months {
-        Some(n) => n.to_string(),
+        Some(n) => format!("{n} mois"),
         None => "—".into(),
+    }
+}
+
+/// « 2 prospects / 1 client ». Le singulier est réservé à 1 ; 0 prend le pluriel.
+fn roster_label(prospects: usize, clients: usize) -> String {
+    format!(
+        "{} / {}",
+        count_noun(prospects, "prospect", "prospects"),
+        count_noun(clients, "client", "clients")
+    )
+}
+
+fn count_noun(n: usize, one: &str, many: &str) -> String {
+    if n == 1 {
+        format!("1 {one}")
+    } else {
+        format!("{n} {many}")
     }
 }
 
@@ -260,13 +304,24 @@ fn geste_copy(
             }
             (head, body)
         }
-        GestureSource::BankStatement { unmatched } => {
-            let body = if *unmatched == 1 {
-                "Un mouvement n'a pas encore de lecture.".into()
+        GestureSource::BankStatement {
+            unmatched,
+            deposited,
+        } => {
+            if !deposited {
+                (
+                    "Déposer le relevé".into(),
+                    "Aucun mouvement n'est encore dans le coffre. L'export de la banque, tel quel."
+                        .into(),
+                )
             } else {
-                format!("{unmatched} mouvements n'ont pas encore de lecture.")
-            };
-            ("Ranger le relevé".into(), body)
+                let body = if *unmatched == 1 {
+                    "Un mouvement n'est pas encore traité.".into()
+                } else {
+                    format!("{unmatched} mouvements ne sont pas encore traités.")
+                };
+                ("Ranger le relevé".into(), body)
+            }
         }
         GestureSource::StateDuty {
             deadline,

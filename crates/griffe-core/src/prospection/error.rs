@@ -16,6 +16,15 @@ pub enum ProspectionError {
     #[error("l'opportunité {0} est déjà dans une étape close, aucune transition n'est possible")]
     AlreadyClosed(OpportunityId),
 
+    #[error("seule une conversation arrêtée peut être reprise ({0})")]
+    NotLost(OpportunityId),
+
+    #[error("l'estimation a besoin d'au moins une ligne de travaux")]
+    EstimationRequired,
+
+    #[error("chaque ligne de travaux a besoin d'un libellé et d'un montant")]
+    EstimationLineInvalid,
+
     #[error("{0:?} n'est pas une étape cible valide pour cette commande")]
     InvalidTarget(OpportunityStage),
 

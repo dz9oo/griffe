@@ -9,15 +9,16 @@ mod row;
 
 pub use commands::{
     AdvanceOpportunity, ArchiveOpportunity, CreateOpportunity, CreateProspect, DeleteInteraction,
-    DeleteOpportunity, LogInteraction, LoseOpportunity, UnarchiveOpportunity, UpdateInteraction,
-    UpdateOpportunity, UpdateProspect, WinOpportunity,
+    DeleteOpportunity, EstimationLineInput, LogInteraction, LoseOpportunity, ReopenOpportunity,
+    SetEstimation, UnarchiveOpportunity, UpdateInteraction, UpdateOpportunity, UpdateProspect,
+    WinOpportunity,
 };
 pub use error::ProspectionError;
 pub use queries::{
-    OpportunityFilter, OpportunityReferences, StageSummary, interaction_by_id, late_actions,
-    list_interactions, list_open_opportunities, list_opportunities, list_opportunities_with,
-    opportunity_by_id, opportunity_references, pipeline_by_stage, weighted_pipeline,
-    without_next_action,
+    OpportunityFilter, OpportunityReferences, StageSummary, estimation_lines, interaction_by_id,
+    late_actions, list_interactions, list_open_opportunities, list_opportunities,
+    list_opportunities_with, opportunity_by_id, opportunity_references, pipeline_by_stage,
+    weighted_pipeline, without_next_action,
 };
 
 /// Voir [`row::set_next_action_at`].

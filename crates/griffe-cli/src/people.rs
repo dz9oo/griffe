@@ -27,6 +27,10 @@ impl HumanRender for PeopleList {
         out.push_str(&chapter_table(&self.missions));
         out.push_str("\nChez qui ça sort\n");
         out.push_str(&chapter_table(&self.outgoing));
+        if !self.stopped.is_empty() {
+            out.push_str("\nArrêtées\n");
+            out.push_str(&chapter_table(&self.stopped));
+        }
         out
     }
 }
@@ -65,10 +69,30 @@ fn cues_fr(cues: &[PersonCue]) -> String {
 fn cue_fr(cue: &PersonCue) -> String {
     match cue {
         PersonCue::QuoteSent { .. } => "estimation envoyée".into(),
-        PersonCue::FollowUpDue { today: true, .. } => "à relancer aujourd'hui".into(),
-        PersonCue::FollowUpDue { on, .. } => format!("à relancer le {}", format_date(*on)),
-        PersonCue::FirstExchange { on } => format!("premier échange le {}", format_date(*on)),
-        PersonCue::NothingScheduled => "rien de posé".into(),
+        PersonCue::FollowUpDue { today: true, .. } => "à reprendre aujourd'hui".into(),
+        PersonCue::FollowUpDue { on, .. } => format!("prochain pas le {}", format_date(*on)),
+        PersonCue::FirstMessage => "premier message à écrire".into(),
+        PersonCue::FirstContact => "premier contact".into(),
+        PersonCue::InExchange => "en échange".into(),
+        PersonCue::EstimateNoted => "estimation posée".into(),
+        PersonCue::DraftReady => "brouillon prêt".into(),
+        PersonCue::Resumed => "repris".into(),
+        PersonCue::Lost { reason } => match reason {
+            Some(griffe_core::domain::LossReason::Budget) => "arrêtée · le budget ne suivait pas",
+            Some(griffe_core::domain::LossReason::Timing) => "arrêtée · pas le bon moment",
+            Some(griffe_core::domain::LossReason::Competitor) => {
+                "arrêtée · quelqu'un d'autre a été choisi"
+            }
+            Some(griffe_core::domain::LossReason::NoResponse) => "arrêtée · pas de réponse",
+            Some(griffe_core::domain::LossReason::ScopeMismatch) => {
+                "arrêtée · ce n'était pas le bon sujet"
+            }
+            Some(griffe_core::domain::LossReason::Other(text)) => {
+                return format!("arrêtée · {text}");
+            }
+            None => "arrêtée",
+        }
+        .into(),
         PersonCue::InvoiceOverdue { days } => format!("facture en retard · {days} jours"),
         PersonCue::InvoiceOutstanding => "facture à encaisser".into(),
         PersonCue::NextMilestone { on, label } => {
@@ -174,6 +198,7 @@ fn chapter_fr(chapter: PersonChapter) -> &'static str {
         PersonChapter::Conversation => "en conversation",
         PersonChapter::Mission => "en mission",
         PersonChapter::Outgoing => "chez qui ça sort",
+        PersonChapter::Stopped => "arrêtée",
     }
 }
 
@@ -240,6 +265,9 @@ fn action_fr(action: &PersonAction) -> &'static str {
         PersonAction::LogMeeting { .. } => "Noter une rencontre",
         PersonAction::Snooze { .. } => "Reporter",
         PersonAction::FileStatement => "Ranger le mouvement",
+        PersonAction::Stop { .. } => "Cette conversation s'arrête",
+        PersonAction::Win { .. } => "C'est un client",
+        PersonAction::Reopen { .. } => "Ils reviennent",
     }
 }
 
