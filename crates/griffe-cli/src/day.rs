@@ -110,9 +110,9 @@ fn gesture_detail(g: &DayGesture) -> String {
             if !deposited {
                 "aucun relevé déposé".into()
             } else if *unmatched == 1 {
-                "1 mouvement sans lecture".into()
+                "1 mouvement non traité".into()
             } else {
-                format!("{unmatched} mouvements sans lecture")
+                format!("{unmatched} mouvements non traités")
             }
         }
         GestureSource::StateDuty { due_on, amount, .. } => {

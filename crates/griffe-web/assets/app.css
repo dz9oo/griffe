@@ -627,6 +627,22 @@ ol.papers .unfold .deposit { margin-top: 0; }
 .btn.small { font-size: 12px; padding: 4px 10px; }
 .btn.primary:hover, .seal:hover, .auth-submit:hover { filter: brightness(1.08); }
 .btn.danger, .danger-hover:hover { color: var(--seal); border-color: var(--seal); background: transparent; }
+.fate {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 18px;
+  border: 1px solid var(--seal);
+  color: var(--seal);
+  background: transparent;
+  padding: 9px 16px;
+  font-size: 14px;
+  font-family: var(--sans);
+  text-align: center;
+  text-decoration: none;
+  cursor: pointer;
+}
+.fate:hover { background: var(--seal); color: #f8f1ea; }
 .btn.ghost { background: transparent; }
 
 .people { list-style: none; }
@@ -647,6 +663,7 @@ ol.papers .unfold .deposit { margin-top: 0; }
 .people a:hover .nm { color: var(--seal); }
 details.stopped > summary { cursor: pointer; list-style: none; }
 details.stopped > summary::-webkit-details-marker { display: none; }
+details.stopped[open] > summary .stopped-hint { display: none; }
 .section-label {
   font-size: 11px;
   letter-spacing: 0.2em;

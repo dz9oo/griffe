@@ -119,9 +119,9 @@ impl HumanRender for SocietyHome {
             (
                 "relevé",
                 match self.unmatched {
-                    0 => "tout est lu".into(),
-                    1 => "1 mouvement sans lecture".into(),
-                    n => format!("{n} mouvements sans lecture"),
+                    0 => "tout est traité".into(),
+                    1 => "1 mouvement non traité".into(),
+                    n => format!("{n} mouvements non traités"),
                 },
             ),
         ];
@@ -446,7 +446,7 @@ impl HumanRender for ClosingStory {
 impl HumanRender for Vec<StatementMove> {
     fn render_human(&self) -> String {
         if self.is_empty() {
-            return "Tout est lu.".into();
+            return "Tout est traité.".into();
         }
         let rows: Vec<Vec<String>> = self
             .iter()

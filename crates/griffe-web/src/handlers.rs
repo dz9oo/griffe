@@ -8,7 +8,7 @@
 //! entre le passage du middleware et l'exécution du handler.
 
 use axum::extract::rejection::FormRejection;
-use axum::extract::{Form, Path, State};
+use axum::extract::{Form, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use maud::{Markup, html};
@@ -760,8 +760,60 @@ pub async fn societe_closing(State(state): State<AppState>, headers: HeaderMap) 
     letter(&state, headers, ViewId::Societe, views::societe::closing).await
 }
 
-pub async fn societe_statement(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
-    letter(&state, headers, ViewId::Societe, views::societe::statement).await
+#[derive(Debug, Default, Deserialize)]
+pub struct StatementQuery {
+    #[serde(default)]
+    q: String,
+    #[serde(default)]
+    etat: String,
+    #[serde(default)]
+    avant: String,
+    #[serde(default)]
+    avant_id: String,
+}
+
+pub async fn societe_statement(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(form): Query<StatementQuery>,
+) -> Html<String> {
+    use griffe_core::domain::BankTransactionId;
+    use griffe_core::society::StatementCursor;
+    use std::str::FromStr;
+
+    let before = match (
+        parse_date(form.avant.trim()),
+        BankTransactionId::from_str(form.avant_id.trim()),
+    ) {
+        (Ok(occurred_on), Ok(id)) => Some(StatementCursor { occurred_on, id }),
+        _ => None,
+    };
+    let target = headers
+        .get("hx-target")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let fragment = if target == "releve-more" || target == "#releve-more" {
+        views::societe::ReleveFragment::More
+    } else if target == "releve-body" || target == "#releve-body" {
+        views::societe::ReleveFragment::Body
+    } else {
+        views::societe::ReleveFragment::Letter
+    };
+    let query = views::societe::ReleveQuery {
+        search: form.q,
+        unread_only: form.etat == "non-traites",
+        before,
+        fragment,
+    };
+    let today = state.today();
+    let content = state
+        .with_store(|store| {
+            views::societe::statement(store, today, &query)
+                .unwrap_or_else(|e| error_markup(ViewId::Societe, e))
+        })
+        .await
+        .unwrap_or_else(|| locked_markup(ViewId::Societe));
+    respond(headers, ViewId::Societe, content).await
 }
 
 pub async fn societe_identity(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
@@ -795,7 +847,19 @@ pub async fn devis(State(state): State<AppState>, headers: HeaderMap) -> Html<St
 }
 
 pub async fn depenses(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
-    letter(&state, headers, ViewId::Depenses, views::societe::statement).await
+    letter(&state, headers, ViewId::Depenses, |store, today| {
+        views::societe::statement(
+            store,
+            today,
+            &views::societe::ReleveQuery {
+                search: String::new(),
+                unread_only: false,
+                before: None,
+                fragment: views::societe::ReleveFragment::Letter,
+            },
+        )
+    })
+    .await
 }
 
 pub async fn cloture(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {

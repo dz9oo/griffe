@@ -10,9 +10,10 @@ use griffe_core::society::{
     AmountBasis, AmountStory, BeatKind, BeatWhen, BoxCoverage, BoxRole, ClosingBeat, ClosingStory,
     ConversationBar, CurrentAccount, CurrentAccountBalance, DividendClosed, DividendDoor, Duty,
     DutyBriefing, Expect, FormBox, IdentityCard, IdentityShort, JournalReading, Landscape,
-    PayYourself, SocietyHome, StatementMove, StatementReading, UnknownReason, VatCarryInRecord,
+    PayYourself, STATEMENT_PAGE_SIZE, SocietyHome, StatementCursor, StatementFilter, StatementMove,
+    StatementPage, StatementPageRequest, StatementReading, UnknownReason, VatCarryInRecord,
     VatPosition, VatRefundStatus, WaiverReason, closing_story, current_account, duty_briefing,
-    pay_yourself, society_duties, society_home, society_identity, statement_journal,
+    pay_yourself, society_duties, society_home, society_identity, statement_history,
     statement_moves, vat_carry_in,
 };
 use griffe_core::store::Store;
@@ -136,9 +137,9 @@ fn home_markup(home: &SocietyHome, today: Date, papers_sub: &str) -> Markup {
         (None, n) => format!("{n} mouvements à ranger d'abord"),
     };
     let releve_sub = match home.unmatched {
-        0 => "Tout est lu.".to_string(),
-        1 => "1 mouvement sans lecture".to_string(),
-        n => format!("{n} mouvements sans lecture"),
+        0 => "Tout est traité.".to_string(),
+        1 => "1 mouvement non traité".to_string(),
+        n => format!("{n} mouvements non traités"),
     };
     let identite_sub = match (home.identity.legal_form.as_deref(), home.identity.year_end) {
         (Some(form), Some(end)) => format!("{form} · clôture au {}", year_end_fr(end)),
@@ -1228,31 +1229,65 @@ fn beat_text(beat: &ClosingBeat) -> String {
     }
 }
 
-pub fn statement(store: &Store, today: Date) -> Result<Markup, AppError> {
-    let journal = statement_journal(store.connection(), today)?;
-    let pending = statement_moves(store.connection(), today)?;
-    Ok(statement_markup(&journal, &pending))
+/// Ce que la requête demande à peindre : la lettre entière, le corps filtré, ou la page suivante.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReleveFragment {
+    Letter,
+    Body,
+    More,
 }
 
-fn statement_markup(
-    journal: &[griffe_core::society::JournalEntry],
-    pending: &[StatementMove],
-) -> Markup {
-    let last = journal.iter().map(|e| e.occurred_on).max();
-    let unread = journal
-        .iter()
-        .filter(|e| matches!(e.reading, JournalReading::Unread))
-        .count();
+#[derive(Debug, Clone)]
+pub struct ReleveQuery {
+    pub search: String,
+    pub unread_only: bool,
+    pub before: Option<StatementCursor>,
+    pub fragment: ReleveFragment,
+}
+
+pub fn statement(store: &Store, today: Date, query: &ReleveQuery) -> Result<Markup, AppError> {
+    let page = statement_history(
+        store.connection(),
+        &StatementPageRequest {
+            today,
+            search: Some(query.search.clone()),
+            filter: if query.unread_only {
+                StatementFilter::Unread
+            } else {
+                StatementFilter::All
+            },
+            before: query.before.clone(),
+            limit: STATEMENT_PAGE_SIZE,
+        },
+    )?;
+    let pending = statement_moves(store.connection(), today)?;
+    Ok(match query.fragment {
+        ReleveFragment::More if query.before.is_none() => html! {},
+        ReleveFragment::More => more_markup(&page, &pending, query),
+        ReleveFragment::Body => html! {
+            (body_markup(&page, &pending, query))
+            input id="releve-etat" type="hidden" name="etat" value=(etat_value(query.unread_only)) hx-swap-oob="true";
+        },
+        ReleveFragment::Letter => letter_markup(&page, &pending, query),
+    })
+}
+
+fn letter_markup(page: &StatementPage, pending: &[StatementMove], query: &ReleveQuery) -> Markup {
+    let refresh = releve_href(&query.search, query.unread_only, None);
+    let show_last = query.search.is_empty() && !query.unread_only && query.before.is_none();
+    let last_on = show_last
+        .then(|| page.entries.first().map(|e| e.occurred_on))
+        .flatten();
     html! {
         div class="letter spread" data-view=(ViewId::Societe.slug())
-            hx-get="/societe/releve"
+            hx-get=(refresh)
             hx-trigger="griffe:saved from:body"
             hx-swap="outerHTML"
             hx-disinherit="hx-swap" {
             (back())
             h1 { "Le relevé." }
             p class="lede" {
-                @if let Some(on) = last {
+                @if let Some(on) = last_on {
                     "Dernier mouvement au " (format_date_fr(on)) ". "
                 }
                 "Tu déposes l'export de la banque quand il y a du nouveau. Griffe ne va pas le chercher."
@@ -1263,27 +1298,172 @@ fn statement_markup(
                     "Déposer un export"
                 }
             }
-            @if journal.is_empty() {
-                p class="prose" { "Aucun mouvement dans le coffre." }
-            } @else if unread == 0 {
-                p class="prose" { "Tout est lu. L'historique reste là." }
+            form class="releve-search" hx-get="/societe/releve" hx-target="#releve-body"
+                hx-swap="outerHTML" hx-replace-url="true" hx-sync="this:replace"
+                hx-trigger="submit, keyup changed delay:400ms from:find input[name=q]" {
+                (crate::views::form::text("q", "Chercher un mouvement", &query.search, None))
+                input id="releve-etat" type="hidden" name="etat" value=(etat_value(query.unread_only));
             }
-            @for entry in journal {
-                article class="block" {
-                    h3 {
-                        (format_date_fr(entry.occurred_on)) " · " (entry.amount)
+            (body_markup(page, pending, query))
+        }
+    }
+}
+
+fn body_markup(page: &StatementPage, pending: &[StatementMove], query: &ReleveQuery) -> Markup {
+    html! {
+        div id="releve-body" {
+            p class="prose" { (banner(page.total, page.unread)) }
+            (filter_link(page, query))
+            (entries_markup(&page.entries, pending))
+            @if page.entries.is_empty() && page.total > 0 {
+                p class="prose" { "Aucun mouvement ne correspond." }
+            }
+            (more_link(page, query))
+        }
+    }
+}
+
+fn more_markup(page: &StatementPage, pending: &[StatementMove], query: &ReleveQuery) -> Markup {
+    html! {
+        (entries_markup(&page.entries, pending))
+        (more_link(page, query))
+    }
+}
+
+fn entries_markup(
+    entries: &[griffe_core::society::JournalEntry],
+    pending: &[StatementMove],
+) -> Markup {
+    html! {
+        @for entry in entries {
+            article class="block" {
+                h3 {
+                    @let untreated = matches!(entry.reading, JournalReading::Unread);
+                    span class=(if untreated { "badge warn" } else { "badge ok" }) {
+                        (if untreated { "non traité" } else { "traité" })
+                    }
+                    " · " (format_date_fr(entry.occurred_on)) " · " (entry.amount)
+                    @if !untreated {
                         " · " (reading_fr(&entry.reading))
                     }
-                    @if let Some(m) = pending.iter().find(|m| m.id == entry.id) {
-                        p { (move_phrase(m)) }
-                        div class="row-actions" { (reading_actions(m)) }
-                    } @else {
-                        p { (entry.description) }
-                    }
+                }
+                @if let Some(m) = pending.iter().find(|m| m.id == entry.id) {
+                    p { (move_phrase(m)) }
+                    div class="row-actions" { (reading_actions(m)) }
+                } @else {
+                    p { (entry.description) }
                 }
             }
         }
     }
+}
+
+fn banner(total: u64, unread: u64) -> String {
+    match (total, unread) {
+        (0, _) => "Aucun mouvement dans le coffre.".into(),
+        (_, 0) => match total {
+            1 => "Tout est traité. Un mouvement.".into(),
+            n => format!("Tout est traité. {} mouvements.", count_fr(n)),
+        },
+        (_, 1) => format!(
+            "1 mouvement n'est pas encore traité, sur {}.",
+            count_fr(total)
+        ),
+        (total, n) => format!(
+            "{} mouvements ne sont pas encore traités, sur {}.",
+            count_fr(n),
+            count_fr(total)
+        ),
+    }
+}
+
+fn count_fr(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 {
+            out.push('\u{202f}');
+        }
+        out.push(c);
+    }
+    out.chars().rev().collect()
+}
+
+fn filter_link(page: &StatementPage, query: &ReleveQuery) -> Markup {
+    if page.unread == 0 && !query.unread_only {
+        return html! {};
+    }
+    let (href, label) = if query.unread_only {
+        (
+            releve_href(&query.search, false, None),
+            "Voir tout l'historique",
+        )
+    } else {
+        (
+            releve_href(&query.search, true, None),
+            "Voir les non traités",
+        )
+    };
+    html! {
+        div class="row-actions" {
+            a class="quiet" href=(href) hx-get=(href) hx-target="#releve-body" hx-swap="outerHTML"
+              hx-trigger="click" hx-push-url="true" { (label) }
+        }
+    }
+}
+
+fn more_link(page: &StatementPage, query: &ReleveQuery) -> Markup {
+    let Some(next) = &page.next else {
+        return html! {};
+    };
+    let href = releve_href(&query.search, query.unread_only, Some(next));
+    html! {
+        div id="releve-more" class="row-actions" {
+            a class="quiet" href=(href) hx-get=(href) hx-target="#releve-more" hx-swap="outerHTML"
+              hx-trigger="click" {
+                "Les mouvements plus anciens"
+            }
+        }
+    }
+}
+
+fn etat_value(unread_only: bool) -> &'static str {
+    if unread_only { "non-traites" } else { "" }
+}
+
+fn releve_href(search: &str, unread_only: bool, before: Option<&StatementCursor>) -> String {
+    let mut parts = Vec::new();
+    if !search.is_empty() {
+        parts.push(format!("q={}", query_escape(search)));
+    }
+    if unread_only {
+        parts.push("etat=non-traites".to_string());
+    }
+    if let Some(cursor) = before {
+        parts.push(format!(
+            "avant={}&avant_id={}",
+            query_escape(&format_date(cursor.occurred_on)),
+            query_escape(&cursor.id.to_string())
+        ));
+    }
+    if parts.is_empty() {
+        "/societe/releve".to_string()
+    } else {
+        format!("/societe/releve?{}", parts.join("&"))
+    }
+}
+
+fn query_escape(value: &str) -> String {
+    let mut out = String::new();
+    for b in value.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(char::from(b));
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }
 
 fn reading_fr(reading: &JournalReading) -> String {

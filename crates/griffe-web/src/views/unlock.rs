@@ -29,7 +29,7 @@ pub fn unlock_form(error: Option<&str>, pending: bool) -> Markup {
                 }
                 label class="auth-remember" {
                     input type="checkbox" name="remember" value="on";
-                    "rester déverrouillé 12h, même après fermeture de l'application"
+                    "Au prochain lancement, ne pas redemander la passphrase pendant 12 h."
                 }
                 button class="auth-submit" type="submit" { "Déverrouiller" }
             }
@@ -62,7 +62,7 @@ pub fn setup_form(error: Option<&str>) -> Markup {
                 }
                 label class="auth-remember" {
                     input type="checkbox" name="remember" value="on";
-                    "rester déverrouillé 12h, même après fermeture de l'application"
+                    "Au prochain lancement, ne pas redemander la passphrase pendant 12 h."
                 }
                 button class="auth-submit" type="submit" { "Créer le coffre" }
             }

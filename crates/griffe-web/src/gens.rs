@@ -1072,17 +1072,17 @@ pub async fn estimate_post(
         .into_response();
     };
     let phrase = form.phrase.trim().to_string();
-    let mut paired: Vec<(String, String)> = if form.label.is_empty() && !form.amount.trim().is_empty()
-    {
-        vec![(phrase.clone(), form.amount.clone())]
-    } else {
-        form.label
-            .iter()
-            .zip(form.euros.iter())
-            .map(|(label, amount)| (label.clone(), amount.clone()))
-            .filter(|(label, amount)| !label.trim().is_empty() || !amount.trim().is_empty())
-            .collect()
-    };
+    let mut paired: Vec<(String, String)> =
+        if form.label.is_empty() && !form.amount.trim().is_empty() {
+            vec![(phrase.clone(), form.amount.clone())]
+        } else {
+            form.label
+                .iter()
+                .zip(form.euros.iter())
+                .map(|(label, amount)| (label.clone(), amount.clone()))
+                .filter(|(label, amount)| !label.trim().is_empty() || !amount.trim().is_empty())
+                .collect()
+        };
     if !form.add.is_empty() {
         paired.push((String::new(), String::new()));
         let values = gens::EstimateValues {

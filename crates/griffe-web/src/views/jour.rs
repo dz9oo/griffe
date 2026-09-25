@@ -316,9 +316,9 @@ fn geste_copy(
                 )
             } else {
                 let body = if *unmatched == 1 {
-                    "Un mouvement n'a pas encore de lecture.".into()
+                    "Un mouvement n'est pas encore traité.".into()
                 } else {
-                    format!("{unmatched} mouvements n'ont pas encore de lecture.")
+                    format!("{unmatched} mouvements ne sont pas encore traités.")
                 };
                 ("Ranger le relevé".into(), body)
             }

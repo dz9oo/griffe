@@ -100,7 +100,10 @@ fn stopped_chapter(rows: &[PersonRow]) -> Markup {
     }
     html! {
         details class="stopped" {
-            summary class="section-label" { "Arrêtées" }
+            summary class="section-label" {
+                "Arrêtées · " (rows.len())
+                span class="stopped-hint" { " · voir" }
+            }
             ul class="people" {
                 @for row in rows {
                     li { (row_link(row)) }
@@ -229,6 +232,10 @@ pub fn dossier_page(store: &Store, needle: &str, today: Date) -> Result<Markup, 
 
 pub fn dossier_markup(dossier: &PersonDossier, today: Date, flash: Option<&str>) -> Markup {
     let href = person_href(&dossier.name);
+    let (daily, fate): (Vec<_>, Vec<_>) = dossier
+        .actions
+        .iter()
+        .partition(|action| !matches!(action, PersonAction::Stop { .. }));
     html! {
         div class="letter" data-view=(ViewId::Gens.slug()) data-person=(dossier.name) {
             a class="back" href="/affaires" hx-get="/affaires" hx-target="#content" hx-push-url="true" {
@@ -239,12 +246,15 @@ pub fn dossier_markup(dossier: &PersonDossier, today: Date, flash: Option<&str>)
             @if let Some(msg) = flash {
                 p class="mast-note" role="status" { (msg) }
             }
-            @if !dossier.actions.is_empty() {
+            @if !daily.is_empty() {
                 div class="row-actions" {
-                    @for action in &dossier.actions {
+                    @for action in &daily {
                         (action_button(action, &href, today))
                     }
                 }
+            }
+            @for action in &fate {
+                (action_button(action, &href, today))
             }
             @if let Some(body) = current_paragraph(&dossier.current, dossier) {
                 div class="block" {
@@ -851,7 +861,7 @@ fn action_button(action: &PersonAction, dossier_href: &str, today: Date) -> Mark
         PersonAction::Stop { .. } => {
             let href = format!("{dossier_href}/arreter");
             html! {
-                a class="quiet" href=(href)
+                a class="fate" href=(href)
                   hx-get=(href) hx-target="#content" hx-push-url="true" {
                     "Cette conversation s'arrête"
                 }
@@ -909,7 +919,7 @@ pub fn stop_page(
                 (form::select("reason", "Pourquoi", LOSS_REASONS, reason, None))
                 (form::text("detail", "Préciser, si besoin", detail, None))
                 div class="row-actions" {
-                    button class="seal" type="submit" { "Arrêter la conversation" }
+                    button class="fate" type="submit" { "Arrêter la conversation" }
                 }
             }
         }
