@@ -9,7 +9,7 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-griffe-core = { version = "0.3.1", path = "../griffe-core" }
+griffe-core = { version = "0.3.2", path = "../griffe-core" }
 serde = { version = "1.0.229", features = ["derive"] }
 tempfile = "3.27.0"
 thiserror = "2.0.20"

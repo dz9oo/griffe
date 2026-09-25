@@ -656,7 +656,10 @@ fn collect_meeting_events(
     use crate::domain::InteractionKind;
     for opportunity in list_opportunities(conn)? {
         for interaction in list_interactions(conn, opportunity.id)? {
-            if interaction.kind != InteractionKind::Meeting {
+            if !matches!(
+                interaction.kind,
+                InteractionKind::Call | InteractionKind::Meeting | InteractionKind::Visio
+            ) {
                 continue;
             }
             let on = interaction.occurred_at.date();

@@ -864,11 +864,18 @@ async fn les_affaires_lists_three_chapters_and_opens_a_dossier() {
         letter.contains("name=\"body\""),
         "lettre éditable : {letter}"
     );
-    assert!(letter.contains("Poster"), "{letter}");
+    assert!(
+        !letter.contains("Poster"),
+        "un seul geste, celui qui classe : {letter}"
+    );
     assert!(letter.contains("C'est parti"), "{letter}");
+    assert!(
+        letter.contains("class=\"seal\""),
+        "le geste a le style du bouton principal : {letter}"
+    );
     assert!(!letter.contains("freeflow "), "{letter}");
 
-    // Poster exige un email destinataire + un expéditeur (sinon le flash produit n'apparaît pas).
+    // « C'est parti » classe la lettre. L'expéditeur et le destinataire restent ceux du coffre.
     {
         let mut store =
             Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
@@ -902,10 +909,12 @@ async fn les_affaires_lists_three_chapters_and_opens_a_dossier() {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/affaires/Camille%20Rivi%C3%A8re/ecrire")
+                    .uri("/affaires/Camille%20Rivi%C3%A8re/envoye")
                     .header("content-type", "application/x-www-form-urlencoded")
                     .header("HX-Request", "true")
-                    .body(Body::from("subject_line=&body="))
+                    .body(Body::from(
+                        "subject_line=Bonjour&body=On+se+voit+mardi+pour+en+parler.",
+                    ))
                     .unwrap(),
             )
             .await
@@ -913,8 +922,12 @@ async fn les_affaires_lists_three_chapters_and_opens_a_dossier() {
     )
     .await;
     assert!(
-        posted.contains("Griffe n'envoie pas") || posted.contains("Griffe n&#x27;envoie pas"),
-        "flash après Poster : {posted}"
+        posted.contains("On se voit mardi pour en parler."),
+        "la lettre classée est dans l'historique : {posted}"
+    );
+    assert!(
+        posted.contains("letter-fold"),
+        "l'historique replie la lettre : {posted}"
     );
     assert!(
         !posted.contains("FreeFlow"),
@@ -1046,7 +1059,197 @@ async fn les_affaires_qualifies_amounts_and_opens_an_outgoing_dossier() {
     )
     .await;
     assert!(mairie.contains("autour de"), "{mairie}");
-    assert!(mairie.contains("Pas de devis posé"), "{mairie}");
+    assert!(mairie.contains("Atelier patrimoine"), "{mairie}");
+    assert!(
+        !mairie.contains("Pas de devis posé"),
+        "l'estimation tient lieu de devis : {mairie}"
+    );
+}
+
+#[tokio::test]
+async fn le_jour_nomme_les_conversations_et_le_dossier_note_fiche_estimation_rencontre() {
+    let db_path = test_db_path("letter-fiche");
+    let state = unlocked_state(&db_path)
+        .await
+        .with_today(time::macros::date!(2026 - 09 - 05));
+    let router = griffe_web::router(state);
+
+    for (who, phrase) in [
+        ("Le porc du Val", "charcuterie"),
+        ("Ferme du Nord", "visite"),
+        ("Mairie test", "signaletique"),
+    ] {
+        let body = format!(
+            "who={}&phrase={}",
+            who.replace(' ', "+"),
+            phrase.replace(' ', "+")
+        );
+        let status = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/affaires/nouvelle")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .header("HX-Request", "true")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::OK, "{who}");
+    }
+
+    {
+        let mut store =
+            Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+        let client_id = client_id_by_name(&db_path, "Mairie test");
+        Executor::new(&mut store)
+            .execute(
+                &CreateMission {
+                    client_id,
+                    quote_id: None,
+                    name: "Signalétique".into(),
+                    kind: griffe_core::domain::MissionKind::Forfait {
+                        budget: Money::from_cents(100_000),
+                    },
+                    milestones: Vec::new(),
+                    started_on: time::macros::date!(2026 - 09 - 01),
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+    }
+
+    let jour = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/jour")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(jour.contains("de piste"), "{jour}");
+    assert!(jour.contains("En conversation"), "{jour}");
+    assert!(jour.contains("Le porc du Val"), "{jour}");
+    assert!(jour.contains("Ferme du Nord"), "{jour}");
+    assert!(jour.contains("En mission"), "{jour}");
+    assert!(jour.contains("Mairie test"), "{jour}");
+
+    let dossier = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Le%20porc%20du%20Val")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(dossier.contains("La fiche"), "{dossier}");
+    assert!(
+        dossier.contains("L'estimation") || dossier.contains("L&#x27;estimation"),
+        "{dossier}"
+    );
+    assert!(dossier.contains("/estimation"), "{dossier}");
+    assert!(!dossier.contains(">Le devis<"), "{dossier}");
+
+    let fiche = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Le%20porc%20du%20Val/fiche")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(fiche.contains("name=\"email\""), "{fiche}");
+    assert!(fiche.contains("Le porc du Val"), "{fiche}");
+
+    let saved = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/affaires/Le%20porc%20du%20Val/fiche")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .header("HX-Request", "true")
+                    .body(Body::from(
+                        "who=Le+porc+du+Val&street=1+rue+du+Marche&postal_code=59292&city=Aubigny&representative=Jean&email=porc@exemple.fr&phone=0600000000&client_revision=1&contact_id=&contact_revision=",
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        saved.contains("Fiche à jour") || saved.contains("Jean"),
+        "{saved}"
+    );
+
+    let estimated = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/affaires/Le%20porc%20du%20Val/estimation")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .header("HX-Request", "true")
+                    .body(Body::from(
+                        "phrase=Charcuterie+du+val&amount=1500&revision=1",
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(estimated.contains("Charcuterie du val"), "{estimated}");
+    assert!(estimated.contains("autour de"), "{estimated}");
+
+    let noted = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/affaires/Le%20porc%20du%20Val/rencontre")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .header("HX-Request", "true")
+                    .body(Body::from(
+                        "kind=visio&when=2026-09-05&note=On+a+parle+du+fournil+puis+d+un+deuxieme+point+qui+depasse+largement+les+quatre-vingts+caracteres+de+l+apercu+historique.",
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(noted.contains("Visioconférence"), "{noted}");
+    assert!(noted.contains("fold-mark"), "{noted}");
+    assert!(
+        noted.contains("deuxieme point"),
+        "le texte entier reste dans le dossier : {noted}"
+    );
 }
 
 #[tokio::test]

@@ -64,7 +64,7 @@ fn cues_fr(cues: &[PersonCue]) -> String {
 
 fn cue_fr(cue: &PersonCue) -> String {
     match cue {
-        PersonCue::QuoteSent { .. } => "devis envoyé".into(),
+        PersonCue::QuoteSent { .. } => "estimation envoyée".into(),
         PersonCue::FollowUpDue { today: true, .. } => "à relancer aujourd'hui".into(),
         PersonCue::FollowUpDue { on, .. } => format!("à relancer le {}", format_date(*on)),
         PersonCue::FirstExchange { on } => format!("premier échange le {}", format_date(*on)),
@@ -187,7 +187,7 @@ fn shape_fr(shape: griffe_core::people::MissionShape) -> &'static str {
 
 fn paper_line(paper: &griffe_core::people::Paper) -> String {
     let kind = match paper.kind {
-        PaperKind::Quote => "devis",
+        PaperKind::Quote => "estimation",
         PaperKind::Invoice => "facture",
     };
     let status = match &paper.status {
@@ -212,9 +212,10 @@ fn history_fr(event: &griffe_core::people::HistoryEvent) -> String {
     match &event.kind {
         HistoryKind::Interaction { interaction } => {
             let kind = match interaction {
-                griffe_core::domain::InteractionKind::Call => "appel",
+                griffe_core::domain::InteractionKind::Call => "téléphone",
                 griffe_core::domain::InteractionKind::Email => "e-mail",
-                griffe_core::domain::InteractionKind::Meeting => "rencontre",
+                griffe_core::domain::InteractionKind::Meeting => "rencontre physique",
+                griffe_core::domain::InteractionKind::Visio => "visioconférence",
                 griffe_core::domain::InteractionKind::Note => "note",
             };
             match &event.note {
@@ -225,8 +226,8 @@ fn history_fr(event: &griffe_core::people::HistoryEvent) -> String {
         HistoryKind::Letter { subject, body } => {
             format!("lettre — {subject}\n    {body}")
         }
-        HistoryKind::QuoteSent { .. } => "Devis envoyé.".into(),
-        HistoryKind::QuoteAccepted => "Devis accepté.".into(),
+        HistoryKind::QuoteSent { .. } => "Estimation envoyée.".into(),
+        HistoryKind::QuoteAccepted => "Estimation acceptée.".into(),
         HistoryKind::InvoiceIssued { number } => format!("Facture {number}."),
     }
 }
@@ -234,7 +235,8 @@ fn history_fr(event: &griffe_core::people::HistoryEvent) -> String {
 fn action_fr(action: &PersonAction) -> &'static str {
     match action {
         PersonAction::Write { .. } => "Écrire",
-        PersonAction::Quote { .. } => "Le devis",
+        PersonAction::Fiche { .. } => "La fiche",
+        PersonAction::Quote { .. } => "L'estimation",
         PersonAction::LogMeeting { .. } => "Noter une rencontre",
         PersonAction::Snooze { .. } => "Reporter",
         PersonAction::FileStatement => "Ranger le mouvement",

@@ -234,7 +234,8 @@ Le **dossier** est l’unité. Chapitres selon ce qui existe :
 - Les papiers (devis, factures)
 - Histoire (interactions, relances)
 
-Actions : Écrire, Le devis, Noter une rencontre, Reporter.
+Actions : Écrire, La fiche, L'estimation, Noter une rencontre, Reporter.
+L'estimation est le sujet et le montant gardés dans le coffre. Griffe ne rédige pas le devis.
 On n’« ouvre pas un devis » depuis un onglet Devis : on ouvre Camille.
 
 Résolution de référence inchangée (nom, préfixe, UUID).

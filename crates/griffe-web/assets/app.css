@@ -1141,12 +1141,59 @@ tr.row-clickable:hover td { background: var(--paper-2); }
   white-space: pre-wrap;
   color: var(--ink);
 }
+.day-who { margin-top: 28px; }
+.day-who .section-label:first-child { margin-top: 0; }
+
 .letter-fold {
   min-width: 0;
 }
 .letter-fold summary {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
   cursor: pointer;
   font-family: var(--serif);
+  list-style: none;
+}
+.letter-fold summary::-webkit-details-marker { display: none; }
+.letter-fold summary::marker { content: ""; }
+.letter-fold .nature {
+  flex: none;
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.letter-fold .preview {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.letter-fold .fold-mark {
+  flex: none;
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1;
+  color: var(--ink-2);
+  border: 1px solid var(--rule);
+  width: 1.4rem;
+  height: 1.4rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.letter-fold .fold-mark::before { content: "+"; }
+.letter-fold[open] .fold-mark::before { content: "–"; }
+.nature {
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 .letter-fold pre {
   font-family: var(--serif);

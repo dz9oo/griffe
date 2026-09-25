@@ -159,10 +159,10 @@ if webkit_present; then
   # tarball .tar.xz avec racine versionnée
   dir2=$(mktemp -d)
   export HOME="$dir2"
-  staged="$dir/griffe-0.3.1-x86_64-linux"
+  staged="$dir/griffe-0.3.2-x86_64-linux"
   make_payload_dir "$staged"
-  tar -C "$(dirname "$staged")" -cJf "$dir/griffe-0.3.1-x86_64-linux.tar.xz" "$(basename "$staged")"
-  out=$("$installer" "$dir/griffe-0.3.1-x86_64-linux.tar.xz")
+  tar -C "$(dirname "$staged")" -cJf "$dir/griffe-0.3.2-x86_64-linux.tar.xz" "$(basename "$staged")"
+  out=$("$installer" "$dir/griffe-0.3.2-x86_64-linux.tar.xz")
   assert_five_paths "$out"
 
   # rollback : icône absente

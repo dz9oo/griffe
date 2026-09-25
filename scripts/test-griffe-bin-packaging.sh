@@ -11,7 +11,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 [ -f "$pkgbuild" ] || fail "PKGBUILD manquant"
 
 grep -qx 'pkgname=griffe-bin' "$pkgbuild" || fail "pkgname"
-grep -qx 'pkgver=0.3.1' "$pkgbuild" || fail "pkgver doit matcher tauri 0.3.1"
+grep -qx 'pkgver=0.3.2' "$pkgbuild" || fail "pkgver doit matcher tauri 0.3.2"
 grep -qx 'pkgrel=1' "$pkgbuild" || fail "pkgrel"
 grep -qx "arch=('x86_64')" "$pkgbuild" || fail "arch"
 grep -qx "depends=('webkit2gtk-4.1' 'gtk3' 'hicolor-icon-theme')" "$pkgbuild" \
@@ -66,11 +66,11 @@ fi
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-mkdir -p "$tmp/native/griffe-0.3.1-x86_64-linux"
-printf 'stub\n' > "$tmp/native/griffe-0.3.1-x86_64-linux/griffe-desktop"
-tar -C "$tmp/native" -cJf "$tmp/native/griffe-0.3.1-x86_64-linux.tar.xz" \
-  griffe-0.3.1-x86_64-linux
-want_sha=$(sha256sum "$tmp/native/griffe-0.3.1-x86_64-linux.tar.xz" | awk '{print $1}')
+mkdir -p "$tmp/native/griffe-0.3.2-x86_64-linux"
+printf 'stub\n' > "$tmp/native/griffe-0.3.2-x86_64-linux/griffe-desktop"
+tar -C "$tmp/native" -cJf "$tmp/native/griffe-0.3.2-x86_64-linux.tar.xz" \
+  griffe-0.3.2-x86_64-linux
+want_sha=$(sha256sum "$tmp/native/griffe-0.3.2-x86_64-linux.tar.xz" | awk '{print $1}')
 [ "${#want_sha}" -eq 64 ] || fail "sha de test"
 
 export GRIFFE_BIN_PREPARE_ONLY=1
@@ -100,7 +100,7 @@ if grep -q CHANGEME "$ci_pb" "$aur_pb"; then
 fi
 grep -q "sha256sums=('CHANGEME')" "$pkgbuild" \
   || fail "le gabarit commité garde CHANGEME"
-test -f "$tmp/work/ci/griffe-0.3.1-x86_64-linux.tar.xz" \
+test -f "$tmp/work/ci/griffe-0.3.2-x86_64-linux.tar.xz" \
   || fail "tarball copié à côté du PKGBUILD CI"
 # package() identique
 pkg_fn() { awk '/^package\(\)/,/^}/' "$1"; }
