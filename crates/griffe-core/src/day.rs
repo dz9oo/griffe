@@ -1561,7 +1561,10 @@ mod tests {
     fn unmatched_debits_helper_still_counts_only_debits() {
         // Filet : day_gestures compte tous les mouvements non lus (crédits compris), pas
         // seulement les débits — un virement client sans facture est aussi « à ranger ».
+        // Le geste n'est posé qu'une fois le coffre configuré.
         let mut store = test_store("unmatched");
+        set_profile(&mut store);
+        set_opening(&mut store, 100_000);
         import_txs(
             &mut store,
             &[

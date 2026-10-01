@@ -13,6 +13,7 @@ Commands:
   edit             Modifie une opportunité ouverte — seuls les champs fournis changent. Ne peut pas changer l'étape (utilisez `advance`/`win`/`lose`) ni le motif de perte
   advance          Fait avancer une opportunité vers une autre étape ouverte
   win              Gagne une opportunité : crée la mission forfait correspondante
+  reopen           Rouvre une conversation arrêtée, sur le même dossier
   lose             Perd une opportunité, avec un motif structuré
   archive          Retire une opportunité des listes actives sans la supprimer — un axe distinct de gagnée/perdue : une opportunité archivée n'est ni l'une ni l'autre, juste sans objet
   unarchive        Réintègre une opportunité archivée dans les listes actives
