@@ -90,6 +90,18 @@ fn people_routes() -> Router<AppState> {
             get(gens::estimate_get).post(gens::estimate_post),
         )
         .route("/{reference}/reporter", post(gens::snooze))
+        .route(
+            "/{reference}/arreter",
+            get(gens::stop_get).post(gens::stop_post),
+        )
+        .route(
+            "/{reference}/client",
+            get(gens::win_get).post(gens::win_post),
+        )
+        .route(
+            "/{reference}/reprise",
+            get(gens::reopen_get).post(gens::reopen_post),
+        )
         .route("/{reference}/devis", get(gens::quote_panel))
         .route(
             "/{reference}/notes/{expense_id}/receipt",

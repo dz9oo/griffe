@@ -115,6 +115,13 @@ pub(crate) struct WinOpportunityArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct ReopenOpportunityArgs {
+    opportunity: String,
+    /// Prochain pas, au format `AAAA-MM-JJ`.
+    next_action: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct LoseOpportunityArgs {
     opportunity: String,
     /// `budget`, `timing`, `competitor`, `no-response`, `scope-mismatch`, ou `other:<détail>`.
@@ -574,6 +581,38 @@ impl FreeflowServer {
         let cmd = prospection::WinOpportunity {
             opportunity_id,
             started_on,
+        };
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(false)) {
+            Ok(outcome) => ok_json(outcome_json(&outcome)),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
+    /// Rouvre une conversation arrêtée. Les lettres et l'estimation restent.
+    #[tool(
+        name = "prospect.reopen",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false
+        )
+    )]
+    async fn prospect_reopen(
+        &self,
+        Parameters(args): Parameters<ReopenOpportunityArgs>,
+    ) -> CallToolResult {
+        let mut store = self.store.lock().await;
+        let opportunity_id = ok_or_return!(
+            "opportunity",
+            resolve_opportunity(&store, &args.opportunity)
+        );
+        let next_action_at = ok_or_return!(
+            "next_action",
+            griffe_core::domain::parse_date(&args.next_action)
+        );
+        let cmd = prospection::ReopenOpportunity {
+            opportunity_id,
+            next_action_at,
         };
         match Executor::new(&mut store).execute(&cmd, &self.ctx(false)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),

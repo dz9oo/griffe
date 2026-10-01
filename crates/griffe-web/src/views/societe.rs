@@ -15,7 +15,8 @@ use crate::views::form;
 
 mod letter;
 pub use letter::{
-    VatCreditForm, closing, duties, duty, duty_with_vat_form, identity, pay, piece, statement,
+    ReleveFragment, ReleveQuery, VatCreditForm, closing, duties, duty, duty_with_vat_form,
+    identity, pay, piece, statement,
 };
 
 pub const VAT_REGIME_OPTIONS: [(&str, &str); 5] = [

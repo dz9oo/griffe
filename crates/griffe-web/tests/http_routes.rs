@@ -699,6 +699,7 @@ async fn the_day_letter_shows_the_mast_gestures_and_the_month_grid() {
     assert!(jour.contains("class=\"mast\""), "mât visible : {jour}");
     assert!(jour.contains("en banque"), "{jour}");
     assert!(jour.contains("de piste"), "{jour}");
+    assert!(jour.contains("0 prospects / 0 clients"), "{jour}");
     assert!(jour.contains("Samedi 5 septembre 2026"), "{jour}");
     assert!(jour.contains("class=\"gestes\""), "{jour}");
     assert!(
@@ -1137,6 +1138,8 @@ async fn le_jour_nomme_les_conversations_et_le_dossier_note_fiche_estimation_ren
     )
     .await;
     assert!(jour.contains("de piste"), "{jour}");
+    assert!(jour.contains("2 prospects / 1 client"), "{jour}");
+    assert!(jour.contains("class=\"day-split\""), "{jour}");
     assert!(jour.contains("En conversation"), "{jour}");
     assert!(jour.contains("Le porc du Val"), "{jour}");
     assert!(jour.contains("Ferme du Nord"), "{jour}");
@@ -7507,4 +7510,264 @@ async fn facturation_empty_state_does_not_send_to_the_console() {
         !aide.contains("l'ancien écran Facturation ou la console"),
         "la recette devis ne renvoie plus à l'émission : {aide}"
     );
+}
+
+#[tokio::test]
+async fn the_statement_pages_badges_and_search() {
+    let db_path = test_db_path("releve-pages");
+    let state = unlocked_state(&db_path)
+        .await
+        .with_today(time::macros::date!(2026 - 09 - 05));
+    {
+        let mut store =
+            Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+        let start = time::macros::date!(2026 - 01 - 01);
+        let mut transactions = Vec::new();
+        for i in 0..41 {
+            let (amount_cents, description) = if i == 0 {
+                (-123_456_i64, "Cabinet Durand".to_string())
+            } else {
+                (-1_000, format!("Mouvement {i:02}"))
+            };
+            transactions.push(griffe_core::billing::ParsedTransaction {
+                occurred_on: start + time::Duration::days(i),
+                amount_cents,
+                description,
+                fitid: None,
+            });
+        }
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &griffe_core::billing::ImportBankTransactions { transactions },
+                    &human_ctx(),
+                )
+                .unwrap(),
+        );
+        let newest = griffe_core::billing::list_bank_transactions(store.connection())
+            .unwrap()
+            .into_iter()
+            .find(|t| t.description == "Mouvement 40")
+            .unwrap();
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &griffe_core::billing::SettleBankTransaction {
+                        transaction_id: newest.id,
+                        account: "455000"
+                            .parse::<griffe_core::domain::SettlementAccount>()
+                            .unwrap(),
+                        label: None,
+                    },
+                    &human_ctx(),
+                )
+                .unwrap(),
+        );
+    }
+    let router = griffe_web::router(state);
+    let page = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/societe/releve")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        page.contains("40 mouvements ne sont pas encore traités, sur 41."),
+        "{page}"
+    );
+    assert!(
+        page.contains("non traité") && page.contains("traité"),
+        "{page}"
+    );
+    assert!(page.contains("Chercher un mouvement"), "{page}");
+    assert!(page.contains("Les mouvements plus anciens"), "{page}");
+    assert!(
+        !page.contains("Cabinet Durand"),
+        "la première page s'arrête avant le plus ancien : {page}"
+    );
+
+    let more = releve_more_uri(&page);
+    let older = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(&more)
+                    .header("HX-Request", "true")
+                    .header("HX-Target", "releve-more")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(older.contains("Cabinet Durand"), "{older}");
+    assert!(older.contains("non traité"), "{older}");
+    assert!(
+        !older.contains("Mouvement 40"),
+        "la suite ne répète pas la première page : {older}"
+    );
+
+    let found = body_text(
+        router
+            .oneshot(
+                Request::builder()
+                    .uri("/societe/releve?q=Durand")
+                    .header("HX-Request", "true")
+                    .header("HX-Target", "releve-body")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(found.contains("Cabinet Durand"), "{found}");
+    assert!(
+        found.contains("40 mouvements ne sont pas encore traités, sur 41."),
+        "les compteurs restent ceux du coffre : {found}"
+    );
+    assert!(!found.contains("Les mouvements plus anciens"), "{found}");
+}
+
+fn releve_more_uri(body: &str) -> String {
+    let idx = body.find("id=\"releve-more\"").expect("sentinelle");
+    let href_at = body[idx..].find("href=\"").expect("lien");
+    let rest = &body[idx + href_at + 6..];
+    let end = rest.find('"').expect("fin du href");
+    rest[..end].replace("&amp;", "&")
+}
+
+#[tokio::test]
+async fn a_stopped_conversation_is_visible_and_the_stop_gesture_looks_final() {
+    let db_path = test_db_path("stopped-visible");
+    let state = unlocked_state(&db_path)
+        .await
+        .with_today(time::macros::date!(2026 - 09 - 05));
+    {
+        let mut store =
+            Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &CreateProspect {
+                        prospect_name: "Atelier".into(),
+                        address: None,
+                        representative: None,
+                        email: None,
+                        phone: None,
+                        name: "Site".into(),
+                        amount: Money::from_cents(100_000),
+                        probability: Probability::new(40).unwrap(),
+                        next_action_at: time::macros::date!(2026 - 10 - 01),
+                        source: None,
+                    },
+                    &human_ctx(),
+                )
+                .unwrap(),
+        );
+        let lost = applied(
+            Executor::new(&mut store)
+                .execute(
+                    &CreateProspect {
+                        prospect_name: "Ancien".into(),
+                        address: None,
+                        representative: None,
+                        email: None,
+                        phone: None,
+                        name: "Ancienne piste".into(),
+                        amount: Money::from_cents(50_000),
+                        probability: Probability::new(20).unwrap(),
+                        next_action_at: time::macros::date!(2026 - 10 - 01),
+                        source: None,
+                    },
+                    &human_ctx(),
+                )
+                .unwrap(),
+        );
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &griffe_core::prospection::LoseOpportunity {
+                        opportunity_id: lost,
+                        reason: griffe_core::domain::LossReason::Timing,
+                    },
+                    &human_ctx(),
+                )
+                .unwrap(),
+        );
+    }
+    let router = griffe_web::router(state);
+    let list = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(list.contains("Arrêtées · 1"), "{list}");
+    assert!(list.contains("voir"), "{list}");
+    assert!(list.contains("stopped-hint"), "{list}");
+
+    let dossier = body_text(
+        router
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Atelier")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        dossier.contains("class=\"fate\""),
+        "le geste d'arrêt se distingue : {dossier}"
+    );
+    assert!(
+        dossier.contains("Cette conversation s") && dossier.contains("arrête"),
+        "{dossier}"
+    );
+}
+
+#[tokio::test]
+async fn the_remember_checkbox_promises_the_next_launch_only() {
+    let db_path = test_db_path("remember-label");
+    Store::create(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    let router = griffe_web::router(AppState::new(db_path));
+    let page = body_text(
+        router
+            .oneshot(
+                Request::builder()
+                    .uri("/unlock")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        page.contains("Au prochain lancement, ne pas redemander la passphrase pendant 12 h."),
+        "{page}"
+    );
+    assert!(!page.contains("rester déverrouillé"), "{page}");
 }

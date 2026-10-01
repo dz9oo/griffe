@@ -267,6 +267,8 @@ pub enum GestureSource {
     },
     BankStatement {
         unmatched: u32,
+        /// Au moins un mouvement déjà importé.
+        deposited: bool,
     },
     StateDuty {
         deadline: FiscalDeadlineKind,
@@ -326,10 +328,16 @@ pub fn day_gestures(conn: &Connection, today: Date) -> Result<Vec<DayGesture>, A
             },
         });
     }
-    if unmatched > 0 && gestes.len() < MAX_GESTURES {
+    let deposited = crate::billing::list_bank_transactions(conn)?
+        .iter()
+        .any(|tx| tx.occurred_on <= today);
+    if setup.is_done() && (unmatched > 0 || !deposited) && gestes.len() < MAX_GESTURES {
         let bank = DayGesture {
             verb: GestureVerb::FileStatement,
-            source: GestureSource::BankStatement { unmatched },
+            source: GestureSource::BankStatement {
+                unmatched,
+                deposited,
+            },
         };
         let insert_at = if gestes.first().is_some_and(|g| {
             matches!(
@@ -1326,7 +1334,7 @@ mod tests {
             .find(|g| g.verb == GestureVerb::FileStatement)
             .unwrap();
         match &bank.source {
-            GestureSource::BankStatement { unmatched } => assert_eq!(*unmatched, 3),
+            GestureSource::BankStatement { unmatched, .. } => assert_eq!(*unmatched, 3),
             other => panic!("{other:?}"),
         }
         assert!(
@@ -1578,7 +1586,7 @@ mod tests {
             .find(|g| g.verb == GestureVerb::FileStatement)
             .expect("relevé");
         match bank.source {
-            GestureSource::BankStatement { unmatched } => assert_eq!(unmatched, 2),
+            GestureSource::BankStatement { unmatched, .. } => assert_eq!(unmatched, 2),
             _ => panic!(),
         }
     }

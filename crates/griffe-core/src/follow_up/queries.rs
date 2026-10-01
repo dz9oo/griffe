@@ -272,6 +272,7 @@ fn history_label(fact: crate::domain::FollowUpFact) -> String {
         crate::domain::FollowUpFact::Snoozed => "reporté".to_string(),
         crate::domain::FollowUpFact::DateSet => "date posée".to_string(),
         crate::domain::FollowUpFact::Retracted => "annulé".to_string(),
+        crate::domain::FollowUpFact::CycleOpened => "reprise".to_string(),
     }
 }
 

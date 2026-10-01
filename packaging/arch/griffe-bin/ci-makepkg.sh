@@ -54,6 +54,9 @@ sed -e 's|^source=.*|source=("griffe-${pkgver}-x86_64-linux.tar.xz")|' \
 sed -e "s|^sha256sums=.*|sha256sums=('$sha')|" \
     "$pkgbuild_src" > "$aur_out/PKGBUILD"
 cp "$packaging_license" "$aur_out/LICENSE"
+"$repo_root/packaging/release-notes.sh" "$pkgver" >/dev/null
+cp "$repo_root/CHANGELOG.md" "$aur_out/griffe-bin.changelog"
+cp "$repo_root/CHANGELOG.md" "$ci_dir/griffe-bin.changelog"
 
 if [ "$prepare_only" = 1 ]; then
   tauri_ver=$(read_tauri_ver)
@@ -90,7 +93,8 @@ build_dir="$builder_home/build"
 pkgdest="$builder_home/out"
 rm -rf "$build_dir" "$pkgdest"
 mkdir -p "$build_dir" "$pkgdest"
-cp "$ci_dir/PKGBUILD" "$ci_dir/griffe-${ver}-x86_64-linux.tar.xz" "$build_dir/"
+cp "$ci_dir/PKGBUILD" "$ci_dir/griffe-${ver}-x86_64-linux.tar.xz" \
+  "$ci_dir/griffe-bin.changelog" "$build_dir/"
 chown -R builder:builder "$build_dir" "$pkgdest" "$aur_out"
 
 # makepkg refuse root.

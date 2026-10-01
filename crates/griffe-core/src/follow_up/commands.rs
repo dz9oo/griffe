@@ -257,6 +257,28 @@ impl Command for RetractLastFollowUp {
     }
 }
 
+/// Midi du jour du coffre, ou une seconde après le dernier fait s'il est déjà plus tard.
+/// Ainsi une reprise posée le jour d'une lettre reste après elle, et la lettre suivante aussi.
+pub(crate) fn stamp_after(today: Date, events: &[FollowUpEvent]) -> OffsetDateTime {
+    let noon = today.with_hms(12, 0, 0).map_or_else(
+        |_| OffsetDateTime::now_utc(),
+        time::PrimitiveDateTime::assume_utc,
+    );
+    // Le brouillon est horodaté à l'horloge de la machine. On ne suit que les faits
+    // du jour du coffre, pour ne pas décaler la cadence quand les deux divergent.
+    let on_this_day = events
+        .iter()
+        .map(|event| event.at)
+        .filter(|at| at.date() == today);
+    match on_this_day.max() {
+        Some(last) if last >= noon => {
+            let next = last + time::Duration::seconds(1);
+            if next.date() == today { next } else { last }
+        }
+        _ => noon,
+    }
+}
+
 fn optional_letter_part(value: Option<String>) -> Option<String> {
     value.filter(|s| !s.trim().is_empty())
 }
@@ -315,10 +337,7 @@ fn append_advancing(
         id: FollowUpEventId::new(),
         subject,
         fact,
-        at: today.with_hms(12, 0, 0).map_or_else(
-            |_| OffsetDateTime::now_utc(),
-            time::PrimitiveDateTime::assume_utc,
-        ),
+        at: stamp_after(today, &loaded.events),
         until: None,
         rendered_subject,
         rendered_body,

@@ -4,6 +4,8 @@ set -eu
 
 die() { printf '%s\n' "$*" >&2; exit 1; }
 
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
 [ -n "${AUR_SSH_PRIVATE_KEY:-}" ] || die "secret AUR_SSH_PRIVATE_KEY manquant"
 
 aur_src=${GRIFFE_AUR_SRC:-aur-src}
@@ -21,16 +23,19 @@ work=$(mktemp -d)
 GIT_SSH_COMMAND='ssh -i '"$HOME/.ssh/id_ed25519"' -o IdentitiesOnly=yes' \
   git clone ssh://aur@aur.archlinux.org/griffe-bin.git "$work/griffe-bin"
 
-cp "$aur_src/PKGBUILD" "$aur_src/.SRCINFO" "$aur_src/LICENSE" "$work/griffe-bin/"
+cp "$aur_src/PKGBUILD" "$aur_src/.SRCINFO" "$aur_src/LICENSE" \
+  "$aur_src/griffe-bin.changelog" "$work/griffe-bin/"
 # Interdit d'embarquer le binaire pacman.
 rm -f "$work/griffe-bin/"*.pkg.tar.* "$work/griffe-bin/"*.tar.xz
 
 cd "$work/griffe-bin"
 git config user.name "${AUR_GIT_NAME:-dz9oo}"
 git config user.email "${AUR_GIT_EMAIL:-dz9oo@users.noreply.github.com}"
-git add PKGBUILD .SRCINFO LICENSE
+git add PKGBUILD .SRCINFO LICENSE griffe-bin.changelog
 git status --porcelain | grep -q . || { printf '%s\n' 'rien à pousser'; exit 0; }
 ver=$(awk -F= '/^pkgver=/{print $2; exit}' PKGBUILD)
-rel=$(awk -F= '/^pkgrel=/{print $2; exit}' PKGBUILD)
-git commit -m "griffe-bin ${ver}-${rel}"
+notes=$("$script_dir/../../release-notes.sh" "$ver")
+msg=$(mktemp)
+printf 'Griffe %s\n\n%s\n' "$ver" "$notes" > "$msg"
+git commit -F "$msg"
 git push origin master

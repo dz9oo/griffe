@@ -25,7 +25,9 @@ pub use vat_reversal::{
     RecordVatReversal, RetractVatReversal, VatReversalError, VatReversalRecord, vat_reversal_for,
 };
 
-use rusqlite::Connection;
+use std::str::FromStr;
+
+use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use time::Date;
 
@@ -38,7 +40,7 @@ use crate::company::company_profile;
 use crate::day::cash_in_bank;
 use crate::domain::{
     BankTransaction, BankTransactionId, Ca3FilingRule, ExpensePaidBy, FiscalYearEnd, Money, Month,
-    Side, VatRate, VatRegime, add_months, sub_months,
+    SettlementAccount, Side, VatRate, VatRegime, add_months, sub_months,
 };
 use crate::expenses::list_expenses;
 use crate::fiscal::{
@@ -1913,6 +1915,379 @@ pub fn statement_moves(conn: &Connection, today: Date) -> Result<Vec<StatementMo
     Ok(moves)
 }
 
+/// Lecture déjà donnée à un mouvement, ou l'absence de lecture.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum JournalReading {
+    Unread,
+    Expense {
+        supplier: Option<String>,
+        label: String,
+    },
+    Invoice {
+        party: String,
+        number: String,
+    },
+    /// Sortie vers le dirigeant.
+    ForMe,
+    /// Apport du dirigeant.
+    Contribution,
+    /// Règlement d'une dette reprise, ou autre compte de bilan.
+    Debt {
+        label: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct JournalEntry {
+    pub id: BankTransactionId,
+    #[serde(with = "crate::domain::serde_date::date")]
+    pub occurred_on: Date,
+    pub amount: Money,
+    pub description: String,
+    pub reading: JournalReading,
+}
+
+fn journal_reading(
+    amount_cents: i64,
+    expense: Option<(Option<String>, String)>,
+    invoice: Option<(String, String)>,
+    settlement_account: Option<&str>,
+    settlement_label: Option<&str>,
+) -> JournalReading {
+    if let Some((supplier, label)) = expense {
+        return JournalReading::Expense { supplier, label };
+    }
+    if let Some((party, number)) = invoice {
+        return JournalReading::Invoice { party, number };
+    }
+    let Some(account) = settlement_account else {
+        return JournalReading::Unread;
+    };
+    if account == "455000" {
+        return if amount_cents < 0 {
+            JournalReading::ForMe
+        } else {
+            JournalReading::Contribution
+        };
+    }
+    JournalReading::Debt {
+        label: settlement_label
+            .filter(|s| !s.is_empty())
+            .unwrap_or("règlement d'une dette")
+            .to_string(),
+    }
+}
+
+/// Tous les mouvements importés jusqu'à `today`, du plus récent au plus ancien,
+/// avec la lecture qui leur a été donnée.
+///
+/// # Errors
+pub fn statement_journal(conn: &Connection, today: Date) -> Result<Vec<JournalEntry>, AppError> {
+    let expenses = crate::expenses::list_expenses(conn)?;
+    let invoices = crate::billing::list_invoices(conn)?;
+    let clients = crate::clients::list_clients(conn)?;
+    let mut entries: Vec<JournalEntry> = list_bank_transactions(conn)?
+        .into_iter()
+        .filter(|tx| tx.occurred_on <= today)
+        .map(|tx| {
+            let expense = tx.matched_expense_id.map(|expense_id| {
+                let expense = expenses.iter().find(|e| e.id == expense_id);
+                (
+                    expense.and_then(|e| e.supplier.clone()),
+                    expense.map_or_else(|| tx.description.clone(), |e| e.label.clone()),
+                )
+            });
+            let invoice = tx.matched_invoice_id.map(|invoice_id| {
+                let invoice = invoices.iter().find(|i| i.id == invoice_id);
+                let party = invoice
+                    .and_then(|i| clients.iter().find(|c| c.id == i.client_id))
+                    .map_or_else(|| "un client".to_string(), |c| c.name.clone());
+                let number = invoice.map_or_else(|| "facture".to_string(), |i| i.number.clone());
+                (party, number)
+            });
+            let reading = journal_reading(
+                tx.amount_cents,
+                expense,
+                invoice,
+                tx.settlement_account
+                    .as_ref()
+                    .map(SettlementAccount::as_str),
+                tx.settlement_label.as_deref(),
+            );
+            JournalEntry {
+                id: tx.id,
+                occurred_on: tx.occurred_on,
+                amount: Money::from_cents(tx.amount_cents),
+                description: tx.description,
+                reading,
+            }
+        })
+        .collect();
+    entries.sort_by(|a, b| b.occurred_on.cmp(&a.occurred_on).then(b.id.cmp(&a.id)));
+    Ok(entries)
+}
+
+/// Taille d'une page de l'historique du relevé.
+pub const STATEMENT_PAGE_SIZE: usize = 40;
+
+const STATEMENT_PAGE_MAX: usize = 200;
+
+/// Restreint la page aux mouvements encore sans lecture, ou les montre tous.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StatementFilter {
+    #[default]
+    All,
+    Unread,
+}
+
+/// Dernier mouvement déjà montré. La page suivante est strictement plus ancienne.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatementCursor {
+    pub occurred_on: Date,
+    pub id: BankTransactionId,
+}
+
+/// Une page de l'historique, et les compteurs de tout le coffre jusqu'à `today`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StatementPage {
+    /// Mouvements importés à la date du jour ou avant, recherche et filtre ignorés.
+    pub total: u64,
+    /// Parmi [`Self::total`], ceux qui n'ont pas encore de lecture.
+    pub unread: u64,
+    pub entries: Vec<JournalEntry>,
+    pub next: Option<StatementCursor>,
+}
+
+/// Demande d'une page. `search` vide est ignoré. `limit` est ramené à `1..=200`.
+#[derive(Debug, Clone)]
+pub struct StatementPageRequest {
+    pub today: Date,
+    pub search: Option<String>,
+    pub filter: StatementFilter,
+    pub before: Option<StatementCursor>,
+    pub limit: usize,
+}
+
+struct AmountNeedle {
+    signed: i64,
+    opposite: Option<i64>,
+}
+
+fn amount_needle(search: &str) -> Option<AmountNeedle> {
+    let compact: String = search
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '€')
+        .collect();
+    let money = Money::parse_decimal(&compact).ok()?;
+    let signed = money.cents();
+    let opposite = if compact.starts_with('-') || signed == 0 {
+        None
+    } else {
+        Some(-signed)
+    };
+    Some(AmountNeedle { signed, opposite })
+}
+
+fn like_pattern(search: &str) -> String {
+    let mut out = String::from('%');
+    for c in search.chars() {
+        if c == '\\' || c == '%' || c == '_' {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out.push('%');
+    out
+}
+
+fn count_u64(n: i64) -> Result<u64, AppError> {
+    u64::try_from(n).map_err(|e| {
+        AppError::Sqlite(rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Integer,
+            Box::new(e),
+        ))
+    })
+}
+
+fn statement_counts(conn: &Connection, today: Date) -> Result<(u64, u64), AppError> {
+    let (total, unread): (i64, i64) = conn.query_row(
+        "SELECT COUNT(*),
+                COALESCE(SUM(CASE
+                    WHEN matched_expense_id IS NULL
+                     AND matched_invoice_id IS NULL
+                     AND settlement_account IS NULL
+                    THEN 1 ELSE 0 END), 0)
+           FROM bank_transactions
+          WHERE occurred_on <= ?1",
+        [crate::domain::format_date(today)],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    Ok((count_u64(total)?, count_u64(unread)?))
+}
+
+fn page_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<JournalEntry> {
+    let id: String = row.get("id")?;
+    let occurred_on: String = row.get("occurred_on")?;
+    let amount_cents: i64 = row.get("amount_cents")?;
+    let description: String = row.get("description")?;
+    let matched_expense_id: Option<String> = row.get("matched_expense_id")?;
+    let matched_invoice_id: Option<String> = row.get("matched_invoice_id")?;
+    let settlement_account: Option<String> = row.get("settlement_account")?;
+    let settlement_label: Option<String> = row.get("settlement_label")?;
+    let expense_supplier: Option<String> = row.get("expense_supplier")?;
+    let expense_label: Option<String> = row.get("expense_label")?;
+    let invoice_number: Option<String> = row.get("invoice_number")?;
+    let client_name: Option<String> = row.get("client_name")?;
+
+    let expense = matched_expense_id.map(|_| {
+        (
+            expense_supplier.filter(|s| !s.is_empty()),
+            expense_label.unwrap_or_else(|| description.clone()),
+        )
+    });
+    let invoice = matched_invoice_id.map(|_| {
+        (
+            client_name.unwrap_or_else(|| "un client".to_string()),
+            invoice_number.unwrap_or_else(|| "facture".to_string()),
+        )
+    });
+    let reading = journal_reading(
+        amount_cents,
+        expense,
+        invoice,
+        settlement_account.as_deref(),
+        settlement_label.as_deref(),
+    );
+    let id = BankTransactionId::from_str(&id).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
+    })?;
+    let occurred_on = crate::domain::parse_date(&occurred_on).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
+    })?;
+    Ok(JournalEntry {
+        id,
+        occurred_on,
+        amount: Money::from_cents(amount_cents),
+        description,
+        reading,
+    })
+}
+
+const STATEMENT_PAGE_SQL: &str = "SELECT bt.id AS id,
+            bt.occurred_on AS occurred_on,
+            bt.amount_cents AS amount_cents,
+            bt.description AS description,
+            bt.matched_expense_id AS matched_expense_id,
+            bt.matched_invoice_id AS matched_invoice_id,
+            bt.settlement_account AS settlement_account,
+            bt.settlement_label AS settlement_label,
+            e.supplier AS expense_supplier,
+            e.label AS expense_label,
+            i.number AS invoice_number,
+            c.name AS client_name
+       FROM bank_transactions bt
+       LEFT JOIN expenses e ON e.id = bt.matched_expense_id
+       LEFT JOIN invoices i ON i.id = bt.matched_invoice_id
+       LEFT JOIN clients c ON c.id = i.client_id
+      WHERE bt.occurred_on <= ?1
+        AND (?2 = 0 OR (
+              bt.matched_expense_id IS NULL
+              AND bt.matched_invoice_id IS NULL
+              AND bt.settlement_account IS NULL))
+        AND (
+              (?3 = 0 AND ?4 = 0)
+              OR (?3 = 1 AND bt.description LIKE ?5 ESCAPE '\\')
+              OR (?4 = 1 AND bt.amount_cents = ?6)
+              OR (?7 = 1 AND bt.amount_cents = ?8))
+        AND (
+              ?9 = 0
+              OR bt.occurred_on < ?10
+              OR (bt.occurred_on = ?10 AND bt.id < ?11))
+      ORDER BY bt.occurred_on DESC, bt.id DESC
+      LIMIT ?12";
+
+/// Une page de l'historique du relevé. Les compteurs portent sur tout le coffre
+/// jusqu'à `today` ; la recherche et le filtre ne concernent que `entries`.
+///
+/// # Errors
+pub fn statement_history(
+    conn: &Connection,
+    request: &StatementPageRequest,
+) -> Result<StatementPage, AppError> {
+    let (total, unread) = statement_counts(conn, request.today)?;
+    let limit = request.limit.clamp(1, STATEMENT_PAGE_MAX);
+    let search = request
+        .search
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let needle = search.and_then(amount_needle);
+    let has_text = i64::from(search.is_some());
+    let has_amount = i64::from(needle.is_some());
+    let signed = needle.as_ref().map_or(0, |n| n.signed);
+    let has_opposite = i64::from(needle.as_ref().is_some_and(|n| n.opposite.is_some()));
+    let opposite = needle.as_ref().and_then(|n| n.opposite).unwrap_or(0);
+    let pattern = search.map(like_pattern).unwrap_or_default();
+    let has_cursor = i64::from(request.before.is_some());
+    let cursor_on = request
+        .before
+        .as_ref()
+        .map(|c| crate::domain::format_date(c.occurred_on))
+        .unwrap_or_default();
+    let cursor_id = request
+        .before
+        .as_ref()
+        .map(|c| c.id.to_string())
+        .unwrap_or_default();
+    let fetch = i64::try_from(limit + 1).map_err(|e| {
+        AppError::Sqlite(rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Integer,
+            Box::new(e),
+        ))
+    })?;
+    let unread_only = i64::from(matches!(request.filter, StatementFilter::Unread));
+    let mut stmt = conn.prepare(STATEMENT_PAGE_SQL)?;
+    let rows = stmt.query_map(
+        params![
+            crate::domain::format_date(request.today),
+            unread_only,
+            has_text,
+            has_amount,
+            pattern,
+            signed,
+            has_opposite,
+            opposite,
+            has_cursor,
+            cursor_on,
+            cursor_id,
+            fetch,
+        ],
+        page_row,
+    )?;
+    let mut loaded = Vec::new();
+    for row in rows {
+        loaded.push(row?);
+    }
+    let next = if loaded.len() > limit {
+        loaded.truncate(limit);
+        loaded.last().map(|entry| StatementCursor {
+            occurred_on: entry.occurred_on,
+            id: entry.id,
+        })
+    } else {
+        None
+    };
+    Ok(StatementPage {
+        total,
+        unread,
+        entries: loaded,
+        next,
+    })
+}
+
 fn suggested_reading(
     tx: &BankTransaction,
     lines: &[crate::domain::OpeningBalanceLine],
@@ -3433,5 +3808,172 @@ mod tests {
             }
         );
         assert_eq!(before.advanced, Money::ZERO);
+    }
+
+    #[test]
+    fn statement_history_pages_searches_and_counts_the_whole_vault() {
+        let mut store = test_store("statement-history");
+        let start = date(2026, TimeMonth::January, 1);
+        let mut transactions = Vec::new();
+        for i in 0..42 {
+            let (amount_cents, description) = if i == 0 {
+                (-123_456, "Cabinet Durand".to_string())
+            } else {
+                (-1_000, format!("Mouvement {i:02}"))
+            };
+            transactions.push(ParsedTransaction {
+                occurred_on: start + time::Duration::days(i),
+                amount_cents,
+                description,
+                fitid: None,
+            });
+        }
+        transactions.push(ParsedTransaction {
+            occurred_on: date(2026, TimeMonth::December, 1),
+            amount_cents: -999,
+            description: "Après aujourd'hui".into(),
+            fitid: None,
+        });
+        applied(
+            Executor::new(&mut store)
+                .execute(&ImportBankTransactions { transactions }, &human())
+                .unwrap(),
+        );
+        let imported = list_bank_transactions(store.connection()).unwrap();
+        let newest = imported
+            .iter()
+            .find(|t| t.description == "Mouvement 41")
+            .unwrap();
+        let debt = imported
+            .iter()
+            .find(|t| t.description == "Mouvement 40")
+            .unwrap();
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &SettleBankTransaction {
+                        transaction_id: newest.id,
+                        account: "455000".parse::<SettlementAccount>().unwrap(),
+                        label: None,
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &SettleBankTransaction {
+                        transaction_id: debt.id,
+                        account: "401000".parse::<SettlementAccount>().unwrap(),
+                        label: Some("Honoraires repris".into()),
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+
+        let first = statement_history(
+            store.connection(),
+            &StatementPageRequest {
+                today: today(),
+                search: None,
+                filter: StatementFilter::All,
+                before: None,
+                limit: STATEMENT_PAGE_SIZE,
+            },
+        )
+        .unwrap();
+        assert_eq!(first.total, 42);
+        assert_eq!(first.unread, 40);
+        assert_eq!(first.entries.len(), 40);
+        assert!(first.next.is_some());
+        assert!(matches!(first.entries[0].reading, JournalReading::ForMe));
+        assert!(matches!(
+            first.entries[1].reading,
+            JournalReading::Debt { .. }
+        ));
+        assert_eq!(first.entries[0].amount, Money::from_cents(-1_000));
+
+        let second = statement_history(
+            store.connection(),
+            &StatementPageRequest {
+                today: today(),
+                search: None,
+                filter: StatementFilter::All,
+                before: first.next.clone(),
+                limit: STATEMENT_PAGE_SIZE,
+            },
+        )
+        .unwrap();
+        assert_eq!(second.entries.len(), 2);
+        assert!(second.next.is_none());
+        assert_eq!(second.total, 42);
+        assert_eq!(second.unread, 40);
+        let durand = second
+            .entries
+            .iter()
+            .find(|e| e.description == "Cabinet Durand")
+            .unwrap();
+        assert_eq!(durand.amount, Money::from_cents(-123_456));
+        assert!(matches!(durand.reading, JournalReading::Unread));
+        assert!(
+            second
+                .entries
+                .iter()
+                .all(|e| first.entries.iter().all(|seen| seen.id != e.id))
+        );
+
+        let by_label = statement_history(
+            store.connection(),
+            &StatementPageRequest {
+                today: today(),
+                search: Some("durand".into()),
+                filter: StatementFilter::All,
+                before: None,
+                limit: STATEMENT_PAGE_SIZE,
+            },
+        )
+        .unwrap();
+        assert_eq!(by_label.entries.len(), 1);
+        assert_eq!(by_label.entries[0].description, "Cabinet Durand");
+        assert_eq!(by_label.total, 42);
+        assert_eq!(by_label.unread, 40);
+
+        let by_amount = statement_history(
+            store.connection(),
+            &StatementPageRequest {
+                today: today(),
+                search: Some("1 234,56".into()),
+                filter: StatementFilter::All,
+                before: None,
+                limit: STATEMENT_PAGE_SIZE,
+            },
+        )
+        .unwrap();
+        assert_eq!(by_amount.entries.len(), 1);
+        assert_eq!(by_amount.entries[0].amount, Money::from_cents(-123_456));
+
+        let unread_only = statement_history(
+            store.connection(),
+            &StatementPageRequest {
+                today: today(),
+                search: None,
+                filter: StatementFilter::Unread,
+                before: None,
+                limit: STATEMENT_PAGE_SIZE,
+            },
+        )
+        .unwrap();
+        assert_eq!(unread_only.entries.len(), 40);
+        assert!(unread_only.next.is_none());
+        assert!(
+            unread_only
+                .entries
+                .iter()
+                .all(|e| matches!(e.reading, JournalReading::Unread))
+        );
+        assert_eq!(unread_only.total, 42);
+        assert_eq!(unread_only.unread, 40);
     }
 }

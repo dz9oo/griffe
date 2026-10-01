@@ -177,6 +177,13 @@ pub enum ProspectCommand {
         #[arg(long, value_parser = parse_date)]
         started_on: Date,
     },
+    /// Rouvre une conversation arrêtée, sur le même dossier.
+    Reopen {
+        #[arg(value_name = "RÉFÉRENCE")]
+        reference: String,
+        #[arg(long, value_parser = parse_date)]
+        next_action: Date,
+    },
     /// Perd une opportunité, avec un motif structuré.
     Lose {
         #[arg(value_name = "RÉFÉRENCE")]
@@ -492,6 +499,18 @@ pub fn run(
             let command = prospection::WinOpportunity {
                 opportunity_id,
                 started_on,
+            };
+            let outcome = Executor::new(store).execute(&command, ctx)?;
+            format_outcome(&outcome, json)
+        }
+        ProspectCommand::Reopen {
+            reference,
+            next_action,
+        } => {
+            let opportunity_id = refs::resolve_opportunity(store, &reference)?;
+            let command = prospection::ReopenOpportunity {
+                opportunity_id,
+                next_action_at: next_action,
             };
             let outcome = Executor::new(store).execute(&command, ctx)?;
             format_outcome(&outcome, json)

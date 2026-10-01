@@ -523,6 +523,131 @@ impl Command for LoseOpportunity {
     }
 }
 
+/// Rouvre une conversation arrêtée. Les lettres, les rencontres et le montant restent sur
+/// la même opportunité. La cadence de relance repart, sans effacer l'historique.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReopenOpportunity {
+    pub opportunity_id: OpportunityId,
+    #[serde(with = "crate::domain::serde_date::date")]
+    pub next_action_at: Date,
+}
+
+impl Command for ReopenOpportunity {
+    type Output = ();
+    const NAME: &'static str = "prospection.reopen_opportunity";
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        let opportunity = row::opportunity_by_id(conn, self.opportunity_id)?
+            .ok_or(ProspectionError::NotFound(self.opportunity_id))?;
+        if opportunity.stage != OpportunityStage::Lost {
+            return Err(ProspectionError::NotLost(self.opportunity_id).into());
+        }
+        let note = opportunity
+            .loss_reason
+            .as_ref()
+            .map_or_else(|| "Conversation reprise.".into(), loss_history_note);
+        LogInteraction {
+            opportunity_id: self.opportunity_id,
+            kind: crate::domain::InteractionKind::Note,
+            note,
+            occurred_at: None,
+        }
+        .apply(conn)?;
+        row::update_stage(
+            conn,
+            self.opportunity_id,
+            OpportunityStage::Discovery,
+            Some(self.next_action_at),
+            None,
+        )?;
+        crate::follow_up::open_cycle(conn, self.opportunity_id, self.next_action_at)?;
+        Ok(())
+    }
+}
+
+/// Remplace les lignes de travaux d'une estimation et aligne le montant de l'opportunité
+/// sur leur somme.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetEstimation {
+    pub id: OpportunityId,
+    pub revision: i64,
+    pub name: String,
+    pub lines: Vec<EstimationLineInput>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EstimationLineInput {
+    pub label: String,
+    pub amount: Money,
+}
+
+impl Command for SetEstimation {
+    type Output = i64;
+    const NAME: &'static str = "prospection.set_estimation";
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        let opportunity =
+            row::opportunity_by_id(conn, self.id)?.ok_or(ProspectionError::NotFound(self.id))?;
+        if opportunity.stage.is_closed() {
+            return Err(ProspectionError::AlreadyClosed(self.id).into());
+        }
+        if self.lines.is_empty() {
+            return Err(ProspectionError::EstimationRequired.into());
+        }
+        let mut total = Money::ZERO;
+        for line in &self.lines {
+            if line.label.trim().is_empty() || line.amount.cents() <= 0 {
+                return Err(ProspectionError::EstimationLineInvalid.into());
+            }
+            total = total
+                .checked_add(line.amount)
+                .ok_or(ProspectionError::EstimationLineInvalid)?;
+        }
+        let new_revision = require_opportunity_revision(conn, self.id, self.revision)?;
+        conn.execute(
+            "DELETE FROM estimation_lines WHERE opportunity_id = ?1",
+            [self.id.to_string()],
+        )?;
+        for (position, line) in self.lines.iter().enumerate() {
+            conn.execute(
+                "INSERT INTO estimation_lines (opportunity_id, position, label, amount_cents)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    self.id.to_string(),
+                    i64::try_from(position).unwrap_or(i64::MAX),
+                    line.label.trim(),
+                    line.amount.cents(),
+                ],
+            )?;
+        }
+        conn.execute(
+            "UPDATE opportunities
+                SET name = ?1, amount_cents = ?2, revision = ?3
+              WHERE id = ?4 AND revision = ?5",
+            params![
+                self.name.trim(),
+                total.cents(),
+                new_revision,
+                self.id.to_string(),
+                self.revision,
+            ],
+        )?;
+        Ok(new_revision)
+    }
+}
+
+fn loss_history_note(reason: &crate::domain::LossReason) -> String {
+    let why = match reason {
+        crate::domain::LossReason::Budget => "le budget ne suivait pas",
+        crate::domain::LossReason::Timing => "pas le bon moment",
+        crate::domain::LossReason::Competitor => "quelqu'un d'autre a été choisi",
+        crate::domain::LossReason::NoResponse => "pas de réponse",
+        crate::domain::LossReason::ScopeMismatch => "ce n'était pas le bon sujet",
+        crate::domain::LossReason::Other(text) => text.as_str(),
+    };
+    format!("Arrêtée : {why}. Conversation reprise.")
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogInteraction {
     pub opportunity_id: OpportunityId,
