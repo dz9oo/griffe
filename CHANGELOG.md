@@ -2,6 +2,10 @@
 
 Ce qui change pour qui se sert de Griffe. Une section par version publiée.
 
+## 0.3.4
+
+- La fenêtre indique la version compilée, à côté de l'état du coffre, et sous la carte quand le coffre est verrouillé ou à créer.
+
 ## 0.3.3
 
 - Le jour place les conversations et les gestes côte à côte quand la fenêtre est assez large, et les empile sinon.
