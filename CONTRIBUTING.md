@@ -27,10 +27,14 @@ Pour un changement de schéma ou de crate visible par Nix :
 vertes. Les tags `v*` aussi : création, suppression et force-push réservés
 à `@dz9oo`.
 
-Couper un tag `vX.Y.Z` exige une section `## X.Y.Z` dans `CHANGELOG.md`,
-rédigée pour qui utilise Griffe : ce qui change à l'écran, pas le détail
-d'implémentation. Le corps de la release GitHub et le commit AUR reprennent
-cette section. `packaging/release-notes.sh X.Y.Z` échoue si elle manque.
+Couper un tag `vX.Y.Z` exige une section `## X.Y.Z` dans `CHANGELOG.md`.
+Chaque version publiée en a une. On y écrit ce qui change pour la personne
+qui s'en sert, dans ses mots : ce qu'elle voit, ce qu'elle peut faire.
+Pas de jargon de développement, pas de nom de crate, de test ou de commit.
+Le corps de la release GitHub et le journal du paquet pacman
+(`pacman -Qc griffe-bin`) reprennent cette section, via
+`packaging/release-notes.sh`. Le script échoue si elle manque ou si elle
+est vide.
 
 Les contributeurs externes travaillent depuis un **fork**. Un coup de
 main sur les issues se fait en rôle Triage. Write et Admin restent à

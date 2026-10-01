@@ -4,7 +4,9 @@ Ce qui change pour qui se sert de Griffe. Une section par version publiée.
 
 ## 0.3.4
 
-- La fenêtre indique la version compilée, à côté de l'état du coffre, et sous la carte quand le coffre est verrouillé ou à créer.
+- La fenêtre affiche son numéro, à côté de l'état du coffre, et sous la carte quand le coffre est verrouillé ou à créer.
+- Au 1er octobre, la TVA de septembre reste à déclarer. Elle ne disparaît pas parce que l'exercice suivant a commencé.
+- Tant que l'exercice fini n'est pas arrêté, le jour le rappelle et la société le dit. On arrête les comptes depuis ce parcours. Une fois l'exercice clos, le rappel disparaît.
 
 ## 0.3.3
 
