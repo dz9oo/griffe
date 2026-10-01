@@ -2800,6 +2800,66 @@ async fn unlock_screen_says_griffe() {
 }
 
 #[tokio::test]
+async fn the_footer_names_the_compiled_version() {
+    let state = unlocked_state(&test_db_path("version-foot")).await;
+    let router = griffe_web::router(state);
+    let jour = body_text(
+        router
+            .oneshot(Request::builder().uri("/jour").body(Body::empty()).unwrap())
+            .await
+            .unwrap(),
+    )
+    .await;
+    let version = format!("Griffe {}", env!("CARGO_PKG_VERSION"));
+    let foot = jour.split_once("class=\"foot\"").map(|(_, rest)| rest);
+    assert!(
+        foot.is_some_and(|foot| foot.contains(&version)),
+        "le pied doit nommer la version compilée ({version}) : {jour}"
+    );
+}
+
+#[tokio::test]
+async fn the_locked_screens_name_the_compiled_version() {
+    let version = format!("Griffe {}", env!("CARGO_PKG_VERSION"));
+
+    let db_path = test_db_path("version-unlock");
+    Store::create(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    let unlock = body_text(
+        griffe_web::router(AppState::new(db_path))
+            .oneshot(
+                Request::builder()
+                    .uri("/unlock")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        unlock.contains(&version),
+        "l'écran verrouillé doit nommer la version ({version}) : {unlock}"
+    );
+
+    let setup = body_text(
+        griffe_web::router(AppState::new(test_db_path("version-setup")))
+            .oneshot(
+                Request::builder()
+                    .uri("/setup")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        setup.contains(&version),
+        "la création du coffre doit nommer la version ({version}) : {setup}"
+    );
+}
+
+#[tokio::test]
 async fn a_view_request_while_locked_renders_the_unlock_screen_directly() {
     // Pas de `303 Location` pour une navigation de premier niveau : le protocole URI custom de
     // la coque desktop (WebKitGTK) ne le suit pas de façon fiable (page blanche silencieuse,
