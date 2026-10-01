@@ -31,7 +31,20 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-on-failure: true
-      - run: nix develop --command just fmt-check lint unused test audit
+      # Recettes séparées : un lint rouge ne doit pas escamoter les tests
+      # (c'est ainsi que l'aide `prospect reopen` est passée sur master).
+      - name: Porte fmt, lint, machete, tests et audit
+        run: |
+          nix develop --command bash -c '
+            set +e
+            status=0
+            just fmt-check || status=1
+            just lint || status=1
+            just unused || status=1
+            just test || status=1
+            just audit || status=1
+            exit "$status"
+          '
       - run: df -h
 
   desktop:
