@@ -35,7 +35,7 @@ use crate::accounting::{compute_result, vat_due_for_period};
 use crate::app::AppError;
 use crate::billing::{aged_balance, list_bank_transactions, list_invoices, list_write_offs};
 use crate::clients::client_by_id;
-use crate::closing::{ClosingStage, ClosingStepKey, StepStatus, closing_checklist};
+use crate::closing::{ClosingStage, ClosingStepKey, StepStatus, closing_checklist, closing_target};
 use crate::company::company_profile;
 use crate::day::cash_in_bank;
 use crate::domain::{
@@ -47,7 +47,6 @@ use crate::fiscal::{
     Ca3Periodicity, DAS2_THRESHOLD, DIVIDEND_INCOME_TAX_BPS, FiscalDeadline, FiscalDeadlineKind,
     IS_ACOMPTE_DISPENSATION, VatFilingScheme, ca3_filings_in_range, ca3_period_key,
     dividend_social_charges_bps, fiscal_calendar, next_cfe, next_is_acompte,
-    simplified_regime_applies_to,
 };
 use crate::fiscal_year::fiscal_year_ending_in;
 use crate::forecast::{build_forecast_inputs, forecast_12_months};
@@ -254,10 +253,10 @@ pub fn society_landscape(conn: &Connection, today: Date) -> Result<Landscape, Ap
     let bank = cash_in_bank(conn, today)?;
     let profile = company_profile(conn)?;
     let year_end = profile.as_ref().and_then(|p| p.fiscal_year_end);
-    let exercise_end = year_end.map(|e| e.containing(today).end());
-    let days_to_year_end = exercise_end
-        .filter(|d| *d >= today)
-        .map(|d| (d - today).whole_days());
+    let target = closing_target(conn, today)?;
+    let exercise_end = year_end.map(|_| target.exercise.end());
+    let days_to_year_end = (year_end.is_some() && !target.elapsed)
+        .then(|| (target.exercise.end() - today).whole_days());
     let start = landscape_start(conn, today, year_end)?;
     let today_month = month_of(today);
     let mut points = Vec::new();
@@ -428,6 +427,10 @@ pub struct IdentityShort {
     pub capital: Option<Money>,
     pub year_end: Option<FiscalYearEnd>,
     pub days_to_year_end: Option<i64>,
+    /// Fin de l'exercice écoulé qui n'est pas encore arrêté. Le décompte vers la clôture
+    /// suivante attend que celui-ci soit clos.
+    #[serde(default, with = "crate::domain::serde_date::date::option")]
+    pub unclosed_on: Option<Date>,
 }
 
 /// Solde entre l'associé et la société (compte 455 dérivé).
@@ -580,29 +583,33 @@ pub struct ClosingCue {
     pub days_left: Option<i64>,
     pub unmatched: u32,
     pub stage: ClosingStage,
+    /// L'exercice à arrêter est déjà écoulé.
+    pub elapsed: bool,
+    #[serde(with = "crate::domain::serde_date::date")]
+    pub ends_on: Date,
 }
 
 /// # Errors
 pub fn society_home(conn: &Connection, today: Date) -> Result<SocietyHome, AppError> {
     let profile = company_profile(conn)?;
     let year_end = profile.as_ref().and_then(|p| p.fiscal_year_end);
-    let exercise_end = year_end.map(|e| e.containing(today).end());
-    let days_to_year_end = exercise_end
-        .filter(|d| *d >= today)
-        .map(|d| (d - today).whole_days());
+    let target = closing_target(conn, today)?;
+    let days_to_year_end = (year_end.is_some() && !target.elapsed)
+        .then(|| (target.exercise.end() - today).whole_days());
     let identity = IdentityShort {
         name: profile.as_ref().map(|p| p.name.clone()),
         legal_form: profile.as_ref().map(|p| p.legal_form.clone()),
         capital: profile.as_ref().and_then(|p| p.share_capital),
         year_end,
         days_to_year_end,
+        unclosed_on: (year_end.is_some() && target.elapsed).then_some(target.exercise.end()),
     };
     let landscape = society_landscape(conn, today)?;
     let conversations = year_conversations(conn, today)?;
     let pay = pay_yourself(conn, today)?;
     let duties = society_duties(conn, today)?;
     let unmatched = unmatched_count(conn)?;
-    let closing = closing_cue(conn, today, days_to_year_end, unmatched)?;
+    let closing = closing_cue(conn, today, unmatched)?;
     Ok(SocietyHome {
         identity,
         landscape,
@@ -673,21 +680,18 @@ fn unmatched_count(conn: &Connection) -> Result<u32, AppError> {
     Ok(u32::try_from(n).unwrap_or(u32::MAX))
 }
 
-fn closing_cue(
-    conn: &Connection,
-    today: Date,
-    days_left: Option<i64>,
-    unmatched: u32,
-) -> Result<ClosingCue, AppError> {
-    let period = company_profile(conn)?
-        .as_ref()
-        .and_then(|p| p.fiscal_year_end)
-        .map_or_else(|| today.year(), |e| e.containing(today).end().year());
-    let checklist = closing_checklist(conn, period, today)?;
+fn closing_cue(conn: &Connection, today: Date, unmatched: u32) -> Result<ClosingCue, AppError> {
+    let target = closing_target(conn, today)?;
+    let configured = company_profile(conn)?.is_some_and(|p| p.fiscal_year_end.is_some());
+    let days_left =
+        (configured && !target.elapsed).then(|| (target.exercise.end() - today).whole_days());
+    let checklist = closing_checklist(conn, target.exercise.end().year(), today)?;
     Ok(ClosingCue {
         days_left,
         unmatched,
         stage: checklist.stage,
+        elapsed: target.elapsed,
+        ends_on: target.exercise.end(),
     })
 }
 
@@ -903,11 +907,7 @@ fn push_ca3_window(
             )
             .day
         });
-    let earliest = simplified_regime_applies_to(previous).then(|| {
-        let start = current.start();
-        Month::new(start.year(), u8::from(start.month()))
-            .expect("un début d'exercice a un mois valide")
-    });
+    let earliest = crate::fiscal::ca3_earliest_period(vat_regime, previous, current);
     for filing in ca3_filings_in_range(window_start, window_end, periodicity, day, earliest) {
         let period_key = ca3_period_key(filing.period_start);
         if has_duty(duties, FiscalDeadlineKind::Ca3, &period_key) {
@@ -1783,25 +1783,31 @@ pub struct ClosingStory {
     pub stage: ClosingStage,
     pub unmatched: u32,
     pub period: i32,
+    /// L'exercice [`Self::period`] est écoulé et pas encore clos.
+    pub elapsed: bool,
+    #[serde(with = "crate::domain::serde_date::date")]
+    pub starts_on: Date,
+    #[serde(with = "crate::domain::serde_date::date")]
+    pub ends_on: Date,
+    /// Exercice qui vient de finir et qui commence avant le bilan d'ouverture.
+    #[serde(with = "crate::domain::serde_date::date::option")]
+    pub outside_end: Option<Date>,
     pub beats: Vec<ClosingBeat>,
 }
 
 /// # Errors
 pub fn closing_story(conn: &Connection, today: Date) -> Result<ClosingStory, AppError> {
-    let profile = company_profile(conn)?;
-    let year_end = profile.as_ref().and_then(|p| p.fiscal_year_end);
-    let exercise = year_end.map(|e| e.containing(today));
-    let period = exercise.map_or_else(|| today.year(), |e| e.end().year());
-    let days_left = exercise
-        .map(crate::domain::FiscalYear::end)
-        .filter(|d| *d >= today)
-        .map(|d| (d - today).whole_days());
+    let target = closing_target(conn, today)?;
+    let exercise = target.exercise;
+    let period = exercise.end().year();
+    let configured = company_profile(conn)?.is_some_and(|p| p.fiscal_year_end.is_some());
+    let ends_on = exercise.end();
+    let days_left = (configured && !target.elapsed).then(|| (ends_on - today).whole_days());
     let checklist = closing_checklist(conn, period, today)?;
     let unmatched = unmatched_count(conn)?;
     let opening = checklist.step(ClosingStepKey::OpeningBalance);
     let expenses = checklist.step(ClosingStepKey::Expenses);
     let close = checklist.step(ClosingStepKey::Close);
-    let ends_on = exercise.map_or_else(|| checklist.exercise.end(), crate::domain::FiscalYear::end);
 
     let mut beats = Vec::new();
     let opening_done =
@@ -1843,16 +1849,16 @@ pub fn closing_story(conn: &Connection, today: Date) -> Result<ClosingStory, App
         },
     });
     let close_status = close.map(|s| s.status);
-    let (close_when, close_on) = match close_status {
-        Some(StepStatus::Done | StepStatus::Info) => (BeatWhen::Done, None),
-        Some(StepStatus::Later) | None if today <= ends_on => {
+    // On arrête le lendemain de la fin. Avant ça, même une étape bloquée reste « plus tard » :
+    // le bouton n'apparaît que lorsque l'exercice est écoulé.
+    let (close_when, close_on) =
+        if matches!(close_status, Some(StepStatus::Done | StepStatus::Info)) {
+            (BeatWhen::Done, None)
+        } else if today <= ends_on {
             (BeatWhen::Later, Some(ends_on.next_day().unwrap_or(ends_on)))
-        }
-        Some(StepStatus::Todo | StepStatus::Warning | StepStatus::Blocked) => {
+        } else {
             (BeatWhen::Today, None)
-        }
-        _ => (BeatWhen::Later, None),
-    };
+        };
     beats.push(ClosingBeat {
         when: close_when,
         on: close_on,
@@ -1868,6 +1874,10 @@ pub fn closing_story(conn: &Connection, today: Date) -> Result<ClosingStory, App
         stage: checklist.stage,
         unmatched,
         period,
+        elapsed: target.elapsed,
+        starts_on: exercise.start(),
+        ends_on,
+        outside_end: target.outside_end,
         beats,
     })
 }
@@ -2379,6 +2389,7 @@ mod tests {
     };
     use crate::expenses::RecordExpense;
     use crate::fiscal::FiscalDeadlineKind;
+    use crate::fiscal_year::CloseFiscalYear;
     use crate::opening_balance::RecordOpeningBalance;
     use crate::prospection::CreateOpportunity;
     use crate::store::Store;
@@ -2733,9 +2744,16 @@ mod tests {
     fn the_home_carries_identity_landscape_and_chapter_cues() {
         let mut store = test_store("home");
         set_profile(&mut store);
+        // Sans bilan, l'exercice précédent (clos au cabinet) serait la cible : le décompte
+        // de l'exercice en cours n'a de sens qu'une fois l'ouverture posée.
+        set_opening(
+            &mut store,
+            &["101000:Capital:C:1000.00", "512000:Banque:D:1000.00"],
+        );
         let home = society_home(store.connection(), today()).unwrap();
         assert_eq!(home.identity.name.as_deref(), Some("Lumen Conseil"));
         assert_eq!(home.identity.days_to_year_end, Some(25));
+        assert_eq!(home.identity.unclosed_on, None);
         assert_eq!(
             home.pay.dividend,
             DividendDoor::Closed {
@@ -3975,5 +3993,135 @@ mod tests {
         );
         assert_eq!(unread_only.total, 42);
         assert_eq!(unread_only.unread, 40);
+    }
+
+    fn close_accounts(story: &ClosingStory) -> &ClosingBeat {
+        story
+            .beats
+            .iter()
+            .find(|b| matches!(b.kind, BeatKind::CloseAccounts { .. }))
+            .expect("battement de clôture")
+    }
+
+    #[test]
+    fn a_monthly_ca3_of_september_is_due_the_day_the_next_exercise_opens() {
+        let mut store = test_store("duties-sept");
+        set_monthly_profile(&mut store);
+        set_opening(
+            &mut store,
+            &["101000:Capital:C:1000.00", "512000:Banque:D:1000.00"],
+        );
+        let on = date(2026, TimeMonth::October, 1);
+        let duties = society_duties(store.connection(), on).unwrap();
+        assert!(
+            duties
+                .iter()
+                .any(|d| d.kind == FiscalDeadlineKind::Ca3 && d.period_key == "2026-09"),
+            "la CA3 de septembre reste due en octobre : {duties:?}"
+        );
+    }
+
+    #[test]
+    fn the_day_after_year_end_the_letter_closes_the_exercise_that_just_ended() {
+        let mut store = test_store("close-target");
+        set_profile(&mut store);
+        set_opening(
+            &mut store,
+            &["101000:Capital:C:1000.00", "512000:Banque:D:1000.00"],
+        );
+        let on = date(2026, TimeMonth::October, 1);
+        let letter = closing_story(store.connection(), on).unwrap();
+        assert_eq!(letter.period, 2026);
+        assert!(letter.elapsed);
+        assert_eq!(letter.starts_on, date(2025, TimeMonth::October, 1));
+        assert_eq!(letter.ends_on, date(2026, TimeMonth::September, 30));
+        assert_eq!(letter.outside_end, None);
+        assert_eq!(letter.days_left, None);
+        assert_eq!(close_accounts(&letter).when, BeatWhen::Today);
+        let home = society_home(store.connection(), on).unwrap();
+        assert_eq!(
+            home.identity.unclosed_on,
+            Some(date(2026, TimeMonth::September, 30))
+        );
+        assert_eq!(home.identity.days_to_year_end, None);
+        assert!(home.closing.elapsed);
+        assert_eq!(home.landscape.days_to_year_end, None);
+
+        let eve = closing_story(store.connection(), date(2026, TimeMonth::September, 30)).unwrap();
+        assert!(!eve.elapsed);
+        assert_eq!(eve.period, 2026);
+        assert_eq!(eve.ends_on, date(2026, TimeMonth::September, 30));
+        assert_eq!(eve.days_left, Some(0));
+        assert_eq!(close_accounts(&eve).when, BeatWhen::Later);
+
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &CloseFiscalYear {
+                        starts_on: date(2025, TimeMonth::October, 1),
+                        ends_on: date(2026, TimeMonth::September, 30),
+                        legal_reserve: Money::ZERO,
+                        dividends: Money::ZERO,
+                        carry_back: false,
+                        today: Some(on),
+                        non_deductible_expenses: Money::ZERO,
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        let next = closing_story(store.connection(), on).unwrap();
+        assert_eq!(next.period, 2027);
+        assert!(!next.elapsed);
+        assert_eq!(next.starts_on, date(2026, TimeMonth::October, 1));
+        assert_eq!(next.ends_on, date(2027, TimeMonth::September, 30));
+        assert_eq!(next.outside_end, None);
+        assert_eq!(close_accounts(&next).when, BeatWhen::Later);
+        assert_eq!(
+            society_home(store.connection(), on)
+                .unwrap()
+                .identity
+                .unclosed_on,
+            None
+        );
+    }
+
+    #[test]
+    fn an_exercise_that_starts_before_the_opening_is_named_not_replaced() {
+        let mut store = test_store("close-outside");
+        set_profile(&mut store);
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &RecordOpeningBalance {
+                        opens_on: date(2026, TimeMonth::October, 1),
+                        source: Some("cabinet".into()),
+                        lines: vec![
+                            "101000:Capital:C:1000.00"
+                                .parse::<OpeningBalanceLine>()
+                                .unwrap(),
+                            "512000:Banque:D:1000.00"
+                                .parse::<OpeningBalanceLine>()
+                                .unwrap(),
+                        ],
+                        tax_losses: Money::ZERO,
+                        prior_corporate_tax: None,
+                        prior_vat_due: None,
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        let on = date(2026, TimeMonth::October, 1);
+        let letter = closing_story(store.connection(), on).unwrap();
+        assert_eq!(
+            letter.outside_end,
+            Some(date(2026, TimeMonth::September, 30))
+        );
+        assert!(!letter.elapsed);
+        assert_eq!(letter.period, 2027);
+        assert_eq!(letter.starts_on, date(2026, TimeMonth::October, 1));
+        assert_eq!(letter.ends_on, date(2027, TimeMonth::September, 30));
+        assert_eq!(close_accounts(&letter).when, BeatWhen::Later);
     }
 }

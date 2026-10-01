@@ -373,6 +373,62 @@ impl Facts {
     }
 }
 
+/// L'exercice que la lettre « Clore » et le formulaire de clôture proposent.
+///
+/// Au lendemain d'une clôture au 30 septembre, l'exercice qui *contient* aujourd'hui est celui
+/// qui vient de s'ouvrir (il finira l'année suivante). Tant que l'exercice qui vient de se
+/// terminer n'est pas clos, et qu'il est dans le coffre, c'est lui qu'on arrête.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClosingTarget {
+    pub exercise: FiscalYear,
+    /// `today` est strictement après la fin : les comptes peuvent être arrêtés.
+    pub elapsed: bool,
+    /// Fin d'un exercice écoulé qui commence avant le bilan d'ouverture, s'il vient de se
+    /// terminer. Il n'est pas dans ce coffre ; on ne le remplace pas en silence par l'exercice
+    /// suivant.
+    pub outside_end: Option<Date>,
+}
+
+/// # Errors
+///
+/// Erreur de lecture SQLite.
+pub fn closing_target(conn: &Connection, today: Date) -> Result<ClosingTarget, AppError> {
+    let profile = company_profile(conn)?;
+    let Some(fye) = profile.as_ref().and_then(|p| p.fiscal_year_end) else {
+        // Sans date de clôture au profil, on ne devine pas qu'un exercice civil serait à
+        // arrêter. L'exercice qui contient aujourd'hui sert de support ; les jours affichés
+        // restent absents.
+        return Ok(ClosingTarget {
+            exercise: FiscalYearEnd::CALENDAR.current(today),
+            elapsed: false,
+            outside_end: None,
+        });
+    };
+    let current = fye.current(today);
+    let previous = fye.previous(current);
+    let opens_on = opening_balance(conn)?.map(|o| o.balance.opens_on);
+    let closed = fiscal_year_ending_in(conn, previous.end().year())?.is_some();
+    let in_vault = opens_on.is_none_or(|on| previous.start() >= on);
+    if today > previous.end() && !closed && in_vault {
+        return Ok(ClosingTarget {
+            exercise: previous,
+            elapsed: true,
+            outside_end: None,
+        });
+    }
+    // Le bilan d'ouverture daté du nouvel exercice laisse dehors l'exercice qui vient de finir.
+    // Au-delà d'une saison, c'est l'exercice du cabinet, déjà représenté par ce bilan : on ne
+    // le rappelle pas toute l'année.
+    let outside_end = (today > previous.end() && !closed && !in_vault)
+        .then_some(previous.end())
+        .filter(|end| (today - *end).whole_days() <= 120);
+    Ok(ClosingTarget {
+        exercise: current,
+        elapsed: false,
+        outside_end,
+    })
+}
+
 /// Le parcours de clôture de l'exercice clos dans l'année civile `period`, vu depuis `today`
 /// (date fournie par l'adaptateur, jamais lue par le cœur : les échéances et le « l'exercice
 /// est-il écoulé » en dépendent).

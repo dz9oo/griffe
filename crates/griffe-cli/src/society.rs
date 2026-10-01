@@ -423,10 +423,14 @@ impl HumanRender for ClosingStory {
                 BeatKind::Receipts { missing: true } => "Justificatifs manquants".into(),
                 BeatKind::Receipts { missing: false } => "Justificatifs de l'exercice".into(),
                 BeatKind::CloseAccounts { ends_on } => {
-                    format!(
-                        "Arrêter les comptes — pas avant le {}",
-                        format_date(*ends_on)
-                    )
+                    if beat.when == BeatWhen::Later {
+                        format!(
+                            "Arrêter les comptes — pas avant le {}",
+                            format_date(*ends_on)
+                        )
+                    } else {
+                        "Arrêter les comptes".to_string()
+                    }
                 }
                 BeatKind::ThenApproveAndFile => {
                     "Décider de l'affectation, faire le PV, déposer".into()

@@ -7831,3 +7831,205 @@ async fn the_remember_checkbox_promises_the_next_launch_only() {
     );
     assert!(!page.contains("rester déverrouillé"), "{page}");
 }
+
+fn page_has(body: &str, needle: &str) -> bool {
+    let hex = needle.replace('\'', "&#x27;");
+    let dec = needle.replace('\'', "&#39;");
+    body.contains(needle) || body.contains(&hex) || body.contains(&dec)
+}
+
+#[tokio::test]
+async fn october_first_declares_september_vat_and_closes_the_year_that_just_ended() {
+    let db_path = test_db_path("letter-october-close");
+    let state = unlocked_state(&db_path)
+        .await
+        .with_today(time::macros::date!(2026 - 10 - 01));
+    {
+        let mut store =
+            Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &griffe_core::company::SetCompanyProfile {
+                        name: "Lumen Conseil".into(),
+                        legal_form: "SASU".into(),
+                        siren: griffe_core::domain::Siren::parse("552100554").unwrap(),
+                        vat_number: None,
+                        address: griffe_core::domain::Address {
+                            street: "18 rue des Ateliers".into(),
+                            postal_code: "69003".into(),
+                            city: "Lyon".into(),
+                            country: "FR".into(),
+                        },
+                        share_capital: Some(Money::from_cents(100_000)),
+                        rcs_city: Some("Lyon".into()),
+                        iban: None,
+                        fiscal_year_end: Some(
+                            griffe_core::domain::FiscalYearEnd::new(9, 30).unwrap(),
+                        ),
+                        vat_regime: Some(griffe_core::domain::VatRegime::RealNormalMonthly),
+                        director_monthly_gross: Some(Money::from_cents(300_000)),
+                        director_charge_ratio_bps: None,
+                        president_name: Some("Nicolas Lumen".into()),
+                        sole_shareholder_name: Some("Nicolas Lumen".into()),
+                        sole_shareholder_address: Some("18 rue des Ateliers, 69003 Lyon".into()),
+                        share_count: Some(1000),
+                    },
+                    &human_ctx(),
+                )
+                .unwrap(),
+        );
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &griffe_core::opening_balance::RecordOpeningBalance {
+                        opens_on: time::macros::date!(2025 - 10 - 01),
+                        source: Some("cabinet".into()),
+                        lines: vec![
+                            "101000:Capital:C:1000.00".parse().unwrap(),
+                            "512000:Banque:D:1000.00".parse().unwrap(),
+                        ],
+                        tax_losses: Money::ZERO,
+                        prior_corporate_tax: None,
+                        prior_vat_due: None,
+                    },
+                    &human_ctx(),
+                )
+                .unwrap(),
+        );
+    }
+    let router = griffe_web::router(state);
+
+    let impots = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/societe/impots")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        impots.contains("href=\"/societe/impots/ca3/2026-09\""),
+        "la TVA de septembre est due : {impots}"
+    );
+
+    let letter = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/societe/impots/ca3/2026-09")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        page_has(&letter, "trop récupéré"),
+        "le trop-déclaré de septembre se saisit ici : {letter}"
+    );
+
+    let home = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/societe")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        page_has(&home, "30 septembre 2026"),
+        "l'exercice qui vient de finir : {home}"
+    );
+    assert!(
+        page_has(&home, "est à arrêter") || page_has(&home, "n'est pas arrêté"),
+        "{home}"
+    );
+    assert!(
+        !home.contains("30 septembre 2027") && !home.contains("1 octobre 2027"),
+        "2027 n'est pas l'exercice à clore : {home}"
+    );
+
+    let cloture = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/societe/cloture")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(page_has(&cloture, "30 septembre 2026"), "{cloture}");
+    assert!(page_has(&cloture, "1 octobre 2025"), "{cloture}");
+    assert!(
+        cloture.contains("Arrêter les comptes"),
+        "on peut arrêter : {cloture}"
+    );
+    assert!(
+        cloture.contains("hx-get=\"/cloture/new\""),
+        "le bouton ouvre le formulaire : {cloture}"
+    );
+    assert!(
+        !cloture.contains("30 septembre 2027") && !cloture.contains("1 octobre 2027"),
+        "2027 n'est pas l'exercice à clore : {cloture}"
+    );
+
+    let form = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/cloture/new")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        form.contains("value=\"2025-10-01\"") && form.contains("value=\"2026-09-30\""),
+        "le formulaire propose l'exercice qui vient de finir : {form}"
+    );
+    assert!(!form.contains("2027-09-30"), "{form}");
+
+    let jour = body_text(
+        router
+            .oneshot(Request::builder().uri("/jour").body(Body::empty()).unwrap())
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        page_has(&jour, "TVA du mois de septembre"),
+        "la CA3 de septembre est au calendrier : {jour}"
+    );
+    assert!(
+        jour.contains("/societe/impots/ca3/2026-09"),
+        "la ligne ouvre la lettre : {jour}"
+    );
+    assert!(
+        page_has(&jour, "Clore l'exercice clos le 30 septembre 2026"),
+        "la clôture est un événement du mois : {jour}"
+    );
+    assert!(
+        jour.contains("href=\"/societe/cloture\""),
+        "la ligne ouvre Clore : {jour}"
+    );
+}
