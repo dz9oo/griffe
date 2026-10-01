@@ -1886,6 +1886,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn a_fresh_prospect_is_a_first_message_and_a_filed_letter_is_first_contact() {
         let mut store = test_store("cues-stage");
         let today = today();
@@ -1996,6 +1997,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn a_lost_conversation_can_be_reopened_with_its_letter_and_its_estimate() {
         let mut store = test_store("reopen");
         let today = today();
