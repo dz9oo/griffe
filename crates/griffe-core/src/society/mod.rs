@@ -3481,17 +3481,25 @@ mod tests {
             ca3.len() >= 2,
             "août en retard et septembre à venir : {ca3:?}"
         );
-        let august = ca3
-            .iter()
-            .find(|d| d.due_on.month() == TimeMonth::August)
-            .expect("août");
+        // Le réel normal mensuel garde les déclarations de l'exercice précédent :
+        // un mois seul peut désigner septembre 2025. On prend la dernière en
+        // retard et la première encore devant.
+        let august = ca3.iter().rfind(|d| d.due_on < today).expect("août");
         let september = ca3
             .iter()
-            .find(|d| d.due_on.month() == TimeMonth::September)
+            .find(|d| d.due_on >= today && d.filed_on.is_none())
             .expect("septembre");
+        assert_eq!(
+            (august.due_on.year(), august.due_on.month()),
+            (2026, TimeMonth::August)
+        );
+        assert_eq!(
+            (september.due_on.year(), september.due_on.month()),
+            (2026, TimeMonth::September)
+        );
         assert_ne!(august.period_key, september.period_key);
-        assert!(august.due_on < today && august.filed_on.is_none());
-        assert!(september.due_on >= today && september.filed_on.is_none());
+        assert!(august.filed_on.is_none());
+        assert!(september.filed_on.is_none());
         let august_key = august.period_key.clone();
         let september_key = september.period_key.clone();
         let august_due = august.due_on;
