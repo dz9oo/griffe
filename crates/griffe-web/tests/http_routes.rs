@@ -7638,6 +7638,273 @@ label_close=Dernier+mot&subject_close=Fin&body_close=Un+dernier+mot.&revision_cl
     );
 }
 
+#[tokio::test]
+async fn engaged_conversations_finish_their_series_and_a_new_one_takes_three_moments() {
+    let db_path = test_db_path("moments");
+    {
+        let state = unlocked_state(&db_path)
+            .await
+            .with_today(time::macros::date!(2026 - 09 - 02));
+        let router = griffe_web::router(state);
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/affaires/nouvelle")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .header("HX-Request", "true")
+                    .body(Body::from("who=Camille+Rivi%C3%A8re&phrase=accompagnement"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        {
+            let mut store =
+                Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+            let client_id = client_id_by_name(&db_path, "Camille Rivière");
+            Executor::new(&mut store)
+                .execute(
+                    &CreateContact {
+                        client_id,
+                        name: "Camille".into(),
+                        email: Some("camille@exemple.fr".into()),
+                        phone: None,
+                        role: None,
+                    },
+                    &human_ctx(),
+                )
+                .unwrap();
+            Executor::new(&mut store)
+                .execute(
+                    &SetFollowUpSender {
+                        email: "moi@exemple.fr".into(),
+                        name: Some("Moi".into()),
+                    },
+                    &human_ctx(),
+                )
+                .unwrap();
+        }
+        router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/affaires/Camille%20Rivi%C3%A8re/envoye")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .header("HX-Request", "true")
+                    .body(Body::from("subject_line=Bonjour&body=Lettre+class%C3%A9e."))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+
+    let state = AppState::new(db_path.clone());
+    state
+        .unlock(&Passphrase::from(PASSPHRASE), false)
+        .await
+        .unwrap();
+    let state = state.with_today(time::macros::date!(2026 - 09 - 05));
+    let router = griffe_web::router(state);
+
+    let jour = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/jour")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        jour.contains("Écrire à Camille") && jour.contains("prévue le 5 septembre 2026"),
+        "{jour}"
+    );
+
+    let phrases = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/phrases")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(phrases.contains("class=\"letter\""), "{phrases}");
+    assert!(!phrases.contains("letter spread"), "{phrases}");
+    assert!(!phrases.contains("<table"), "{phrases}");
+    assert!(phrases.contains("Écart"), "{phrases}");
+    assert!(
+        phrases.contains("Les conversations déjà engagées finissent leur série."),
+        "{phrases}"
+    );
+    assert!(phrases.contains("Ajouter un moment"), "{phrases}");
+    assert!(phrases.contains("Retirer"), "{phrases}");
+    assert!(phrases.contains("value=\"3\""), "{phrases}");
+    assert!(phrases.contains("value=\"7\""), "{phrases}");
+    assert!(phrases.contains("value=\"14\""), "{phrases}");
+    assert!(!phrases.contains("step="), "{phrases}");
+    for forbidden in [
+        "template", "cadence", "step", "campagne", "workflow", "pipeline",
+    ] {
+        assert!(
+            !phrases.contains(forbidden),
+            "{forbidden} dans la lettre : {phrases}"
+        );
+    }
+
+    let saved = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/affaires/phrases")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .header("HX-Request", "true")
+                    .body(Body::from(
+                        "order=hello,bump,close&\
+label_hello=Premier+contact&subject_hello=Bonjour&body_hello=Un+premier+mot+r%C3%A9%C3%A9crit.&revision_hello=1&\
+label_bump=Premi%C3%A8re+relance&subject_bump=Suite&body_bump=Un+%C3%A9cart+nouveau.&revision_bump=1&ecart_bump=10&\
+label_close=Derni%C3%A8re+relance&subject_close=Fin&body_close=Le+dernier+mot.&revision_close=1&ecart_close=21",
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(saved.contains("Les phrases sont enregistrées."), "{saved}");
+    assert!(saved.contains("Première relance"), "{saved}");
+    assert!(!saved.contains("Relance utile"), "{saved}");
+
+    let jour = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/jour")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        jour.contains("Écrire à Camille") && jour.contains("prévue le 5 septembre 2026"),
+        "{jour}"
+    );
+
+    router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/affaires/nouvelle")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from("who=Nina&phrase=site"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let nina = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Nina/ecrire")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(nina.contains("Premier contact"), "{nina}");
+    assert!(nina.contains("Un premier mot réécrit."), "{nina}");
+    assert_eq!(nina.matches("class=\"seal\"").count(), 1, "{nina}");
+    assert!(nina.contains("C'est parti"), "{nina}");
+    assert!(!nina.contains("<select"), "{nina}");
+
+    let camille = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Camille%20Rivi%C3%A8re/ecrire")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(camille.contains("Petit rappel"), "{camille}");
+    assert!(
+        camille.contains("Je me permets un court rappel"),
+        "{camille}"
+    );
+    assert!(!camille.contains("Un écart nouveau."), "{camille}");
+
+    router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/affaires/Camille%20Rivi%C3%A8re/arreter")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from("reason=timing&detail="))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/affaires/Camille%20Rivi%C3%A8re/reprise")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from("when=2026-09-05"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let resumed = body_text(
+        router
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Camille%20Rivi%C3%A8re/ecrire")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(resumed.contains("Premier contact"), "{resumed}");
+    assert!(!resumed.contains("Premier message"), "{resumed}");
+    assert!(!resumed.contains("Petit rappel"), "{resumed}");
+}
+
 fn uncollectible_notice_papers(db_path: &Path) -> Vec<griffe_core::papers::Paper> {
     let store = Store::open_with_passphrase(db_path, &Passphrase::from(PASSPHRASE)).unwrap();
     griffe_core::papers::list_papers(

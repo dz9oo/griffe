@@ -4,9 +4,9 @@ use griffe_core::app::Executor;
 use griffe_core::clock::today_local;
 use griffe_core::domain::{FollowUpSubject, SnoozePreset, parse_date, snooze_date};
 use griffe_core::follow_up::{
-    MarkFollowUpSent, PhraseRewrite, PrepareFollowUp, RetractLastFollowUp, RewriteProspectPhrases,
-    SetFollowUpDate, SetFollowUpSender, SkipFollowUpStep, SnoozeFollowUp, card_for,
-    follow_up_board, follow_up_queue, prospect_phrases,
+    ArrangeProspectPhrases, MarkFollowUpSent, MomentDraft, PhraseRewrite, PrepareFollowUp,
+    RetractLastFollowUp, RewriteProspectPhrases, SetFollowUpDate, SetFollowUpSender,
+    SkipFollowUpStep, SnoozeFollowUp, card_for, follow_up_board, follow_up_queue, prospect_phrases,
 };
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
@@ -84,6 +84,48 @@ pub(crate) struct RewritePhraseArgs {
     subject: String,
     /// Corps. Mêmes mots que le sujet.
     body: String,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct AddMomentArgs {
+    /// Nom du moment. Défaut : « Nouveau moment ».
+    label: Option<String>,
+    /// Sujet. Défaut : « le sujet ».
+    subject: Option<String>,
+    /// Corps. Défaut : une lettre courte.
+    body: Option<String>,
+    /// Jours après le précédent. Défaut : 7.
+    days: Option<i64>,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct MomentKeyArgs {
+    /// Identifiant du moment.
+    key: String,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct MoveMomentArgs {
+    /// Identifiant du moment.
+    key: String,
+    /// `earlier` pour monter, `later` pour descendre.
+    direction: String,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct SetGapArgs {
+    /// Identifiant du moment.
+    key: String,
+    /// Jours après le précédent.
+    days: i64,
     #[serde(default)]
     dry_run: bool,
 }
@@ -168,6 +210,120 @@ impl FreeflowServer {
             Ok(phrases) => ok_json(phrases),
             Err(e) => err_text(e.to_string()),
         }
+    }
+
+    /// Ajoute un moment à la fin. Les conversations déjà engagées finissent leur série.
+    #[tool(
+        name = "follow_up.add_moment",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false
+        )
+    )]
+    async fn follow_up_add_moment(
+        &self,
+        Parameters(args): Parameters<AddMomentArgs>,
+    ) -> CallToolResult {
+        let mut store = self.store.lock().await;
+        let mut drafts = match living_drafts(&store) {
+            Ok(drafts) => drafts,
+            Err(e) => return err_text(e),
+        };
+        let offset_days = args.days.unwrap_or(if drafts.is_empty() { 0 } else { 7 });
+        drafts.push(MomentDraft {
+            key: None,
+            label: args.label.unwrap_or_else(|| "Nouveau moment".to_string()),
+            offset_days,
+            subject: args.subject.unwrap_or_else(|| "{{sujet}}".to_string()),
+            body: args.body.unwrap_or_else(|| NEW_MOMENT_BODY.to_string()),
+            revision: None,
+        });
+        execute_arrange(&mut store, drafts, &self.ctx(args.dry_run))
+    }
+
+    /// Retire un moment. Il en reste au moins un.
+    #[tool(
+        name = "follow_up.drop_moment",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false
+        )
+    )]
+    async fn follow_up_drop_moment(
+        &self,
+        Parameters(args): Parameters<MomentKeyArgs>,
+    ) -> CallToolResult {
+        let mut store = self.store.lock().await;
+        let mut drafts = match living_drafts(&store) {
+            Ok(drafts) => drafts,
+            Err(e) => return err_text(e),
+        };
+        let Some(index) = moment_index(&drafts, &args.key) else {
+            return err_text("Ce moment n'existe pas.");
+        };
+        drafts.remove(index);
+        zero_first(&mut drafts);
+        execute_arrange(&mut store, drafts, &self.ctx(args.dry_run))
+    }
+
+    /// Monte ou descend un moment d'un cran.
+    #[tool(
+        name = "follow_up.move_moment",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false
+        )
+    )]
+    async fn follow_up_move_moment(
+        &self,
+        Parameters(args): Parameters<MoveMomentArgs>,
+    ) -> CallToolResult {
+        let mut store = self.store.lock().await;
+        let mut drafts = match living_drafts(&store) {
+            Ok(drafts) => drafts,
+            Err(e) => return err_text(e),
+        };
+        let Some(index) = moment_index(&drafts, &args.key) else {
+            return err_text("Ce moment n'existe pas.");
+        };
+        match args.direction.as_str() {
+            "earlier" if index > 0 => {
+                drafts.swap(index, index - 1);
+                zero_first(&mut drafts);
+            }
+            "later" if index + 1 < drafts.len() => {
+                drafts.swap(index, index + 1);
+                zero_first(&mut drafts);
+            }
+            "earlier" | "later" => {}
+            _ => return err_text("Monte ou descends le moment."),
+        }
+        execute_arrange(&mut store, drafts, &self.ctx(args.dry_run))
+    }
+
+    /// Règle l'écart d'un moment, en jours après le précédent.
+    #[tool(
+        name = "follow_up.set_gap",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true
+        )
+    )]
+    async fn follow_up_set_gap(&self, Parameters(args): Parameters<SetGapArgs>) -> CallToolResult {
+        let mut store = self.store.lock().await;
+        let mut drafts = match living_drafts(&store) {
+            Ok(drafts) => drafts,
+            Err(e) => return err_text(e),
+        };
+        let Some(index) = moment_index(&drafts, &args.key) else {
+            return err_text("Ce moment n'existe pas.");
+        };
+        drafts[index].offset_days = args.days;
+        execute_arrange(&mut store, drafts, &self.ctx(args.dry_run))
     }
 
     /// Réécrit le nom, le sujet et le corps d'un moment. Ne change ni l'ordre ni l'écart.
@@ -440,5 +596,36 @@ impl FreeflowServer {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
             Err(e) => err_text(e.to_string()),
         }
+    }
+}
+
+const NEW_MOMENT_BODY: &str = "Bonjour {{prenom}},\n\n{{sujet}}\n\nBien à vous,\n{{moi}}\n";
+
+fn living_drafts(store: &griffe_core::store::Store) -> Result<Vec<MomentDraft>, String> {
+    prospect_phrases(store.connection())
+        .map(|phrases| phrases.iter().map(MomentDraft::from_phrase).collect())
+        .map_err(|e| e.to_string())
+}
+
+fn moment_index(drafts: &[MomentDraft], key: &str) -> Option<usize> {
+    drafts
+        .iter()
+        .position(|draft| draft.key.as_deref() == Some(key))
+}
+
+fn zero_first(drafts: &mut [MomentDraft]) {
+    if let Some(first) = drafts.first_mut() {
+        first.offset_days = 0;
+    }
+}
+
+fn execute_arrange(
+    store: &mut griffe_core::store::Store,
+    drafts: Vec<MomentDraft>,
+    ctx: &griffe_core::app::ExecutionContext,
+) -> CallToolResult {
+    match Executor::new(store).execute(&ArrangeProspectPhrases { moments: drafts }, ctx) {
+        Ok(outcome) => ok_json(outcome_json(&outcome)),
+        Err(e) => err_text(e.to_string()),
     }
 }

@@ -19,7 +19,7 @@ use griffe_core::domain::{
 };
 use griffe_core::expenses::{AttachReceipt, expense_by_id};
 use griffe_core::follow_up::{
-    MarkFollowUpSent, PhraseRewrite, PrepareFollowUp, ProspectPhrase, RewriteProspectPhrases,
+    ArrangeProspectPhrases, MarkFollowUpSent, MomentDraft, PrepareFollowUp, ProspectPhrase,
     SnoozeFollowUp, follow_up_sender, prospect_phrases,
 };
 use griffe_core::people::{PersonKey, person};
@@ -221,22 +221,9 @@ pub async fn phrases_post(
     let result = state
         .with_store_mut(|store| {
             let phrases = prospect_phrases(store.connection())?;
-            let edits = phrases
-                .iter()
-                .map(|phrase| PhraseRewrite {
-                    key: phrase.key.clone(),
-                    label: posted(&fields, &format!("label_{}", phrase.key)),
-                    subject: posted(&fields, &format!("subject_{}", phrase.key)),
-                    body: posted(&fields, &format!("body_{}", phrase.key)),
-                    revision: posted(&fields, &format!("revision_{}", phrase.key))
-                        .parse()
-                        .unwrap_or(phrase.revision),
-                })
-                .collect();
-            Executor::new(store).execute(
-                &RewriteProspectPhrases { phrases: edits },
-                &AppState::human_ctx(),
-            )
+            let moments = drafts_from_form(&phrases, &fields).map_err(AppError::Domain)?;
+            Executor::new(store)
+                .execute(&ArrangeProspectPhrases { moments }, &AppState::human_ctx())
         })
         .await;
     let today = state.today();
@@ -272,8 +259,134 @@ pub async fn phrases_post(
     page(&headers, content)
 }
 
-fn posted(fields: &HashMap<String, String>, name: &str) -> String {
-    fields.get(name).cloned().unwrap_or_default()
+const NEW_MOMENT_BODY: &str = "Bonjour {{prenom}},\n\n{{sujet}}\n\nBien à vous,\n{{moi}}\n";
+
+/// `order` absent : l'ordre du coffre. `ecart_` absent ou vide : l'écart déjà noté.
+/// Un enregistrement sans ces champs ne change donc pas la structure.
+fn drafts_from_form(
+    phrases: &[ProspectPhrase],
+    fields: &HashMap<String, String>,
+) -> Result<Vec<MomentDraft>, String> {
+    let by_key: HashMap<&str, &ProspectPhrase> = phrases
+        .iter()
+        .map(|phrase| (phrase.key.as_str(), phrase))
+        .collect();
+    let mut keys = ordered_keys(phrases, fields);
+    let structural =
+        fields.contains_key("add") || fields.contains_key("drop") || fields.contains_key("move");
+    if let Some(key) = fields.get("drop") {
+        if !by_key.contains_key(key.as_str()) {
+            return Err("Ce moment n'existe pas.".to_string());
+        }
+        keys.retain(|candidate| candidate != key);
+    } else if let Some(spec) = fields.get("move") {
+        apply_move(&mut keys, spec)?;
+    }
+    let mut drafts = Vec::with_capacity(keys.len() + usize::from(fields.contains_key("add")));
+    for (index, key) in keys.iter().enumerate() {
+        let Some(phrase) = by_key.get(key.as_str()) else {
+            return Err("Ce moment n'existe pas.".to_string());
+        };
+        let mut draft = draft_from_posted(phrase, fields)?;
+        if structural && index == 0 {
+            draft.offset_days = 0;
+        }
+        drafts.push(draft);
+    }
+    if fields.contains_key("add") {
+        drafts.push(new_moment(drafts.is_empty()));
+    }
+    Ok(drafts)
+}
+
+fn ordered_keys(phrases: &[ProspectPhrase], fields: &HashMap<String, String>) -> Vec<String> {
+    match fields
+        .get("order")
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
+        Some(order) => order
+            .split(',')
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
+            .map(ToString::to_string)
+            .collect(),
+        None => phrases.iter().map(|phrase| phrase.key.clone()).collect(),
+    }
+}
+
+fn apply_move(keys: &mut [String], spec: &str) -> Result<(), String> {
+    let Some((key, direction)) = spec.split_once(':') else {
+        return Err("Ce moment n'existe pas.".to_string());
+    };
+    let Some(index) = keys.iter().position(|candidate| candidate == key) else {
+        return Err("Ce moment n'existe pas.".to_string());
+    };
+    match direction {
+        "earlier" if index > 0 => keys.swap(index, index - 1),
+        "later" if index + 1 < keys.len() => keys.swap(index, index + 1),
+        "earlier" | "later" => {}
+        _ => return Err("Monte ou descends le moment.".to_string()),
+    }
+    Ok(())
+}
+
+fn draft_from_posted(
+    phrase: &ProspectPhrase,
+    fields: &HashMap<String, String>,
+) -> Result<MomentDraft, String> {
+    let label = field_or(fields, &format!("label_{}", phrase.key), &phrase.label);
+    let subject = field_or(
+        fields,
+        &format!("subject_{}", phrase.key),
+        &phrase_to_editor(&phrase.subject),
+    );
+    let body = field_or(
+        fields,
+        &format!("body_{}", phrase.key),
+        &phrase_to_editor(&phrase.body),
+    );
+    let revision = fields
+        .get(&format!("revision_{}", phrase.key))
+        .and_then(|value| value.parse().ok())
+        .or(Some(phrase.revision));
+    Ok(MomentDraft {
+        key: Some(phrase.key.clone()),
+        label,
+        offset_days: posted_gap(phrase, fields)?,
+        subject,
+        body,
+        revision,
+    })
+}
+
+fn field_or(fields: &HashMap<String, String>, name: &str, fallback: &str) -> String {
+    fields
+        .get(name)
+        .cloned()
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+fn posted_gap(phrase: &ProspectPhrase, fields: &HashMap<String, String>) -> Result<i64, String> {
+    match fields.get(&format!("ecart_{}", phrase.key)) {
+        None => Ok(phrase.offset_days),
+        Some(raw) if raw.trim().is_empty() => Ok(phrase.offset_days),
+        Some(raw) => raw
+            .trim()
+            .parse()
+            .map_err(|_| "L'écart se compte en jours.".to_string()),
+    }
+}
+
+fn new_moment(first: bool) -> MomentDraft {
+    MomentDraft {
+        key: None,
+        label: "Nouveau moment".to_string(),
+        offset_days: if first { 0 } else { 7 },
+        subject: "{{sujet}}".to_string(),
+        body: NEW_MOMENT_BODY.to_string(),
+        revision: None,
+    }
 }
 
 fn phrases_markup(
@@ -286,9 +399,19 @@ fn phrases_markup(
 ) -> Markup {
     let phrases = prospect_phrases(store.connection()).unwrap_or_default();
     let reading = phrase_reading(store, query, today);
+    let alone = phrases.len() == 1;
     let moments = phrases
         .iter()
-        .map(|phrase| phrase_moment(phrase, &reading.ctx, fields))
+        .enumerate()
+        .map(|(index, phrase)| {
+            phrase_moment(
+                phrase,
+                &reading.ctx,
+                fields,
+                index + 1 == phrases.len(),
+                alone,
+            )
+        })
         .collect();
     gens::phrases_page(&gens::PhrasesView {
         back_href: reading.back_href,
@@ -398,18 +521,33 @@ fn phrase_moment(
     phrase: &ProspectPhrase,
     ctx: &TemplateContext,
     fields: Option<&HashMap<String, String>>,
+    last: bool,
+    alone: bool,
 ) -> gens::PhraseMoment {
-    let (label, subject, body) = if let Some(fields) = fields {
+    let (label, subject, body, gap) = if let Some(fields) = fields {
         (
-            posted(fields, &format!("label_{}", phrase.key)),
-            posted(fields, &format!("subject_{}", phrase.key)),
-            posted(fields, &format!("body_{}", phrase.key)),
+            field_or(fields, &format!("label_{}", phrase.key), &phrase.label),
+            field_or(
+                fields,
+                &format!("subject_{}", phrase.key),
+                &phrase_to_editor(&phrase.subject),
+            ),
+            field_or(
+                fields,
+                &format!("body_{}", phrase.key),
+                &phrase_to_editor(&phrase.body),
+            ),
+            match fields.get(&format!("ecart_{}", phrase.key)) {
+                Some(raw) if !raw.trim().is_empty() => raw.clone(),
+                _ => phrase.offset_days.to_string(),
+            },
         )
     } else {
         (
             phrase.label.clone(),
             phrase_to_editor(&phrase.subject),
             phrase_to_editor(&phrase.body),
+            phrase.offset_days.to_string(),
         )
     };
     gens::PhraseMoment {
@@ -419,8 +557,10 @@ fn phrase_moment(
         subject,
         body,
         revision: phrase.revision,
-        offset_days: phrase.offset_days,
+        gap,
         first: phrase.position == 0,
+        last,
+        alone,
     }
 }
 

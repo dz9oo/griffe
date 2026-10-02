@@ -8,9 +8,10 @@ use griffe_core::domain::{
     FollowUpSubject, SnoozePreset, format_date, phrase_to_editor, snooze_date,
 };
 use griffe_core::follow_up::{
-    CardStatus, FollowUpCard, MarkFollowUpSent, PhraseRewrite, PrepareFollowUp, ProspectPhrase,
-    RetractLastFollowUp, RewriteProspectPhrases, SetFollowUpDate, SetFollowUpSender,
-    SkipFollowUpStep, SnoozeFollowUp, card_for, follow_up_board, follow_up_queue, prospect_phrases,
+    ArrangeProspectPhrases, CardStatus, FollowUpCard, MarkFollowUpSent, MomentDraft, PhraseRewrite,
+    PrepareFollowUp, ProspectPhrase, RetractLastFollowUp, RewriteProspectPhrases, SetFollowUpDate,
+    SetFollowUpSender, SkipFollowUpStep, SnoozeFollowUp, card_for, follow_up_board,
+    follow_up_queue, prospect_phrases,
 };
 use griffe_core::store::Store;
 use time::Date;
@@ -194,6 +195,11 @@ pub enum FollowUpCommand {
     },
     /// Les phrases de prospection, dans l'ordre.
     Phrases,
+    /// Les moments : en ajouter, en retirer, les déplacer, régler l'écart.
+    Moments {
+        #[command(subcommand)]
+        action: MomentsCommand,
+    },
     /// Réécrit le nom, le sujet et la lettre d'un moment.
     Rewrite {
         /// Identifiant du moment (`hello`, `bump`, `value`, `close`, ou celui affiché en JSON).
@@ -217,6 +223,51 @@ pub enum FollowUpCommand {
         today: Option<Date>,
     },
 }
+
+#[derive(Debug, Subcommand)]
+pub enum MomentsCommand {
+    /// Ajoute un moment à la fin.
+    Add {
+        /// Nom du moment. Défaut : « Nouveau moment ».
+        #[arg(long)]
+        label: Option<String>,
+        /// Sujet. Défaut : « le sujet ».
+        #[arg(long)]
+        subject: Option<String>,
+        /// Corps. Défaut : une lettre courte.
+        #[arg(long)]
+        body: Option<String>,
+        #[arg(long, conflicts_with = "body")]
+        body_file: Option<PathBuf>,
+        /// Jours après le précédent. Défaut : 7.
+        #[arg(long)]
+        days: Option<i64>,
+    },
+    /// Retire un moment. Il en reste au moins un.
+    Drop {
+        /// Identifiant du moment.
+        key: String,
+    },
+    /// Monte le moment d'un cran.
+    Earlier {
+        /// Identifiant du moment.
+        key: String,
+    },
+    /// Descend le moment d'un cran.
+    Later {
+        /// Identifiant du moment.
+        key: String,
+    },
+    /// Règle l'écart, en jours après le précédent.
+    Gap {
+        /// Identifiant du moment.
+        key: String,
+        #[arg(long)]
+        days: i64,
+    },
+}
+
+const NEW_MOMENT_BODY: &str = "Bonjour {{prenom}},\n\n{{sujet}}\n\nBien à vous,\n{{moi}}\n";
 
 /// Les tests posent `GRIFFE_NO_OPEN` : on écrit le fichier, on n'ouvre pas le visualiseur
 /// (`xdg-open` / `open` ouvriraient le navigateur ou le client mail).
@@ -300,12 +351,101 @@ fn resolve_subject(store: &Store, needle: &str) -> Result<FollowUpSubject, CliEr
 }
 
 fn format_phrase(phrase: &ProspectPhrase) -> String {
+    let gap = if phrase.position == 0 {
+        "le jour déjà posé".to_string()
+    } else {
+        format!("{} jours après le précédent", phrase.offset_days)
+    };
     format!(
-        "{label}\nsujet : {subject}\n{body}",
+        "{label}\n{gap}\nsujet : {subject}\n{body}",
         label = phrase.label,
         subject = phrase_to_editor(&phrase.subject),
         body = phrase_to_editor(&phrase.body)
     )
+}
+
+fn render_phrases(phrases: &[ProspectPhrase]) -> String {
+    phrases
+        .iter()
+        .map(format_phrase)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn living_drafts(store: &Store) -> Result<Vec<MomentDraft>, CliError> {
+    Ok(prospect_phrases(store.connection())?
+        .iter()
+        .map(MomentDraft::from_phrase)
+        .collect())
+}
+
+fn moment_index(drafts: &[MomentDraft], key: &str) -> Result<usize, CliError> {
+    drafts
+        .iter()
+        .position(|draft| draft.key.as_deref() == Some(key))
+        .ok_or_else(|| CliError::Domain("Ce moment n'existe pas.".to_string()))
+}
+
+fn zero_first(drafts: &mut [MomentDraft]) {
+    if let Some(first) = drafts.first_mut() {
+        first.offset_days = 0;
+    }
+}
+
+fn run_moments(
+    action: MomentsCommand,
+    store: &mut Store,
+    ctx: &ExecutionContext,
+    json: bool,
+) -> Result<String, CliError> {
+    let mut drafts = living_drafts(store)?;
+    match action {
+        MomentsCommand::Add {
+            label,
+            subject,
+            body,
+            body_file,
+            days,
+        } => {
+            let body = read_letter_body(body, body_file)?;
+            let offset_days = days.unwrap_or(if drafts.is_empty() { 0 } else { 7 });
+            drafts.push(MomentDraft {
+                key: None,
+                label: label.unwrap_or_else(|| "Nouveau moment".to_string()),
+                offset_days,
+                subject: subject.unwrap_or_else(|| "{{sujet}}".to_string()),
+                body: body.unwrap_or_else(|| NEW_MOMENT_BODY.to_string()),
+                revision: None,
+            });
+        }
+        MomentsCommand::Drop { key } => {
+            let index = moment_index(&drafts, &key)?;
+            drafts.remove(index);
+            zero_first(&mut drafts);
+        }
+        MomentsCommand::Earlier { key } => {
+            let index = moment_index(&drafts, &key)?;
+            if index > 0 {
+                drafts.swap(index, index - 1);
+                zero_first(&mut drafts);
+            }
+        }
+        MomentsCommand::Later { key } => {
+            let index = moment_index(&drafts, &key)?;
+            if index + 1 < drafts.len() {
+                drafts.swap(index, index + 1);
+                zero_first(&mut drafts);
+            }
+        }
+        MomentsCommand::Gap { key, days } => {
+            let index = moment_index(&drafts, &key)?;
+            drafts[index].offset_days = days;
+        }
+    }
+    let outcome = Executor::new(store).execute(&ArrangeProspectPhrases { moments: drafts }, ctx)?;
+    Ok(format_outcome_as(&outcome, json, |phrases| {
+        render_phrases(phrases)
+    }))
 }
 
 pub fn run(
@@ -329,13 +469,10 @@ pub fn run(
             if json {
                 Ok(format_json(&phrases))
             } else {
-                Ok(phrases
-                    .iter()
-                    .map(format_phrase)
-                    .collect::<Vec<_>>()
-                    .join("\n"))
+                Ok(render_phrases(&phrases))
             }
         }
+        FollowUpCommand::Moments { action } => run_moments(action, store, ctx, json),
         FollowUpCommand::Rewrite {
             key,
             label,
@@ -362,11 +499,7 @@ pub fn run(
                 ctx,
             )?;
             Ok(format_outcome_as(&outcome, json, |phrases| {
-                phrases
-                    .iter()
-                    .map(format_phrase)
-                    .collect::<Vec<_>>()
-                    .join("\n")
+                render_phrases(phrases)
             }))
         }
         FollowUpCommand::Show { reference, today } => {

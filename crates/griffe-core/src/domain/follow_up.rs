@@ -298,6 +298,20 @@ pub fn active_events(events: &[FollowUpEvent]) -> Vec<&FollowUpEvent> {
     active
 }
 
+/// Cycle sur lequel la conversation est entrée.
+///
+/// Chaîne vide : le cycle d'origine, avant toute reprise. Sinon l'identifiant
+/// du dernier `cycle_opened` encore vrai.
+#[must_use]
+pub fn entered_cycle_key(events: &[FollowUpEvent]) -> String {
+    active_events(events)
+        .iter()
+        .rev()
+        .find(|event| event.fact == FollowUpFact::CycleOpened)
+        .map(|event| event.id.to_string())
+        .unwrap_or_default()
+}
+
 /// Dérive où l'on en est sur la série compilée du genre.
 ///
 /// La fenêtre de prospection passe par [`derive_cursor_with`] et les phrases du coffre.
@@ -889,5 +903,14 @@ mod tests {
             format_date_fr(date(2026, Month::September, 5)),
             "5 septembre 2026"
         );
+    }
+
+    #[test]
+    fn the_entered_cycle_is_the_latest_reopening() {
+        let first = event(FollowUpFact::CycleOpened, 2, None);
+        let later = event(FollowUpFact::CycleOpened, 9, None);
+        let later_id = later.id.to_string();
+        assert_eq!(entered_cycle_key(&[first, later]), later_id);
+        assert_eq!(entered_cycle_key(&[]), "");
     }
 }

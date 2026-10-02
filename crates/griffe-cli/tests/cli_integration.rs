@@ -800,6 +800,81 @@ fn follow_up_phrases_lists_the_seed_and_a_rewrite_is_what_the_next_letter_uses()
 }
 
 #[test]
+fn follow_up_help_lists_the_moments() {
+    let output = freeflow().args(["follow-up", "--help"]).output().unwrap();
+    insta::assert_snapshot!(String::from_utf8(output.stdout).unwrap());
+}
+
+#[test]
+fn follow_up_moments_help_is_a_stable_interface_contract() {
+    let output = freeflow()
+        .args(["follow-up", "moments", "--help"])
+        .output()
+        .unwrap();
+    insta::assert_snapshot!(String::from_utf8(output.stdout).unwrap());
+}
+
+#[test]
+fn follow_up_moments_set_a_gap_add_a_moment_and_refuse_the_first() {
+    let db = temp_db("moments");
+    provision(&db);
+    let listed = unlocked(&db)
+        .args(["follow-up", "phrases"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let listed = String::from_utf8(listed).unwrap();
+    assert!(listed.contains("le jour déjà posé"), "{listed}");
+    assert!(listed.contains("3 jours après le précédent"), "{listed}");
+    assert!(
+        !listed.contains("cadence") && !listed.contains("template"),
+        "{listed}"
+    );
+
+    unlocked(&db)
+        .args(["follow-up", "moments", "gap", "bump", "--days", "10"])
+        .assert()
+        .success();
+    let widened = unlocked(&db)
+        .args(["follow-up", "phrases"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let widened = String::from_utf8(widened).unwrap();
+    assert!(widened.contains("10 jours après le précédent"), "{widened}");
+
+    unlocked(&db)
+        .args(["follow-up", "moments", "gap", "hello", "--days", "4"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "Le premier moment est le jour déjà posé sur le dossier.",
+        ));
+    unlocked(&db)
+        .args(["follow-up", "moments", "add"])
+        .assert()
+        .success();
+    let added = unlocked(&db)
+        .args(["follow-up", "phrases"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let added = String::from_utf8(added).unwrap();
+    assert!(added.contains("Nouveau moment"), "{added}");
+    unlocked(&db)
+        .args(["follow-up", "moments", "drop", "absent"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Ce moment n'existe pas."));
+}
+
+#[test]
 fn day_mast_json_on_an_empty_vault_has_zero_bank_and_typed_signals() {
     let db = temp_db("day-mast");
     provision(&db);

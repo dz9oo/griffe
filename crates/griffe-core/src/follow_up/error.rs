@@ -51,6 +51,18 @@ pub enum FollowUpError {
 
     #[error("Ces phrases ont changé entre-temps. Relis avant d'enregistrer.")]
     StalePhrases,
+
+    #[error("Il reste au moins un moment.")]
+    LastMoment,
+
+    #[error("Ce moment est en double.")]
+    DuplicateMoment,
+
+    #[error("L'écart se compte en jours.")]
+    GapNotANumber,
+
+    #[error("Le premier moment est le jour déjà posé sur le dossier.")]
+    FirstMomentIsTheDay,
 }
 
 impl From<FollowUpError> for AppError {

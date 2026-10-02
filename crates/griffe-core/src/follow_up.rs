@@ -9,8 +9,9 @@ mod queries;
 mod row;
 
 pub use commands::{
-    MarkFollowUpSent, PhraseRewrite, PrepareFollowUp, PreparedFollowUp, RetractLastFollowUp,
-    RewriteProspectPhrases, SetFollowUpDate, SetFollowUpSender, SkipFollowUpStep, SnoozeFollowUp,
+    ArrangeProspectPhrases, MarkFollowUpSent, MomentDraft, PhraseRewrite, PrepareFollowUp,
+    PreparedFollowUp, RetractLastFollowUp, RewriteProspectPhrases, SetFollowUpDate,
+    SetFollowUpSender, SkipFollowUpStep, SnoozeFollowUp,
 };
 pub use error::FollowUpError;
 pub use queries::{
@@ -19,7 +20,11 @@ pub use queries::{
 };
 pub use row::ProspectPhrase;
 
-/// Pose une frontière de cadence sans effacer les lettres déjà classées.
+/// Pose la reprise. Les lettres d'avant restent, le compteur repart.
+///
+/// Si une série a déjà été copiée, cette reprise entre sur la série vivante
+/// et en garde une copie. Avant le premier changement de structure, elle lit
+/// la série vivante, comme tout le monde.
 ///
 /// # Errors
 pub(crate) fn open_cycle(
@@ -41,7 +46,12 @@ pub(crate) fn open_cycle(
         retracts: None,
         interaction_id: None,
     };
-    row::insert_event(conn, &event)
+    row::insert_event(conn, &event)?;
+    if row::any_copied_series(conn)? {
+        let living = row::list_phrases(conn)?;
+        row::copy_series(conn, id, &event.id.to_string(), &living)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -51,12 +61,15 @@ mod tests {
     use super::*;
     use crate::app::{Actor, AppError, ExecutionContext, Executor, Outcome};
     use crate::clients::{CreateClient, CreateContact};
+    use crate::day::{GestureSource, GestureVerb, day_gestures};
     use crate::domain::{
-        ClientId, FollowUpFact, FollowUpKind, FollowUpSubject, InteractionKind, Money,
+        ClientId, FollowUpFact, FollowUpKind, FollowUpSubject, InteractionKind, LossReason, Money,
         PROSPECT_CADENCE, Probability, VatRate,
     };
     use crate::people::{HistoryKind, person};
-    use crate::prospection::{CreateOpportunity, list_interactions, opportunity_by_id};
+    use crate::prospection::{
+        CreateOpportunity, LoseOpportunity, ReopenOpportunity, list_interactions, opportunity_by_id,
+    };
     use crate::store::Store;
     use crate::store::testing::test_store;
 
@@ -724,5 +737,407 @@ mod tests {
                     && c.kind == FollowUpKind::Invoice),
             "{queue:?}"
         );
+    }
+
+    /// Classe la lettre du moment, sans brouillon ouvert : l'aperçu suivant est la phrase.
+    fn file_letter(store: &mut Store, subject: FollowUpSubject, today: Date) {
+        set_sender(store);
+        let Outcome::Applied(_) = Executor::new(store)
+            .execute(
+                &MarkFollowUpSent {
+                    subject,
+                    today,
+                    subject_line: None,
+                    body: None,
+                },
+                &human(),
+            )
+            .unwrap()
+        else {
+            panic!("expected Applied");
+        };
+    }
+
+    fn phrase_by_key(store: &Store, key: &str) -> ProspectPhrase {
+        prospect_phrases(store.connection())
+            .unwrap()
+            .into_iter()
+            .find(|phrase| phrase.key == key)
+            .unwrap()
+    }
+
+    fn arrange_three(store: &mut Store) {
+        let hello = phrase_by_key(store, "hello");
+        let bump = phrase_by_key(store, "bump");
+        let close = phrase_by_key(store, "close");
+        let Outcome::Applied(_) = Executor::new(store)
+            .execute(
+                &ArrangeProspectPhrases {
+                    moments: vec![
+                        MomentDraft {
+                            key: Some(hello.key),
+                            label: "Premier contact".into(),
+                            offset_days: 0,
+                            subject: hello.subject,
+                            body: hello.body,
+                            revision: Some(hello.revision),
+                        },
+                        MomentDraft {
+                            key: Some(bump.key),
+                            label: "Première relance".into(),
+                            offset_days: 10,
+                            subject: bump.subject,
+                            body: bump.body,
+                            revision: Some(bump.revision),
+                        },
+                        MomentDraft {
+                            key: Some(close.key),
+                            label: "Dernière relance".into(),
+                            offset_days: 21,
+                            subject: close.subject,
+                            body: close.body,
+                            revision: Some(close.revision),
+                        },
+                    ],
+                },
+                &human(),
+            )
+            .unwrap()
+        else {
+            panic!("expected Applied");
+        };
+    }
+
+    fn on_the_day(store: &Store, today: Date, title: &str) -> bool {
+        day_gestures(store.connection(), today)
+            .unwrap()
+            .iter()
+            .any(|geste| {
+                matches!(
+                    (&geste.verb, &geste.source),
+                    (
+                        GestureVerb::Write,
+                        GestureSource::FollowUp {
+                            title: gesture_title,
+                            due_on: Some(due),
+                            ..
+                        }
+                    ) if gesture_title == title && *due == today
+                )
+            })
+    }
+
+    #[test]
+    fn an_engaged_dossier_finishes_its_series_and_stays_on_the_day() {
+        let mut store = test_store("engaged-series");
+        let sent_on = date(2026, Month::September, 2);
+        let today = date(2026, Month::September, 5);
+        let (_, engaged) = seed_opportunity(&mut store, sent_on);
+        file_letter(&mut store, engaged, sent_on);
+        let before = card_for(store.connection(), engaged, today).unwrap();
+        assert_eq!(before.step_label.as_deref(), Some("Petit rappel"));
+        assert_eq!(before.due_on, Some(today));
+        assert_eq!(before.step_count, 4);
+        assert!(on_the_day(&store, today, "Refonte"));
+
+        arrange_three(&mut store);
+
+        let kept = card_for(store.connection(), engaged, today).unwrap();
+        assert_eq!(kept.step_label.as_deref(), Some("Petit rappel"));
+        assert_eq!(kept.step_count, 4);
+        assert_eq!(kept.due_on, Some(today));
+        assert!(kept.preview_body.unwrap().contains("court rappel"));
+        assert!(on_the_day(&store, today, "Refonte"));
+
+        let bump = phrase_by_key(&store, "bump");
+        let Outcome::Applied(_) = Executor::new(&mut store)
+            .execute(
+                &RewriteProspectPhrases {
+                    phrases: vec![PhraseRewrite {
+                        key: bump.key.clone(),
+                        label: bump.label.clone(),
+                        subject: bump.subject.clone(),
+                        body: "Un écart nouveau.".into(),
+                        revision: bump.revision,
+                    }],
+                },
+                &human(),
+            )
+            .unwrap()
+        else {
+            panic!("expected Applied");
+        };
+        let still = card_for(store.connection(), engaged, today).unwrap();
+        assert!(still.preview_body.unwrap().contains("court rappel"));
+        assert_eq!(still.due_on, Some(today));
+
+        let (_, fresh) = seed_opportunity(&mut store, today);
+        file_letter(&mut store, fresh, today);
+        let next = card_for(store.connection(), fresh, today).unwrap();
+        assert_eq!(next.step_count, 3);
+        assert_eq!(next.step_label.as_deref(), Some("Première relance"));
+        assert_eq!(next.due_on, Some(date(2026, Month::September, 15)));
+        assert!(next.preview_body.unwrap().contains("Un écart nouveau."));
+        assert!(on_the_day(&store, today, "Refonte"));
+    }
+
+    #[test]
+    fn a_reopened_conversation_takes_the_living_series() {
+        let mut store = test_store("reopened-series");
+        let sent_on = date(2026, Month::September, 2);
+        let today = date(2026, Month::September, 5);
+        let (_, engaged) = seed_opportunity(&mut store, sent_on);
+        file_letter(&mut store, engaged, sent_on);
+        arrange_three(&mut store);
+        let FollowUpSubject::Opportunity(id) = engaged else {
+            panic!("opportunity");
+        };
+        Executor::new(&mut store)
+            .execute(
+                &LoseOpportunity {
+                    opportunity_id: id,
+                    reason: LossReason::Timing,
+                },
+                &human(),
+            )
+            .unwrap();
+        Executor::new(&mut store)
+            .execute(
+                &ReopenOpportunity {
+                    opportunity_id: id,
+                    next_action_at: today,
+                },
+                &human(),
+            )
+            .unwrap();
+        let resumed = card_for(store.connection(), engaged, today).unwrap();
+        assert_eq!(resumed.step_count, 3);
+        assert_eq!(resumed.step_label.as_deref(), Some("Premier contact"));
+        assert!(
+            resumed
+                .preview_body
+                .unwrap()
+                .contains("Je me permets de revenir")
+        );
+
+        let hello = phrase_by_key(&store, "hello");
+        Executor::new(&mut store)
+            .execute(
+                &RewriteProspectPhrases {
+                    phrases: vec![PhraseRewrite {
+                        key: hello.key,
+                        label: hello.label,
+                        subject: hello.subject,
+                        body: "Mot repris.".into(),
+                        revision: hello.revision,
+                    }],
+                },
+                &human(),
+            )
+            .unwrap();
+        let frozen = card_for(store.connection(), engaged, today).unwrap();
+        assert!(
+            frozen
+                .preview_body
+                .unwrap()
+                .contains("Je me permets de revenir")
+        );
+        assert_eq!(frozen.step_count, 3);
+
+        let (_, fresh) = seed_opportunity(&mut store, today);
+        let fresh_card = card_for(store.connection(), fresh, today).unwrap();
+        assert!(fresh_card.preview_body.unwrap().contains("Mot repris."));
+        assert_eq!(fresh_card.step_count, 3);
+    }
+
+    #[test]
+    fn before_a_structure_change_a_reopening_reads_the_living_words() {
+        let mut store = test_store("reopen-before-structure");
+        let today = date(2026, Month::September, 5);
+        let (_, subject) = seed_opportunity(&mut store, today);
+        let FollowUpSubject::Opportunity(id) = subject else {
+            panic!("opportunity");
+        };
+        Executor::new(&mut store)
+            .execute(
+                &LoseOpportunity {
+                    opportunity_id: id,
+                    reason: LossReason::Timing,
+                },
+                &human(),
+            )
+            .unwrap();
+        Executor::new(&mut store)
+            .execute(
+                &ReopenOpportunity {
+                    opportunity_id: id,
+                    next_action_at: today,
+                },
+                &human(),
+            )
+            .unwrap();
+        let hello = phrase_by_key(&store, "hello");
+        Executor::new(&mut store)
+            .execute(
+                &RewriteProspectPhrases {
+                    phrases: vec![PhraseRewrite {
+                        key: hello.key,
+                        label: hello.label,
+                        subject: hello.subject,
+                        body: "Avant tout changement.".into(),
+                        revision: hello.revision,
+                    }],
+                },
+                &human(),
+            )
+            .unwrap();
+        let reading = card_for(store.connection(), subject, today).unwrap();
+        assert_eq!(reading.step_count, 4);
+        assert!(
+            reading
+                .preview_body
+                .unwrap()
+                .contains("Avant tout changement.")
+        );
+
+        arrange_three(&mut store);
+        let pinned = card_for(store.connection(), subject, today).unwrap();
+        assert_eq!(pinned.step_count, 4);
+        assert!(
+            pinned
+                .preview_body
+                .unwrap()
+                .contains("Avant tout changement.")
+        );
+        assert_eq!(pinned.step_label.as_deref(), Some("Premier message"));
+    }
+
+    #[test]
+    fn moving_a_moment_changes_only_the_living_order() {
+        let mut store = test_store("move-moment");
+        let sent_on = date(2026, Month::September, 2);
+        let today = date(2026, Month::September, 5);
+        let (_, engaged) = seed_opportunity(&mut store, sent_on);
+        file_letter(&mut store, engaged, sent_on);
+        let hello = phrase_by_key(&store, "hello");
+        let bump = phrase_by_key(&store, "bump");
+        let close = phrase_by_key(&store, "close");
+        let Outcome::Applied(_) = Executor::new(&mut store)
+            .execute(
+                &ArrangeProspectPhrases {
+                    moments: vec![
+                        MomentDraft::from_phrase(&hello),
+                        MomentDraft::from_phrase(&close),
+                        MomentDraft::from_phrase(&bump),
+                    ],
+                },
+                &human(),
+            )
+            .unwrap()
+        else {
+            panic!("expected Applied");
+        };
+        let kept = card_for(store.connection(), engaged, today).unwrap();
+        assert_eq!(kept.step_label.as_deref(), Some("Petit rappel"));
+        assert_eq!(kept.step_count, 4);
+
+        let (_, fresh) = seed_opportunity(&mut store, today);
+        file_letter(&mut store, fresh, today);
+        let next = card_for(store.connection(), fresh, today).unwrap();
+        assert_eq!(next.step_label.as_deref(), Some("Dernier mot"));
+        assert_eq!(next.step_count, 3);
+    }
+
+    #[test]
+    fn arranging_words_alone_does_not_copy_the_series() {
+        let mut store = test_store("words-only");
+        let today = date(2026, Month::September, 5);
+        let (_, subject) = seed_opportunity(&mut store, today);
+        let mut moments: Vec<_> = prospect_phrases(store.connection())
+            .unwrap()
+            .iter()
+            .map(MomentDraft::from_phrase)
+            .collect();
+        moments[0].label = "Premier contact".into();
+        moments[0].body = "Un premier mot réécrit.".into();
+        let Outcome::Applied(_) = Executor::new(&mut store)
+            .execute(&ArrangeProspectPhrases { moments }, &human())
+            .unwrap()
+        else {
+            panic!("expected Applied");
+        };
+        let card = card_for(store.connection(), subject, today).unwrap();
+        assert_eq!(card.step_label.as_deref(), Some("Premier contact"));
+        assert!(
+            card.preview_body
+                .unwrap()
+                .contains("Un premier mot réécrit.")
+        );
+        assert_eq!(card.step_count, 4);
+    }
+
+    #[test]
+    fn the_last_moment_stays_and_the_first_gap_is_refused() {
+        let mut store = test_store("moment-guards");
+        let only = MomentDraft::from_phrase(&phrase_by_key(&store, "hello"));
+        let err = Executor::new(&mut store)
+            .execute(&ArrangeProspectPhrases { moments: vec![] }, &human())
+            .unwrap_err();
+        assert!(matches!(err, AppError::Domain(msg) if msg == "Il reste au moins un moment."));
+        let mut shifted = only.clone();
+        shifted.offset_days = 4;
+        let err = Executor::new(&mut store)
+            .execute(
+                &ArrangeProspectPhrases {
+                    moments: vec![shifted],
+                },
+                &human(),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            AppError::Domain(msg) if msg == "Le premier moment est le jour déjà posé sur le dossier."
+        ));
+        assert_eq!(prospect_phrases(store.connection()).unwrap().len(), 4);
+        let _ = only;
+    }
+
+    #[test]
+    fn invoice_reminders_keep_their_own_gaps() {
+        let mut store = test_store("invoice-gaps");
+        let today = date(2026, Month::September, 5);
+        let (client_id, _) = seed_opportunity(&mut store, date(2026, Month::October, 1));
+        let emitted = match Executor::new(&mut store)
+            .execute(
+                &crate::billing::EmitInvoice {
+                    client_id,
+                    mission_id: None,
+                    lines: vec![crate::domain::InvoiceLine {
+                        description: "Mission".into(),
+                        quantity: 1.0,
+                        unit_price: Money::from_cents(120_000),
+                        vat_rate: VatRate::Standard,
+                    }],
+                    issued_on: date(2026, Month::August, 6),
+                    payment_terms_days: 30,
+                },
+                &human(),
+            )
+            .unwrap()
+        {
+            Outcome::Applied(emitted) => emitted,
+            other => panic!("expected Applied, got {other:?}"),
+        };
+        arrange_three(&mut store);
+        let card = card_for(
+            store.connection(),
+            FollowUpSubject::Invoice(emitted.id),
+            today,
+        )
+        .unwrap();
+        assert_eq!(card.step_count, 4);
+        assert_eq!(card.step_key.as_deref(), Some("due"));
+        assert_eq!(card.step_label.as_deref(), Some("Échéance"));
+        assert_eq!(card.due_on, Some(today));
     }
 }

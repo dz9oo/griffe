@@ -148,7 +148,7 @@ fn load_opportunity(
     let subject = FollowUpSubject::Opportunity(opportunity.id);
     let events = row::events_for(conn, subject)?;
     let anchor = opportunity.next_action_at.unwrap_or(today);
-    let steps = row::phrase_steps(conn)?;
+    let steps = row::steps_for_opportunity(conn, opportunity.id, &events)?;
     let step_count = steps.len();
     let cursor = derive_cursor_with(FollowUpKind::Prospect, &steps, &events, anchor, today);
     Ok(LoadedSubject {

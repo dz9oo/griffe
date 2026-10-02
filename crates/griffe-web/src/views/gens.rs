@@ -1154,8 +1154,10 @@ pub struct PhraseMoment {
     pub subject: String,
     pub body: String,
     pub revision: i64,
-    pub offset_days: i64,
+    pub gap: String,
     pub first: bool,
+    pub last: bool,
+    pub alone: bool,
     pub reads: String,
 }
 
@@ -1170,6 +1172,12 @@ pub struct PhrasesView {
 }
 
 pub fn phrases_page(view: &PhrasesView) -> Markup {
+    let order = view
+        .moments
+        .iter()
+        .map(|moment| moment.key.as_str())
+        .collect::<Vec<_>>()
+        .join(",");
     html! {
         div class="letter" data-view=(ViewId::Gens.slug()) {
             a class="back" href=(view.back_href) hx-get=(view.back_href) hx-target="#content" hx-push-url="true" {
@@ -1179,6 +1187,7 @@ pub fn phrases_page(view: &PhrasesView) -> Markup {
             p class="lede" {
                 "Les phrases que tu répètes. Une lettre par moment, dans l'ordre. Changer ici ne touche pas les lettres déjà classées. Griffe n'envoie pas."
             }
+            p class="phrase-when" { "Les conversations déjà engagées finissent leur série." }
             @if let Some(msg) = &view.banner {
                 p class="mast-note" role="alert" { (msg) }
             }
@@ -1186,9 +1195,33 @@ pub fn phrases_page(view: &PhrasesView) -> Markup {
                 p class="mast-note" role="status" { (msg) }
             }
             form hx-post=(view.action) hx-target="#content" hx-push-url="true" {
+                input type="hidden" name="order" value=(order);
                 @for moment in &view.moments {
                     div class="phrase-moment" {
-                        p class="phrase-when" { (offset_sentence(moment.offset_days, moment.first)) }
+                        @if moment.first {
+                            p class="phrase-when" { "Le jour déjà posé sur le dossier." }
+                        } @else {
+                            div class="field phrase-gap" {
+                                label for=(format!("ecart_{}", moment.key)) { "Écart" }
+                                input id=(format!("ecart_{}", moment.key))
+                                      name=(format!("ecart_{}", moment.key))
+                                      type="text"
+                                      inputmode="numeric"
+                                      value=(moment.gap);
+                                p class="phrase-caption" { "jours après le précédent" }
+                            }
+                        }
+                        @if !moment.alone {
+                            div class="token-row" {
+                                @if !moment.first {
+                                    button type="submit" name="move" value=(format!("{}:earlier", moment.key)) { "Monter" }
+                                }
+                                @if !moment.last {
+                                    button type="submit" name="move" value=(format!("{}:later", moment.key)) { "Descendre" }
+                                }
+                                button type="submit" name="drop" value=(moment.key) { "Retirer" }
+                            }
+                        }
                         (phrase_line(&format!("label_{}", moment.key), "Ce moment", &moment.label, false))
                         (phrase_line(&format!("subject_{}", moment.key), "Sujet", &moment.subject, false))
                         (phrase_line(&format!("body_{}", moment.key), "Lettre", &moment.body, true))
@@ -1203,6 +1236,7 @@ pub fn phrases_page(view: &PhrasesView) -> Markup {
                     }
                 }
                 div class="row-actions" {
+                    button class="quiet" type="submit" name="add" value="1" { "Ajouter un moment" }
                     button class="seal" type="submit" { "Enregistrer les phrases" }
                 }
             }
@@ -1229,21 +1263,6 @@ fn phrase_line(id: &str, label: &str, value: &str, letter: bool) -> Markup {
             }
         }
     }
-}
-
-fn offset_sentence(days: i64, first: bool) -> String {
-    if first {
-        return "Le jour déjà posé sur le dossier.".to_string();
-    }
-    let words = match days {
-        1 => "Un jour",
-        2 => "Deux jours",
-        3 => "Trois jours",
-        7 => "Sept jours",
-        14 => "Quatorze jours",
-        other => return format!("{other} jours après le précédent."),
-    };
-    format!("{words} après le précédent.")
 }
 
 pub fn phrases_href(depuis: &str, pour: &str) -> String {

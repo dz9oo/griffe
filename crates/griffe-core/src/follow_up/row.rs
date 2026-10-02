@@ -227,3 +227,118 @@ pub(super) fn update_phrase(
     )?;
     Ok(updated == 1)
 }
+
+/// Remplace la série vivante. L'appelant est déjà dans la transaction de l'exécuteur.
+pub(super) fn replace_phrases(
+    conn: &Connection,
+    phrases: &[ProspectPhrase],
+) -> Result<(), AppError> {
+    conn.execute("DELETE FROM prospect_phrases", [])?;
+    for phrase in phrases {
+        conn.execute(
+            "INSERT INTO prospect_phrases
+                (id, position, label, offset_days, subject, body, revision)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                phrase.key,
+                phrase.position,
+                phrase.label,
+                phrase.offset_days,
+                phrase.subject,
+                phrase.body,
+                phrase.revision,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+pub(super) fn any_copied_series(conn: &Connection) -> Result<bool, AppError> {
+    let count: i64 =
+        conn.query_row("SELECT COUNT(*) FROM prospect_series", [], |row| row.get(0))?;
+    Ok(count > 0)
+}
+
+pub(super) fn copied_steps(
+    conn: &Connection,
+    opportunity_id: OpportunityId,
+    cycle_key: &str,
+) -> Result<Option<Vec<PhraseStep>>, AppError> {
+    let series_id: Option<String> = conn
+        .query_row(
+            "SELECT id FROM prospect_series
+              WHERE opportunity_id = ?1 AND cycle_key = ?2",
+            params![opportunity_id.to_string(), cycle_key],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(series_id) = series_id else {
+        return Ok(None);
+    };
+    let mut stmt = conn.prepare(
+        "SELECT phrase_key, label, offset_days, subject, body
+           FROM prospect_series_steps
+          WHERE series_id = ?1
+          ORDER BY position ASC",
+    )?;
+    let rows = stmt.query_map(params![series_id], |row| {
+        Ok(PhraseStep {
+            key: row.get(0)?,
+            label: row.get(1)?,
+            offset_days: row.get(2)?,
+            subject: row.get(3)?,
+            body: row.get(4)?,
+        })
+    })?;
+    let steps = rows.collect::<Result<Vec<_>, _>>()?;
+    Ok(Some(steps))
+}
+
+/// Copie la série vivante pour ce cycle. Ne remplace pas une copie déjà là.
+pub(super) fn copy_series(
+    conn: &Connection,
+    opportunity_id: OpportunityId,
+    cycle_key: &str,
+    phrases: &[ProspectPhrase],
+) -> Result<(), AppError> {
+    if copied_steps(conn, opportunity_id, cycle_key)?.is_some() {
+        return Ok(());
+    }
+    let series_id = uuid::Uuid::now_v7().to_string();
+    conn.execute(
+        "INSERT INTO prospect_series (id, opportunity_id, cycle_key) VALUES (?1, ?2, ?3)",
+        params![series_id, opportunity_id.to_string(), cycle_key],
+    )?;
+    for phrase in phrases {
+        conn.execute(
+            "INSERT INTO prospect_series_steps
+                (series_id, position, phrase_key, label, offset_days, subject, body)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                series_id,
+                phrase.position,
+                phrase.key,
+                phrase.label,
+                phrase.offset_days,
+                phrase.subject,
+                phrase.body,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+/// La série de cette conversation : la copie de son cycle, sinon la série vivante.
+pub(super) fn steps_for_opportunity(
+    conn: &Connection,
+    opportunity_id: OpportunityId,
+    events: &[FollowUpEvent],
+) -> Result<Vec<PhraseStep>, AppError> {
+    let cycle = domain::entered_cycle_key(events);
+    if let Some(steps) = copied_steps(conn, opportunity_id, &cycle)?
+        && !steps.is_empty()
+    {
+        return Ok(steps);
+    }
+    phrase_steps(conn)
+}

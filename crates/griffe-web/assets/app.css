@@ -1216,6 +1216,12 @@ tr.row-clickable:hover td { background: var(--paper-2); }
   color: var(--ink-2);
   margin: 0 0 12px;
 }
+.phrase-gap {
+  max-width: 8.5rem;
+}
+.phrase-gap .phrase-caption {
+  margin: 6px 0 0;
+}
 .phrase-read {
   font-family: var(--serif);
   font-size: 16px;

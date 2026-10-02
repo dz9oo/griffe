@@ -1,5 +1,7 @@
 //! Mutations du journal de relances. Aucune IO fichier : le `.eml` est renvoyé en octets.
 
+use std::collections::HashSet;
+
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use time::{Date, OffsetDateTime};
@@ -92,6 +94,231 @@ impl Command for RewriteProspectPhrases {
         }
         row::list_phrases(conn)
     }
+}
+
+/// Un moment de la série vivante, tel qu'on veut le laisser.
+///
+/// `key` absent : un moment nouveau. L'écart du premier moment reste 0 :
+/// c'est le jour déjà posé sur le dossier.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MomentDraft {
+    pub key: Option<String>,
+    pub label: String,
+    pub offset_days: i64,
+    pub subject: String,
+    pub body: String,
+    pub revision: Option<i64>,
+}
+
+impl MomentDraft {
+    #[must_use]
+    pub fn from_phrase(phrase: &row::ProspectPhrase) -> Self {
+        Self {
+            key: Some(phrase.key.clone()),
+            label: phrase.label.clone(),
+            offset_days: phrase.offset_days,
+            subject: phrase.subject.clone(),
+            body: phrase.body.clone(),
+            revision: Some(phrase.revision),
+        }
+    }
+}
+
+/// Au plus dix ans. Au-delà, ce n'est plus un écart qu'on relit.
+const MAX_GAP_DAYS: i64 = 3_660;
+
+/// Remplace la série vivante.
+///
+/// Tant que l'ordre, le nombre et les écarts ne bougent pas, les mots se
+/// réécrivent pour tout le monde. Au premier changement de structure, chaque
+/// conversation ouverte qui n'a pas encore de copie garde la série d'avant.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArrangeProspectPhrases {
+    pub moments: Vec<MomentDraft>,
+}
+
+struct PreparedMoment {
+    key: String,
+    is_new: bool,
+    label: String,
+    offset_days: i64,
+    subject: String,
+    body: String,
+    revision: Option<i64>,
+}
+
+impl Command for ArrangeProspectPhrases {
+    type Output = Vec<row::ProspectPhrase>;
+    const NAME: &'static str = "follow_up.arrange_phrases";
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        let current = row::list_phrases(conn)?;
+        let prepared = prepare_moments(&current, &self.moments)?;
+        if series_matches(&current, &prepared) {
+            return Ok(current);
+        }
+        refuse_stale(&current, &prepared)?;
+        if structure_changed(&current, &prepared) {
+            pin_open_cycles(conn)?;
+        }
+        row::replace_phrases(conn, &phrases_to_write(&current, &prepared)?)?;
+        row::list_phrases(conn)
+    }
+}
+
+fn prepare_moments(
+    current: &[row::ProspectPhrase],
+    drafts: &[MomentDraft],
+) -> Result<Vec<PreparedMoment>, AppError> {
+    if drafts.is_empty() {
+        return Err(FollowUpError::LastMoment.into());
+    }
+    let mut seen = HashSet::new();
+    let mut prepared = Vec::with_capacity(drafts.len());
+    for (index, draft) in drafts.iter().enumerate() {
+        let label = draft.label.trim().to_string();
+        let subject = phrase_from_editor(draft.subject.trim());
+        let body = phrase_from_editor(&draft.body);
+        if label.is_empty() {
+            return Err(FollowUpError::EmptyMoment.into());
+        }
+        if subject.trim().is_empty() {
+            return Err(FollowUpError::EmptySubject.into());
+        }
+        if body.trim().is_empty() {
+            return Err(FollowUpError::EmptyLetter.into());
+        }
+        let offset_days = gap_days(index, draft.offset_days)?;
+        let (key, is_new) = moment_key(current, &mut seen, draft.key.as_deref())?;
+        prepared.push(PreparedMoment {
+            key,
+            is_new,
+            label,
+            offset_days,
+            subject,
+            body,
+            revision: draft.revision,
+        });
+    }
+    Ok(prepared)
+}
+
+fn gap_days(index: usize, days: i64) -> Result<i64, AppError> {
+    if index == 0 {
+        if days == 0 {
+            Ok(0)
+        } else {
+            Err(FollowUpError::FirstMomentIsTheDay.into())
+        }
+    } else if (0..=MAX_GAP_DAYS).contains(&days) {
+        Ok(days)
+    } else {
+        Err(FollowUpError::GapNotANumber.into())
+    }
+}
+
+fn moment_key(
+    current: &[row::ProspectPhrase],
+    seen: &mut HashSet<String>,
+    requested: Option<&str>,
+) -> Result<(String, bool), AppError> {
+    let Some(key) = requested.map(str::trim).filter(|key| !key.is_empty()) else {
+        return Ok((uuid::Uuid::now_v7().to_string(), true));
+    };
+    if !seen.insert(key.to_string()) {
+        return Err(FollowUpError::DuplicateMoment.into());
+    }
+    if current.iter().any(|phrase| phrase.key == key) {
+        Ok((key.to_string(), false))
+    } else {
+        Err(FollowUpError::UnknownPhrase.into())
+    }
+}
+
+fn series_matches(current: &[row::ProspectPhrase], prepared: &[PreparedMoment]) -> bool {
+    current.len() == prepared.len()
+        && current.iter().zip(prepared).all(|(row, want)| {
+            !want.is_new
+                && row.key == want.key
+                && row.label == want.label
+                && row.offset_days == want.offset_days
+                && row.subject == want.subject
+                && row.body == want.body
+        })
+}
+
+fn structure_changed(current: &[row::ProspectPhrase], prepared: &[PreparedMoment]) -> bool {
+    current.len() != prepared.len()
+        || current.iter().zip(prepared).any(|(row, want)| {
+            want.is_new || row.key != want.key || row.offset_days != want.offset_days
+        })
+}
+
+fn refuse_stale(
+    current: &[row::ProspectPhrase],
+    prepared: &[PreparedMoment],
+) -> Result<(), AppError> {
+    for want in prepared {
+        if want.is_new {
+            continue;
+        }
+        let Some(row) = current.iter().find(|phrase| phrase.key == want.key) else {
+            return Err(FollowUpError::UnknownPhrase.into());
+        };
+        let same_words =
+            row.label == want.label && row.subject == want.subject && row.body == want.body;
+        if !same_words && want.revision != Some(row.revision) {
+            return Err(FollowUpError::StalePhrases.into());
+        }
+    }
+    Ok(())
+}
+
+fn phrases_to_write(
+    current: &[row::ProspectPhrase],
+    prepared: &[PreparedMoment],
+) -> Result<Vec<row::ProspectPhrase>, AppError> {
+    let mut written = Vec::with_capacity(prepared.len());
+    for (index, want) in prepared.iter().enumerate() {
+        let Ok(position) = i64::try_from(index) else {
+            return Err(FollowUpError::GapNotANumber.into());
+        };
+        let revision = current
+            .iter()
+            .find(|phrase| phrase.key == want.key)
+            .map_or(1, |row| {
+                let changed = row.label != want.label
+                    || row.subject != want.subject
+                    || row.body != want.body
+                    || row.offset_days != want.offset_days;
+                if changed {
+                    row.revision + 1
+                } else {
+                    row.revision
+                }
+            });
+        written.push(row::ProspectPhrase {
+            key: want.key.clone(),
+            position,
+            label: want.label.clone(),
+            offset_days: want.offset_days,
+            subject: want.subject.clone(),
+            body: want.body.clone(),
+            revision,
+        });
+    }
+    Ok(written)
+}
+
+fn pin_open_cycles(conn: &Connection) -> Result<(), AppError> {
+    let living = row::list_phrases(conn)?;
+    for opportunity in crate::prospection::list_open_opportunities(conn)? {
+        let subject = FollowUpSubject::Opportunity(opportunity.id);
+        let events = row::events_for(conn, subject)?;
+        let cycle = crate::domain::entered_cycle_key(&events);
+        row::copy_series(conn, opportunity.id, &cycle, &living)?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -440,7 +667,7 @@ fn project_opportunity(
     let opportunity = opportunity_by_id(conn, id)?.ok_or(FollowUpError::OpportunityInactive)?;
     let events = row::events_for(conn, subject)?;
     let anchor = opportunity.next_action_at.unwrap_or(today);
-    let steps = row::phrase_steps(conn)?;
+    let steps = row::steps_for_opportunity(conn, id, &events)?;
     let cursor = derive_cursor_with(FollowUpKind::Prospect, &steps, &events, anchor, today);
     crate::prospection::set_next_action_at(conn, id, cursor.due_on)?;
     Ok(())
