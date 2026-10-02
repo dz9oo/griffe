@@ -91,5 +91,7 @@ pub fn migrations() -> Migrations<'static> {
             .down(include_str!("migrations/0036_prospect_phrases_down.sql")),
         M::up(include_str!("migrations/0037_prospect_series_up.sql"))
             .down(include_str!("migrations/0037_prospect_series_down.sql")),
+        M::up(include_str!("migrations/0038_prospect_genres_up.sql"))
+            .down(include_str!("migrations/0038_prospect_genres_down.sql")),
     ])
 }

@@ -63,6 +63,24 @@ pub enum FollowUpError {
 
     #[error("Le premier moment est le jour déjà posé sur le dossier.")]
     FirstMomentIsTheDay,
+
+    #[error("Ce genre n'a pas de nom.")]
+    EmptyGenre,
+
+    #[error("Ce genre existe déjà.")]
+    DuplicateGenre,
+
+    #[error("Ce genre n'existe pas.")]
+    UnknownGenre,
+
+    #[error("Pour qui ?")]
+    GenreRequired,
+
+    #[error("Le genre est celui d'une conversation.")]
+    NotAConversation,
+
+    #[error("Cette conversation n'existe pas.")]
+    UnknownConversation,
 }
 
 impl From<FollowUpError> for AppError {

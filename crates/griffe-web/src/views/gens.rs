@@ -6,7 +6,9 @@ use griffe_core::domain::{
     ExpensePaidBy, FollowUpSubject, InteractionKind, SnoozePreset, format_date, format_date_fr,
     snooze_date,
 };
-use griffe_core::follow_up::{FollowUpCard, card_for, follow_up_sender};
+use griffe_core::follow_up::{
+    FollowUpCard, card_for, follow_up_sender, prospect_genre_for, prospect_genres,
+};
 use griffe_core::people::{
     CurrentSituation, HistoryEvent, HistoryKind, MissionShape, OutgoingCadence, OutgoingChapter,
     OutgoingNote, Paper, PaperKind, PaperStatus, PeopleList, PersonAction, PersonChapter,
@@ -1066,7 +1068,12 @@ pub struct FicheErrors {
     pub banner: Option<String>,
 }
 
-pub fn fiche_page(dossier: &PersonDossier, values: &FicheValues, errors: &FicheErrors) -> Markup {
+pub fn fiche_page(
+    dossier: &PersonDossier,
+    values: &FicheValues,
+    errors: &FicheErrors,
+    genre: &GenreField,
+) -> Markup {
     let href = person_href(&dossier.name);
     html! {
         div class="letter" data-view=(ViewId::Gens.slug()) {
@@ -1089,6 +1096,9 @@ pub fn fiche_page(dossier: &PersonDossier, values: &FicheValues, errors: &FicheE
                 (form::text("representative", "Qui répond", &values.representative, None))
                 (form::text("email", "Courriel", &values.email, None))
                 (form::text("phone", "Téléphone", &values.phone, None))
+                @if genre.show {
+                    (genre_line(genre))
+                }
                 div class="row-actions" {
                     button class="seal" type="submit" { "Enregistrer la fiche" }
                 }
@@ -1161,14 +1171,44 @@ pub struct PhraseMoment {
     pub reads: String,
 }
 
+pub struct PhraseLink {
+    pub label: String,
+    pub href: String,
+    pub current: bool,
+}
+
 pub struct PhrasesView {
     pub back_href: String,
     pub back_label: String,
     pub action: String,
+    pub title: String,
+    pub lede: String,
+    pub links: Vec<PhraseLink>,
+    pub other_href: String,
+    pub drop: bool,
     pub moments: Vec<PhraseMoment>,
     pub read_caption: String,
     pub banner: Option<String>,
     pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct GenreField {
+    pub show: bool,
+    pub name: String,
+    pub known: Vec<String>,
+    pub phrases: String,
+    pub created: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct KeepUi {
+    pub ask: bool,
+    pub confirm: bool,
+    pub proposed_name: String,
+    /// Texte encore dans la lettre, quand le geste n'est pas terminé.
+    pub subject: Option<String>,
+    pub body: Option<String>,
 }
 
 pub fn phrases_page(view: &PhrasesView) -> Markup {
@@ -1183,10 +1223,22 @@ pub fn phrases_page(view: &PhrasesView) -> Markup {
             a class="back" href=(view.back_href) hx-get=(view.back_href) hx-target="#content" hx-push-url="true" {
                 "← " (view.back_label)
             }
-            h1 { "Les phrases." }
-            p class="lede" {
-                "Les phrases que tu répètes. Une lettre par moment, dans l'ordre. Changer ici ne touche pas les lettres déjà classées. Griffe n'envoie pas."
+            h1 { (view.title) }
+            p class="phrase-line" {
+                @for link in &view.links {
+                    @if link.current {
+                        span class="current" { (link.label) }
+                    } @else {
+                        a href=(link.href) hx-get=(link.href) hx-target="#content" hx-push-url="true" {
+                            (link.label)
+                        }
+                    }
+                }
+                a href=(view.other_href) hx-get=(view.other_href) hx-target="#content" hx-push-url="true" {
+                    "Un autre genre"
+                }
             }
+            p class="lede" { (view.lede) }
             p class="phrase-when" { "Les conversations déjà engagées finissent leur série." }
             @if let Some(msg) = &view.banner {
                 p class="mast-note" role="alert" { (msg) }
@@ -1238,6 +1290,9 @@ pub fn phrases_page(view: &PhrasesView) -> Markup {
                 div class="row-actions" {
                     button class="quiet" type="submit" name="add" value="1" { "Ajouter un moment" }
                     button class="seal" type="submit" { "Enregistrer les phrases" }
+                    @if view.drop {
+                        button class="quiet" type="submit" name="retirer_genre" value="1" { "Retirer ce genre" }
+                    }
                 }
             }
         }
@@ -1265,8 +1320,15 @@ fn phrase_line(id: &str, label: &str, value: &str, letter: bool) -> Markup {
     }
 }
 
-pub fn phrases_href(depuis: &str, pour: &str) -> String {
-    let mut url = String::from("/affaires/phrases");
+pub fn phrases_href(depuis: &str, pour: &str, genre: &str) -> String {
+    query_href("/affaires/phrases", depuis, pour, genre, "")
+}
+
+pub fn new_genre_href(depuis: &str, pour: &str, source: &str) -> String {
+    query_href("/affaires/phrases/nouveau", depuis, pour, "", source)
+}
+
+fn query_href(path: &str, depuis: &str, pour: &str, genre: &str, source: &str) -> String {
     let mut parts = Vec::new();
     if !depuis.is_empty() {
         parts.push(format!("depuis={}", path_encode(depuis)));
@@ -1274,11 +1336,17 @@ pub fn phrases_href(depuis: &str, pour: &str) -> String {
     if !pour.is_empty() {
         parts.push(format!("pour={}", path_encode(pour)));
     }
-    if !parts.is_empty() {
-        url.push('?');
-        url.push_str(&parts.join("&"));
+    if !genre.is_empty() {
+        parts.push(format!("genre={}", path_encode(genre)));
     }
-    url
+    if !source.is_empty() {
+        parts.push(format!("source={}", path_encode(source)));
+    }
+    if parts.is_empty() {
+        path.to_string()
+    } else {
+        format!("{path}?{}", parts.join("&"))
+    }
 }
 
 pub fn letter_page(
@@ -1287,17 +1355,72 @@ pub fn letter_page(
     card: Option<&FollowUpCard>,
     today: Date,
     flash: Option<&str>,
+    keep: &KeepUi,
 ) -> Result<Markup, AppError> {
     let href = person_href(&dossier.name);
     let sender = follow_up_sender(store.connection())?;
     let from = sender.sender_email.as_deref().unwrap_or("—");
     let to = card.and_then(|c| c.contact_email.as_deref()).unwrap_or("—");
-    let subject = card
+    let preview_subject = card
         .and_then(|c| c.preview_subject.as_deref())
         .unwrap_or("");
-    let body = card.and_then(|c| c.preview_body.as_deref()).unwrap_or("");
-    let phrases = phrases_href("lettre", &dossier.name);
-    let moment = card.and_then(|c| c.step_label.as_deref());
+    let preview_body = card.and_then(|c| c.preview_body.as_deref()).unwrap_or("");
+    let subject = keep.subject.as_deref().unwrap_or(preview_subject);
+    let body = keep.body.as_deref().unwrap_or(preview_body);
+    let opportunity = match dossier.follow_up_subject {
+        Some(FollowUpSubject::Opportunity(id)) => Some(id),
+        _ => None,
+    };
+    let genre = opportunity
+        .map(|id| prospect_genre_for(store.connection(), id))
+        .transpose()?
+        .flatten();
+    let moment = card.and_then(|c| c.step_label.clone());
+    let phrases = phrases_href(
+        "lettre",
+        &dossier.name,
+        genre.as_ref().map(|item| item.id.as_str()).unwrap_or(""),
+    );
+    let known = if keep.ask {
+        prospect_genres(store.connection())?
+            .into_iter()
+            .map(|item| item.name)
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let genre_name = genre
+        .as_ref()
+        .map(|item| item.name.clone())
+        .filter(|name| !name.is_empty())
+        .or_else(|| {
+            let proposed = keep.proposed_name.trim();
+            if keep.confirm && !proposed.is_empty() {
+                Some(proposed.to_string())
+            } else {
+                None
+            }
+        });
+    let keep_sentence = match (&moment, &genre_name) {
+        (Some(moment), Some(name)) if keep.confirm => Some(format!(
+            "Ces mots remplaceront le {} des {}. Les lettres déjà classées ne bougent pas.",
+            lower_first(moment),
+            lower_first(name)
+        )),
+        _ => None,
+    };
+    let keep_label = if keep.confirm {
+        moment
+            .as_deref()
+            .map(|moment| format!("Oui, remplacer le {}", lower_first(moment)))
+            .unwrap_or_else(|| "Garder ces mots".to_string())
+    } else if genre.is_some() {
+        "Garder ces mots pour ce genre".to_string()
+    } else {
+        "Garder ces mots".to_string()
+    };
+    let show_keep = opportunity.is_some() && moment.is_some();
+    let mots = format!("{href}/mots");
     let previous: Vec<&HistoryEvent> = dossier
         .history
         .iter()
@@ -1315,7 +1438,16 @@ pub fn letter_page(
             @if let Some(msg) = flash {
                 p class="mast-note" role="status" { (msg) }
             }
-            @if let Some(label) = moment {
+            @if show_keep {
+                @if let Some(label) = &moment {
+                    p class="phrase-line" {
+                        span { (genre_line_name(genre.as_ref().map(|item| item.name.as_str()))) " · " (label) }
+                        a href=(phrases) hx-get=(phrases) hx-target="#content" hx-push-url="true" {
+                            "Les phrases"
+                        }
+                    }
+                }
+            } @else if let Some(label) = &moment {
                 p class="phrase-nav" {
                     (label)
                     " · "
@@ -1331,7 +1463,37 @@ pub fn letter_page(
                 form {
                     (form::text("subject_line", "Sujet", subject, None))
                     (form::textarea("body", "Lettre", body, 12, None))
+                    @if keep.ask {
+                        p class="phrase-caption" { "Pour qui ?" }
+                        div class="field" {
+                            label for="genre_name" { "Genre" }
+                            input id="genre_name" name="genre_name" type="text" value=(keep.proposed_name);
+                        }
+                        p class="phrase-line" {
+                            @for name in &known {
+                                span { (name) }
+                            }
+                        }
+                    }
+                    @if let Some(sentence) = &keep_sentence {
+                        p class="phrase-caption" { (sentence) }
+                    }
+                    @if keep.confirm && genre.is_none() {
+                        input type="hidden" name="genre_name" value=(keep.proposed_name);
+                    }
                     div class="row-actions" {
+                        @if show_keep {
+                            button class="quiet" type="submit"
+                                   formaction=(mots)
+                                   formmethod="post"
+                                   hx-post=(mots)
+                                   hx-target="#content"
+                                   hx-push-url="true"
+                                   name=(if keep.confirm { "confirmer" } else { "garder" })
+                                   value="1" {
+                                (keep_label)
+                            }
+                        }
                         button class="seal" type="submit"
                                formaction=(format!("{href}/envoye"))
                                formmethod="post"
@@ -1356,6 +1518,112 @@ pub fn letter_page(
             p class="date" { (letter_date(today)) }
         }
     })
+}
+
+fn lower_first(value: &str) -> String {
+    let mut chars = value.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(first) => {
+            let mut out = first.to_lowercase().collect::<String>();
+            out.push_str(chars.as_str());
+            out
+        }
+    }
+}
+
+fn genre_line_name(name: Option<&str>) -> String {
+    name.unwrap_or("Pas encore de genre").to_string()
+}
+
+fn genre_line(genre: &GenreField) -> Markup {
+    html! {
+        div class="field genre-field" {
+            label for="genre" { "Genre" }
+            input id="genre" name="genre" type="text" value=(genre.name);
+            div class="genre-known" {
+                @for name in &genre.known {
+                    span { (name) }
+                }
+            }
+            @if genre.created {
+                p class="mast-note" { "Ce genre n'existe pas encore. La fiche le crée." }
+            }
+            @if !genre.phrases.is_empty() {
+                p {
+                    a href=(genre.phrases) hx-get=(genre.phrases) hx-target="#content" hx-push-url="true" {
+                        @if genre.created { "Écrire les phrases" } @else { (genre.name) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub fn genre_field(
+    store: &Store,
+    dossier: &PersonDossier,
+    posted_name: Option<&str>,
+    created: bool,
+) -> Result<GenreField, AppError> {
+    let known = prospect_genres(store.connection())?
+        .into_iter()
+        .map(|genre| genre.name)
+        .collect();
+    let Some(id) = dossier.current.opportunity_id else {
+        return Ok(GenreField {
+            known,
+            ..GenreField::default()
+        });
+    };
+    let current = prospect_genre_for(store.connection(), id)?;
+    let name = match posted_name {
+        Some(raw) => raw.trim().to_string(),
+        None => current
+            .as_ref()
+            .map(|genre| genre.name.clone())
+            .unwrap_or_default(),
+    };
+    let phrases = current
+        .as_ref()
+        .map(|genre| phrases_href("fiche", &dossier.name, &genre.id))
+        .unwrap_or_default();
+    Ok(GenreField {
+        show: true,
+        name,
+        known,
+        phrases,
+        created,
+    })
+}
+
+pub fn new_genre_page(
+    back_href: &str,
+    back_label: &str,
+    action: &str,
+    name: &str,
+    banner: Option<&str>,
+) -> Markup {
+    html! {
+        div class="letter" data-view=(ViewId::Gens.slug()) {
+            a class="back" href=(back_href) hx-get=(back_href) hx-target="#content" hx-push-url="true" {
+                "← " (back_label)
+            }
+            h1 { "Un autre genre." }
+            p class="lede" {
+                "Un nom suffit. Les phrases de la page d'où tu viens sont copiées, pour avoir quelque chose à corriger. Griffe n'envoie pas."
+            }
+            @if let Some(msg) = banner {
+                p class="mast-note" role="alert" { (msg) }
+            }
+            form hx-post=(action) hx-target="#content" hx-push-url="true" {
+                (form::text("name", "Nom", name, None))
+                div class="row-actions" {
+                    button class="seal" type="submit" { "Enregistrer" }
+                }
+            }
+        }
+    }
 }
 
 pub fn not_found(needle: &str, today: Date) -> Markup {

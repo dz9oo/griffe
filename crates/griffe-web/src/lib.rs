@@ -72,12 +72,17 @@ fn people_routes() -> Router<AppState> {
         .route("/", get(handlers::gens))
         .route("/nouvelle", get(gens::new_get).post(gens::new_post))
         .route("/phrases", get(gens::phrases_get).post(gens::phrases_post))
+        .route(
+            "/phrases/nouveau",
+            get(gens::genre_new_get).post(gens::genre_new_post),
+        )
         .route("/{reference}", get(gens::show))
         .route(
             "/{reference}/ecrire",
             get(gens::write_get).post(gens::write),
         )
         .route("/{reference}/envoye", post(gens::sent))
+        .route("/{reference}/mots", post(gens::keep_words))
         .route(
             "/{reference}/rencontre",
             get(gens::meeting_get).post(gens::meeting_post),

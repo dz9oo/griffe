@@ -1205,6 +1205,32 @@ tr.row-clickable:hover td { background: var(--paper-2); }
   margin: 0 0 18px;
 }
 .phrase-nav a { color: var(--ink); }
+.phrase-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  font-family: var(--sans);
+  font-size: 13px;
+  color: var(--ink-2);
+  margin: 0 0 18px;
+}
+.phrase-line a { color: var(--ink-2); }
+.phrase-line .current { color: var(--ink); }
+.phrase-line span, .phrase-line a { min-width: 0; overflow-wrap: anywhere; }
+.genre-field .genre-known { display: none; }
+.genre-field:focus-within .genre-known {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-top: 6px;
+  font-family: var(--sans);
+  font-size: 13px;
+  color: var(--ink-2);
+}
 .phrase-moment {
   margin: 28px 0 8px;
   padding-top: 16px;

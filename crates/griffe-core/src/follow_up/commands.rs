@@ -7,11 +7,11 @@ use serde::{Deserialize, Serialize};
 use time::{Date, OffsetDateTime};
 
 use crate::app::{AppError, Command};
-use crate::company::{CompanyProfile, company_profile};
+use crate::company::company_profile;
 use crate::domain::{
     self, EmlDraft, FollowUpEvent, FollowUpEventId, FollowUpFact, FollowUpKind, FollowUpSubject,
-    InteractionKind, TemplateContext, derive_cursor_with, parse_email, phrase_from_editor,
-    render_eml, render_template,
+    InteractionKind, derive_cursor_with, parse_email, phrase_from_editor, render_eml,
+    render_template,
 };
 use crate::prospection::{LogInteraction, opportunity_by_id};
 
@@ -162,6 +162,9 @@ impl Command for ArrangeProspectPhrases {
             pin_open_cycles(conn)?;
         }
         row::replace_phrases(conn, &phrases_to_write(&current, &prepared)?)?;
+        // Un moment ajouté reçoit, dans chaque genre, les mots par défaut.
+        // Un moment retiré quitte les genres vivants. La copie, elle, le garde.
+        row::sync_genre_words(conn)?;
         row::list_phrases(conn)
     }
 }
@@ -319,6 +322,361 @@ fn pin_open_cycles(conn: &Connection) -> Result<(), AppError> {
         row::copy_series(conn, opportunity.id, &cycle, &living)?;
     }
     Ok(())
+}
+
+fn trimmed_genre_name(raw: &str) -> Result<String, AppError> {
+    let name = raw.trim();
+    if name.is_empty() {
+        Err(FollowUpError::EmptyGenre.into())
+    } else {
+        Ok(name.to_string())
+    }
+}
+
+fn blank_id(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|id| !id.is_empty())
+}
+
+fn opportunity_subject(subject: FollowUpSubject) -> Result<domain::OpportunityId, AppError> {
+    match subject {
+        FollowUpSubject::Opportunity(id) => Ok(id),
+        FollowUpSubject::Invoice(_) => Err(FollowUpError::NotAConversation.into()),
+    }
+}
+
+/// Crée un genre en copiant les sujets et les corps. Pas les libellés, pas les écarts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateProspectGenre {
+    pub name: String,
+    /// Identifiant du genre dont on copie les mots. Absent : les phrases par défaut.
+    pub copy_from: Option<String>,
+}
+
+impl Command for CreateProspectGenre {
+    type Output = row::ProspectGenre;
+    const NAME: &'static str = "follow_up.create_genre";
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        let name = trimmed_genre_name(&self.name)?;
+        if row::genre_by_name(conn, &name)?.is_some() {
+            return Err(FollowUpError::DuplicateGenre.into());
+        }
+        let source = blank_id(self.copy_from.as_deref());
+        if let Some(source) = source
+            && row::genre_by_id(conn, source)?.is_none()
+        {
+            return Err(FollowUpError::UnknownGenre.into());
+        }
+        let genre = row::insert_genre(conn, &name)?;
+        row::copy_genre_words(conn, &genre.id, source)?;
+        Ok(genre)
+    }
+}
+
+/// Retire un genre. Les fiches qui le portaient redeviennent sans genre.
+/// Les lettres classées restent. Le compteur ne repart pas.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DropProspectGenre {
+    pub id: String,
+}
+
+impl Command for DropProspectGenre {
+    type Output = ();
+    const NAME: &'static str = "follow_up.drop_genre";
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        let id = self.id.trim();
+        if row::genre_by_id(conn, id)?.is_none() {
+            return Err(FollowUpError::UnknownGenre.into());
+        }
+        row::delete_genre(conn, id)
+    }
+}
+
+/// Pose un genre sur le dossier, ou l'enlève si le nom est vide.
+/// Un nom inconnu crée le genre en copiant les phrases par défaut.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetDossierGenre {
+    pub subject: FollowUpSubject,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GenreAssignment {
+    pub id: Option<String>,
+    pub name: Option<String>,
+    pub created: bool,
+}
+
+impl Command for SetDossierGenre {
+    type Output = GenreAssignment;
+    const NAME: &'static str = "follow_up.set_genre";
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        let opportunity_id = opportunity_subject(self.subject)?;
+        if opportunity_by_id(conn, opportunity_id)?.is_none() {
+            return Err(FollowUpError::UnknownConversation.into());
+        }
+        let name = self.name.trim();
+        if name.is_empty() {
+            if !row::set_opportunity_genre(conn, opportunity_id, None)? {
+                return Err(FollowUpError::UnknownConversation.into());
+            }
+            return Ok(GenreAssignment {
+                id: None,
+                name: None,
+                created: false,
+            });
+        }
+        let (genre, created) = if let Some(existing) = row::genre_by_name(conn, name)? {
+            (existing, false)
+        } else {
+            let created = row::insert_genre(conn, name)?;
+            row::copy_genre_words(conn, &created.id, None)?;
+            (created, true)
+        };
+        if !row::set_opportunity_genre(conn, opportunity_id, Some(&genre.id))? {
+            return Err(FollowUpError::UnknownConversation.into());
+        }
+        Ok(GenreAssignment {
+            id: Some(genre.id),
+            name: Some(genre.name),
+            created,
+        })
+    }
+}
+
+/// Réécrit le sujet et le corps d'un genre, pour les moments donnés.
+/// Ne copie pas de série et ne change pas les phrases par défaut.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GenreWordDraft {
+    pub key: String,
+    pub subject: String,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RewriteGenreWords {
+    pub genre_id: String,
+    pub words: Vec<GenreWordDraft>,
+}
+
+impl Command for RewriteGenreWords {
+    type Output = ();
+    const NAME: &'static str = "follow_up.rewrite_genre";
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        write_genre_words(conn, self.genre_id.trim(), &self.words)?;
+        row::touch_genre(conn, self.genre_id.trim())?;
+        Ok(())
+    }
+}
+
+fn write_genre_words(
+    conn: &Connection,
+    genre_id: &str,
+    words: &[GenreWordDraft],
+) -> Result<(), AppError> {
+    if row::genre_by_id(conn, genre_id)?.is_none() {
+        return Err(FollowUpError::UnknownGenre.into());
+    }
+    let living = row::list_phrases(conn)?;
+    for word in words {
+        let subject = phrase_from_editor(word.subject.trim());
+        let body = phrase_from_editor(&word.body);
+        if subject.trim().is_empty() {
+            return Err(FollowUpError::EmptySubject.into());
+        }
+        if body.trim().is_empty() {
+            return Err(FollowUpError::EmptyLetter.into());
+        }
+        if !living.iter().any(|phrase| phrase.key == word.key) {
+            return Err(FollowUpError::UnknownPhrase.into());
+        }
+        row::upsert_genre_word(conn, genre_id, &word.key, &subject, &body)?;
+    }
+    Ok(())
+}
+
+/// Enregistre la lettre d'un genre.
+///
+/// Le libellé, l'ordre et les écarts sont le procédé commun. Le sujet et le
+/// corps ne changent que ce genre. Un moment nouveau prend, pour tout le
+/// monde, les mots écrits ici : ce sont les mots par défaut de ce moment.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SaveGenreLetter {
+    pub genre_id: String,
+    pub moments: Vec<MomentDraft>,
+}
+
+impl Command for SaveGenreLetter {
+    type Output = ();
+    const NAME: &'static str = "follow_up.save_genre";
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        let genre_id = self.genre_id.trim();
+        if row::genre_by_id(conn, genre_id)?.is_none() {
+            return Err(FollowUpError::UnknownGenre.into());
+        }
+        let current = row::list_phrases(conn)?;
+        let prepared = prepare_moments(&current, &self.moments)?;
+        let structure = structure_drafts(&current, &prepared)?;
+        ArrangeProspectPhrases { moments: structure }.apply(conn)?;
+        let words = prepared
+            .iter()
+            .filter(|moment| !moment.is_new)
+            .map(|moment| GenreWordDraft {
+                key: moment.key.clone(),
+                subject: moment.subject.clone(),
+                body: moment.body.clone(),
+            })
+            .collect::<Vec<_>>();
+        write_genre_words(conn, genre_id, &words)?;
+        row::touch_genre(conn, genre_id)?;
+        Ok(())
+    }
+}
+
+fn structure_drafts(
+    current: &[row::ProspectPhrase],
+    prepared: &[PreparedMoment],
+) -> Result<Vec<MomentDraft>, AppError> {
+    let mut drafts = Vec::with_capacity(prepared.len());
+    for want in prepared {
+        if want.is_new {
+            drafts.push(MomentDraft {
+                key: None,
+                label: want.label.clone(),
+                offset_days: want.offset_days,
+                subject: want.subject.clone(),
+                body: want.body.clone(),
+                revision: None,
+            });
+            continue;
+        }
+        let Some(row) = current.iter().find(|phrase| phrase.key == want.key) else {
+            return Err(FollowUpError::UnknownPhrase.into());
+        };
+        drafts.push(MomentDraft {
+            key: Some(want.key.clone()),
+            label: want.label.clone(),
+            offset_days: want.offset_days,
+            subject: row.subject.clone(),
+            body: row.body.clone(),
+            revision: want.revision.or(Some(row.revision)),
+        });
+    }
+    Ok(drafts)
+}
+
+/// Remplace le sujet et le corps de ce moment, pour ce genre seulement.
+///
+/// Ne classe rien, n'envoie rien, ne déplace pas le curseur, et ne réécrit
+/// ni une lettre déjà classée ni un brouillon déjà préparé.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KeepGenreWords {
+    pub subject: FollowUpSubject,
+    #[serde(with = "crate::domain::serde_date::date")]
+    pub today: Date,
+    /// Absent : ce champ n'a pas été modifié, on garde le modèle.
+    #[serde(default)]
+    pub subject_line: Option<String>,
+    #[serde(default)]
+    pub body: Option<String>,
+    /// Quand le dossier n'a pas de genre. Un nom nouveau le crée.
+    #[serde(default)]
+    pub genre_name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeptWords {
+    pub genre_id: String,
+    pub genre_name: String,
+    pub key: String,
+    pub subject: String,
+    pub body: String,
+}
+
+impl Command for KeepGenreWords {
+    type Output = KeptWords;
+    const NAME: &'static str = "follow_up.keep_words";
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        let opportunity_id = opportunity_subject(self.subject)?;
+        let loaded = load_subject(conn, self.subject, self.today)?;
+        if loaded.cursor.exhausted {
+            return Err(FollowUpError::Exhausted.into());
+        }
+        let step = loaded.cursor.step.clone().ok_or(FollowUpError::Exhausted)?;
+        let living = row::list_phrases(conn)?;
+        if !living.iter().any(|phrase| phrase.key == step.key) {
+            return Err(FollowUpError::UnknownPhrase.into());
+        }
+        let ctx = loaded.template_context(conn)?;
+        let rendered_subject = render_template(&step.subject, &ctx);
+        let rendered_body = render_template(&step.body, &ctx);
+        let subject = kept_field(
+            self.subject_line.as_deref(),
+            &rendered_subject,
+            &step.subject,
+            FollowUpError::EmptySubject,
+        )?;
+        let body = kept_field(
+            self.body.as_deref(),
+            &rendered_body,
+            &step.body,
+            FollowUpError::EmptyLetter,
+        )?;
+        if row::genre_of_opportunity(conn, opportunity_id)?.is_none() {
+            let Some(name) = self
+                .genre_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|n| !n.is_empty())
+            else {
+                return Err(FollowUpError::GenreRequired.into());
+            };
+            SetDossierGenre {
+                subject: self.subject,
+                name: name.to_string(),
+            }
+            .apply(conn)?;
+        }
+        let Some(genre) = row::genre_of_opportunity(conn, opportunity_id)? else {
+            return Err(FollowUpError::GenreRequired.into());
+        };
+        row::upsert_genre_word(conn, &genre.id, &step.key, &subject, &body)?;
+        row::touch_genre(conn, &genre.id)?;
+        Ok(KeptWords {
+            genre_id: genre.id,
+            genre_name: genre.name,
+            key: step.key,
+            subject,
+            body,
+        })
+    }
+}
+
+fn kept_field(
+    submitted: Option<&str>,
+    rendered: &str,
+    template: &str,
+    empty: FollowUpError,
+) -> Result<String, AppError> {
+    match submitted {
+        None => Ok(template.to_string()),
+        Some(text) if text == rendered || text.trim() == rendered.trim() => {
+            Ok(template.to_string())
+        }
+        Some(text) => {
+            let stored = phrase_from_editor(text);
+            if stored.trim().is_empty() {
+                Err(empty.into())
+            } else {
+                Ok(stored)
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -690,44 +1048,4 @@ fn recipient(loaded: &super::queries::LoadedSubject) -> Result<(String, String),
         .recipient
         .clone()
         .ok_or(FollowUpError::RecipientMissing)
-}
-
-impl super::queries::LoadedSubject {
-    fn template_context(&self, conn: &Connection) -> Result<TemplateContext, AppError> {
-        let profile: Option<CompanyProfile> = company_profile(conn)?;
-        let settings = row::settings(conn)?;
-        let moi = settings
-            .sender_name
-            .clone()
-            .or_else(|| profile.as_ref().and_then(|p| p.president_name.clone()))
-            .or_else(|| profile.as_ref().map(|p| p.name.clone()))
-            .unwrap_or_default();
-        let societe = profile.map(|p| p.name).unwrap_or_default();
-        let (contact, _) = self
-            .recipient
-            .clone()
-            .unwrap_or_else(|| (self.party.clone(), String::new()));
-        let mut ctx = TemplateContext {
-            sujet: self.title.clone(),
-            moi,
-            societe,
-            facture: self.invoice_number.clone().unwrap_or_default(),
-            echeance: self
-                .invoice_due_on
-                .map(domain::format_date_fr)
-                .unwrap_or_default(),
-            retard: self.cursor.days_until(self.today).map_or_else(
-                || "0".to_string(),
-                |d| d.saturating_neg().max(0).to_string(),
-            ),
-            ..TemplateContext::default()
-        };
-        ctx = ctx
-            .with_names(&contact, &self.party)
-            .with_amount(self.amount);
-        if let Some(outstanding) = self.outstanding {
-            ctx.solde = outstanding.to_string();
-        }
-        Ok(ctx)
-    }
 }

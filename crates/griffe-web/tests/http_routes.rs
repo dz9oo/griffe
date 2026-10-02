@@ -7905,6 +7905,571 @@ label_close=Derni%C3%A8re+relance&subject_close=Fin&body_close=Le+dernier+mot.&r
     assert!(!resumed.contains("Petit rappel"), "{resumed}");
 }
 
+#[tokio::test]
+async fn the_genre_changes_only_the_words() {
+    let db_path = test_db_path("genres");
+    let state = unlocked_state(&db_path)
+        .await
+        .with_today(time::macros::date!(2026 - 09 - 05));
+    let router = griffe_web::router(state);
+
+    for (who, phrase) in [
+        ("Camille", "accompagnement"),
+        ("Nina", "site"),
+        ("L%C3%A9o", "atelier"),
+    ] {
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/affaires/nouvelle")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .header("HX-Request", "true")
+                    .body(Body::from(format!("who={who}&phrase={phrase}")))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+    {
+        let mut store =
+            Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+        for (name, email) in [
+            ("Camille", "camille@exemple.fr"),
+            ("Nina", "nina@exemple.fr"),
+            ("Léo", "leo@exemple.fr"),
+        ] {
+            Executor::new(&mut store)
+                .execute(
+                    &CreateContact {
+                        client_id: client_id_by_name(&db_path, name),
+                        name: name.into(),
+                        email: Some(email.into()),
+                        phone: None,
+                        role: None,
+                    },
+                    &human_ctx(),
+                )
+                .unwrap();
+        }
+        Executor::new(&mut store)
+            .execute(
+                &SetFollowUpSender {
+                    email: "moi@exemple.fr".into(),
+                    name: Some("Moi".into()),
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+    }
+
+    let nouvelle = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/nouvelle")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(!nouvelle.contains("name=\"genre\""), "{nouvelle}");
+
+    let services = create_genre(&router, "Services publics").await;
+    let shops = create_genre(&router, "Commerces").await;
+    let services_page = post_form(
+        &router,
+        &format!("/affaires/phrases?genre={services}"),
+        "subject_hello=Pour+la+mairie",
+    )
+    .await;
+    assert!(services_page.contains("Pour la mairie"), "{services_page}");
+    assert!(services_page.contains("value=\"3\""), "{services_page}");
+    assert!(services_page.contains("value=\"7\""), "{services_page}");
+    assert!(services_page.contains("value=\"14\""), "{services_page}");
+    assert!(
+        services_page.contains("Services publics."),
+        "{services_page}"
+    );
+    assert!(
+        services_page.contains("Les phrases que tu répètes à ce genre de gens.")
+            || services_page.contains("Les phrases que tu répètes à ce genre de gens."),
+        "{services_page}"
+    );
+    assert!(
+        services_page.contains("Griffe n'envoie pas")
+            || services_page.contains("Griffe n&#x27;envoie pas"),
+        "{services_page}"
+    );
+    assert!(
+        services_page.contains("Enregistrer les phrases"),
+        "{services_page}"
+    );
+    assert!(
+        services_page.contains("Retirer ce genre"),
+        "{services_page}"
+    );
+    assert!(
+        services_page.contains("Les conversations déjà engagées finissent leur série."),
+        "{services_page}"
+    );
+    for forbidden in [
+        "template", "cadence", "step", "campagne", "workflow", "pipeline",
+    ] {
+        assert!(
+            !services_page.contains(forbidden),
+            "{forbidden} : {services_page}"
+        );
+    }
+    post_form(
+        &router,
+        &format!("/affaires/phrases?genre={shops}"),
+        "subject_hello=Pour+le+commerce",
+    )
+    .await;
+
+    let camille_fiche = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Camille/fiche")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(camille_fiche.contains("name=\"genre\""), "{camille_fiche}");
+    assert!(
+        camille_fiche.contains("Services publics"),
+        "{camille_fiche}"
+    );
+    assert!(camille_fiche.contains("Commerces"), "{camille_fiche}");
+    for forbidden in [
+        "template", "cadence", "step", "campagne", "workflow", "pipeline",
+    ] {
+        assert!(
+            !camille_fiche.contains(forbidden),
+            "{forbidden} : {camille_fiche}"
+        );
+    }
+    let revision = hidden_value(&camille_fiche, "client_revision");
+    post_form(
+        &router,
+        "/affaires/Camille/fiche",
+        &format!(
+            "who=Camille&client_revision={revision}&email=camille@exemple.fr&genre=Services+publics"
+        ),
+    )
+    .await;
+    let nina_fiche = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Nina/fiche")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    let nina_revision = hidden_value(&nina_fiche, "client_revision");
+    post_form(
+        &router,
+        "/affaires/Nina/fiche",
+        &format!("who=Nina&client_revision={nina_revision}&email=nina@exemple.fr&genre=Commerces"),
+    )
+    .await;
+
+    let camille = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Camille/ecrire")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    let nina = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Nina/ecrire")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    let leo = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/L%C3%A9o/ecrire")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(camille.contains("Pour la mairie"), "{camille}");
+    assert!(
+        camille.contains("Services publics · Premier message"),
+        "{camille}"
+    );
+    assert!(nina.contains("Pour le commerce"), "{nina}");
+    assert!(nina.contains("Commerces · Premier message"), "{nina}");
+    assert!(!camille.contains("Pour le commerce"), "{camille}");
+    assert!(
+        leo.contains("Pas encore de genre · Premier message"),
+        "{leo}"
+    );
+    assert!(!leo.contains("Pour la mairie"), "{leo}");
+    assert!(leo.contains("atelier"), "{leo}");
+    assert_eq!(leo.matches("class=\"seal\"").count(), 1, "{leo}");
+    assert!(leo.contains("C'est parti"), "{leo}");
+    assert!(leo.contains("Garder ces mots"), "{leo}");
+    for forbidden in [
+        "template", "cadence", "step", "campagne", "workflow", "pipeline",
+    ] {
+        assert!(!camille.contains(forbidden), "{forbidden} : {camille}");
+        assert!(!leo.contains(forbidden), "{forbidden} : {leo}");
+    }
+
+    post_form(
+        &router,
+        "/affaires/Nina/ecrire",
+        "subject_line=Brouillon+fig%C3%A9&body=Ce+brouillon+reste.",
+    )
+    .await;
+    post_form(
+        &router,
+        "/affaires/L%C3%A9o/envoye",
+        "subject_line=Lettre+class%C3%A9e&body=Elle+reste.",
+    )
+    .await;
+
+    let ask = post_form(
+        &router,
+        "/affaires/Camille/mots",
+        "subject_line=Pour+la+mairie&body=La+lettre+affich%C3%A9e.&garder=1",
+    )
+    .await;
+    assert!(
+        ask.contains("Ces mots remplaceront le premier message des services publics."),
+        "{ask}"
+    );
+    assert!(ask.contains("Oui, remplacer le premier message"), "{ask}");
+    assert_eq!(ask.matches("class=\"seal\"").count(), 1, "{ask}");
+    assert!(ask.contains("C'est parti"), "{ask}");
+    post_form(
+        &router,
+        "/affaires/Camille/mots",
+        "subject_line=Mot+gard%C3%A9&body=Le+mot+gard%C3%A9.&confirmer=1",
+    )
+    .await;
+    let services_after = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/affaires/phrases?genre={services}"))
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    let shops_after = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/affaires/phrases?genre={shops}"))
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(services_after.contains("Mot gardé"), "{services_after}");
+    assert!(shops_after.contains("Pour le commerce"), "{shops_after}");
+    assert!(!shops_after.contains("Mot gardé"), "{shops_after}");
+    assert!(services_after.contains("value=\"3\""), "{services_after}");
+    let nina_after = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Nina/ecrire")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(nina_after.contains("Brouillon figé"), "{nina_after}");
+    let leo_after = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/L%C3%A9o/ecrire")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(leo_after.contains("Lettre classée"), "{leo_after}");
+    assert!(leo_after.contains("Petit rappel"), "{leo_after}");
+
+    let before_due = opportunity_due(&db_path, "accompagnement");
+    let camille_fiche = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Camille/fiche")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    let revision = hidden_value(&camille_fiche, "client_revision");
+    post_form(
+        &router,
+        "/affaires/Camille/envoye",
+        "subject_line=Lettre+de+Camille&body=Class%C3%A9e.",
+    )
+    .await;
+    let due_on_bump = opportunity_due(&db_path, "accompagnement");
+    post_form(
+        &router,
+        "/affaires/Camille/fiche",
+        &format!("who=Camille&client_revision={revision}&email=camille@exemple.fr&genre=Commerces"),
+    )
+    .await;
+    assert_eq!(opportunity_due(&db_path, "accompagnement"), due_on_bump);
+    assert_ne!(due_on_bump, before_due);
+    let camille_next = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Camille/ecrire")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        camille_next.contains("Commerces · Petit rappel"),
+        "{camille_next}"
+    );
+    assert!(camille_next.contains("Lettre de Camille"), "{camille_next}");
+    assert!(!camille_next.contains("Mot gardé"), "{camille_next}");
+
+    let leo_fiche = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/L%C3%A9o/fiche")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    let leo_revision = hidden_value(&leo_fiche, "client_revision");
+    let created = post_form(
+        &router,
+        "/affaires/L%C3%A9o/fiche",
+        &format!("who=L%C3%A9o&client_revision={leo_revision}&email=leo@exemple.fr&genre=Ateliers"),
+    )
+    .await;
+    assert!(
+        created.contains("Ce genre n'existe pas encore. La fiche le crée."),
+        "{created}"
+    );
+    assert!(created.contains("Écrire les phrases"), "{created}");
+    let ateliers = genre_id_from(&created);
+    post_form(
+        &router,
+        &format!("/affaires/phrases?genre={ateliers}"),
+        "retirer_genre=1",
+    )
+    .await;
+    let leo_plain = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/L%C3%A9o/ecrire")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        leo_plain.contains("Pas encore de genre · Petit rappel"),
+        "{leo_plain}"
+    );
+    assert!(leo_plain.contains("Lettre classée"), "{leo_plain}");
+
+    let identity = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/societe/identite")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(identity.contains("genre="), "{identity}");
+    assert!(identity.contains("selon qui ils sont"), "{identity}");
+
+    let css = body_text(
+        router
+            .oneshot(
+                Request::builder()
+                    .uri("/assets/app.css")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    let line = css
+        .split(".phrase-line {")
+        .nth(1)
+        .and_then(|rest| rest.split('}').next())
+        .expect("règle .phrase-line");
+    assert!(
+        line.contains("display: flex") && line.contains("flex-wrap: wrap"),
+        "la ligne genre · moment se replie : {line}"
+    );
+}
+
+async fn create_genre(router: &axum::Router, name: &str) -> String {
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/affaires/phrases/nouveau")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from(format!("name={}", name.replace(' ', "+"))))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let pushed = response
+        .headers()
+        .get("hx-push-url")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let id = genre_id_from(&pushed);
+    assert!(!id.is_empty(), "{pushed}");
+    let _ = body_text(response).await;
+    id
+}
+
+async fn post_form(router: &axum::Router, uri: &str, body: &str) -> String {
+    body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .header("HX-Request", "true")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await
+}
+
+fn hidden_value(page: &str, name: &str) -> String {
+    let needle = format!("name=\"{name}\" value=\"");
+    page.split(&needle)
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .unwrap_or("")
+        .to_string()
+}
+
+fn genre_id_from(page: &str) -> String {
+    page.split("genre=")
+        .nth(1)
+        .and_then(|rest| rest.split(['&', '"', ' ']).next())
+        .unwrap_or("")
+        .to_string()
+}
+
+fn opportunity_due(db_path: &Path, name: &str) -> Option<time::Date> {
+    let store = Store::open_with_passphrase(db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    list_opportunities(store.connection())
+        .unwrap()
+        .into_iter()
+        .find(|opportunity| opportunity.name == name)
+        .and_then(|opportunity| opportunity.next_action_at)
+}
+
 fn uncollectible_notice_papers(db_path: &Path) -> Vec<griffe_core::papers::Paper> {
     let store = Store::open_with_passphrase(db_path, &Passphrase::from(PASSPHRASE)).unwrap();
     griffe_core::papers::list_papers(

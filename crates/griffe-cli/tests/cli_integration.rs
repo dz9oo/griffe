@@ -806,6 +806,15 @@ fn follow_up_help_lists_the_moments() {
 }
 
 #[test]
+fn follow_up_genre_help_is_a_stable_interface_contract() {
+    let output = freeflow()
+        .args(["follow-up", "genre", "--help"])
+        .output()
+        .unwrap();
+    insta::assert_snapshot!(String::from_utf8(output.stdout).unwrap());
+}
+
+#[test]
 fn follow_up_moments_help_is_a_stable_interface_contract() {
     let output = freeflow()
         .args(["follow-up", "moments", "--help"])

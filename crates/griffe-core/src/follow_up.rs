@@ -9,16 +9,19 @@ mod queries;
 mod row;
 
 pub use commands::{
-    ArrangeProspectPhrases, MarkFollowUpSent, MomentDraft, PhraseRewrite, PrepareFollowUp,
-    PreparedFollowUp, RetractLastFollowUp, RewriteProspectPhrases, SetFollowUpDate,
-    SetFollowUpSender, SkipFollowUpStep, SnoozeFollowUp,
+    ArrangeProspectPhrases, CreateProspectGenre, DropProspectGenre, GenreAssignment,
+    GenreWordDraft, KeepGenreWords, KeptWords, MarkFollowUpSent, MomentDraft, PhraseRewrite,
+    PrepareFollowUp, PreparedFollowUp, RetractLastFollowUp, RewriteGenreWords,
+    RewriteProspectPhrases, SaveGenreLetter, SetDossierGenre, SetFollowUpDate, SetFollowUpSender,
+    SkipFollowUpStep, SnoozeFollowUp,
 };
 pub use error::FollowUpError;
 pub use queries::{
     CardStatus, FollowUpCard, HistoryItem, card_for, events_for, follow_up_board, follow_up_queue,
-    follow_up_sender, prospect_phrases,
+    follow_up_sender, latest_prospect_genre, phrases_for_genre, prospect_genre_for,
+    prospect_genres, prospect_phrases,
 };
-pub use row::ProspectPhrase;
+pub use row::{ProspectGenre, ProspectPhrase};
 
 /// Pose la reprise. Les lettres d'avant restent, le compteur repart.
 ///
@@ -59,7 +62,7 @@ mod tests {
     use time::{Date, Month};
 
     use super::*;
-    use crate::app::{Actor, AppError, ExecutionContext, Executor, Outcome};
+    use crate::app::{Actor, AppError, Command, ExecutionContext, Executor, Outcome};
     use crate::clients::{CreateClient, CreateContact};
     use crate::day::{GestureSource, GestureVerb, day_gestures};
     use crate::domain::{
@@ -1139,5 +1142,572 @@ mod tests {
         assert_eq!(card.step_key.as_deref(), Some("due"));
         assert_eq!(card.step_label.as_deref(), Some("Échéance"));
         assert_eq!(card.due_on, Some(today));
+    }
+
+    /// # Panics
+    /// Si la commande n'est pas appliquée.
+    fn applied<C: Command>(store: &mut Store, command: &C) -> C::Output {
+        match Executor::new(store).execute(command, &human()).unwrap() {
+            Outcome::Applied(value) => value,
+            Outcome::DryRun | Outcome::AlreadyApplied(_) | Outcome::PendingConfirmation(_) => {
+                panic!("expected Applied")
+            }
+        }
+    }
+
+    fn count_rows(store: &Store, sql: &str) -> i64 {
+        store
+            .connection()
+            .query_row(sql, [], |row| row.get(0))
+            .unwrap()
+    }
+
+    fn genre_subject(store: &Store, genre_id: &str, key: &str) -> String {
+        store
+            .connection()
+            .query_row(
+                "SELECT subject FROM prospect_genre_words WHERE genre_id = ?1 AND phrase_key = ?2",
+                [genre_id, key],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    fn stored_letter(
+        store: &Store,
+        subject: FollowUpSubject,
+        fact: FollowUpFact,
+    ) -> (Option<String>, Option<String>) {
+        let event = events_for(store.connection(), subject)
+            .unwrap()
+            .into_iter()
+            .find(|event| event.fact == fact)
+            .unwrap();
+        (event.rendered_subject, event.rendered_body)
+    }
+
+    #[test]
+    fn two_dossiers_of_the_same_rank_do_not_share_a_subject() {
+        let mut store = test_store("genre-subjects");
+        let today = date(2026, Month::September, 5);
+        let (_, mairie) = seed_opportunity(&mut store, today);
+        let (_, commerce) = seed_opportunity(&mut store, today);
+        let (_, nu) = seed_opportunity(&mut store, today);
+        let services = applied(
+            &mut store,
+            &CreateProspectGenre {
+                name: "Services publics".into(),
+                copy_from: None,
+            },
+        );
+        let shops = applied(
+            &mut store,
+            &CreateProspectGenre {
+                name: "Commerces".into(),
+                copy_from: None,
+            },
+        );
+        applied(
+            &mut store,
+            &RewriteGenreWords {
+                genre_id: services.id.clone(),
+                words: vec![GenreWordDraft {
+                    key: "hello".into(),
+                    subject: "Pour la mairie".into(),
+                    body: "Bonjour {{prenom}},\n\nLa mairie.\n".into(),
+                }],
+            },
+        );
+        applied(
+            &mut store,
+            &RewriteGenreWords {
+                genre_id: shops.id,
+                words: vec![GenreWordDraft {
+                    key: "hello".into(),
+                    subject: "Pour le commerce".into(),
+                    body: "Bonjour {{prenom}},\n\nLe commerce.\n".into(),
+                }],
+            },
+        );
+        applied(
+            &mut store,
+            &SetDossierGenre {
+                subject: mairie,
+                name: "Services publics".into(),
+            },
+        );
+        applied(
+            &mut store,
+            &SetDossierGenre {
+                subject: commerce,
+                name: "Commerces".into(),
+            },
+        );
+
+        let town = card_for(store.connection(), mairie, today).unwrap();
+        let shop = card_for(store.connection(), commerce, today).unwrap();
+        let plain = card_for(store.connection(), nu, today).unwrap();
+        assert_eq!(town.due_on, shop.due_on);
+        assert_eq!(town.due_on, plain.due_on);
+        assert_eq!(town.step_index, shop.step_index);
+        assert_eq!(town.step_key, shop.step_key);
+        assert_eq!(town.preview_subject.as_deref(), Some("Pour la mairie"));
+        assert_eq!(shop.preview_subject.as_deref(), Some("Pour le commerce"));
+        assert_eq!(plain.preview_subject.as_deref(), Some("Refonte"));
+        assert!(
+            plain
+                .preview_body
+                .unwrap()
+                .contains("Je me permets de revenir")
+        );
+        assert_eq!(phrase_by_key(&store, "hello").subject, "{{sujet}}");
+    }
+
+    #[test]
+    fn changing_the_genre_keeps_the_cursor_and_the_due_date() {
+        let mut store = test_store("genre-cursor");
+        let today = date(2026, Month::September, 5);
+        let (_, subject) = seed_opportunity(&mut store, today);
+        set_sender(&mut store);
+        applied(
+            &mut store,
+            &MarkFollowUpSent {
+                subject,
+                today,
+                subject_line: Some("Première lettre classée".into()),
+                body: Some("Le texte classé.".into()),
+            },
+        );
+        applied(
+            &mut store,
+            &MarkFollowUpSent {
+                subject,
+                today,
+                subject_line: Some("Deuxième lettre classée".into()),
+                body: Some("Le second texte classé.".into()),
+            },
+        );
+        let before = card_for(store.connection(), subject, today).unwrap();
+        assert_eq!(before.step_index, 2);
+        assert_eq!(before.step_key.as_deref(), Some("value"));
+        let services = applied(
+            &mut store,
+            &CreateProspectGenre {
+                name: "Services publics".into(),
+                copy_from: None,
+            },
+        );
+        applied(
+            &mut store,
+            &RewriteGenreWords {
+                genre_id: services.id,
+                words: vec![GenreWordDraft {
+                    key: "value".into(),
+                    subject: "Troisième des services".into(),
+                    body: "Bonjour {{prenom}},\n\nLe troisième moment.\n".into(),
+                }],
+            },
+        );
+        applied(
+            &mut store,
+            &SetDossierGenre {
+                subject,
+                name: "Services publics".into(),
+            },
+        );
+        let after = card_for(store.connection(), subject, today).unwrap();
+        assert_eq!(after.step_index, before.step_index);
+        assert_eq!(after.step_key, before.step_key);
+        assert_eq!(after.due_on, before.due_on);
+        assert_eq!(
+            after.preview_subject.as_deref(),
+            Some("Troisième des services")
+        );
+        assert_eq!(
+            count_rows(&store, "SELECT COUNT(*) FROM prospect_series"),
+            0
+        );
+        let (filed_subject, filed_body) = stored_letter(&store, subject, FollowUpFact::MarkedSent);
+        assert_eq!(filed_subject.as_deref(), Some("Première lettre classée"));
+        assert_eq!(filed_body.as_deref(), Some("Le texte classé."));
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn keeping_words_updates_only_that_genre_and_that_moment() {
+        let mut store = test_store("keep-words");
+        let today = date(2026, Month::September, 5);
+        let (_, mairie) = seed_opportunity(&mut store, today);
+        let (_, commerce) = seed_opportunity(&mut store, today);
+        let (_, ailleurs) = seed_opportunity(&mut store, today);
+        let (_, classe) = seed_opportunity(&mut store, today);
+        set_sender(&mut store);
+        let services = applied(
+            &mut store,
+            &CreateProspectGenre {
+                name: "Services publics".into(),
+                copy_from: None,
+            },
+        );
+        let shops = applied(
+            &mut store,
+            &CreateProspectGenre {
+                name: "Commerces".into(),
+                copy_from: None,
+            },
+        );
+        applied(
+            &mut store,
+            &SetDossierGenre {
+                subject: mairie,
+                name: "Services publics".into(),
+            },
+        );
+        applied(
+            &mut store,
+            &SetDossierGenre {
+                subject: commerce,
+                name: "Commerces".into(),
+            },
+        );
+        let before = card_for(store.connection(), mairie, today).unwrap();
+        applied(
+            &mut store,
+            &PrepareFollowUp {
+                subject: ailleurs,
+                today,
+                subject_line: Some("Brouillon déjà préparé".into()),
+                body: Some("Ce brouillon reste.".into()),
+            },
+        );
+        applied(
+            &mut store,
+            &MarkFollowUpSent {
+                subject: classe,
+                today,
+                subject_line: Some("Lettre déjà classée".into()),
+                body: Some("Ce classement reste.".into()),
+            },
+        );
+        let shops_hello = genre_subject(&store, &shops.id, "hello");
+        let services_bump = genre_subject(&store, &services.id, "bump");
+        let kept = applied(
+            &mut store,
+            &KeepGenreWords {
+                subject: mairie,
+                today,
+                subject_line: Some(before.preview_subject.unwrap()),
+                body: Some(before.preview_body.unwrap()),
+                genre_name: Some("Ignoré".into()),
+            },
+        );
+        assert_eq!(kept.key, "hello");
+        assert_eq!(kept.genre_id, services.id);
+        assert_eq!(kept.subject, "{{sujet}}");
+        assert!(kept.body.contains("{{prenom}}"));
+        assert_eq!(genre_subject(&store, &shops.id, "hello"), shops_hello);
+        assert_eq!(genre_subject(&store, &services.id, "bump"), services_bump);
+        assert_eq!(phrase_by_key(&store, "hello").subject, "{{sujet}}");
+        let still = card_for(store.connection(), mairie, today).unwrap();
+        assert_eq!(still.step_key.as_deref(), Some("hello"));
+        assert_eq!(still.due_on, before.due_on);
+        assert_eq!(still.step_index, before.step_index);
+        assert_eq!(
+            stored_letter(&store, ailleurs, FollowUpFact::DraftPrepared),
+            (
+                Some("Brouillon déjà préparé".into()),
+                Some("Ce brouillon reste.".into())
+            )
+        );
+        assert_eq!(
+            stored_letter(&store, classe, FollowUpFact::MarkedSent),
+            (
+                Some("Lettre déjà classée".into()),
+                Some("Ce classement reste.".into())
+            )
+        );
+        let written = applied(
+            &mut store,
+            &KeepGenreWords {
+                subject: mairie,
+                today,
+                subject_line: Some("Bonjour « le prénom »".into()),
+                body: Some("Un mot pour la mairie.".into()),
+                genre_name: None,
+            },
+        );
+        assert_eq!(written.subject, "Bonjour {{prenom}}");
+        assert_eq!(written.body, "Un mot pour la mairie.");
+        assert_eq!(genre_subject(&store, &shops.id, "hello"), shops_hello);
+        assert_eq!(
+            card_for(store.connection(), commerce, today)
+                .unwrap()
+                .preview_subject
+                .as_deref(),
+            Some("Refonte")
+        );
+        assert_eq!(
+            count_rows(&store, "SELECT COUNT(*) FROM prospect_series"),
+            0
+        );
+
+        let (_, neuf) = seed_opportunity(&mut store, today);
+        let created = applied(
+            &mut store,
+            &KeepGenreWords {
+                subject: neuf,
+                today,
+                subject_line: Some("Pour les ateliers".into()),
+                body: Some("Le mot des ateliers.".into()),
+                genre_name: Some("Ateliers".into()),
+            },
+        );
+        assert_eq!(created.genre_name, "Ateliers");
+        assert_eq!(created.key, "hello");
+        assert_eq!(created.subject, "Pour les ateliers");
+        assert_eq!(
+            prospect_genre_for(
+                store.connection(),
+                match neuf {
+                    FollowUpSubject::Opportunity(id) => id,
+                    FollowUpSubject::Invoice(_) => panic!("conversation"),
+                }
+            )
+            .unwrap()
+            .unwrap()
+            .name,
+            "Ateliers"
+        );
+        assert_eq!(
+            genre_subject(&store, &created.genre_id, "bump"),
+            phrase_by_key(&store, "bump").subject
+        );
+        applied(
+            &mut store,
+            &KeepGenreWords {
+                subject: neuf,
+                today,
+                subject_line: None,
+                body: None,
+                genre_name: None,
+            },
+        );
+        let (_, sans) = seed_opportunity(&mut store, today);
+        let missing = Executor::new(&mut store)
+            .execute(
+                &KeepGenreWords {
+                    subject: sans,
+                    today,
+                    subject_line: None,
+                    body: None,
+                    genre_name: None,
+                },
+                &human(),
+            )
+            .unwrap_err();
+        assert!(matches!(missing, AppError::Domain(msg) if msg == "Pour qui ?"));
+    }
+
+    #[test]
+    fn rewriting_genre_words_does_not_copy_a_series() {
+        let mut store = test_store("genre-words");
+        let today = date(2026, Month::September, 5);
+        let (_, subject) = seed_opportunity(&mut store, today);
+        let services = applied(
+            &mut store,
+            &CreateProspectGenre {
+                name: "Services publics".into(),
+                copy_from: None,
+            },
+        );
+        let defaults = prospect_phrases(store.connection()).unwrap();
+        let mut moments: Vec<_> = defaults.iter().map(MomentDraft::from_phrase).collect();
+        moments[0].subject = "Pour la mairie".into();
+        moments[0].body = "Bonjour {{prenom}},\n\nLa mairie seulement.\n".into();
+        applied(
+            &mut store,
+            &SaveGenreLetter {
+                genre_id: services.id.clone(),
+                moments,
+            },
+        );
+        applied(
+            &mut store,
+            &SetDossierGenre {
+                subject,
+                name: "Services publics".into(),
+            },
+        );
+        assert_eq!(
+            count_rows(&store, "SELECT COUNT(*) FROM prospect_series"),
+            0
+        );
+        assert_eq!(phrase_by_key(&store, "hello").subject, "{{sujet}}");
+        assert_eq!(phrase_by_key(&store, "bump").offset_days, 3);
+        assert_eq!(phrase_by_key(&store, "value").offset_days, 7);
+        assert_eq!(phrase_by_key(&store, "close").offset_days, 14);
+        let card = card_for(store.connection(), subject, today).unwrap();
+        assert_eq!(card.preview_subject.as_deref(), Some("Pour la mairie"));
+        assert!(card.preview_body.unwrap().contains("La mairie seulement."));
+        let shown = phrases_for_genre(store.connection(), &services.id).unwrap();
+        assert_eq!(shown[0].subject, "Pour la mairie");
+        assert_eq!(shown[1].subject, defaults[1].subject);
+        assert_eq!(shown[1].offset_days, 3);
+    }
+
+    #[test]
+    fn a_structure_change_still_pins_and_drops_the_moment_from_living_genres() {
+        let mut store = test_store("genre-pin");
+        let sent_on = date(2026, Month::September, 2);
+        let today = date(2026, Month::September, 5);
+        let (_, engaged) = seed_opportunity(&mut store, sent_on);
+        file_letter(&mut store, engaged, sent_on);
+        let services = applied(
+            &mut store,
+            &CreateProspectGenre {
+                name: "Services publics".into(),
+                copy_from: None,
+            },
+        );
+        applied(
+            &mut store,
+            &RewriteGenreWords {
+                genre_id: services.id.clone(),
+                words: vec![GenreWordDraft {
+                    key: "value".into(),
+                    subject: "Valeur du genre".into(),
+                    body: "Ce mot ne doit pas rester sur la copie.\n".into(),
+                }],
+            },
+        );
+        applied(
+            &mut store,
+            &SetDossierGenre {
+                subject: engaged,
+                name: "Services publics".into(),
+            },
+        );
+        let phrases = prospect_phrases(store.connection()).unwrap();
+        let draft =
+            |key: &str| MomentDraft::from_phrase(phrases.iter().find(|p| p.key == key).unwrap());
+        let mut hello = draft("hello");
+        hello.subject = "Pour la mairie".into();
+        applied(
+            &mut store,
+            &SaveGenreLetter {
+                genre_id: services.id.clone(),
+                moments: vec![hello, draft("bump"), draft("close")],
+            },
+        );
+        assert_eq!(
+            count_rows(&store, "SELECT COUNT(*) FROM prospect_series"),
+            1
+        );
+        assert_eq!(
+            count_rows(
+                &store,
+                "SELECT COUNT(*) FROM prospect_genre_words WHERE phrase_key = 'value'"
+            ),
+            0
+        );
+        assert!(
+            prospect_phrases(store.connection())
+                .unwrap()
+                .iter()
+                .all(|p| p.key != "value")
+        );
+        assert_eq!(
+            genre_subject(&store, &services.id, "hello"),
+            "Pour la mairie"
+        );
+        assert_eq!(phrase_by_key(&store, "hello").subject, "{{sujet}}");
+        let pinned = card_for(store.connection(), engaged, today).unwrap();
+        assert_eq!(pinned.step_count, 4);
+        assert_eq!(pinned.step_key.as_deref(), Some("bump"));
+        assert_eq!(pinned.due_on, Some(today));
+        let copy_subject: String = store
+            .connection()
+            .query_row(
+                "SELECT subject FROM prospect_series_steps WHERE phrase_key = 'value'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(copy_subject, "{{sujet}}");
+        let (_, fresh) = seed_opportunity(&mut store, today);
+        let fresh_card = card_for(store.connection(), fresh, today).unwrap();
+        assert_eq!(fresh_card.step_count, 3);
+        assert_ne!(fresh_card.step_key.as_deref(), Some("value"));
+    }
+
+    #[test]
+    fn dropping_a_genre_returns_the_next_letter_to_the_default_words() {
+        let mut store = test_store("drop-genre");
+        let today = date(2026, Month::September, 5);
+        let (_, subject) = seed_opportunity(&mut store, today);
+        set_sender(&mut store);
+        let services = applied(
+            &mut store,
+            &CreateProspectGenre {
+                name: "Services publics".into(),
+                copy_from: None,
+            },
+        );
+        applied(
+            &mut store,
+            &RewriteGenreWords {
+                genre_id: services.id.clone(),
+                words: vec![GenreWordDraft {
+                    key: "bump".into(),
+                    subject: "Rappel des services".into(),
+                    body: "Le rappel du genre.\n".into(),
+                }],
+            },
+        );
+        applied(
+            &mut store,
+            &SetDossierGenre {
+                subject,
+                name: "Services publics".into(),
+            },
+        );
+        applied(
+            &mut store,
+            &MarkFollowUpSent {
+                subject,
+                today,
+                subject_line: Some("Lettre classée".into()),
+                body: Some("Elle reste.".into()),
+            },
+        );
+        let before = card_for(store.connection(), subject, today).unwrap();
+        assert_eq!(
+            before.preview_subject.as_deref(),
+            Some("Rappel des services")
+        );
+        applied(&mut store, &DropProspectGenre { id: services.id });
+        let after = card_for(store.connection(), subject, today).unwrap();
+        assert_eq!(after.step_index, before.step_index);
+        assert_eq!(after.step_key, before.step_key);
+        assert_eq!(after.due_on, before.due_on);
+        assert_eq!(
+            after.preview_subject.as_deref(),
+            Some("Refonte — je me permets un rappel")
+        );
+        assert_eq!(
+            stored_letter(&store, subject, FollowUpFact::MarkedSent)
+                .0
+                .as_deref(),
+            Some("Lettre classée")
+        );
+        assert!(prospect_genres(store.connection()).unwrap().is_empty());
+        let FollowUpSubject::Opportunity(id) = subject else {
+            panic!("conversation");
+        };
+        assert!(
+            prospect_genre_for(store.connection(), id)
+                .unwrap()
+                .is_none()
+        );
     }
 }

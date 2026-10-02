@@ -2,11 +2,14 @@
 
 use griffe_core::app::Executor;
 use griffe_core::clock::today_local;
+use griffe_core::domain::phrase_from_editor;
 use griffe_core::domain::{FollowUpSubject, SnoozePreset, parse_date, snooze_date};
 use griffe_core::follow_up::{
-    ArrangeProspectPhrases, MarkFollowUpSent, MomentDraft, PhraseRewrite, PrepareFollowUp,
-    RetractLastFollowUp, RewriteProspectPhrases, SetFollowUpDate, SetFollowUpSender,
-    SkipFollowUpStep, SnoozeFollowUp, card_for, follow_up_board, follow_up_queue, prospect_phrases,
+    ArrangeProspectPhrases, CreateProspectGenre, DropProspectGenre, GenreWordDraft, KeepGenreWords,
+    MarkFollowUpSent, MomentDraft, PhraseRewrite, PrepareFollowUp, RetractLastFollowUp,
+    RewriteGenreWords, RewriteProspectPhrases, SetDossierGenre, SetFollowUpDate, SetFollowUpSender,
+    SkipFollowUpStep, SnoozeFollowUp, card_for, follow_up_board, follow_up_queue, prospect_genres,
+    prospect_phrases,
 };
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
@@ -145,6 +148,56 @@ pub(crate) struct SnoozeArgs {
     until: Option<String>,
     preset: Option<String>,
     today: Option<String>,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct GenreNameArgs {
+    name: String,
+    /// Identifiant du genre dont on copie les mots. Absent : les phrases par défaut.
+    copy_from: Option<String>,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct GenreIdArgs {
+    id: String,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct RewriteGenreArgs {
+    /// Identifiant du genre.
+    genre_id: String,
+    /// Identifiant du moment.
+    key: String,
+    subject: String,
+    body: String,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct SetGenreArgs {
+    reference: String,
+    /// Nom du genre. Vide : le dossier redevient sans genre.
+    name: String,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct KeepWordsArgs {
+    reference: String,
+    today: Option<String>,
+    /// Absent : ce champ n'a pas été modifié, on garde le modèle.
+    subject_line: Option<String>,
+    body: Option<String>,
+    /// Quand le dossier n'a pas de genre.
+    genre_name: Option<String>,
     #[serde(default)]
     dry_run: bool,
 }
@@ -356,6 +409,156 @@ impl FreeflowServer {
                 body: args.body,
                 revision,
             }],
+        };
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
+            Ok(outcome) => ok_json(outcome_json(&outcome)),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
+    /// Les genres, par nom. Les mots seulement.
+    #[tool(
+        name = "follow_up.genres",
+        annotations(read_only_hint = true, idempotent_hint = true)
+    )]
+    async fn follow_up_genres(&self) -> CallToolResult {
+        let store = self.store.lock().await;
+        match prospect_genres(store.connection()) {
+            Ok(genres) => ok_json(genres),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
+    /// Crée un genre en copiant les sujets et les corps.
+    #[tool(
+        name = "follow_up.add_genre",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false
+        )
+    )]
+    async fn follow_up_add_genre(
+        &self,
+        Parameters(args): Parameters<GenreNameArgs>,
+    ) -> CallToolResult {
+        let mut store = self.store.lock().await;
+        let cmd = CreateProspectGenre {
+            name: args.name,
+            copy_from: args.copy_from,
+        };
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
+            Ok(outcome) => ok_json(outcome_json(&outcome)),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
+    /// Retire un genre. Les fiches qui le portaient redeviennent sans genre.
+    #[tool(
+        name = "follow_up.drop_genre",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true
+        )
+    )]
+    async fn follow_up_drop_genre(
+        &self,
+        Parameters(args): Parameters<GenreIdArgs>,
+    ) -> CallToolResult {
+        let mut store = self.store.lock().await;
+        let cmd = DropProspectGenre { id: args.id };
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
+            Ok(outcome) => ok_json(outcome_json(&outcome)),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
+    /// Réécrit le sujet et le corps d'un moment, pour ce genre seulement.
+    #[tool(
+        name = "follow_up.rewrite_genre",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true
+        )
+    )]
+    async fn follow_up_rewrite_genre(
+        &self,
+        Parameters(args): Parameters<RewriteGenreArgs>,
+    ) -> CallToolResult {
+        let mut store = self.store.lock().await;
+        let cmd = RewriteGenreWords {
+            genre_id: args.genre_id,
+            words: vec![GenreWordDraft {
+                key: args.key,
+                subject: phrase_from_editor(&args.subject),
+                body: phrase_from_editor(&args.body),
+            }],
+        };
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
+            Ok(outcome) => ok_json(outcome_json(&outcome)),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
+    /// Pose un genre sur le dossier, ou l'enlève si le nom est vide.
+    #[tool(
+        name = "follow_up.set_genre",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true
+        )
+    )]
+    async fn follow_up_set_genre(
+        &self,
+        Parameters(args): Parameters<SetGenreArgs>,
+    ) -> CallToolResult {
+        let mut store = self.store.lock().await;
+        let subject = match resolve_subject(&store, &args.reference) {
+            Ok(subject) => subject,
+            Err(e) => return err_text(e),
+        };
+        let cmd = SetDossierGenre {
+            subject,
+            name: args.name,
+        };
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
+            Ok(outcome) => ok_json(outcome_json(&outcome)),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
+    /// Remplace le sujet et le corps de ce moment, pour ce genre seulement.
+    /// Ne classe rien et n'envoie rien.
+    #[tool(
+        name = "follow_up.keep_words",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true
+        )
+    )]
+    async fn follow_up_keep_words(
+        &self,
+        Parameters(args): Parameters<KeepWordsArgs>,
+    ) -> CallToolResult {
+        let today = match today_or(args.today) {
+            Ok(today) => today,
+            Err(e) => return err_text(e),
+        };
+        let mut store = self.store.lock().await;
+        let subject = match resolve_subject(&store, &args.reference) {
+            Ok(subject) => subject,
+            Err(e) => return err_text(e),
+        };
+        let cmd = KeepGenreWords {
+            subject,
+            today,
+            subject_line: args.subject_line.map(|text| phrase_from_editor(&text)),
+            body: args.body.map(|text| phrase_from_editor(&text)),
+            genre_name: args.genre_name,
         };
         match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),

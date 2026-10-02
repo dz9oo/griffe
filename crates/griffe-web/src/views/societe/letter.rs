@@ -1587,10 +1587,16 @@ fn reading_actions(m: &StatementMove) -> Markup {
 pub fn identity(store: &Store, today: Date) -> Result<Markup, AppError> {
     let _ = today;
     let card = society_identity(store.connection())?;
-    Ok(identity_markup(&card))
+    let genre = griffe_core::follow_up::latest_prospect_genre(store.connection())?;
+    let phrases = crate::views::gens::phrases_href(
+        "identite",
+        "",
+        genre.as_ref().map(|genre| genre.id.as_str()).unwrap_or(""),
+    );
+    Ok(identity_markup(&card, &phrases))
 }
 
-fn identity_markup(card: &IdentityCard) -> Markup {
+fn identity_markup(card: &IdentityCard, phrases: &str) -> Markup {
     let siege = match (
         card.street.as_deref(),
         card.postal_code.as_deref(),
@@ -1644,8 +1650,8 @@ fn identity_markup(card: &IdentityCard) -> Markup {
                 h3 { "Le coffre" }
                 p { "Un fichier sur cette machine, chiffré. Aucune connexion sortante. Les mails, la TVA, le greffe se font ailleurs — Griffe prépare, il ne transmet pas." }
                 p {
-                    a href="/affaires/phrases?depuis=identite"
-                      hx-get="/affaires/phrases?depuis=identite"
+                    a href=(phrases)
+                      hx-get=(phrases)
                       hx-target="#content"
                       hx-push-url="true" {
                         "Les phrases"

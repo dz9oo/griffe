@@ -13,14 +13,16 @@ use griffe_core::clients::{
 };
 use griffe_core::company::company_profile;
 use griffe_core::domain::{
-    Address, ExpenseId, InteractionKind, InvoiceId, InvoiceLine, MissionId, Money, Probability,
-    TemplateContext, VatRate, WriteOffId, format_date, parse_date, phrase_from_editor,
+    Address, ExpenseId, FollowUpSubject, InteractionKind, InvoiceId, InvoiceLine, MissionId, Money,
+    Probability, TemplateContext, VatRate, WriteOffId, format_date, parse_date, phrase_from_editor,
     phrase_to_editor, render_template,
 };
 use griffe_core::expenses::{AttachReceipt, expense_by_id};
 use griffe_core::follow_up::{
-    ArrangeProspectPhrases, MarkFollowUpSent, MomentDraft, PrepareFollowUp, ProspectPhrase,
-    SnoozeFollowUp, follow_up_sender, prospect_phrases,
+    ArrangeProspectPhrases, CreateProspectGenre, DropProspectGenre, KeepGenreWords,
+    MarkFollowUpSent, MomentDraft, PrepareFollowUp, ProspectPhrase, SaveGenreLetter,
+    SetDossierGenre, SnoozeFollowUp, follow_up_sender, phrases_for_genre, prospect_genres,
+    prospect_phrases,
 };
 use griffe_core::people::{PersonKey, person};
 use griffe_core::prospection::{
@@ -191,12 +193,42 @@ pub struct LetterForm {
     body: String,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct PhrasesQuery {
     #[serde(default)]
     depuis: String,
     #[serde(default)]
     pour: String,
+    #[serde(default)]
+    genre: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct NewGenreQuery {
+    #[serde(default)]
+    depuis: String,
+    #[serde(default)]
+    pour: String,
+    #[serde(default)]
+    source: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct NewGenreForm {
+    #[serde(default)]
+    name: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct KeepForm {
+    #[serde(default)]
+    subject_line: String,
+    #[serde(default)]
+    body: String,
+    #[serde(default)]
+    confirmer: String,
+    #[serde(default)]
+    genre_name: String,
 }
 
 pub async fn phrases_get(
@@ -217,46 +249,197 @@ pub async fn phrases_post(
     headers: HeaderMap,
     Query(query): Query<PhrasesQuery>,
     Form(fields): Form<HashMap<String, String>>,
-) -> Html<String> {
+) -> Response {
+    let genre_id = query.genre.trim().to_string();
+    let dropping = fields.contains_key("retirer_genre") && !genre_id.is_empty();
     let result = state
-        .with_store_mut(|store| {
-            let phrases = prospect_phrases(store.connection())?;
+        .with_store_mut(|store| -> Result<bool, AppError> {
+            if dropping {
+                Executor::new(store).execute(
+                    &DropProspectGenre {
+                        id: genre_id.clone(),
+                    },
+                    &AppState::human_ctx(),
+                )?;
+                return Ok(true);
+            }
+            let phrases = if genre_id.is_empty() {
+                prospect_phrases(store.connection())?
+            } else {
+                phrases_for_genre(store.connection(), &genre_id)?
+            };
             let moments = drafts_from_form(&phrases, &fields).map_err(AppError::Domain)?;
-            Executor::new(store)
-                .execute(&ArrangeProspectPhrases { moments }, &AppState::human_ctx())
+            if genre_id.is_empty() {
+                Executor::new(store)
+                    .execute(&ArrangeProspectPhrases { moments }, &AppState::human_ctx())?;
+            } else {
+                Executor::new(store).execute(
+                    &SaveGenreLetter {
+                        genre_id: genre_id.clone(),
+                        moments,
+                    },
+                    &AppState::human_ctx(),
+                )?;
+            }
+            Ok(false)
         })
         .await;
     let today = state.today();
-    let content = match result {
-        None => return locked(&headers),
-        Some(Err(error)) => state
-            .with_store(|store| {
-                phrases_markup(
-                    store,
-                    &query,
-                    today,
-                    Some(error.to_string()),
-                    None,
-                    Some(&fields),
-                )
-            })
-            .await
-            .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } }),
-        Some(Ok(_)) => state
-            .with_store(|store| {
-                phrases_markup(
-                    store,
-                    &query,
-                    today,
-                    None,
-                    Some("Les phrases sont enregistrées.".to_string()),
-                    None,
-                )
-            })
-            .await
-            .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } }),
-    };
+    match result {
+        None => locked(&headers).into_response(),
+        Some(Err(error)) => {
+            let content = state
+                .with_store(|store| {
+                    phrases_markup(
+                        store,
+                        &query,
+                        today,
+                        Some(error.to_string()),
+                        None,
+                        Some(&fields),
+                    )
+                })
+                .await
+                .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
+            page(&headers, content).into_response()
+        }
+        Some(Ok(true)) => {
+            let mut shown = query.clone();
+            shown.genre.clear();
+            let content = state
+                .with_store(|store| phrases_markup(store, &shown, today, None, None, None))
+                .await
+                .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
+            with_push(
+                &headers,
+                &gens::phrases_href(&shown.depuis, &shown.pour, ""),
+                content,
+            )
+        }
+        Some(Ok(false)) => {
+            let content = state
+                .with_store(|store| {
+                    phrases_markup(
+                        store,
+                        &query,
+                        today,
+                        None,
+                        Some("Les phrases sont enregistrées.".to_string()),
+                        None,
+                    )
+                })
+                .await
+                .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
+            page(&headers, content).into_response()
+        }
+    }
+}
+
+pub async fn genre_new_get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<NewGenreQuery>,
+) -> Html<String> {
+    let content = state
+        .with_store(|store| {
+            let (back_href, back_label) = genre_back(store, &query);
+            gens::new_genre_page(
+                &back_href,
+                &back_label,
+                &gens::new_genre_href(&query.depuis, &query.pour, &query.source),
+                "",
+                None,
+            )
+        })
+        .await
+        .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
     page(&headers, content)
+}
+
+pub async fn genre_new_post(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<NewGenreQuery>,
+    Form(form): Form<NewGenreForm>,
+) -> Response {
+    let source = query.source.trim().to_string();
+    let result = state
+        .with_store_mut(|store| {
+            Executor::new(store).execute(
+                &CreateProspectGenre {
+                    name: form.name.clone(),
+                    copy_from: if source.is_empty() {
+                        None
+                    } else {
+                        Some(source.clone())
+                    },
+                },
+                &AppState::human_ctx(),
+            )
+        })
+        .await;
+    let today = state.today();
+    match result {
+        None => locked(&headers).into_response(),
+        Some(Err(error)) => {
+            let content = state
+                .with_store(|store| {
+                    let (back_href, back_label) = genre_back(store, &query);
+                    gens::new_genre_page(
+                        &back_href,
+                        &back_label,
+                        &gens::new_genre_href(&query.depuis, &query.pour, &query.source),
+                        &form.name,
+                        Some(&error.to_string()),
+                    )
+                })
+                .await
+                .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
+            page(&headers, content).into_response()
+        }
+        Some(Ok(outcome)) => {
+            let Outcome::Applied(genre) = outcome else {
+                return page(
+                    &headers,
+                    html! { div class="empty-state" { "le genre n'a pas été créé" } },
+                )
+                .into_response();
+            };
+            let shown = PhrasesQuery {
+                depuis: query.depuis.clone(),
+                pour: query.pour.clone(),
+                genre: genre.id.clone(),
+            };
+            let content = state
+                .with_store(|store| phrases_markup(store, &shown, today, None, None, None))
+                .await
+                .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
+            with_push(
+                &headers,
+                &gens::phrases_href(&shown.depuis, &shown.pour, &shown.genre),
+                content,
+            )
+        }
+    }
+}
+
+fn genre_back(store: &griffe_core::store::Store, query: &NewGenreQuery) -> (String, String) {
+    let source = query.source.trim();
+    let href = gens::phrases_href(query.depuis.trim(), query.pour.trim(), source);
+    let label = if source.is_empty() {
+        "Les phrases".to_string()
+    } else {
+        prospect_genres(store.connection())
+            .ok()
+            .and_then(|genres| {
+                genres
+                    .into_iter()
+                    .find(|genre| genre.id == source)
+                    .map(|genre| genre.name)
+            })
+            .unwrap_or_else(|| "Les phrases".to_string())
+    };
+    (href, label)
 }
 
 const NEW_MOMENT_BODY: &str = "Bonjour {{prenom}},\n\n{{sujet}}\n\nBien à vous,\n{{moi}}\n";
@@ -389,16 +572,60 @@ fn new_moment(first: bool) -> MomentDraft {
     }
 }
 
+const PHRASES_LEDE: &str = "Les phrases que tu répètes. Une lettre par moment, dans l'ordre. Changer ici ne touche pas les lettres déjà classées. Griffe n'envoie pas.";
+const GENRE_LEDE: &str = "Les phrases que tu répètes à ce genre de gens. Une lettre par moment, dans l'ordre. Changer ici ne touche pas les lettres déjà classées. Griffe n'envoie pas.";
+
 fn phrases_markup(
     store: &griffe_core::store::Store,
     query: &PhrasesQuery,
     today: time::Date,
-    banner: Option<String>,
+    mut banner: Option<String>,
     status: Option<String>,
     fields: Option<&HashMap<String, String>>,
 ) -> Markup {
-    let phrases = prospect_phrases(store.connection()).unwrap_or_default();
-    let reading = phrase_reading(store, query, today);
+    let genre_id = query.genre.trim();
+    let genres = prospect_genres(store.connection()).unwrap_or_default();
+    let selected = genres.iter().find(|genre| genre.id == genre_id);
+    let (phrases, current) = if let Some(genre) = selected {
+        match phrases_for_genre(store.connection(), &genre.id) {
+            Ok(phrases) => (phrases, Some(genre)),
+            Err(error) => {
+                if banner.is_none() {
+                    banner = Some(error.to_string());
+                }
+                (
+                    prospect_phrases(store.connection()).unwrap_or_default(),
+                    None,
+                )
+            }
+        }
+    } else {
+        if !genre_id.is_empty() && banner.is_none() {
+            banner = Some("Ce genre n'existe pas.".to_string());
+        }
+        (
+            prospect_phrases(store.connection()).unwrap_or_default(),
+            None,
+        )
+    };
+    let shown = current.map(|genre| genre.id.as_str()).unwrap_or("");
+    let reading = phrase_reading(store, query, today, shown);
+    let (title, lede) = if let Some(genre) = current {
+        (format!("{}.", genre.name), GENRE_LEDE.to_string())
+    } else {
+        ("Les phrases.".to_string(), PHRASES_LEDE.to_string())
+    };
+    let links = std::iter::once(gens::PhraseLink {
+        label: "Les phrases".to_string(),
+        href: gens::phrases_href(query.depuis.trim(), query.pour.trim(), ""),
+        current: current.is_none(),
+    })
+    .chain(genres.iter().map(|genre| gens::PhraseLink {
+        label: genre.name.clone(),
+        href: gens::phrases_href(query.depuis.trim(), query.pour.trim(), &genre.id),
+        current: current.is_some_and(|selected| selected.id == genre.id),
+    }))
+    .collect();
     let alone = phrases.len() == 1;
     let moments = phrases
         .iter()
@@ -417,6 +644,11 @@ fn phrases_markup(
         back_href: reading.back_href,
         back_label: reading.back_label,
         action: reading.action,
+        title,
+        lede,
+        links,
+        other_href: gens::new_genre_href(query.depuis.trim(), query.pour.trim(), shown),
+        drop: current.is_some(),
         moments,
         read_caption: reading.caption,
         banner,
@@ -436,11 +668,12 @@ fn phrase_reading(
     store: &griffe_core::store::Store,
     query: &PhrasesQuery,
     today: time::Date,
+    genre: &str,
 ) -> PhraseReading {
     let (moi, societe) = speaker(store);
     let pour = query.pour.trim();
     let depuis = query.depuis.trim();
-    let action = gens::phrases_href(depuis, pour);
+    let action = gens::phrases_href(depuis, pour, genre);
     let example = PhraseReading {
         caption: "Exemple, pour voir.".to_string(),
         ctx: TemplateContext {
@@ -474,6 +707,8 @@ fn phrase_reading(
     let href = gens::person_href(&dossier.name);
     let (back_href, back_label) = if depuis == "lettre" {
         (format!("{href}/ecrire"), dossier.name.clone())
+    } else if depuis == "fiche" {
+        (format!("{href}/fiche"), dossier.name.clone())
     } else {
         (href, dossier.name.clone())
     };
@@ -590,8 +825,15 @@ pub async fn write_get(
     let content = state
         .with_store(|store| {
             let card = gens::load_card(store, subject, today).ok().flatten();
-            gens::letter_page(store, &dossier, card.as_ref(), today, None)
-                .unwrap_or_else(|err| html! { div class="empty-state" { (err.to_string()) } })
+            gens::letter_page(
+                store,
+                &dossier,
+                card.as_ref(),
+                today,
+                None,
+                &gens::KeepUi::default(),
+            )
+            .unwrap_or_else(|err| html! { div class="empty-state" { (err.to_string()) } })
         })
         .await
         .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
@@ -654,6 +896,7 @@ pub async fn write(
                         card.as_ref(),
                         today,
                         Some("brouillon ouvert dans ton client mail — Griffe n'envoie pas"),
+                        &gens::KeepUi::default(),
                     )
                     .unwrap_or_else(|err| html! { div class="empty-state" { (err.to_string()) } })
                 })
@@ -662,6 +905,161 @@ pub async fn write(
             page(&headers, content)
         }
     }
+}
+
+pub async fn keep_words(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(reference): Path<String>,
+    Form(form): Form<KeepForm>,
+) -> Html<String> {
+    let today = state.today();
+    let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
+        return page(&headers, gens::not_found(&reference, today));
+    };
+    let Some(subject) = dossier.follow_up_subject else {
+        return page(
+            &headers,
+            gens::dossier_markup(&dossier, today, Some("rien à écrire pour l'instant")),
+        );
+    };
+    let FollowUpSubject::Opportunity(_) = subject else {
+        return page(
+            &headers,
+            gens::dossier_markup(
+                &dossier,
+                today,
+                Some("Le genre est celui d'une conversation."),
+            ),
+        );
+    };
+    let confirming = form.confirmer.trim() == "1";
+    let proposed = form.genre_name.trim().to_string();
+    let has_genre = state
+        .with_store(|store| {
+            let FollowUpSubject::Opportunity(id) = subject else {
+                return false;
+            };
+            griffe_core::follow_up::prospect_genre_for(store.connection(), id)
+                .ok()
+                .flatten()
+                .is_some()
+        })
+        .await
+        .unwrap_or(false);
+    let written = gens::KeepUi {
+        subject: Some(form.subject_line.clone()),
+        body: Some(form.body.clone()),
+        ..gens::KeepUi::default()
+    };
+    if !confirming {
+        let keep = if has_genre {
+            gens::KeepUi {
+                confirm: true,
+                ..written
+            }
+        } else if proposed.is_empty() {
+            gens::KeepUi {
+                ask: true,
+                ..written
+            }
+        } else {
+            gens::KeepUi {
+                confirm: true,
+                proposed_name: proposed,
+                ..written
+            }
+        };
+        return page(
+            &headers,
+            render_letter(&state, &dossier, today, None, &keep).await,
+        );
+    }
+    if !has_genre && proposed.is_empty() {
+        return page(
+            &headers,
+            render_letter(
+                &state,
+                &dossier,
+                today,
+                None,
+                &gens::KeepUi {
+                    ask: true,
+                    ..written
+                },
+            )
+            .await,
+        );
+    }
+    let result = state
+        .with_store_mut(|store| {
+            Executor::new(store).execute(
+                &KeepGenreWords {
+                    subject,
+                    today,
+                    subject_line: Some(form.subject_line.clone()),
+                    body: Some(form.body.clone()),
+                    genre_name: if has_genre {
+                        None
+                    } else {
+                        Some(proposed.clone())
+                    },
+                },
+                &AppState::human_ctx(),
+            )
+        })
+        .await;
+    match result {
+        None => locked(&headers),
+        Some(Err(error)) => page(
+            &headers,
+            render_letter(
+                &state,
+                &dossier,
+                today,
+                Some(&error.to_string()),
+                &gens::KeepUi::default(),
+            )
+            .await,
+        ),
+        Some(Ok(_)) => {
+            let fresh = load_dossier(&state, &reference)
+                .await
+                .and_then(Result::ok)
+                .unwrap_or(dossier);
+            page(
+                &headers,
+                render_letter(
+                    &state,
+                    &fresh,
+                    today,
+                    Some("Ces mots sont gardés. Rien n'est classé."),
+                    &gens::KeepUi::default(),
+                )
+                .await,
+            )
+        }
+    }
+}
+
+async fn render_letter(
+    state: &AppState,
+    dossier: &griffe_core::people::PersonDossier,
+    today: time::Date,
+    flash: Option<&str>,
+    keep: &gens::KeepUi,
+) -> Markup {
+    let Some(subject) = dossier.follow_up_subject else {
+        return gens::dossier_markup(dossier, today, flash);
+    };
+    state
+        .with_store(|store| {
+            let card = gens::load_card(store, subject, today).ok().flatten();
+            gens::letter_page(store, dossier, card.as_ref(), today, flash, keep)
+                .unwrap_or_else(|err| html! { div class="empty-state" { (err.to_string()) } })
+        })
+        .await
+        .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } })
 }
 
 pub async fn sent(
@@ -1071,6 +1469,19 @@ fn parse_address(street: &str, postal_code: &str, city: &str) -> Result<Option<A
     }))
 }
 
+async fn load_genre_field(
+    state: &AppState,
+    dossier: &griffe_core::people::PersonDossier,
+    posted: Option<&str>,
+    created: bool,
+) -> gens::GenreField {
+    state
+        .with_store(|store| gens::genre_field(store, dossier, posted, created))
+        .await
+        .and_then(Result::ok)
+        .unwrap_or_default()
+}
+
 fn fiche_values_from(
     client: &griffe_core::domain::Client,
     contact: Option<&griffe_core::domain::Contact>,
@@ -1128,6 +1539,7 @@ pub async fn fiche_get(
         ),
         Some(Ok((client, contact))) => {
             let values = fiche_values_from(&client, contact.as_ref());
+            let genre = load_genre_field(&state, &dossier, None, false).await;
             page(
                 &headers,
                 gens::fiche_page(
@@ -1138,6 +1550,7 @@ pub async fn fiche_get(
                         address: None,
                         banner: None,
                     },
+                    &genre,
                 ),
             )
         }
@@ -1166,6 +1579,8 @@ pub struct FicheForm {
     contact_id: String,
     #[serde(default)]
     contact_revision: String,
+    #[serde(default)]
+    genre: String,
 }
 
 pub async fn fiche_post(
@@ -1186,6 +1601,7 @@ pub async fn fiche_post(
         .into_response();
     };
     let who = form.who.trim().to_string();
+    let posted_genre_name = form.genre.clone();
     let address = match parse_address(&form.street, &form.postal_code, &form.city) {
         Ok(address) => address,
         Err(msg) => {
@@ -1201,6 +1617,7 @@ pub async fn fiche_post(
                 contact_id: form.contact_id,
                 contact_revision: form.contact_revision,
             };
+            let genre = load_genre_field(&state, &dossier, Some(&posted_genre_name), false).await;
             return page(
                 &headers,
                 gens::fiche_page(
@@ -1211,6 +1628,7 @@ pub async fn fiche_post(
                         address: Some(msg),
                         banner: None,
                     },
+                    &genre,
                 ),
             )
             .into_response();
@@ -1229,6 +1647,7 @@ pub async fn fiche_post(
             contact_id: form.contact_id,
             contact_revision: form.contact_revision,
         };
+        let genre = load_genre_field(&state, &dossier, Some(&posted_genre_name), false).await;
         return page(
             &headers,
             gens::fiche_page(
@@ -1239,6 +1658,7 @@ pub async fn fiche_post(
                     address: None,
                     banner: None,
                 },
+                &genre,
             ),
         )
         .into_response();
@@ -1256,7 +1676,7 @@ pub async fn fiche_post(
     let contact_name = representative.clone().unwrap_or_else(|| who.clone());
     let posted_contact_revision = form.contact_revision.parse::<i64>().ok();
     let result = state
-        .with_store_mut(|store| -> Result<(), AppError> {
+        .with_store_mut(|store| -> Result<bool, AppError> {
             let client = client_by_id(store.connection(), id)?
                 .ok_or_else(|| AppError::from(griffe_core::clients::ClientError::NotFound(id)))?;
             let contact = list_contacts(store.connection(), id)?.into_iter().next();
@@ -1300,7 +1720,17 @@ pub async fn fiche_post(
                 }
                 None => {}
             }
-            Ok(())
+            let Some(opportunity_id) = dossier.current.opportunity_id else {
+                return Ok(false);
+            };
+            let outcome = Executor::new(store).execute(
+                &SetDossierGenre {
+                    subject: FollowUpSubject::Opportunity(opportunity_id),
+                    name: posted_genre_name.clone(),
+                },
+                &AppState::human_ctx(),
+            )?;
+            Ok(matches!(outcome, Outcome::Applied(assignment) if assignment.created))
         })
         .await;
     match result {
@@ -1318,6 +1748,7 @@ pub async fn fiche_post(
                 contact_id: form.contact_id,
                 contact_revision: form.contact_revision,
             };
+            let genre = load_genre_field(&state, &dossier, Some(&posted_genre_name), false).await;
             page(
                 &headers,
                 gens::fiche_page(
@@ -1328,11 +1759,46 @@ pub async fn fiche_post(
                         address: None,
                         banner: Some(e.to_string()),
                     },
+                    &genre,
                 ),
             )
             .into_response()
         }
-        Some(Ok(())) => {
+        Some(Ok(true)) => {
+            let rendered = state
+                .with_store(|store| -> Result<_, AppError> {
+                    let dossier = person(store.connection(), &id.to_string(), today)?;
+                    let client = client_by_id(store.connection(), id)?.ok_or_else(|| {
+                        AppError::from(griffe_core::clients::ClientError::NotFound(id))
+                    })?;
+                    let contact = list_contacts(store.connection(), id)?.into_iter().next();
+                    let values = fiche_values_from(&client, contact.as_ref());
+                    let genre = gens::genre_field(store, &dossier, None, true)?;
+                    let href = format!("{}/fiche", person_href(&dossier.name));
+                    let markup = gens::fiche_page(
+                        &dossier,
+                        &values,
+                        &gens::FicheErrors {
+                            who: None,
+                            address: None,
+                            banner: None,
+                        },
+                        &genre,
+                    );
+                    Ok((href, markup))
+                })
+                .await;
+            match rendered {
+                None => locked(&headers).into_response(),
+                Some(Err(e)) => page(
+                    &headers,
+                    gens::dossier_markup(&dossier, today, Some(&e.to_string())),
+                )
+                .into_response(),
+                Some(Ok((href, markup))) => with_push(&headers, &href, markup),
+            }
+        }
+        Some(Ok(false)) => {
             let rendered = state
                 .with_store(|store| -> Result<_, AppError> {
                     let dossier = person(store.connection(), &id.to_string(), today)?;
