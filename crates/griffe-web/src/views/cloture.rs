@@ -10,6 +10,7 @@
 use griffe_core::app::AppError;
 use griffe_core::closing::{
     ClosingChecklist, ClosingPhase, ClosingStep, ClosingStepKey, GLOSSARY, StepStatus,
+    closing_target,
 };
 use griffe_core::domain::Money;
 use griffe_core::domain::Side;
@@ -18,7 +19,6 @@ use griffe_core::fec::{FecCheck, FecSeverity};
 use griffe_core::fiscal_year::{FiscalYearRecord, list_fiscal_years};
 use griffe_core::ledger::{BalanceSheet, TrialBalance};
 use griffe_core::opening_balance::OpeningBalanceRecord;
-use griffe_core::opening_balance::opening_balance;
 use griffe_core::store::Store;
 use maud::{Markup, html};
 
@@ -58,38 +58,17 @@ fn fiscal_year_end_of(store: &Store) -> FiscalYearEnd {
         .unwrap_or(FiscalYearEnd::CALENDAR)
 }
 
-/// Pré-remplit la période à clore (lot 36) : celle qui **suit le dernier exercice clos** dans
-/// l'application (lendemain de sa fin, un an moins un jour), sinon celle qui **s'ouvre sur le
-/// bilan d'ouverture** (à sa date, jusqu'à la clôture récurrente suivante), sinon le dernier
-/// exercice écoulé d'après le profil — le geste le plus probable est de clore l'exercice qui
-/// vient de se terminer, pas celui en cours, et jamais un exercice qui laisserait un trou.
+/// Pré-remplit la période à clore : la même cible que la lettre « Clore »
+/// ([`closing_target`]). En cas d'erreur de lecture, le dernier exercice écoulé d'après le
+/// profil.
 pub fn default_close_values(store: &Store, today: time::Date) -> CloseFormValues {
     let fiscal_year_end = fiscal_year_end_of(store);
-    let after_last_closed = list_fiscal_years(store.connection())
-        .ok()
-        .and_then(|years| years.iter().map(|y| y.ends_on).max())
-        .and_then(|end| end.next_day())
-        .map(|start| {
-            let end = fiscal_year_end.containing(start).end();
-            let end = if end <= start {
-                fiscal_year_end
-                    .containing(start.saturating_add(time::Duration::days(1)))
-                    .end()
-            } else {
-                end
-            };
-            (start, end)
+    let (starts_on, ends_on) = closing_target(store.connection(), today)
+        .map(|target| (target.exercise.start(), target.exercise.end()))
+        .unwrap_or_else(|_| {
+            let previous = fiscal_year_end.previous(fiscal_year_end.current(today));
+            (previous.start(), previous.end())
         });
-    let from_opening = || {
-        opening_balance(store.connection()).ok().flatten().map(|o| {
-            let start = o.balance.opens_on;
-            (start, fiscal_year_end.containing(start).end())
-        })
-    };
-    let (starts_on, ends_on) = after_last_closed.or_else(from_opening).unwrap_or_else(|| {
-        let previous = fiscal_year_end.previous(fiscal_year_end.current(today));
-        (previous.start(), previous.end())
-    });
     CloseFormValues {
         starts_on: format_date(starts_on),
         ends_on: format_date(ends_on),

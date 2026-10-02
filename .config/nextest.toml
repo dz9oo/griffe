@@ -8,6 +8,9 @@ slow-timeout = { period = "60s", terminate-after = 3 }
 leak-timeout = "2s"
 
 [profile.ci]
+# Défaut nextest : s'arrêter au premier échec. Ici on joue toute la suite,
+# pour qu'un snapshot périmé ne cache pas les suivants.
+fail-fast = false
 slow-timeout = { period = "60s", terminate-after = 2 }
 leak-timeout = "2s"
 

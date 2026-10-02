@@ -2,6 +2,12 @@
 
 Ce qui change pour qui se sert de Griffe. Une section par version publiée.
 
+## 0.3.4
+
+- La fenêtre affiche son numéro, à côté de l'état du coffre, et sous la carte quand le coffre est verrouillé ou à créer.
+- Au 1er octobre, la TVA de septembre reste à déclarer. Elle ne disparaît pas parce que l'exercice suivant a commencé.
+- Tant que l'exercice fini n'est pas arrêté, le jour le rappelle et la société le dit. On arrête les comptes depuis ce parcours. Une fois l'exercice clos, le rappel disparaît.
+
 ## 0.3.3
 
 - Le jour place les conversations et les gestes côte à côte quand la fenêtre est assez large, et les empile sinon.

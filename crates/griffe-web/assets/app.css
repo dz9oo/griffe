@@ -175,7 +175,9 @@ button { font-family: inherit; color: inherit; cursor: pointer; background: none
   gap: 12px;
   flex-wrap: wrap;
 }
+.foot-status { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .foot-actions { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.app-version { font-size: 12px; color: var(--ink-2); }
 .foot .quiet {
   border: 0;
   padding: 4px 8px;
@@ -932,6 +934,8 @@ td.num { text-align: right; }
 .palette-item:hover, .palette-item.sel { background: var(--seal-soft); color: var(--seal); }
 
 .auth-shell { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }
+.auth-column { width: 400px; max-width: 100%; }
+.auth-column .app-version { display: block; margin-top: 8px; }
 .auth-card { width: 400px; max-width: 100%; padding: 8px 0 28px; }
 .auth-brand {
   font-family: var(--serif);

@@ -128,13 +128,25 @@ fn home_markup(home: &SocietyHome, today: Date, papers_sub: &str) -> Markup {
             None => "Aucune échéance dans l'horizon.".to_string(),
         },
     };
-    let closing_sub = match (home.closing.days_left, home.closing.unmatched) {
-        (Some(days), 0) => format!("Dans {days} jours"),
-        (Some(days), 1) => format!("Dans {days} jours · 1 mouvement à ranger d'abord"),
-        (Some(days), n) => format!("Dans {days} jours · {n} mouvements à ranger d'abord"),
-        (None, 0) => "Le parcours, en phrases.".into(),
-        (None, 1) => "1 mouvement à ranger d'abord".into(),
-        (None, n) => format!("{n} mouvements à ranger d'abord"),
+    let closing_sub = if home.closing.elapsed {
+        let base = format!(
+            "L'exercice clos le {} est à arrêter",
+            format_date_fr(home.closing.ends_on)
+        );
+        match home.closing.unmatched {
+            0 => base,
+            1 => format!("{base} · 1 mouvement à ranger d'abord"),
+            n => format!("{base} · {n} mouvements à ranger d'abord"),
+        }
+    } else {
+        match (home.closing.days_left, home.closing.unmatched) {
+            (Some(days), 0) => format!("Dans {days} jours"),
+            (Some(days), 1) => format!("Dans {days} jours · 1 mouvement à ranger d'abord"),
+            (Some(days), n) => format!("Dans {days} jours · {n} mouvements à ranger d'abord"),
+            (None, 0) => "Le parcours, en phrases.".into(),
+            (None, 1) => "1 mouvement à ranger d'abord".into(),
+            (None, n) => format!("{n} mouvements à ranger d'abord"),
+        }
     };
     let releve_sub = match home.unmatched {
         0 => "Tout est traité.".to_string(),
@@ -223,6 +235,18 @@ fn current_account_block(acc: &CurrentAccount, with_moves: bool) -> Markup {
 }
 
 fn identity_lede(id: &IdentityShort) -> String {
+    if let Some(on) = id.unclosed_on {
+        let form = id.legal_form.as_deref().unwrap_or("La société");
+        let cap = id
+            .capital
+            .filter(|c| *c != Money::ZERO)
+            .map(|c| format!(" au capital de {c}"))
+            .unwrap_or_default();
+        return format!(
+            "{form}{cap}. L'exercice clos le {} n'est pas arrêté.",
+            format_date_fr(on)
+        );
+    }
     match (&id.legal_form, id.capital, id.year_end, id.days_to_year_end) {
         (Some(form), capital, Some(end), Some(days)) => {
             let cap = capital
@@ -1154,15 +1178,35 @@ pub fn closing(store: &Store, today: Date) -> Result<Markup, AppError> {
     Ok(closing_markup(&story, today))
 }
 
-fn closing_markup(story: &ClosingStory, today: Date) -> Markup {
-    let lede = match story.days_left {
-        Some(days) if days > 0 => format!(
-            "{} jours. On ne clôt pas aujourd'hui. On range, on attend, on décide.",
-            french_days(days)
-        ),
-        Some(_) => "L'exercice est écoulé. On peut arrêter les comptes.".into(),
-        None => "Le parcours, en phrases.".into(),
+fn closing_lede(story: &ClosingStory) -> String {
+    let mut lede = if story.elapsed {
+        format!(
+            "L'exercice du {} au {} est écoulé. On peut arrêter les comptes.",
+            format_date_fr(story.starts_on),
+            format_date_fr(story.ends_on)
+        )
+    } else {
+        match story.days_left {
+            Some(days) if days > 0 => format!(
+                "{} jours. On ne clôt pas aujourd'hui. On range, on attend, on décide.",
+                french_days(days)
+            ),
+            Some(_) => "L'exercice est écoulé. On peut arrêter les comptes.".into(),
+            None => "Le parcours, en phrases.".into(),
+        }
     };
+    if let Some(end) = story.outside_end {
+        lede.push(' ');
+        lede.push_str(&format!(
+            "L'exercice clos le {} commence avant le bilan d'ouverture : il n'est pas dans ce coffre.",
+            format_date_fr(end)
+        ));
+    }
+    lede
+}
+
+fn closing_markup(story: &ClosingStory, today: Date) -> Markup {
+    let lede = closing_lede(story);
     html! {
         div class="letter" data-view=(ViewId::Societe.slug()) {
             (back())
@@ -1176,6 +1220,14 @@ fn closing_markup(story: &ClosingStory, today: Date) -> Markup {
                             (beat_when_label(beat, today))
                         }
                         span { (beat_text(beat)) }
+                        @if beat.when == BeatWhen::Today && matches!(beat.kind, BeatKind::CloseAccounts { .. }) {
+                            div class="row-actions" {
+                                button class="seal" type="button"
+                                    hx-get="/cloture/new" hx-target="#panel" hx-swap="innerHTML" {
+                                    "Arrêter les comptes"
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1224,7 +1276,16 @@ fn beat_text(beat: &ClosingBeat) -> String {
         }
         BeatKind::Receipts { missing: true } => "Justificatifs manquants".into(),
         BeatKind::Receipts { missing: false } => "Justificatifs de l'exercice".into(),
-        BeatKind::CloseAccounts { .. } => "Arrêter les comptes — pas avant".into(),
+        BeatKind::CloseAccounts { ends_on } => {
+            if beat.when == BeatWhen::Later {
+                format!(
+                    "Arrêter les comptes — pas avant le {}",
+                    format_date_fr(*ends_on)
+                )
+            } else {
+                "Arrêter les comptes".into()
+            }
+        }
         BeatKind::ThenApproveAndFile => "Décider de l'affectation, faire le PV, déposer".into(),
     }
 }

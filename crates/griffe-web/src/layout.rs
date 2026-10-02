@@ -309,7 +309,10 @@ pub fn page(active: ViewId, vault_label: &str, content: Markup) -> Markup {
                         (audit_rail())
                     }
                     footer class="foot" {
-                        span class="lock" { span class="dot" {} (vault_label) }
+                        span class="foot-status" {
+                            span class="lock" { span class="dot" {} (vault_label) }
+                            (app_version())
+                        }
                         span class="foot-actions" {
                             button class="quiet" type="button" id="audit-toggle" title="Afficher ou masquer le journal d'audit" { "Journal" }
                             a class="quiet" id="aide-link" href="/aide"
@@ -328,6 +331,13 @@ pub fn page(active: ViewId, vault_label: &str, content: Markup) -> Markup {
     }
 }
 
+/// Numéro compilé dans ce binaire (`Cargo.toml` du workspace). Le même que `griffe --version`.
+fn app_version() -> Markup {
+    html! {
+        span class="app-version" { "Griffe " (env!("CARGO_PKG_VERSION")) }
+    }
+}
+
 /// Coque nue pour `/unlock` et `/setup` : ni onglets, ni rail d'audit, ni palette ⌘K — et
 /// surtout pas `app.js`, qui suppose leur présence (`#palette-overlay`/`#palette-input`) et
 /// pilote le signal d'activité qui n'a pas de sens tant que le coffre n'est pas ouvert.
@@ -342,7 +352,12 @@ pub fn bare_page(title: &str, content: Markup) -> Markup {
                 link rel="stylesheet" href="/assets/app.css";
             }
             body {
-                div class="auth-shell" { (content) }
+                div class="auth-shell" {
+                    div class="auth-column" {
+                        (content)
+                        (app_version())
+                    }
+                }
             }
         }
     }

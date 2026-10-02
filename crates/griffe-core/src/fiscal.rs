@@ -1061,6 +1061,34 @@ fn push_simplified_vat_deadlines(
     Ok(())
 }
 
+/// Première période CA3 à retenir quand l'exercice précédent était encore au réel simplifié.
+///
+/// La CA12 couvre tout jusqu'à la clôture : la première CA3 de l'exercice qui passe au réel
+/// normal ne déclare rien d'antérieur à son début, sinon le trimestre qui chevauche une clôture
+/// décalée serait déclaré deux fois. Le réel normal, mensuel ou trimestriel, n'a pas cette borne :
+/// la CA3 déposée en octobre déclare septembre, même si l'exercice suivant est déjà ouvert.
+///
+/// # Panics
+///
+/// Ne panique jamais : un début d'exercice a un mois valide.
+pub(crate) fn ca3_earliest_period(
+    vat_regime: Option<VatRegime>,
+    previous: FiscalYear,
+    current: FiscalYear,
+) -> Option<Month> {
+    if vat_regime != Some(VatRegime::RealSimplified) || simplified_regime_applies_to(current) {
+        return None;
+    }
+    if !simplified_regime_applies_to(previous) {
+        return None;
+    }
+    let start = current.start();
+    Some(
+        Month::new(start.year(), u8::from(start.month()))
+            .expect("un début d'exercice a un mois valide"),
+    )
+}
+
 /// Calendrier fiscal et social chiffré sur les 12 prochains mois à partir de `today`, dérivé de la
 /// date de clôture d'exercice du profil (année civile à défaut) et enrichi des montants
 /// calculables. Chaque échéance retournée a `due_on >= today`.
@@ -1117,17 +1145,9 @@ pub fn fiscal_calendar(conn: &Connection, today: Date) -> Result<Vec<FiscalDeadl
     // CA12), s'il commence dans l'horizon.
     let scheme = VatFilingScheme::for_exercise(vat_regime, current);
     let ca3 = match scheme.ca3_periodicity() {
-        // Lot 41 : quand l'exercice précédent était encore au réel simplifié (sa CA12 E couvre
-        // tout jusqu'à sa clôture), la première CA3 ne déclare rien d'antérieur au début de
-        // l'exercice courant — sinon le trimestre qui chevauche la clôture décalée serait
-        // déclaré deux fois (constat de l'audit sur une clôture au 30/09).
         Some(periodicity) => Some((
             periodicity,
-            simplified_regime_applies_to(previous).then(|| {
-                let start = current.start();
-                Month::new(start.year(), u8::from(start.month()))
-                    .expect("un début d'exercice a un mois valide")
-            }),
+            ca3_earliest_period(vat_regime, previous, current),
         )),
         None if scheme == VatFilingScheme::Simplified => {
             let next = fye.containing(add_months(current.end(), 1));
@@ -2317,5 +2337,28 @@ mod tests {
         let note = ca3.note.as_deref().unwrap();
         assert!(note.contains("2027-07"), "{note}");
         assert!(!note.contains("2027-04"), "{note}");
+    }
+
+    #[test]
+    fn a_monthly_ca3_still_declares_september_on_the_day_the_next_exercise_opens() {
+        // Clôture au 30/09, réel normal mensuel : au 1/10/2026 l'exercice qui commence
+        // n'avale pas la CA3 de septembre, due en octobre.
+        let (mut store, _client_id) = fresh_store("sept-ca3");
+        let mut profile = calendar_profile();
+        profile.fiscal_year_end = Some(FiscalYearEnd::new(9, 30).unwrap());
+        profile.vat_regime = Some(VatRegime::RealNormalMonthly);
+        Executor::new(&mut store)
+            .execute(&profile, &ExecutionContext::new(Actor::Human, false))
+            .unwrap();
+        let today = date(2026, TimeMonth::October, 1);
+        let calendar = fiscal_calendar(store.connection(), today).unwrap();
+        let ca3 = calendar
+            .iter()
+            .find(|d| d.kind == FiscalDeadlineKind::Ca3)
+            .expect("la CA3 de septembre est due en octobre");
+        assert_eq!(ca3.period_key, "2026-09");
+        assert_eq!(ca3.due_on.year(), 2026);
+        assert_eq!(ca3.due_on.month(), TimeMonth::October);
+        assert!(ca3.due_on >= today);
     }
 }

@@ -1540,6 +1540,18 @@ mod tests {
 
     #[test]
     fn opening_an_older_schema_writes_pre_migrate_backup_then_migrates() {
+        let head_path = temp_db_path("pre-migrate-head");
+        let head_store = create(&head_path, "s3cret");
+        let head: i64 = head_store
+            .connection()
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        drop(head_store);
+        assert!(
+            head > 32,
+            "le schéma 32 doit rester un coffre ancien, tête actuelle {head}"
+        );
+
         let db_path = temp_db_path("pre-migrate-ok");
         let mut store = create(&db_path, "s3cret");
         migrations::migrations()
@@ -1552,7 +1564,7 @@ mod tests {
             .connection()
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 33);
+        assert_eq!(version, head);
         drop(reopened);
 
         let backups = db_path.with_file_name("backups");

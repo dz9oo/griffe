@@ -491,6 +491,8 @@ pub enum MonthEventKind {
     MissionEnd,
     StateDuty,
     YearEnd,
+    /// L'exercice qui vient de finir est à arrêter. Posé sur aujourd'hui, tant qu'il n'est pas clos.
+    CloseExercise,
 }
 
 impl MonthEventKind {
@@ -498,7 +500,7 @@ impl MonthEventKind {
     pub const fn mark(self) -> DayMark {
         match self {
             Self::Meeting => DayMark::Meet,
-            Self::StateDuty | Self::YearEnd => DayMark::Legal,
+            Self::StateDuty | Self::YearEnd | Self::CloseExercise => DayMark::Legal,
             Self::FollowUp | Self::InvoiceDue | Self::Milestone | Self::MissionEnd => DayMark::Dot,
         }
     }
@@ -570,6 +572,7 @@ pub fn day_month(conn: &Connection, month: Month, today: Date) -> Result<MonthVi
     collect_mission_events(conn, month, &mut events)?;
     collect_fiscal_events(conn, month, today, &mut events)?;
     collect_year_end(conn, month, &mut events)?;
+    collect_close_due(conn, month, today, &mut events)?;
 
     events.sort_by(|a, b| a.on.cmp(&b.on).then(a.title.cmp(&b.title)));
 
@@ -792,6 +795,39 @@ fn collect_year_end(
     Ok(())
 }
 
+/// Tant que l'exercice écoulé n'est pas clos, un événement légal reste sur aujourd'hui
+/// (l'agenda ne montre que les dates ≥ aujourd'hui : le poser le lendemain de la fin le
+/// ferait disparaître dès le surlendemain).
+fn collect_close_due(
+    conn: &Connection,
+    month: Month,
+    today: Date,
+    events: &mut Vec<MonthEvent>,
+) -> Result<(), AppError> {
+    if company_profile(conn)?
+        .and_then(|p| p.fiscal_year_end)
+        .is_none()
+    {
+        return Ok(());
+    }
+    let target = crate::closing::closing_target(conn, today)?;
+    if !target.elapsed || month_of(today) != month {
+        return Ok(());
+    }
+    let end = target.exercise.end();
+    events.push(MonthEvent {
+        on: today,
+        kind: MonthEventKind::CloseExercise,
+        deadline: None,
+        period_key: Some(format_date(end)),
+        party: None,
+        title: format_date(end),
+        amount: None,
+        target: MonthTarget::Closing,
+    });
+    Ok(())
+}
+
 fn mission_tracks(conn: &Connection, month: Month) -> Result<Vec<MissionTrack>, AppError> {
     let missions = list_missions_with(
         conn,
@@ -892,6 +928,8 @@ mod tests {
         MissionKind, OpeningBalanceLine, Probability, Siren, VatRate, VatRegime,
     };
     use crate::expenses::RecordExpense;
+    use crate::fiscal::FiscalDeadlineKind;
+    use crate::fiscal_year::CloseFiscalYear;
     use crate::follow_up::SetFollowUpSender;
     use crate::missions::{CloseMission, CreateMission};
     use crate::opening_balance::RecordOpeningBalance;
@@ -1561,7 +1599,10 @@ mod tests {
     fn unmatched_debits_helper_still_counts_only_debits() {
         // Filet : day_gestures compte tous les mouvements non lus (crédits compris), pas
         // seulement les débits — un virement client sans facture est aussi « à ranger ».
+        // Le geste n'est posé qu'une fois le coffre configuré.
         let mut store = test_store("unmatched");
+        set_profile(&mut store);
+        set_opening(&mut store, 100_000);
         import_txs(
             &mut store,
             &[
@@ -1589,5 +1630,88 @@ mod tests {
             GestureSource::BankStatement { unmatched, .. } => assert_eq!(unmatched, 2),
             _ => panic!(),
         }
+    }
+
+    #[test]
+    fn october_keeps_september_vat_and_the_close_until_the_year_is_closed() {
+        let mut store = test_store("oct-close");
+        set_profile(&mut store);
+        set_opening(&mut store, 100_000);
+        let october = Month::new(2026, 10).unwrap();
+        let first = date(2026, TimeMonth::October, 1);
+        let view = day_month(store.connection(), october, first).unwrap();
+        let ca3 = view
+            .events
+            .iter()
+            .find(|e| {
+                e.kind == MonthEventKind::StateDuty
+                    && e.deadline == Some(FiscalDeadlineKind::Ca3)
+                    && e.period_key.as_deref() == Some("2026-09")
+            })
+            .expect("CA3 de septembre");
+        assert_eq!(ca3.on.month(), TimeMonth::October);
+        assert!(ca3.on >= first);
+        let close = view
+            .events
+            .iter()
+            .find(|e| e.kind == MonthEventKind::CloseExercise)
+            .expect("clôture due");
+        assert_eq!(close.on, first);
+        assert_eq!(close.period_key.as_deref(), Some("2026-09-30"));
+        assert_eq!(close.target, MonthTarget::Closing);
+        assert_eq!(close.kind.mark(), DayMark::Legal);
+
+        let mid = date(2026, TimeMonth::October, 15);
+        let later = day_month(store.connection(), october, mid).unwrap();
+        let close = later
+            .events
+            .iter()
+            .find(|e| e.kind == MonthEventKind::CloseExercise)
+            .expect("toujours due le 15");
+        assert_eq!(close.on, mid);
+
+        let september = Month::new(2026, 9).unwrap();
+        let sept = day_month(
+            store.connection(),
+            september,
+            date(2026, TimeMonth::September, 5),
+        )
+        .unwrap();
+        assert!(
+            sept.events
+                .iter()
+                .any(|e| e.kind == MonthEventKind::YearEnd && e.on.day() == 30)
+        );
+        assert!(
+            sept.events
+                .iter()
+                .all(|e| e.kind != MonthEventKind::CloseExercise)
+        );
+
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &CloseFiscalYear {
+                        starts_on: date(2025, TimeMonth::October, 1),
+                        ends_on: date(2026, TimeMonth::September, 30),
+                        legal_reserve: Money::ZERO,
+                        dividends: Money::ZERO,
+                        carry_back: false,
+                        today: Some(first),
+                        non_deductible_expenses: Money::ZERO,
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        let after = day_month(store.connection(), october, first).unwrap();
+        assert!(
+            after
+                .events
+                .iter()
+                .all(|e| e.kind != MonthEventKind::CloseExercise),
+            "une fois clos, l'événement disparaît : {:?}",
+            after.events
+        );
     }
 }

@@ -158,6 +158,7 @@ expression: "json!({\n    \"tool_names\": names, \"invoice_emit_input_schema\":\
     "prospect.orphans",
     "prospect.pipeline",
     "prospect.references",
+    "prospect.reopen",
     "prospect.show",
     "prospect.unarchive",
     "prospect.update",

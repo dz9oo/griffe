@@ -204,6 +204,7 @@ fn event_kind_fr(kind: MonthEventKind) -> &'static str {
         MonthEventKind::MissionEnd => "fin de mission",
         MonthEventKind::StateDuty => "État",
         MonthEventKind::YearEnd => "exercice",
+        MonthEventKind::CloseExercise => "clôture",
     }
 }
 

@@ -9,7 +9,7 @@ use griffe_core::day::{
 };
 use griffe_core::domain::{
     FiscalYearEnd, FollowUpSubject, Money, Month, SnoozePreset, format_date, format_date_fr,
-    snooze_date,
+    parse_date, snooze_date,
 };
 use griffe_core::people::{PeopleList, people_list};
 use griffe_core::setup::setup_status;
@@ -676,6 +676,14 @@ fn agenda_title(event: &MonthEvent, vat_scheme: VatFilingScheme) -> String {
             format!("{label}{amount}")
         }
         MonthEventKind::YearEnd => "Dernier jour — on clôt le lendemain".into(),
+        MonthEventKind::CloseExercise => {
+            let end = event
+                .period_key
+                .as_deref()
+                .and_then(|key| parse_date(key).ok())
+                .unwrap_or(event.on);
+            format!("Clore l'exercice clos le {}", format_date_fr(end))
+        }
         MonthEventKind::MissionEnd => {
             let who = event.party.as_deref().unwrap_or("la mission");
             format!("{who} · le forfait s'arrête")
