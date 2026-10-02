@@ -8,7 +8,8 @@ use crate::app::{AppError, Command};
 use crate::company::{CompanyProfile, company_profile};
 use crate::domain::{
     self, EmlDraft, FollowUpEvent, FollowUpEventId, FollowUpFact, FollowUpKind, FollowUpSubject,
-    InteractionKind, TemplateContext, derive_cursor, parse_email, render_eml, render_template,
+    InteractionKind, TemplateContext, derive_cursor_with, parse_email, phrase_from_editor,
+    render_eml, render_template,
 };
 use crate::prospection::{LogInteraction, opportunity_by_id};
 
@@ -35,6 +36,61 @@ impl Command for SetFollowUpSender {
             .filter(|s| !s.is_empty());
         row::upsert_settings(conn, &email, name)?;
         Ok(())
+    }
+}
+
+/// Réécrit le nom, le sujet et le corps d'un moment. L'écart et l'ordre ne bougent pas.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PhraseRewrite {
+    pub key: String,
+    pub label: String,
+    pub subject: String,
+    pub body: String,
+    pub revision: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RewriteProspectPhrases {
+    pub phrases: Vec<PhraseRewrite>,
+}
+
+impl Command for RewriteProspectPhrases {
+    type Output = Vec<super::row::ProspectPhrase>;
+    const NAME: &'static str = "follow_up.rewrite_phrases";
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        let current = row::list_phrases(conn)?;
+        for edit in &self.phrases {
+            let label = edit.label.trim();
+            let subject = phrase_from_editor(edit.subject.trim());
+            let body = phrase_from_editor(&edit.body);
+            if label.is_empty() {
+                return Err(FollowUpError::EmptyMoment.into());
+            }
+            if subject.trim().is_empty() {
+                return Err(FollowUpError::EmptySubject.into());
+            }
+            if body.trim().is_empty() {
+                return Err(FollowUpError::EmptyLetter.into());
+            }
+            let Some(row) = current.iter().find(|phrase| phrase.key == edit.key) else {
+                return Err(FollowUpError::UnknownPhrase.into());
+            };
+            let same = row.label == label && row.subject == subject && row.body == body;
+            if row.revision != edit.revision {
+                if same {
+                    continue;
+                }
+                return Err(FollowUpError::StalePhrases.into());
+            }
+            if same {
+                continue;
+            }
+            if !row::update_phrase(conn, &edit.key, label, &subject, &body, edit.revision)? {
+                return Err(FollowUpError::StalePhrases.into());
+            }
+        }
+        row::list_phrases(conn)
     }
 }
 
@@ -68,14 +124,14 @@ impl Command for PrepareFollowUp {
         if loaded.cursor.exhausted {
             return Err(FollowUpError::Exhausted.into());
         }
-        let step = loaded.cursor.step.ok_or(FollowUpError::Exhausted)?;
+        let step = loaded.cursor.step.clone().ok_or(FollowUpError::Exhausted)?;
         let (from_name, from_email) = sender(conn)?;
         let (to_name, to_email) = recipient(&loaded)?;
         let ctx = loaded.template_context(conn)?;
         let subject_line = optional_letter_part(self.subject_line.clone())
-            .unwrap_or_else(|| render_template(step.subject, &ctx));
+            .unwrap_or_else(|| render_template(&step.subject, &ctx));
         let body = optional_letter_part(self.body.clone())
-            .unwrap_or_else(|| render_template(step.body, &ctx));
+            .unwrap_or_else(|| render_template(&step.body, &ctx));
         let event_id = FollowUpEventId::new();
         let at = OffsetDateTime::now_utc();
         let draft = render_eml(
@@ -285,7 +341,7 @@ fn optional_letter_part(value: Option<String>) -> Option<String> {
 
 fn last_draft_letter(
     events: &[FollowUpEvent],
-    cursor: domain::FollowUpCursor,
+    cursor: &domain::FollowUpCursor,
 ) -> Option<(String, String)> {
     if !cursor.drafted {
         return None;
@@ -309,12 +365,12 @@ fn append_advancing(
     if loaded.cursor.exhausted {
         return Err(FollowUpError::Exhausted.into());
     }
-    let step = loaded.cursor.step;
+    let step = loaded.cursor.step.clone();
     let mut interaction_id = None;
     if fact == FollowUpFact::MarkedSent
         && let FollowUpSubject::Opportunity(oid) = subject
     {
-        let note = step.map_or_else(|| "lettre".to_string(), |s| s.label.to_string());
+        let note = step.map_or_else(|| "lettre".to_string(), |s| s.label.clone());
         let id = LogInteraction {
             opportunity_id: oid,
             kind: InteractionKind::Email,
@@ -325,7 +381,7 @@ fn append_advancing(
         interaction_id = Some(id);
     }
     let (rendered_subject, rendered_body) = if fact == FollowUpFact::MarkedSent {
-        let draft = last_draft_letter(&loaded.events, loaded.cursor);
+        let draft = last_draft_letter(&loaded.events, &loaded.cursor);
         (
             subject_override.or_else(|| draft.as_ref().map(|(s, _)| s.clone())),
             body_override.or_else(|| draft.as_ref().map(|(_, b)| b.clone())),
@@ -384,7 +440,8 @@ fn project_opportunity(
     let opportunity = opportunity_by_id(conn, id)?.ok_or(FollowUpError::OpportunityInactive)?;
     let events = row::events_for(conn, subject)?;
     let anchor = opportunity.next_action_at.unwrap_or(today);
-    let cursor = derive_cursor(FollowUpKind::Prospect, &events, anchor, today);
+    let steps = row::phrase_steps(conn)?;
+    let cursor = derive_cursor_with(FollowUpKind::Prospect, &steps, &events, anchor, today);
     crate::prospection::set_next_action_at(conn, id, cursor.due_on)?;
     Ok(())
 }

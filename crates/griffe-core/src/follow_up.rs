@@ -9,14 +9,15 @@ mod queries;
 mod row;
 
 pub use commands::{
-    MarkFollowUpSent, PrepareFollowUp, PreparedFollowUp, RetractLastFollowUp, SetFollowUpDate,
-    SetFollowUpSender, SkipFollowUpStep, SnoozeFollowUp,
+    MarkFollowUpSent, PhraseRewrite, PrepareFollowUp, PreparedFollowUp, RetractLastFollowUp,
+    RewriteProspectPhrases, SetFollowUpDate, SetFollowUpSender, SkipFollowUpStep, SnoozeFollowUp,
 };
 pub use error::FollowUpError;
 pub use queries::{
     CardStatus, FollowUpCard, HistoryItem, card_for, events_for, follow_up_board, follow_up_queue,
-    follow_up_sender,
+    follow_up_sender, prospect_phrases,
 };
+pub use row::ProspectPhrase;
 
 /// Pose une frontière de cadence sans effacer les lettres déjà classées.
 ///
@@ -51,8 +52,8 @@ mod tests {
     use crate::app::{Actor, AppError, ExecutionContext, Executor, Outcome};
     use crate::clients::{CreateClient, CreateContact};
     use crate::domain::{
-        ClientId, FollowUpFact, FollowUpKind, FollowUpSubject, InteractionKind, Money, Probability,
-        VatRate,
+        ClientId, FollowUpFact, FollowUpKind, FollowUpSubject, InteractionKind, Money,
+        PROSPECT_CADENCE, Probability, VatRate,
     };
     use crate::people::{HistoryKind, person};
     use crate::prospection::{CreateOpportunity, list_interactions, opportunity_by_id};
@@ -220,6 +221,200 @@ mod tests {
         let interactions = list_interactions(store.connection(), oid).unwrap();
         assert_eq!(interactions.len(), 1);
         assert_eq!(interactions[0].kind, InteractionKind::Email);
+    }
+
+    #[test]
+    fn a_fresh_vault_seeds_the_four_prospect_phrases() {
+        let store = test_store("seed-phrases");
+        let phrases = prospect_phrases(store.connection()).unwrap();
+        assert_eq!(phrases.len(), PROSPECT_CADENCE.len());
+        for (phrase, step) in phrases.iter().zip(PROSPECT_CADENCE) {
+            assert_eq!(phrase.key, step.key);
+            assert_eq!(phrase.label, step.label);
+            assert_eq!(phrase.offset_days, step.offset_days);
+            assert_eq!(phrase.subject, step.subject);
+            assert_eq!(phrase.body, step.body);
+            assert_eq!(phrase.revision, 1);
+        }
+    }
+
+    #[test]
+    fn rewriting_a_phrase_changes_the_next_unopened_letter_only() {
+        let mut store = test_store("rewrite-phrase");
+        let today = date(2026, Month::September, 5);
+        let (_, filed_subject) = seed_opportunity(&mut store, today);
+        let (_, drafted_subject) = seed_opportunity(&mut store, today);
+        let (_, fresh_subject) = seed_opportunity(&mut store, today);
+        set_sender(&mut store);
+        Executor::new(&mut store)
+            .execute(
+                &PrepareFollowUp {
+                    subject: filed_subject,
+                    today,
+                    subject_line: None,
+                    body: None,
+                },
+                &human(),
+            )
+            .unwrap();
+        Executor::new(&mut store)
+            .execute(
+                &MarkFollowUpSent {
+                    subject: filed_subject,
+                    today,
+                    subject_line: None,
+                    body: None,
+                },
+                &human(),
+            )
+            .unwrap();
+        let filed_before = events_for(store.connection(), filed_subject)
+            .unwrap()
+            .into_iter()
+            .find(|event| event.fact == FollowUpFact::MarkedSent)
+            .unwrap()
+            .rendered_body
+            .unwrap();
+        assert!(filed_before.contains("Je me permets de revenir"));
+        Executor::new(&mut store)
+            .execute(
+                &PrepareFollowUp {
+                    subject: drafted_subject,
+                    today,
+                    subject_line: None,
+                    body: None,
+                },
+                &human(),
+            )
+            .unwrap();
+        let hello = prospect_phrases(store.connection())
+            .unwrap()
+            .into_iter()
+            .find(|phrase| phrase.key == "hello")
+            .unwrap();
+        let Outcome::Applied(_) = Executor::new(&mut store)
+            .execute(
+                &RewriteProspectPhrases {
+                    phrases: vec![PhraseRewrite {
+                        key: hello.key,
+                        label: hello.label,
+                        subject: hello.subject,
+                        body: "Bonjour {{prenom}},\n\nUn premier mot réécrit.\n".into(),
+                        revision: hello.revision,
+                    }],
+                },
+                &human(),
+            )
+            .unwrap()
+        else {
+            panic!("expected Applied");
+        };
+        let filed_after = events_for(store.connection(), filed_subject)
+            .unwrap()
+            .into_iter()
+            .find(|event| event.fact == FollowUpFact::MarkedSent)
+            .unwrap()
+            .rendered_body
+            .unwrap();
+        assert_eq!(filed_after, filed_before);
+        let drafted = card_for(store.connection(), drafted_subject, today).unwrap();
+        let drafted_body = drafted.preview_body.unwrap();
+        assert!(drafted_body.contains("Je me permets de revenir"));
+        assert!(!drafted_body.contains("réécrit"));
+        let fresh = card_for(store.connection(), fresh_subject, today).unwrap();
+        let fresh_body = fresh.preview_body.unwrap();
+        assert!(fresh_body.contains("Un premier mot réécrit"));
+        assert!(!fresh_body.contains("Je me permets de revenir"));
+    }
+
+    fn hello_phrase(store: &Store) -> ProspectPhrase {
+        prospect_phrases(store.connection())
+            .unwrap()
+            .into_iter()
+            .find(|phrase| phrase.key == "hello")
+            .unwrap()
+    }
+
+    fn rewrite_hello(
+        store: &mut Store,
+        hello: &ProspectPhrase,
+        label: &str,
+        body: &str,
+        revision: i64,
+    ) -> Result<Outcome<Vec<ProspectPhrase>>, AppError> {
+        Executor::new(store).execute(
+            &RewriteProspectPhrases {
+                phrases: vec![PhraseRewrite {
+                    key: hello.key.clone(),
+                    label: label.to_string(),
+                    subject: hello.subject.clone(),
+                    body: body.to_string(),
+                    revision,
+                }],
+            },
+            &human(),
+        )
+    }
+
+    #[test]
+    fn a_stale_revision_is_refused_unless_the_words_are_the_same() {
+        let mut store = test_store("stale-phrase");
+        let hello = hello_phrase(&store);
+        let stale = rewrite_hello(&mut store, &hello, "Autre nom", &hello.body, 0).unwrap_err();
+        assert!(matches!(
+            stale,
+            AppError::Domain(msg) if msg == "Ces phrases ont changé entre-temps. Relis avant d'enregistrer."
+        ));
+        assert_eq!(hello_phrase(&store).revision, 1);
+
+        let Outcome::Applied(_) =
+            rewrite_hello(&mut store, &hello, &hello.label, &hello.body, 99).unwrap()
+        else {
+            panic!("expected Applied");
+        };
+        assert_eq!(hello_phrase(&store).revision, 1);
+
+        let body = "Un mot.\n";
+        let Outcome::Applied(_) =
+            rewrite_hello(&mut store, &hello, "Premier contact", body, hello.revision).unwrap()
+        else {
+            panic!("expected Applied");
+        };
+        let rewritten = hello_phrase(&store);
+        assert_eq!(rewritten.revision, 2);
+        assert_eq!(rewritten.label, "Premier contact");
+        assert_eq!(rewritten.body, body);
+
+        let Outcome::Applied(_) =
+            rewrite_hello(&mut store, &rewritten, "Premier contact", body, 1).unwrap()
+        else {
+            panic!("expected Applied");
+        };
+        assert_eq!(hello_phrase(&store).revision, 2);
+
+        let empty = rewrite_hello(&mut store, &rewritten, "  ", body, 2).unwrap_err();
+        assert!(matches!(
+            empty,
+            AppError::Domain(msg) if msg == "Ce moment n'a pas de nom."
+        ));
+        let unknown = Executor::new(&mut store)
+            .execute(
+                &RewriteProspectPhrases {
+                    phrases: vec![PhraseRewrite {
+                        key: "absent".into(),
+                        label: "Nom".into(),
+                        subject: "Sujet".into(),
+                        body: "Lettre".into(),
+                        revision: 1,
+                    }],
+                },
+                &human(),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            unknown,
+            AppError::Domain(msg) if msg == "Ce moment n'existe pas."
+        ));
     }
 
     #[test]

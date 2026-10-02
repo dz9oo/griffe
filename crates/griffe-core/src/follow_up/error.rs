@@ -36,6 +36,21 @@ pub enum FollowUpError {
 
     #[error("événement de relance introuvable : {0}")]
     EventNotFound(FollowUpEventId),
+
+    #[error("Ce moment n'existe pas.")]
+    UnknownPhrase,
+
+    #[error("Ce moment n'a pas de nom.")]
+    EmptyMoment,
+
+    #[error("Le sujet est vide.")]
+    EmptySubject,
+
+    #[error("La lettre est vide.")]
+    EmptyLetter,
+
+    #[error("Ces phrases ont changé entre-temps. Relis avant d'enregistrer.")]
+    StalePhrases,
 }
 
 impl From<FollowUpError> for AppError {

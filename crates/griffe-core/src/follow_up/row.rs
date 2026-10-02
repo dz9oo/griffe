@@ -1,13 +1,14 @@
 //! Correspondance SQL du journal de relances.
 
 use rusqlite::{Connection, OptionalExtension, Row, params};
+use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
 use crate::app::AppError;
 use crate::domain::{
     self, FollowUpEvent, FollowUpEventId, FollowUpFact, FollowUpSubject, InteractionId, InvoiceId,
-    OpportunityId,
+    OpportunityId, PhraseStep,
 };
 
 fn conv_err(e: impl std::error::Error + Send + Sync + 'static) -> rusqlite::Error {
@@ -155,4 +156,74 @@ pub(super) fn upsert_settings(
         params![email, name, OffsetDateTime::now_utc().format(&Rfc3339)?],
     )?;
     Ok(())
+}
+
+/// Une phrase de prospection, dans l'ordre du coffre.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProspectPhrase {
+    pub key: String,
+    pub position: i64,
+    pub label: String,
+    pub offset_days: i64,
+    pub subject: String,
+    pub body: String,
+    pub revision: i64,
+}
+
+impl ProspectPhrase {
+    #[must_use]
+    pub fn step(&self) -> PhraseStep {
+        PhraseStep {
+            key: self.key.clone(),
+            offset_days: self.offset_days,
+            label: self.label.clone(),
+            subject: self.subject.clone(),
+            body: self.body.clone(),
+        }
+    }
+}
+
+pub(super) fn list_phrases(conn: &Connection) -> Result<Vec<ProspectPhrase>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, position, label, offset_days, subject, body, revision
+           FROM prospect_phrases
+          ORDER BY position ASC, id ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(ProspectPhrase {
+            key: row.get(0)?,
+            position: row.get(1)?,
+            label: row.get(2)?,
+            offset_days: row.get(3)?,
+            subject: row.get(4)?,
+            body: row.get(5)?,
+            revision: row.get(6)?,
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+}
+
+pub(super) fn phrase_steps(conn: &Connection) -> Result<Vec<PhraseStep>, AppError> {
+    Ok(list_phrases(conn)?
+        .iter()
+        .map(ProspectPhrase::step)
+        .collect())
+}
+
+/// `false` si la révision ne correspond plus, ou si le moment n'existe pas.
+pub(super) fn update_phrase(
+    conn: &Connection,
+    key: &str,
+    label: &str,
+    subject: &str,
+    body: &str,
+    revision: i64,
+) -> Result<bool, AppError> {
+    let updated = conn.execute(
+        "UPDATE prospect_phrases
+            SET label = ?1, subject = ?2, body = ?3, revision = revision + 1
+          WHERE id = ?4 AND revision = ?5",
+        params![label, subject, body, key, revision],
+    )?;
+    Ok(updated == 1)
 }

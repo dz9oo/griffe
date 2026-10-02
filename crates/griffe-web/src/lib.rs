@@ -71,6 +71,7 @@ fn people_routes() -> Router<AppState> {
     Router::new()
         .route("/", get(handlers::gens))
         .route("/nouvelle", get(gens::new_get).post(gens::new_post))
+        .route("/phrases", get(gens::phrases_get).post(gens::phrases_post))
         .route("/{reference}", get(gens::show))
         .route(
             "/{reference}/ecrire",

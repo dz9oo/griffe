@@ -4,18 +4,20 @@ use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
 use griffe_core::app::{ExecutionContext, Executor};
-use griffe_core::domain::{FollowUpSubject, SnoozePreset, format_date, snooze_date};
+use griffe_core::domain::{
+    FollowUpSubject, SnoozePreset, format_date, phrase_to_editor, snooze_date,
+};
 use griffe_core::follow_up::{
-    CardStatus, FollowUpCard, MarkFollowUpSent, PrepareFollowUp, RetractLastFollowUp,
-    SetFollowUpDate, SetFollowUpSender, SkipFollowUpStep, SnoozeFollowUp, card_for,
-    follow_up_board, follow_up_queue,
+    CardStatus, FollowUpCard, MarkFollowUpSent, PhraseRewrite, PrepareFollowUp, ProspectPhrase,
+    RetractLastFollowUp, RewriteProspectPhrases, SetFollowUpDate, SetFollowUpSender,
+    SkipFollowUpStep, SnoozeFollowUp, card_for, follow_up_board, follow_up_queue, prospect_phrases,
 };
 use griffe_core::store::Store;
 use time::Date;
 
 use crate::error::CliError;
 use crate::output::{
-    HumanRender, format_outcome, format_outcome_as, format_value, key_values, or_dash,
+    HumanRender, format_json, format_outcome, format_outcome_as, format_value, key_values, or_dash,
 };
 use crate::parsers::parse_date;
 use crate::refs;
@@ -190,6 +192,23 @@ pub enum FollowUpCommand {
         #[arg(long, value_parser = parse_date)]
         today: Option<Date>,
     },
+    /// Les phrases de prospection, dans l'ordre.
+    Phrases,
+    /// Réécrit le nom, le sujet et la lettre d'un moment.
+    Rewrite {
+        /// Identifiant du moment (`hello`, `bump`, `value`, `close`, ou celui affiché en JSON).
+        key: String,
+        #[arg(long)]
+        label: String,
+        #[arg(long)]
+        subject: String,
+        /// Corps. Les mots « le prénom », « le sujet », « le montant », « moi », « la société »
+        /// entre guillemets sont les jetons.
+        #[arg(long)]
+        body: Option<String>,
+        #[arg(long, conflicts_with = "body")]
+        body_file: Option<PathBuf>,
+    },
     /// Annule le dernier geste (envoi, saut, report, brouillon).
     Retract {
         #[arg(value_name = "RÉFÉRENCE")]
@@ -280,6 +299,15 @@ fn resolve_subject(store: &Store, needle: &str) -> Result<FollowUpSubject, CliEr
     refs::resolve_follow_up(store, needle)
 }
 
+fn format_phrase(phrase: &ProspectPhrase) -> String {
+    format!(
+        "{label}\nsujet : {subject}\n{body}",
+        label = phrase.label,
+        subject = phrase_to_editor(&phrase.subject),
+        body = phrase_to_editor(&phrase.body)
+    )
+}
+
 pub fn run(
     cmd: FollowUpCommand,
     store: &mut Store,
@@ -295,6 +323,51 @@ pub fn run(
         FollowUpCommand::Board { today } => {
             let cards = follow_up_board(store.connection(), today_or(today))?;
             Ok(format_value(&cards, json))
+        }
+        FollowUpCommand::Phrases => {
+            let phrases = prospect_phrases(store.connection())?;
+            if json {
+                Ok(format_json(&phrases))
+            } else {
+                Ok(phrases
+                    .iter()
+                    .map(format_phrase)
+                    .collect::<Vec<_>>()
+                    .join("\n"))
+            }
+        }
+        FollowUpCommand::Rewrite {
+            key,
+            label,
+            subject,
+            body,
+            body_file,
+        } => {
+            let body = read_letter_body(body, body_file)?.unwrap_or_default();
+            let revision = prospect_phrases(store.connection())?
+                .into_iter()
+                .find(|phrase| phrase.key == key)
+                .map(|phrase| phrase.revision)
+                .unwrap_or(0);
+            let outcome = Executor::new(store).execute(
+                &RewriteProspectPhrases {
+                    phrases: vec![PhraseRewrite {
+                        key,
+                        label,
+                        subject,
+                        body,
+                        revision,
+                    }],
+                },
+                ctx,
+            )?;
+            Ok(format_outcome_as(&outcome, json, |phrases| {
+                phrases
+                    .iter()
+                    .map(format_phrase)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }))
         }
         FollowUpCommand::Show { reference, today } => {
             let subject = resolve_subject(store, &reference)?;

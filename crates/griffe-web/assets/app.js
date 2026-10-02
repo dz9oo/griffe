@@ -50,6 +50,22 @@ document.body.addEventListener("change", (event) => {
 });
 
 document.body.addEventListener("click", (event) => {
+  const token = event.target.closest("[data-insert]");
+  if (token) {
+    const area = token.closest(".phrase-moment")?.querySelector("textarea");
+    if (area) {
+      event.preventDefault();
+      const text = token.dataset.insert || "";
+      const start = area.selectionStart ?? area.value.length;
+      const end = area.selectionEnd ?? start;
+      area.value = area.value.slice(0, start) + text + area.value.slice(end);
+      const caret = start + text.length;
+      area.selectionStart = caret;
+      area.selectionEnd = caret;
+      area.focus();
+    }
+    return;
+  }
   const pieceLink = event.target.closest(".chrome nav a[data-piece]");
   if (pieceLink) {
     markNav(pieceLink.dataset.piece);

@@ -4,8 +4,9 @@ use griffe_core::app::Executor;
 use griffe_core::clock::today_local;
 use griffe_core::domain::{FollowUpSubject, SnoozePreset, parse_date, snooze_date};
 use griffe_core::follow_up::{
-    MarkFollowUpSent, PrepareFollowUp, RetractLastFollowUp, SetFollowUpDate, SetFollowUpSender,
-    SkipFollowUpStep, SnoozeFollowUp, card_for, follow_up_board, follow_up_queue,
+    MarkFollowUpSent, PhraseRewrite, PrepareFollowUp, RetractLastFollowUp, RewriteProspectPhrases,
+    SetFollowUpDate, SetFollowUpSender, SkipFollowUpStep, SnoozeFollowUp, card_for,
+    follow_up_board, follow_up_queue, prospect_phrases,
 };
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
@@ -74,6 +75,20 @@ pub(crate) struct LetterArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct RewritePhraseArgs {
+    /// Identifiant du moment (`hello`, `bump`, `value`, `close`).
+    key: String,
+    /// Nom du moment, tel qu'on le lit.
+    label: String,
+    /// Sujet. « le prénom » entre guillemets, ou le jeton `{{prenom}}`.
+    subject: String,
+    /// Corps. Mêmes mots que le sujet.
+    body: String,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct SenderArgs {
     email: String,
     name: Option<String>,
@@ -137,6 +152,57 @@ impl FreeflowServer {
         let store = self.store.lock().await;
         match follow_up_board(store.connection(), today) {
             Ok(cards) => ok_json(cards),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
+    /// Les phrases de prospection, dans l'ordre. Le coffre garde `{{prenom}}`, `{{sujet}}`,
+    /// `{{montant}}`, `{{moi}}`, `{{societe}}`.
+    #[tool(
+        name = "follow_up.phrases",
+        annotations(read_only_hint = true, idempotent_hint = true)
+    )]
+    async fn follow_up_phrases(&self) -> CallToolResult {
+        let store = self.store.lock().await;
+        match prospect_phrases(store.connection()) {
+            Ok(phrases) => ok_json(phrases),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
+    /// Réécrit le nom, le sujet et le corps d'un moment. Ne change ni l'ordre ni l'écart.
+    #[tool(
+        name = "follow_up.rewrite_phrase",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true
+        )
+    )]
+    async fn follow_up_rewrite_phrase(
+        &self,
+        Parameters(args): Parameters<RewritePhraseArgs>,
+    ) -> CallToolResult {
+        let mut store = self.store.lock().await;
+        let revision = match prospect_phrases(store.connection()) {
+            Ok(phrases) => phrases
+                .into_iter()
+                .find(|phrase| phrase.key == args.key)
+                .map(|phrase| phrase.revision)
+                .unwrap_or(0),
+            Err(e) => return err_text(e.to_string()),
+        };
+        let cmd = RewriteProspectPhrases {
+            phrases: vec![PhraseRewrite {
+                key: args.key,
+                label: args.label,
+                subject: args.subject,
+                body: args.body,
+                revision,
+            }],
+        };
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
+            Ok(outcome) => ok_json(outcome_json(&outcome)),
             Err(e) => err_text(e.to_string()),
         }
     }

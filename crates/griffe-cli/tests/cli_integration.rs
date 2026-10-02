@@ -755,6 +755,51 @@ fn follow_up_queue_lists_a_due_opportunity_and_drafts_without_sending() {
 }
 
 #[test]
+fn follow_up_phrases_lists_the_seed_and_a_rewrite_is_what_the_next_letter_uses() {
+    let db = temp_db("phrases");
+    provision(&db);
+    let listed = unlocked(&db)
+        .args(["follow-up", "phrases"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let listed = String::from_utf8(listed).unwrap();
+    assert!(listed.contains("Premier message"), "{listed}");
+    assert!(listed.contains("« le prénom »"), "{listed}");
+    assert!(!listed.contains("{{"), "{listed}");
+    assert!(
+        !listed.contains("template") && !listed.contains("cadence"),
+        "{listed}"
+    );
+    unlocked(&db)
+        .args([
+            "follow-up",
+            "rewrite",
+            "hello",
+            "--label",
+            "Premier contact",
+            "--subject",
+            "Bonjour",
+            "--body",
+            "Un premier mot réécrit.",
+        ])
+        .assert()
+        .success();
+    let again = unlocked(&db)
+        .args(["follow-up", "phrases"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let again = String::from_utf8(again).unwrap();
+    assert!(again.contains("Premier contact"), "{again}");
+    assert!(again.contains("Un premier mot réécrit."), "{again}");
+}
+
+#[test]
 fn day_mast_json_on_an_empty_vault_has_zero_bank_and_typed_signals() {
     let db = temp_db("day-mast");
     provision(&db);

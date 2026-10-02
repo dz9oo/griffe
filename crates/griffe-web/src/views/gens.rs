@@ -1148,6 +1148,120 @@ pub fn estimate_page(
     }
 }
 
+pub struct PhraseMoment {
+    pub key: String,
+    pub label: String,
+    pub subject: String,
+    pub body: String,
+    pub revision: i64,
+    pub offset_days: i64,
+    pub first: bool,
+    pub reads: String,
+}
+
+pub struct PhrasesView {
+    pub back_href: String,
+    pub back_label: String,
+    pub action: String,
+    pub moments: Vec<PhraseMoment>,
+    pub read_caption: String,
+    pub banner: Option<String>,
+    pub status: Option<String>,
+}
+
+pub fn phrases_page(view: &PhrasesView) -> Markup {
+    html! {
+        div class="letter" data-view=(ViewId::Gens.slug()) {
+            a class="back" href=(view.back_href) hx-get=(view.back_href) hx-target="#content" hx-push-url="true" {
+                "← " (view.back_label)
+            }
+            h1 { "Les phrases." }
+            p class="lede" {
+                "Les phrases que tu répètes. Une lettre par moment, dans l'ordre. Changer ici ne touche pas les lettres déjà classées. Griffe n'envoie pas."
+            }
+            @if let Some(msg) = &view.banner {
+                p class="mast-note" role="alert" { (msg) }
+            }
+            @if let Some(msg) = &view.status {
+                p class="mast-note" role="status" { (msg) }
+            }
+            form hx-post=(view.action) hx-target="#content" hx-push-url="true" {
+                @for moment in &view.moments {
+                    div class="phrase-moment" {
+                        p class="phrase-when" { (offset_sentence(moment.offset_days, moment.first)) }
+                        (phrase_line(&format!("label_{}", moment.key), "Ce moment", &moment.label, false))
+                        (phrase_line(&format!("subject_{}", moment.key), "Sujet", &moment.subject, false))
+                        (phrase_line(&format!("body_{}", moment.key), "Lettre", &moment.body, true))
+                        input type="hidden" name=(format!("revision_{}", moment.key)) value=(moment.revision);
+                        div class="token-row" {
+                            @for (name, insert) in PHRASE_TOKENS {
+                                button type="button" data-insert=(insert) { (name) }
+                            }
+                        }
+                        p class="phrase-caption" { (view.read_caption) }
+                        pre class="phrase-read" { (moment.reads) }
+                    }
+                }
+                div class="row-actions" {
+                    button class="seal" type="submit" { "Enregistrer les phrases" }
+                }
+            }
+        }
+    }
+}
+
+const PHRASE_TOKENS: &[(&str, &str)] = &[
+    ("« le prénom »", "« le prénom »"),
+    ("« le sujet »", "« le sujet »"),
+    ("« le montant »", "« le montant »"),
+    ("« moi »", "« moi »"),
+    ("« la société »", "« la société »"),
+];
+
+fn phrase_line(id: &str, label: &str, value: &str, letter: bool) -> Markup {
+    html! {
+        div class="field" {
+            label for=(id) { (label) }
+            @if letter {
+                textarea id=(id) name=(id) rows="8" { (value) }
+            } @else {
+                input id=(id) name=(id) type="text" value=(value);
+            }
+        }
+    }
+}
+
+fn offset_sentence(days: i64, first: bool) -> String {
+    if first {
+        return "Le jour déjà posé sur le dossier.".to_string();
+    }
+    let words = match days {
+        1 => "Un jour",
+        2 => "Deux jours",
+        3 => "Trois jours",
+        7 => "Sept jours",
+        14 => "Quatorze jours",
+        other => return format!("{other} jours après le précédent."),
+    };
+    format!("{words} après le précédent.")
+}
+
+pub fn phrases_href(depuis: &str, pour: &str) -> String {
+    let mut url = String::from("/affaires/phrases");
+    let mut parts = Vec::new();
+    if !depuis.is_empty() {
+        parts.push(format!("depuis={}", path_encode(depuis)));
+    }
+    if !pour.is_empty() {
+        parts.push(format!("pour={}", path_encode(pour)));
+    }
+    if !parts.is_empty() {
+        url.push('?');
+        url.push_str(&parts.join("&"));
+    }
+    url
+}
+
 pub fn letter_page(
     store: &Store,
     dossier: &PersonDossier,
@@ -1163,6 +1277,8 @@ pub fn letter_page(
         .and_then(|c| c.preview_subject.as_deref())
         .unwrap_or("");
     let body = card.and_then(|c| c.preview_body.as_deref()).unwrap_or("");
+    let phrases = phrases_href("lettre", &dossier.name);
+    let moment = card.and_then(|c| c.step_label.as_deref());
     let previous: Vec<&HistoryEvent> = dossier
         .history
         .iter()
@@ -1179,6 +1295,15 @@ pub fn letter_page(
             }
             @if let Some(msg) = flash {
                 p class="mast-note" role="status" { (msg) }
+            }
+            @if let Some(label) = moment {
+                p class="phrase-nav" {
+                    (label)
+                    " · "
+                    a href=(phrases) hx-get=(phrases) hx-target="#content" hx-push-url="true" {
+                        "Les phrases"
+                    }
+                }
             }
             div class="letter-draft" {
                 div class="meta" {

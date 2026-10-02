@@ -1643,6 +1643,15 @@ fn identity_markup(card: &IdentityCard) -> Markup {
             div class="block" {
                 h3 { "Le coffre" }
                 p { "Un fichier sur cette machine, chiffré. Aucune connexion sortante. Les mails, la TVA, le greffe se font ailleurs — Griffe prépare, il ne transmet pas." }
+                p {
+                    a href="/affaires/phrases?depuis=identite"
+                      hx-get="/affaires/phrases?depuis=identite"
+                      hx-target="#content"
+                      hx-push-url="true" {
+                        "Les phrases"
+                    }
+                    " — comment tu leur écris, selon qui ils sont."
+                }
             }
             div class="row-actions" {
                 a class="quiet" href="/view/societe"

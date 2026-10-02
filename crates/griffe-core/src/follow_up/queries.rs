@@ -8,8 +8,8 @@ use crate::app::AppError;
 use crate::billing::{aged_balance, invoice_by_id};
 use crate::clients::{client_by_id, list_contacts};
 use crate::domain::{
-    CadenceStep, ClientId, FollowUpEvent, FollowUpKind, FollowUpSubject, Money, Opportunity,
-    derive_cursor, parse_email, render_template,
+    ClientId, FollowUpEvent, FollowUpKind, FollowUpSubject, Money, Opportunity, derive_cursor_with,
+    parse_email, render_template,
 };
 use crate::prospection::{list_open_opportunities, opportunity_by_id};
 
@@ -77,6 +77,7 @@ pub(super) struct LoadedSubject {
     pub recipient: Option<(String, String)>,
     pub events: Vec<FollowUpEvent>,
     pub cursor: crate::domain::FollowUpCursor,
+    pub step_count: usize,
     pub invoice_number: Option<String>,
     pub invoice_due_on: Option<Date>,
     pub today: Date,
@@ -111,7 +112,15 @@ pub(super) fn load_subject(
             let client =
                 client_by_id(conn, invoice.client_id)?.ok_or(FollowUpError::InvoiceInactive)?;
             let events = row::events_for(conn, subject)?;
-            let cursor = derive_cursor(FollowUpKind::Invoice, &events, invoice.due_on, today);
+            let steps = FollowUpKind::Invoice.steps();
+            let step_count = steps.len();
+            let cursor = derive_cursor_with(
+                FollowUpKind::Invoice,
+                &steps,
+                &events,
+                invoice.due_on,
+                today,
+            );
             Ok(LoadedSubject {
                 title: invoice.number.clone(),
                 party: client.name,
@@ -120,6 +129,7 @@ pub(super) fn load_subject(
                 recipient: first_recipient(conn, invoice.client_id)?,
                 events,
                 cursor,
+                step_count,
                 invoice_number: Some(invoice.number),
                 invoice_due_on: Some(invoice.due_on),
                 today,
@@ -138,7 +148,9 @@ fn load_opportunity(
     let subject = FollowUpSubject::Opportunity(opportunity.id);
     let events = row::events_for(conn, subject)?;
     let anchor = opportunity.next_action_at.unwrap_or(today);
-    let cursor = derive_cursor(FollowUpKind::Prospect, &events, anchor, today);
+    let steps = row::phrase_steps(conn)?;
+    let step_count = steps.len();
+    let cursor = derive_cursor_with(FollowUpKind::Prospect, &steps, &events, anchor, today);
     Ok(LoadedSubject {
         title: opportunity.name.clone(),
         party: client.name,
@@ -147,6 +159,7 @@ fn load_opportunity(
         recipient: first_recipient(conn, opportunity.client_id)?,
         events,
         cursor,
+        step_count,
         invoice_number: None,
         invoice_due_on: None,
         today,
@@ -194,9 +207,9 @@ fn card_from_loaded(
         }
     };
 
-    let step = loaded.cursor.step;
-    let (preview_subject, preview_body) = if let Some(step) = step {
-        let last_draft = domain_last_draft(&loaded.events, loaded.cursor);
+    let step = loaded.cursor.step.clone();
+    let (preview_subject, preview_body) = if let Some(step) = step.as_ref() {
+        let last_draft = domain_last_draft(&loaded.events, &loaded.cursor);
         if let Some((s, b)) = last_draft {
             (Some(s), Some(b))
         } else {
@@ -209,8 +222,8 @@ fn card_from_loaded(
                 ..crate::domain::TemplateContext::default()
             };
             (
-                Some(render_template(step.subject, &ctx)),
-                Some(render_template(step.body, &ctx)),
+                Some(render_template(&step.subject, &ctx)),
+                Some(render_template(&step.body, &ctx)),
             )
         }
     } else {
@@ -237,9 +250,9 @@ fn card_from_loaded(
         contact_email: loaded.recipient.as_ref().map(|(_, e)| e.clone()),
         amount: loaded.amount,
         step_index: loaded.cursor.position,
-        step_count: CadenceStep::cadence(subject.kind()).len(),
-        step_key: step.map(|s| s.key.to_string()),
-        step_label: step.map(|s| s.label.to_string()),
+        step_count: loaded.step_count,
+        step_key: step.as_ref().map(|s| s.key.clone()),
+        step_label: step.as_ref().map(|s| s.label.clone()),
         due_on: loaded.cursor.due_on,
         days_until: loaded.cursor.days_until(loaded.today),
         status,
@@ -252,7 +265,7 @@ fn card_from_loaded(
 
 fn domain_last_draft(
     events: &[FollowUpEvent],
-    cursor: crate::domain::FollowUpCursor,
+    cursor: &crate::domain::FollowUpCursor,
 ) -> Option<(String, String)> {
     if !cursor.drafted {
         return None;
@@ -338,6 +351,13 @@ fn all_cards(conn: &Connection, today: Date) -> Result<Vec<FollowUpCard>, AppErr
         }
     }
     Ok(cards)
+}
+
+/// Les phrases de prospection, dans l'ordre.
+///
+/// # Errors
+pub fn prospect_phrases(conn: &Connection) -> Result<Vec<row::ProspectPhrase>, AppError> {
+    row::list_phrases(conn)
 }
 
 /// Identité d'envoi configurée, éventuellement absente.

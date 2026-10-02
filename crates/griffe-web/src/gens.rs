@@ -1,7 +1,9 @@
 //! Routes de la pièce Les affaires : liste, dossier, nouvelle conversation, lettre, rencontre.
 
 use axum::Form;
-use axum::extract::{Multipart, Path, State};
+use std::collections::HashMap;
+
+use axum::extract::{Multipart, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue};
 use axum::response::{Html, IntoResponse, Response};
 use griffe_core::app::{AppError, Executor, Outcome};
@@ -9,12 +11,17 @@ use griffe_core::billing::{ImportIssuedInvoice, RetractWriteOff, WriteOffReceiva
 use griffe_core::clients::{
     CreateContact, UpdateClient, UpdateContact, client_by_id, list_contacts,
 };
+use griffe_core::company::company_profile;
 use griffe_core::domain::{
     Address, ExpenseId, InteractionKind, InvoiceId, InvoiceLine, MissionId, Money, Probability,
-    VatRate, WriteOffId, format_date, parse_date,
+    TemplateContext, VatRate, WriteOffId, format_date, parse_date, phrase_from_editor,
+    phrase_to_editor, render_template,
 };
 use griffe_core::expenses::{AttachReceipt, expense_by_id};
-use griffe_core::follow_up::{MarkFollowUpSent, PrepareFollowUp, SnoozeFollowUp};
+use griffe_core::follow_up::{
+    MarkFollowUpSent, PhraseRewrite, PrepareFollowUp, ProspectPhrase, RewriteProspectPhrases,
+    SnoozeFollowUp, follow_up_sender, prospect_phrases,
+};
 use griffe_core::people::{PersonKey, person};
 use griffe_core::prospection::{
     CreateOpportunity, CreateProspect, EstimationLineInput, LogInteraction, LoseOpportunity,
@@ -182,6 +189,239 @@ pub struct LetterForm {
     subject_line: String,
     #[serde(default)]
     body: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct PhrasesQuery {
+    #[serde(default)]
+    depuis: String,
+    #[serde(default)]
+    pour: String,
+}
+
+pub async fn phrases_get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<PhrasesQuery>,
+) -> Html<String> {
+    let today = state.today();
+    let content = state
+        .with_store(|store| phrases_markup(store, &query, today, None, None, None))
+        .await
+        .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
+    page(&headers, content)
+}
+
+pub async fn phrases_post(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<PhrasesQuery>,
+    Form(fields): Form<HashMap<String, String>>,
+) -> Html<String> {
+    let result = state
+        .with_store_mut(|store| {
+            let phrases = prospect_phrases(store.connection())?;
+            let edits = phrases
+                .iter()
+                .map(|phrase| PhraseRewrite {
+                    key: phrase.key.clone(),
+                    label: posted(&fields, &format!("label_{}", phrase.key)),
+                    subject: posted(&fields, &format!("subject_{}", phrase.key)),
+                    body: posted(&fields, &format!("body_{}", phrase.key)),
+                    revision: posted(&fields, &format!("revision_{}", phrase.key))
+                        .parse()
+                        .unwrap_or(phrase.revision),
+                })
+                .collect();
+            Executor::new(store).execute(
+                &RewriteProspectPhrases { phrases: edits },
+                &AppState::human_ctx(),
+            )
+        })
+        .await;
+    let today = state.today();
+    let content = match result {
+        None => return locked(&headers),
+        Some(Err(error)) => state
+            .with_store(|store| {
+                phrases_markup(
+                    store,
+                    &query,
+                    today,
+                    Some(error.to_string()),
+                    None,
+                    Some(&fields),
+                )
+            })
+            .await
+            .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } }),
+        Some(Ok(_)) => state
+            .with_store(|store| {
+                phrases_markup(
+                    store,
+                    &query,
+                    today,
+                    None,
+                    Some("Les phrases sont enregistrées.".to_string()),
+                    None,
+                )
+            })
+            .await
+            .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } }),
+    };
+    page(&headers, content)
+}
+
+fn posted(fields: &HashMap<String, String>, name: &str) -> String {
+    fields.get(name).cloned().unwrap_or_default()
+}
+
+fn phrases_markup(
+    store: &griffe_core::store::Store,
+    query: &PhrasesQuery,
+    today: time::Date,
+    banner: Option<String>,
+    status: Option<String>,
+    fields: Option<&HashMap<String, String>>,
+) -> Markup {
+    let phrases = prospect_phrases(store.connection()).unwrap_or_default();
+    let reading = phrase_reading(store, query, today);
+    let moments = phrases
+        .iter()
+        .map(|phrase| phrase_moment(phrase, &reading.ctx, fields))
+        .collect();
+    gens::phrases_page(&gens::PhrasesView {
+        back_href: reading.back_href,
+        back_label: reading.back_label,
+        action: reading.action,
+        moments,
+        read_caption: reading.caption,
+        banner,
+        status,
+    })
+}
+
+struct PhraseReading {
+    caption: String,
+    ctx: TemplateContext,
+    back_href: String,
+    back_label: String,
+    action: String,
+}
+
+fn phrase_reading(
+    store: &griffe_core::store::Store,
+    query: &PhrasesQuery,
+    today: time::Date,
+) -> PhraseReading {
+    let (moi, societe) = speaker(store);
+    let pour = query.pour.trim();
+    let depuis = query.depuis.trim();
+    let action = gens::phrases_href(depuis, pour);
+    let example = PhraseReading {
+        caption: "Exemple, pour voir.".to_string(),
+        ctx: TemplateContext {
+            prenom: "Camille".into(),
+            sujet: "la refonte".into(),
+            montant: "4 500 €".into(),
+            moi: moi.clone(),
+            societe: societe.clone(),
+            ..TemplateContext::default()
+        },
+        back_href: "/societe/identite".to_string(),
+        back_label: "L'identité".to_string(),
+        action: action.clone(),
+    };
+    if pour.is_empty() {
+        return example;
+    }
+    let Ok(dossier) = person(store.connection(), pour, today) else {
+        return example;
+    };
+    let prenom = dossier
+        .contact_name
+        .as_deref()
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or(dossier.name.as_str());
+    let prenom = prenom
+        .split_whitespace()
+        .next()
+        .unwrap_or(prenom)
+        .to_string();
+    let href = gens::person_href(&dossier.name);
+    let (back_href, back_label) = if depuis == "lettre" {
+        (format!("{href}/ecrire"), dossier.name.clone())
+    } else {
+        (href, dossier.name.clone())
+    };
+    PhraseReading {
+        caption: format!("{prenom} lira"),
+        ctx: TemplateContext {
+            prenom,
+            sujet: dossier
+                .current
+                .opportunity_name
+                .filter(|name| !name.trim().is_empty())
+                .unwrap_or_else(|| "le sujet".to_string()),
+            montant: dossier
+                .current
+                .amount
+                .map(|amount| amount.to_string())
+                .unwrap_or_else(|| "—".to_string()),
+            moi,
+            societe,
+            ..TemplateContext::default()
+        },
+        back_href,
+        back_label,
+        action,
+    }
+}
+
+fn speaker(store: &griffe_core::store::Store) -> (String, String) {
+    let profile = company_profile(store.connection()).ok().flatten();
+    let sender = follow_up_sender(store.connection()).ok();
+    let moi = sender
+        .and_then(|settings| settings.sender_name)
+        .or_else(|| profile.as_ref().and_then(|p| p.president_name.clone()))
+        .or_else(|| profile.as_ref().map(|p| p.name.clone()))
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| "moi".to_string());
+    let societe = profile
+        .map(|p| p.name)
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| "la société".to_string());
+    (moi, societe)
+}
+
+fn phrase_moment(
+    phrase: &ProspectPhrase,
+    ctx: &TemplateContext,
+    fields: Option<&HashMap<String, String>>,
+) -> gens::PhraseMoment {
+    let (label, subject, body) = if let Some(fields) = fields {
+        (
+            posted(fields, &format!("label_{}", phrase.key)),
+            posted(fields, &format!("subject_{}", phrase.key)),
+            posted(fields, &format!("body_{}", phrase.key)),
+        )
+    } else {
+        (
+            phrase.label.clone(),
+            phrase_to_editor(&phrase.subject),
+            phrase_to_editor(&phrase.body),
+        )
+    };
+    gens::PhraseMoment {
+        key: phrase.key.clone(),
+        reads: render_template(&phrase_from_editor(&body), ctx),
+        label,
+        subject,
+        body,
+        revision: phrase.revision,
+        offset_days: phrase.offset_days,
+        first: phrase.position == 0,
+    }
 }
 
 fn optional_letter_field(value: String) -> Option<String> {

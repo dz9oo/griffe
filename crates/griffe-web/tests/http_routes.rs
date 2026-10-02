@@ -7506,6 +7506,138 @@ async fn the_dossier_archives_a_local_notice_when_the_issue_period_was_filed() {
     );
 }
 
+#[tokio::test]
+async fn phrases_are_a_letter_and_the_next_unopened_mail_uses_them() {
+    let db_path = test_db_path("phrases");
+    let state = unlocked_state(&db_path)
+        .await
+        .with_today(time::macros::date!(2026 - 10 - 02));
+    let router = griffe_web::router(state);
+
+    router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/affaires/nouvelle")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from("who=Camille+Rivi%C3%A8re&phrase=accompagnement"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let page = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/phrases")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(page.contains("Les phrases."), "{page}");
+    assert!(page.contains("Premier message"), "{page}");
+    assert!(page.contains("« le prénom »"), "{page}");
+    assert!(
+        page.contains("Griffe n'envoie pas") || page.contains("Griffe n&#x27;envoie pas"),
+        "{page}"
+    );
+    assert!(page.contains("Enregistrer les phrases"), "{page}");
+    assert!(!page.contains("{{"), "{page}");
+    for forbidden in ["template", "cadence", "campagne", "workflow", "pipeline"] {
+        assert!(
+            !page.contains(forbidden),
+            "{forbidden} dans la lettre : {page}"
+        );
+    }
+
+    let letter = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Camille%20Rivi%C3%A8re/ecrire")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(letter.contains("Premier message"), "{letter}");
+    assert!(letter.contains("Les phrases"), "{letter}");
+    assert!(letter.contains("C'est parti"), "{letter}");
+
+    let saved = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/affaires/phrases")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .header("HX-Request", "true")
+                    .body(Body::from(
+                        "label_hello=Premier+contact&subject_hello=Bonjour&body_hello=Un+premier+mot+r%C3%A9%C3%A9crit.&revision_hello=1&\
+label_bump=Petit+rappel&subject_bump=Rappel&body_bump=Un+rappel.&revision_bump=1&\
+label_value=Relance+utile&subject_value=Suite&body_value=Une+suite.&revision_value=1&\
+label_close=Dernier+mot&subject_close=Fin&body_close=Un+dernier+mot.&revision_close=1",
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(saved.contains("Les phrases sont enregistrées."), "{saved}");
+    assert!(saved.contains("Premier contact"), "{saved}");
+    assert!(saved.contains("Un premier mot réécrit."), "{saved}");
+
+    let next = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Camille%20Rivi%C3%A8re/ecrire")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(next.contains("Premier contact"), "{next}");
+    assert!(next.contains("Un premier mot réécrit."), "{next}");
+    assert!(!next.contains("Je me permets de revenir"), "{next}");
+
+    let identity = body_text(
+        router
+            .oneshot(
+                Request::builder()
+                    .uri("/societe/identite")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        identity.contains("Les phrases") && identity.contains("selon qui ils sont"),
+        "{identity}"
+    );
+}
+
 fn uncollectible_notice_papers(db_path: &Path) -> Vec<griffe_core::papers::Paper> {
     let store = Store::open_with_passphrase(db_path, &Passphrase::from(PASSPHRASE)).unwrap();
     griffe_core::papers::list_papers(
