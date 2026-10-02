@@ -87,5 +87,11 @@ pub fn migrations() -> Migrations<'static> {
             .down(include_str!("migrations/0034_follow_up_cycle_down.sql")),
         M::up(include_str!("migrations/0035_estimation_lines_up.sql"))
             .down(include_str!("migrations/0035_estimation_lines_down.sql")),
+        M::up(include_str!("migrations/0036_prospect_phrases_up.sql"))
+            .down(include_str!("migrations/0036_prospect_phrases_down.sql")),
+        M::up(include_str!("migrations/0037_prospect_series_up.sql"))
+            .down(include_str!("migrations/0037_prospect_series_down.sql")),
+        M::up(include_str!("migrations/0038_prospect_genres_up.sql"))
+            .down(include_str!("migrations/0038_prospect_genres_down.sql")),
     ])
 }

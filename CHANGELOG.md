@@ -2,6 +2,14 @@
 
 Ce qui change pour qui se sert de Griffe. Une section par version publiée.
 
+## 0.3.5
+
+- Les phrases que tu répètes sont dans le coffre, depuis L'identité. Les réécrire change la prochaine lettre. Une lettre déjà classée, ou un brouillon déjà préparé, garde son texte.
+- Le nombre de moments et les écarts se règlent. Une conversation déjà engagée finit sa série. Une conversation neuve ou reprise prend la série du moment.
+- Le genre, sur la fiche, ne change que les mots. Deux dossiers du même rang, le même jour, n'ont pas la même lettre.
+- Garder ces mots depuis Écrire remplace ce moment pour ce genre, et n'envoie rien.
+- La cadence des factures n'a pas bougé.
+
 ## 0.3.4
 
 - La fenêtre affiche son numéro, à côté de l'état du coffre, et sous la carte quand le coffre est verrouillé ou à créer.

@@ -36,6 +36,51 @@ pub enum FollowUpError {
 
     #[error("événement de relance introuvable : {0}")]
     EventNotFound(FollowUpEventId),
+
+    #[error("Ce moment n'existe pas.")]
+    UnknownPhrase,
+
+    #[error("Ce moment n'a pas de nom.")]
+    EmptyMoment,
+
+    #[error("Le sujet est vide.")]
+    EmptySubject,
+
+    #[error("La lettre est vide.")]
+    EmptyLetter,
+
+    #[error("Ces phrases ont changé entre-temps. Relis avant d'enregistrer.")]
+    StalePhrases,
+
+    #[error("Il reste au moins un moment.")]
+    LastMoment,
+
+    #[error("Ce moment est en double.")]
+    DuplicateMoment,
+
+    #[error("L'écart se compte en jours.")]
+    GapNotANumber,
+
+    #[error("Le premier moment est le jour déjà posé sur le dossier.")]
+    FirstMomentIsTheDay,
+
+    #[error("Ce genre n'a pas de nom.")]
+    EmptyGenre,
+
+    #[error("Ce genre existe déjà.")]
+    DuplicateGenre,
+
+    #[error("Ce genre n'existe pas.")]
+    UnknownGenre,
+
+    #[error("Pour qui ?")]
+    GenreRequired,
+
+    #[error("Le genre est celui d'une conversation.")]
+    NotAConversation,
+
+    #[error("Cette conversation n'existe pas.")]
+    UnknownConversation,
 }
 
 impl From<FollowUpError> for AppError {

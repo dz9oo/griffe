@@ -4,18 +4,22 @@ use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
 use griffe_core::app::{ExecutionContext, Executor};
-use griffe_core::domain::{FollowUpSubject, SnoozePreset, format_date, snooze_date};
+use griffe_core::domain::{
+    FollowUpSubject, SnoozePreset, format_date, phrase_from_editor, phrase_to_editor, snooze_date,
+};
 use griffe_core::follow_up::{
-    CardStatus, FollowUpCard, MarkFollowUpSent, PrepareFollowUp, RetractLastFollowUp,
-    SetFollowUpDate, SetFollowUpSender, SkipFollowUpStep, SnoozeFollowUp, card_for,
-    follow_up_board, follow_up_queue,
+    ArrangeProspectPhrases, CardStatus, CreateProspectGenre, DropProspectGenre, FollowUpCard,
+    GenreWordDraft, KeepGenreWords, MarkFollowUpSent, MomentDraft, PhraseRewrite, PrepareFollowUp,
+    ProspectGenre, ProspectPhrase, RetractLastFollowUp, RewriteGenreWords, RewriteProspectPhrases,
+    SetDossierGenre, SetFollowUpDate, SetFollowUpSender, SkipFollowUpStep, SnoozeFollowUp,
+    card_for, follow_up_board, follow_up_queue, prospect_genres, prospect_phrases,
 };
 use griffe_core::store::Store;
 use time::Date;
 
 use crate::error::CliError;
 use crate::output::{
-    HumanRender, format_outcome, format_outcome_as, format_value, key_values, or_dash,
+    HumanRender, format_json, format_outcome, format_outcome_as, format_value, key_values, or_dash,
 };
 use crate::parsers::parse_date;
 use crate::refs;
@@ -190,6 +194,53 @@ pub enum FollowUpCommand {
         #[arg(long, value_parser = parse_date)]
         today: Option<Date>,
     },
+    /// Les phrases de prospection, dans l'ordre.
+    Phrases,
+    /// Les moments : en ajouter, en retirer, les déplacer, régler l'écart.
+    Moments {
+        #[command(subcommand)]
+        action: MomentsCommand,
+    },
+    /// Réécrit le nom, le sujet et la lettre d'un moment.
+    Rewrite {
+        /// Identifiant du moment (`hello`, `bump`, `value`, `close`, ou celui affiché en JSON).
+        key: String,
+        #[arg(long)]
+        label: String,
+        #[arg(long)]
+        subject: String,
+        /// Corps. Les mots « le prénom », « le sujet », « le montant », « moi », « la société »
+        /// entre guillemets sont les jetons.
+        #[arg(long)]
+        body: Option<String>,
+        #[arg(long, conflicts_with = "body")]
+        body_file: Option<PathBuf>,
+    },
+    /// Les genres. Les mots seulement : l'ordre et les écarts restent ceux du coffre.
+    Genres,
+    /// Crée, retire ou réécrit un genre, ou le pose sur un dossier.
+    Genre {
+        #[command(subcommand)]
+        action: GenreCommand,
+    },
+    /// Garde le sujet et le corps de cette lettre pour ce genre, et ce moment.
+    ///
+    /// Sans sujet ni corps, le modèle est gardé, avec ses jetons. Rien n'est classé.
+    Keep {
+        #[arg(value_name = "RÉFÉRENCE")]
+        reference: String,
+        #[arg(long, value_parser = parse_date)]
+        today: Option<Date>,
+        #[arg(long)]
+        subject: Option<String>,
+        #[arg(long)]
+        body: Option<String>,
+        #[arg(long, conflicts_with = "body")]
+        body_file: Option<PathBuf>,
+        /// Quand le dossier n'a pas encore de genre.
+        #[arg(long)]
+        genre: Option<String>,
+    },
     /// Annule le dernier geste (envoi, saut, report, brouillon).
     Retract {
         #[arg(value_name = "RÉFÉRENCE")]
@@ -198,6 +249,91 @@ pub enum FollowUpCommand {
         today: Option<Date>,
     },
 }
+
+#[derive(Debug, Subcommand)]
+pub enum GenreCommand {
+    /// Crée un genre en copiant les phrases par défaut, ou celles d'un autre genre.
+    Add {
+        name: String,
+        /// Identifiant du genre dont on copie les mots. Absent : les phrases par défaut.
+        #[arg(long)]
+        from: Option<String>,
+    },
+    /// Retire un genre. Les fiches qui le portaient redeviennent sans genre.
+    Drop {
+        /// Identifiant du genre.
+        id: String,
+    },
+    /// Réécrit le sujet et le corps d'un moment, pour ce genre seulement.
+    Rewrite {
+        /// Identifiant du genre.
+        id: String,
+        /// Identifiant du moment.
+        key: String,
+        #[arg(long)]
+        subject: String,
+        #[arg(long)]
+        body: Option<String>,
+        #[arg(long, conflicts_with = "body")]
+        body_file: Option<PathBuf>,
+    },
+    /// Pose un genre sur le dossier. Un nom inconnu le crée.
+    Assign {
+        #[arg(value_name = "RÉFÉRENCE")]
+        reference: String,
+        name: String,
+    },
+    /// Enlève le genre du dossier.
+    Clear {
+        #[arg(value_name = "RÉFÉRENCE")]
+        reference: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum MomentsCommand {
+    /// Ajoute un moment à la fin.
+    Add {
+        /// Nom du moment. Défaut : « Nouveau moment ».
+        #[arg(long)]
+        label: Option<String>,
+        /// Sujet. Défaut : « le sujet ».
+        #[arg(long)]
+        subject: Option<String>,
+        /// Corps. Défaut : une lettre courte.
+        #[arg(long)]
+        body: Option<String>,
+        #[arg(long, conflicts_with = "body")]
+        body_file: Option<PathBuf>,
+        /// Jours après le précédent. Défaut : 7.
+        #[arg(long)]
+        days: Option<i64>,
+    },
+    /// Retire un moment. Il en reste au moins un.
+    Drop {
+        /// Identifiant du moment.
+        key: String,
+    },
+    /// Monte le moment d'un cran.
+    Earlier {
+        /// Identifiant du moment.
+        key: String,
+    },
+    /// Descend le moment d'un cran.
+    Later {
+        /// Identifiant du moment.
+        key: String,
+    },
+    /// Règle l'écart, en jours après le précédent.
+    Gap {
+        /// Identifiant du moment.
+        key: String,
+        #[arg(long)]
+        days: i64,
+    },
+}
+
+const NEW_MOMENT_BODY: &str = "Bonjour {{prenom}},\n\n{{sujet}}\n\nBien à vous,\n{{moi}}\n";
 
 /// Les tests posent `GRIFFE_NO_OPEN` : on écrit le fichier, on n'ouvre pas le visualiseur
 /// (`xdg-open` / `open` ouvriraient le navigateur ou le client mail).
@@ -280,6 +416,189 @@ fn resolve_subject(store: &Store, needle: &str) -> Result<FollowUpSubject, CliEr
     refs::resolve_follow_up(store, needle)
 }
 
+fn format_phrase(phrase: &ProspectPhrase) -> String {
+    let gap = if phrase.position == 0 {
+        "le jour déjà posé".to_string()
+    } else {
+        format!("{} jours après le précédent", phrase.offset_days)
+    };
+    format!(
+        "{label}\n{gap}\nsujet : {subject}\n{body}",
+        label = phrase.label,
+        subject = phrase_to_editor(&phrase.subject),
+        body = phrase_to_editor(&phrase.body)
+    )
+}
+
+fn render_genres(genres: &[ProspectGenre]) -> String {
+    if genres.is_empty() {
+        return "Pas encore de genre.".to_string();
+    }
+    genres
+        .iter()
+        .map(|genre| format!("{} — {}", genre.name, genre.id))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn render_phrases(phrases: &[ProspectPhrase]) -> String {
+    phrases
+        .iter()
+        .map(format_phrase)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn living_drafts(store: &Store) -> Result<Vec<MomentDraft>, CliError> {
+    Ok(prospect_phrases(store.connection())?
+        .iter()
+        .map(MomentDraft::from_phrase)
+        .collect())
+}
+
+fn moment_index(drafts: &[MomentDraft], key: &str) -> Result<usize, CliError> {
+    drafts
+        .iter()
+        .position(|draft| draft.key.as_deref() == Some(key))
+        .ok_or_else(|| CliError::Domain("Ce moment n'existe pas.".to_string()))
+}
+
+fn zero_first(drafts: &mut [MomentDraft]) {
+    if let Some(first) = drafts.first_mut() {
+        first.offset_days = 0;
+    }
+}
+
+fn run_genre(
+    action: GenreCommand,
+    store: &mut Store,
+    ctx: &ExecutionContext,
+    json: bool,
+) -> Result<String, CliError> {
+    match action {
+        GenreCommand::Add { name, from } => {
+            let outcome = Executor::new(store).execute(
+                &CreateProspectGenre {
+                    name,
+                    copy_from: from,
+                },
+                ctx,
+            )?;
+            Ok(format_outcome_as(&outcome, json, |genre| {
+                format!("{} — {}", genre.name, genre.id)
+            }))
+        }
+        GenreCommand::Drop { id } => {
+            let outcome = Executor::new(store).execute(&DropProspectGenre { id }, ctx)?;
+            Ok(format_outcome_as(&outcome, json, |_| {
+                "Ce genre est retiré.".to_string()
+            }))
+        }
+        GenreCommand::Rewrite {
+            id,
+            key,
+            subject,
+            body,
+            body_file,
+        } => {
+            let body = read_letter_body(body, body_file)?.unwrap_or_default();
+            let outcome = Executor::new(store).execute(
+                &RewriteGenreWords {
+                    genre_id: id,
+                    words: vec![GenreWordDraft {
+                        key,
+                        subject: phrase_from_editor(&subject),
+                        body: phrase_from_editor(&body),
+                    }],
+                },
+                ctx,
+            )?;
+            Ok(format_outcome_as(&outcome, json, |_| {
+                "Les mots de ce genre sont enregistrés.".to_string()
+            }))
+        }
+        GenreCommand::Assign { reference, name } => {
+            let subject = resolve_subject(store, &reference)?;
+            let outcome = Executor::new(store).execute(&SetDossierGenre { subject, name }, ctx)?;
+            Ok(format_outcome_as(&outcome, json, |assignment| {
+                assignment
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| "Sans genre.".to_string())
+            }))
+        }
+        GenreCommand::Clear { reference } => {
+            let subject = resolve_subject(store, &reference)?;
+            let outcome = Executor::new(store).execute(
+                &SetDossierGenre {
+                    subject,
+                    name: String::new(),
+                },
+                ctx,
+            )?;
+            Ok(format_outcome_as(&outcome, json, |_| {
+                "Sans genre.".to_string()
+            }))
+        }
+    }
+}
+
+fn run_moments(
+    action: MomentsCommand,
+    store: &mut Store,
+    ctx: &ExecutionContext,
+    json: bool,
+) -> Result<String, CliError> {
+    let mut drafts = living_drafts(store)?;
+    match action {
+        MomentsCommand::Add {
+            label,
+            subject,
+            body,
+            body_file,
+            days,
+        } => {
+            let body = read_letter_body(body, body_file)?;
+            let offset_days = days.unwrap_or(if drafts.is_empty() { 0 } else { 7 });
+            drafts.push(MomentDraft {
+                key: None,
+                label: label.unwrap_or_else(|| "Nouveau moment".to_string()),
+                offset_days,
+                subject: subject.unwrap_or_else(|| "{{sujet}}".to_string()),
+                body: body.unwrap_or_else(|| NEW_MOMENT_BODY.to_string()),
+                revision: None,
+            });
+        }
+        MomentsCommand::Drop { key } => {
+            let index = moment_index(&drafts, &key)?;
+            drafts.remove(index);
+            zero_first(&mut drafts);
+        }
+        MomentsCommand::Earlier { key } => {
+            let index = moment_index(&drafts, &key)?;
+            if index > 0 {
+                drafts.swap(index, index - 1);
+                zero_first(&mut drafts);
+            }
+        }
+        MomentsCommand::Later { key } => {
+            let index = moment_index(&drafts, &key)?;
+            if index + 1 < drafts.len() {
+                drafts.swap(index, index + 1);
+                zero_first(&mut drafts);
+            }
+        }
+        MomentsCommand::Gap { key, days } => {
+            let index = moment_index(&drafts, &key)?;
+            drafts[index].offset_days = days;
+        }
+    }
+    let outcome = Executor::new(store).execute(&ArrangeProspectPhrases { moments: drafts }, ctx)?;
+    Ok(format_outcome_as(&outcome, json, |phrases| {
+        render_phrases(phrases)
+    }))
+}
+
 pub fn run(
     cmd: FollowUpCommand,
     store: &mut Store,
@@ -295,6 +614,84 @@ pub fn run(
         FollowUpCommand::Board { today } => {
             let cards = follow_up_board(store.connection(), today_or(today))?;
             Ok(format_value(&cards, json))
+        }
+        FollowUpCommand::Phrases => {
+            let phrases = prospect_phrases(store.connection())?;
+            if json {
+                Ok(format_json(&phrases))
+            } else {
+                Ok(render_phrases(&phrases))
+            }
+        }
+        FollowUpCommand::Moments { action } => run_moments(action, store, ctx, json),
+        FollowUpCommand::Rewrite {
+            key,
+            label,
+            subject,
+            body,
+            body_file,
+        } => {
+            let body = read_letter_body(body, body_file)?.unwrap_or_default();
+            let revision = prospect_phrases(store.connection())?
+                .into_iter()
+                .find(|phrase| phrase.key == key)
+                .map(|phrase| phrase.revision)
+                .unwrap_or(0);
+            let outcome = Executor::new(store).execute(
+                &RewriteProspectPhrases {
+                    phrases: vec![PhraseRewrite {
+                        key,
+                        label,
+                        subject,
+                        body,
+                        revision,
+                    }],
+                },
+                ctx,
+            )?;
+            Ok(format_outcome_as(&outcome, json, |phrases| {
+                render_phrases(phrases)
+            }))
+        }
+        FollowUpCommand::Genres => {
+            let genres = prospect_genres(store.connection())?;
+            if json {
+                Ok(format_json(&genres))
+            } else {
+                Ok(render_genres(&genres))
+            }
+        }
+        FollowUpCommand::Genre { action } => run_genre(action, store, ctx, json),
+        FollowUpCommand::Keep {
+            reference,
+            today,
+            subject,
+            body,
+            body_file,
+            genre,
+        } => {
+            let subject_line = subject.map(|text| phrase_from_editor(&text));
+            let body = read_letter_body(body, body_file)?.map(|text| phrase_from_editor(&text));
+            let subject = resolve_subject(store, &reference)?;
+            let outcome = Executor::new(store).execute(
+                &KeepGenreWords {
+                    subject,
+                    today: today_or(today),
+                    subject_line,
+                    body,
+                    genre_name: genre,
+                },
+                ctx,
+            )?;
+            Ok(format_outcome_as(&outcome, json, |kept| {
+                format!(
+                    "{name}\n{key}\nsujet : {subject}\n{body}",
+                    name = kept.genre_name,
+                    key = kept.key,
+                    subject = phrase_to_editor(&kept.subject),
+                    body = phrase_to_editor(&kept.body)
+                )
+            }))
         }
         FollowUpCommand::Show { reference, today } => {
             let subject = resolve_subject(store, &reference)?;

@@ -1198,6 +1198,81 @@ tr.row-clickable:hover td { background: var(--paper-2); }
   }
 }
 .letter.spread .letter-draft { max-width: none; width: 100%; }
+.phrase-nav {
+  font-family: var(--sans);
+  font-size: 13px;
+  color: var(--ink-2);
+  margin: 0 0 18px;
+}
+.phrase-nav a { color: var(--ink); }
+.phrase-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  font-family: var(--sans);
+  font-size: 13px;
+  color: var(--ink-2);
+  margin: 0 0 18px;
+}
+.phrase-line a { color: var(--ink-2); }
+.phrase-line .current { color: var(--ink); }
+.phrase-line span, .phrase-line a { min-width: 0; overflow-wrap: anywhere; }
+.genre-field .genre-known { display: none; }
+.genre-field:focus-within .genre-known {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-top: 6px;
+  font-family: var(--sans);
+  font-size: 13px;
+  color: var(--ink-2);
+}
+.phrase-moment {
+  margin: 28px 0 8px;
+  padding-top: 16px;
+  border-top: 1px solid var(--rule);
+}
+.phrase-when, .phrase-caption {
+  font-family: var(--sans);
+  font-size: 13px;
+  color: var(--ink-2);
+  margin: 0 0 12px;
+}
+.phrase-gap {
+  max-width: 8.5rem;
+}
+.phrase-gap .phrase-caption {
+  margin: 6px 0 0;
+}
+.phrase-read {
+  font-family: var(--serif);
+  font-size: 16px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  color: var(--ink-2);
+  margin: 0 0 8px;
+}
+.token-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin: 4px 0 14px;
+}
+.token-row button {
+  font-family: var(--sans);
+  font-size: 13px;
+  color: var(--ink-2);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
 .letter.spread .field textarea { min-height: clamp(16rem, 50vh, 40rem); }
 
 .letter-fold {

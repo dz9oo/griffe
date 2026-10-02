@@ -231,11 +231,44 @@ pub struct FollowUpEvent {
     pub interaction_id: Option<InteractionId>,
 }
 
+/// Un moment de cadence, possédé : les constantes, ou une phrase lue dans le coffre.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhraseStep {
+    pub key: String,
+    pub offset_days: i64,
+    pub label: String,
+    pub subject: String,
+    pub body: String,
+}
+
+impl From<&CadenceStep> for PhraseStep {
+    fn from(step: &CadenceStep) -> Self {
+        Self {
+            key: step.key.to_string(),
+            offset_days: step.offset_days,
+            label: step.label.to_string(),
+            subject: step.subject.to_string(),
+            body: step.body.to_string(),
+        }
+    }
+}
+
+impl FollowUpKind {
+    /// La série compilée. La prospection affichée vient du coffre ; la facture reste ici.
+    #[must_use]
+    pub fn steps(self) -> Vec<PhraseStep> {
+        CadenceStep::cadence(self)
+            .iter()
+            .map(PhraseStep::from)
+            .collect()
+    }
+}
+
 /// Position dérivée dans la cadence, à une date `today` donnée.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FollowUpCursor {
     pub position: usize,
-    pub step: Option<CadenceStep>,
+    pub step: Option<PhraseStep>,
     pub due_on: Option<Date>,
     pub drafted: bool,
     pub exhausted: bool,
@@ -244,7 +277,7 @@ pub struct FollowUpCursor {
 impl FollowUpCursor {
     /// Jours jusqu'à l'échéance : négatif = en retard. `None` si pas d'échéance.
     #[must_use]
-    pub fn days_until(self, today: Date) -> Option<i64> {
+    pub fn days_until(&self, today: Date) -> Option<i64> {
         self.due_on.map(|due| (due - today).whole_days())
     }
 }
@@ -265,15 +298,43 @@ pub fn active_events(events: &[FollowUpEvent]) -> Vec<&FollowUpEvent> {
     active
 }
 
-/// Dérive où l'on en est. `anchor` = `next_action_at` (prospect) ou `due_on` (facture).
+/// Cycle sur lequel la conversation est entrée.
+///
+/// Chaîne vide : le cycle d'origine, avant toute reprise. Sinon l'identifiant
+/// du dernier `cycle_opened` encore vrai.
+#[must_use]
+pub fn entered_cycle_key(events: &[FollowUpEvent]) -> String {
+    active_events(events)
+        .iter()
+        .rev()
+        .find(|event| event.fact == FollowUpFact::CycleOpened)
+        .map(|event| event.id.to_string())
+        .unwrap_or_default()
+}
+
+/// Dérive où l'on en est sur la série compilée du genre.
+///
+/// La fenêtre de prospection passe par [`derive_cursor_with`] et les phrases du coffre.
 #[must_use]
 pub fn derive_cursor(
     kind: FollowUpKind,
     events: &[FollowUpEvent],
     anchor: Date,
+    today: Date,
+) -> FollowUpCursor {
+    derive_cursor_with(kind, &kind.steps(), events, anchor, today)
+}
+
+/// Dérive où l'on en est. `anchor` = `next_action_at` (prospect) ou `due_on` (facture).
+/// `steps` est la série de cette conversation : les phrases du coffre, ou la cadence facture.
+#[must_use]
+pub fn derive_cursor_with(
+    kind: FollowUpKind,
+    cadence: &[PhraseStep],
+    events: &[FollowUpEvent],
+    anchor: Date,
     _today: Date,
 ) -> FollowUpCursor {
-    let cadence = CadenceStep::cadence(kind);
     let active_all = active_events(events);
     // Une reprise garde les lettres d'avant et remet le compteur à zéro.
     let active: Vec<&FollowUpEvent> = match active_all
@@ -285,7 +346,7 @@ pub fn derive_cursor(
     };
     let position = active.iter().filter(|e| e.fact.advances()).count();
     let exhausted = position >= cadence.len();
-    let step = cadence.get(position).copied();
+    let step = cadence.get(position).cloned();
 
     let last_advancing = active.iter().rev().find(|e| e.fact.advances()).copied();
     let last_override = active
@@ -366,6 +427,37 @@ impl TemplateContext {
         self.solde = amount.to_string();
         self
     }
+}
+
+/// Mots de l'éditeur, dans l'ordre des jetons stockés. « le prénom », pas `{{prenom}}`.
+const EDITOR_WORDS: &[(&str, &str)] = &[
+    ("{{prenom}}", "« le prénom »"),
+    ("{{contact}}", "« le contact »"),
+    ("{{client}}", "« le client »"),
+    ("{{sujet}}", "« le sujet »"),
+    ("{{montant}}", "« le montant »"),
+    ("{{moi}}", "« moi »"),
+    ("{{societe}}", "« la société »"),
+];
+
+/// Ce que la lettre des phrases montre. Les jetons inconnus restent en accolades.
+#[must_use]
+pub fn phrase_to_editor(stored: &str) -> String {
+    let mut out = stored.to_string();
+    for (token, word) in EDITOR_WORDS {
+        out = out.replace(token, word);
+    }
+    out
+}
+
+/// Ce que le coffre garde. Une phrase déjà en jetons n'est pas modifiée.
+#[must_use]
+pub fn phrase_from_editor(edited: &str) -> String {
+    let mut out = edited.to_string();
+    for (token, word) in EDITOR_WORDS {
+        out = out.replace(word, token);
+    }
+    out
 }
 
 /// Remplace les `{{clés}}` connues. Une clé inconnue reste telle quelle.
@@ -633,7 +725,7 @@ mod tests {
         let anchor = date(2026, Month::September, 8);
         let cursor = derive_cursor(FollowUpKind::Prospect, &[], anchor, today);
         assert_eq!(cursor.position, 0);
-        assert_eq!(cursor.step.map(|s| s.key), Some("hello"));
+        assert_eq!(cursor.step.as_ref().map(|s| s.key.as_str()), Some("hello"));
         assert_eq!(cursor.due_on, Some(anchor));
         assert!(!cursor.drafted);
         assert!(!cursor.exhausted);
@@ -646,7 +738,7 @@ mod tests {
         let sent = event(FollowUpFact::MarkedSent, 5, None);
         let cursor = derive_cursor(FollowUpKind::Prospect, &[sent], anchor, today);
         assert_eq!(cursor.position, 1);
-        assert_eq!(cursor.step.map(|s| s.key), Some("bump"));
+        assert_eq!(cursor.step.as_ref().map(|s| s.key.as_str()), Some("bump"));
         assert_eq!(cursor.due_on, Some(date(2026, Month::September, 8)));
     }
 
@@ -724,6 +816,20 @@ mod tests {
     }
 
     #[test]
+    fn editor_words_roundtrip_to_the_stored_tokens() {
+        let stored = "Bonjour {{prenom}},\n\n{{sujet}} ({{montant}}).\n{{moi}}\n{{societe}}\n";
+        let shown = phrase_to_editor(stored);
+        assert!(shown.contains("« le prénom »"));
+        assert!(shown.contains("« le sujet »"));
+        assert!(shown.contains("« le montant »"));
+        assert!(shown.contains("« moi »"));
+        assert!(shown.contains("« la société »"));
+        assert!(!shown.contains("{{"));
+        assert_eq!(phrase_from_editor(&shown), stored);
+        assert_eq!(phrase_from_editor(stored), stored);
+    }
+
+    #[test]
     fn rendering_replaces_known_placeholders() {
         let ctx = TemplateContext {
             prenom: "Marie".into(),
@@ -797,5 +903,14 @@ mod tests {
             format_date_fr(date(2026, Month::September, 5)),
             "5 septembre 2026"
         );
+    }
+
+    #[test]
+    fn the_entered_cycle_is_the_latest_reopening() {
+        let first = event(FollowUpFact::CycleOpened, 2, None);
+        let later = event(FollowUpFact::CycleOpened, 9, None);
+        let later_id = later.id.to_string();
+        assert_eq!(entered_cycle_key(&[first, later]), later_id);
+        assert_eq!(entered_cycle_key(&[]), "");
     }
 }
