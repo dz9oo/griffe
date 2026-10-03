@@ -1599,6 +1599,14 @@ async fn the_people_list_tool_returns_three_empty_chapters() {
     );
     assert!(body["missions"].as_array().unwrap().is_empty(), "{body}");
     assert!(body["outgoing"].as_array().unwrap().is_empty(), "{body}");
+    assert!(
+        body["first_messages"].as_array().unwrap().is_empty(),
+        "{body}"
+    );
+    assert!(
+        body["first_contacts"].as_array().unwrap().is_empty(),
+        "{body}"
+    );
 
     let missing = call(
         &client,

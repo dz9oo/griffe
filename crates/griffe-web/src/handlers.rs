@@ -104,8 +104,22 @@ pub async fn dashboard(State(state): State<AppState>, headers: HeaderMap) -> Htm
     letter(&state, headers, ViewId::Dashboard, views::jour::render).await
 }
 
-pub async fn gens(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
-    letter(&state, headers, ViewId::Gens, views::gens::render).await
+#[derive(Debug, Default, Deserialize)]
+pub struct AffairesQuery {
+    #[serde(default)]
+    q: String,
+}
+
+pub async fn gens(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(form): Query<AffairesQuery>,
+) -> Html<String> {
+    let q = form.q;
+    letter(&state, headers, ViewId::Gens, move |store, today| {
+        views::gens::render_search(store, today, &q)
+    })
+    .await
 }
 
 pub async fn societe_piece(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {

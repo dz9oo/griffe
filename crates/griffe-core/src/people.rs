@@ -220,13 +220,23 @@ pub struct PersonRow {
     pub chapter: PersonChapter,
     pub figure: Option<PersonFigure>,
     pub cues: Vec<PersonCue>,
+    /// Prochain pas, même quand la phrase du stade l'avale (premier message, brouillon).
+    #[serde(default, with = "crate::domain::serde_date::date::option")]
+    pub due_on: Option<Date>,
     pub client_id: Option<ClientId>,
     pub opportunity_id: Option<OpportunityId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PeopleList {
+    /// Noms qui ont déjà un corps : brouillon, estimation, échange, repris.
     pub conversations: Vec<PersonRow>,
+    /// Premier message, y compris ceux dont le pas est aujourd'hui.
+    #[serde(default)]
+    pub first_messages: Vec<PersonRow>,
+    /// Une lettre partie, sans rencontre ni montant.
+    #[serde(default)]
+    pub first_contacts: Vec<PersonRow>,
     pub missions: Vec<PersonRow>,
     pub outgoing: Vec<PersonRow>,
     /// Hors du compte « X noms » : on les relit, on peut les rouvrir.
@@ -236,10 +246,16 @@ pub struct PeopleList {
 impl PeopleList {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.conversations.is_empty()
+        self.open_conversations() == 0
             && self.missions.is_empty()
             && self.outgoing.is_empty()
             && self.stopped.is_empty()
+    }
+
+    /// Prospects ouverts, corps et tas froid. Le mât et « N noms » comptent ceci.
+    #[must_use]
+    pub fn open_conversations(&self) -> usize {
+        self.conversations.len() + self.first_messages.len() + self.first_contacts.len()
     }
 }
 
@@ -399,6 +415,32 @@ pub struct PersonDossier {
 pub struct WorkLine {
     pub label: String,
     pub amount: Money,
+}
+
+fn row_has_body(row: &PersonRow) -> bool {
+    row.cues.iter().any(|cue| {
+        matches!(
+            cue,
+            PersonCue::DraftReady
+                | PersonCue::QuoteSent { .. }
+                | PersonCue::EstimateNoted
+                | PersonCue::InExchange
+                | PersonCue::Resumed
+        )
+    })
+}
+
+/// Dus (et brouillons, sur la lettre) devant, puis par date, puis par nom.
+fn attention_key(today: Date, row: &PersonRow, draft_is_head: bool) -> (u8, i64, &str) {
+    let draft = draft_is_head
+        && row
+            .cues
+            .iter()
+            .any(|cue| matches!(cue, PersonCue::DraftReady));
+    let due = row.due_on.is_some_and(|on| on <= today);
+    let rank = u8::from(!(draft || due));
+    let days = row.due_on.map_or(i64::MAX, |on| (on - today).whole_days());
+    (rank, days, row.name.as_str())
 }
 
 /// Liste unique, trois chapitres. Un client en mission n'apparaît pas aussi en conversation.
@@ -799,14 +841,32 @@ impl Snapshot {
         let in_mission: HashSet<ClientId> = self.missions.iter().map(|m| m.client_id).collect();
 
         let mut conversations = Vec::new();
+        let mut first_messages = Vec::new();
+        let mut first_contacts = Vec::new();
         let mut seen_conv: HashSet<ClientId> = HashSet::new();
         for opp in &self.opportunities {
             if in_mission.contains(&opp.client_id) || !seen_conv.insert(opp.client_id) {
                 continue;
             }
-            conversations.push(self.conversation_row(opp, today));
+            let row = self.conversation_row(opp, today);
+            if row_has_body(&row) {
+                conversations.push(row);
+            } else if row
+                .cues
+                .iter()
+                .any(|c| matches!(c, PersonCue::FirstContact))
+            {
+                first_contacts.push(row);
+            } else {
+                first_messages.push(row);
+            }
         }
-        conversations.sort_by(|a, b| a.name.cmp(&b.name));
+        conversations
+            .sort_by(|a, b| attention_key(today, a, true).cmp(&attention_key(today, b, true)));
+        first_messages
+            .sort_by(|a, b| attention_key(today, a, false).cmp(&attention_key(today, b, false)));
+        first_contacts
+            .sort_by(|a, b| attention_key(today, a, false).cmp(&attention_key(today, b, false)));
 
         let mut missions = Vec::new();
         let mut seen_mission: HashSet<ClientId> = HashSet::new();
@@ -857,6 +917,8 @@ impl Snapshot {
 
         PeopleList {
             conversations,
+            first_messages,
+            first_contacts,
             missions,
             outgoing,
             stopped,
@@ -877,6 +939,7 @@ impl Snapshot {
             cues: vec![PersonCue::Lost {
                 reason: opp.loss_reason.clone(),
             }],
+            due_on: None,
             client_id: Some(opp.client_id),
             opportunity_id: Some(opp.id),
         }
@@ -921,7 +984,8 @@ impl Snapshot {
         } else {
             cues.push(PersonCue::FirstMessage);
         }
-        if let Some(on) = card.and_then(|c| c.due_on).or(opp.next_action_at) {
+        let due_on = card.and_then(|c| c.due_on).or(opp.next_action_at);
+        if let Some(on) = due_on {
             let stage_says_today = on <= today
                 && (cues.contains(&PersonCue::FirstMessage)
                     || cues.contains(&PersonCue::DraftReady));
@@ -941,6 +1005,7 @@ impl Snapshot {
             chapter: PersonChapter::Conversation,
             figure,
             cues,
+            due_on,
             client_id: Some(opp.client_id),
             opportunity_id: Some(opp.id),
         }
@@ -997,6 +1062,7 @@ impl Snapshot {
             chapter: PersonChapter::Mission,
             figure,
             cues,
+            due_on: None,
             client_id: Some(mission.client_id),
             opportunity_id: mission.opportunity_id,
         }
@@ -1038,6 +1104,7 @@ impl Snapshot {
             chapter: PersonChapter::Outgoing,
             figure,
             cues,
+            due_on: None,
             client_id: None,
             opportunity_id: None,
         }
@@ -1955,7 +2022,7 @@ mod tests {
 
         let list = people_list(store.connection(), today).unwrap();
         let ferme = list
-            .conversations
+            .first_messages
             .iter()
             .find(|r| r.name.contains("Ferme"))
             .expect("Ferme");
@@ -1976,7 +2043,7 @@ mod tests {
             ferme.cues
         );
         let porc = list
-            .conversations
+            .first_contacts
             .iter()
             .find(|r| r.name.contains("porc"))
             .expect("porc");
@@ -2657,5 +2724,186 @@ mod tests {
             "{:?}",
             dossier.actions
         );
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn an_estimate_stays_on_the_letter_while_a_due_batch_stays_in_the_pile() {
+        let mut store = test_store("pile");
+        let today = today();
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &SetFollowUpSender {
+                        email: "moi@lumen.test".into(),
+                        name: Some("Moi".into()),
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &CreateProspect {
+                        prospect_name: "Hortense".into(),
+                        address: None,
+                        representative: None,
+                        email: None,
+                        phone: None,
+                        name: "identité".into(),
+                        amount: Money::from_cents(450_000),
+                        probability: Probability::new(30).unwrap(),
+                        next_action_at: today + Duration::days(30),
+                        source: None,
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        for i in 0..100 {
+            applied(
+                Executor::new(&mut store)
+                    .execute(
+                        &CreateProspect {
+                            prospect_name: format!("Fournée {i:03}"),
+                            address: None,
+                            representative: None,
+                            email: None,
+                            phone: None,
+                            name: "premier mot".into(),
+                            amount: Money::ZERO,
+                            probability: Probability::new(10).unwrap(),
+                            next_action_at: today,
+                            source: None,
+                        },
+                        &human(),
+                    )
+                    .unwrap(),
+            );
+        }
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &CreateProspect {
+                        prospect_name: "Après".into(),
+                        address: None,
+                        representative: None,
+                        email: None,
+                        phone: None,
+                        name: "plus tard".into(),
+                        amount: Money::ZERO,
+                        probability: Probability::new(10).unwrap(),
+                        next_action_at: today + Duration::days(10),
+                        source: None,
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        let contact = applied(
+            Executor::new(&mut store)
+                .execute(
+                    &CreateProspect {
+                        prospect_name: "Quai des orfèvres".into(),
+                        address: None,
+                        representative: None,
+                        email: Some("quai@orf.test".into()),
+                        phone: None,
+                        name: "vitrine".into(),
+                        amount: Money::ZERO,
+                        probability: Probability::new(10).unwrap(),
+                        next_action_at: today,
+                        source: None,
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &crate::follow_up::MarkFollowUpSent {
+                        subject: FollowUpSubject::Opportunity(contact),
+                        today,
+                        subject_line: Some("Premier contact".into()),
+                        body: Some("Bonjour,\n\nUn premier mot.\n".into()),
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &crate::follow_up::SetFollowUpDate {
+                        subject: FollowUpSubject::Opportunity(contact),
+                        on: today,
+                        today,
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+
+        let list = people_list(store.connection(), today).unwrap();
+        assert_eq!(
+            list.conversations
+                .iter()
+                .map(|r| r.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Hortense"]
+        );
+        assert!(
+            list.conversations[0]
+                .cues
+                .iter()
+                .any(|c| matches!(c, PersonCue::EstimateNoted)),
+            "{:?}",
+            list.conversations[0].cues
+        );
+        assert_eq!(
+            list.conversations[0].due_on,
+            Some(today + Duration::days(30))
+        );
+
+        assert_eq!(list.first_messages.len(), 101);
+        assert_eq!(list.first_messages[0].name, "Fournée 000");
+        assert_eq!(list.first_messages[99].name, "Fournée 099");
+        assert_eq!(list.first_messages[100].name, "Après");
+        assert!(
+            list.first_messages[0]
+                .cues
+                .iter()
+                .any(|c| matches!(c, PersonCue::FirstMessage)),
+            "{:?}",
+            list.first_messages[0].cues
+        );
+        assert!(
+            !list.first_messages[0]
+                .cues
+                .iter()
+                .any(|c| matches!(c, PersonCue::FollowUpDue { .. })),
+            "un premier message dû garde sa phrase : {:?}",
+            list.first_messages[0].cues
+        );
+        assert_eq!(list.first_messages[0].due_on, Some(today));
+        assert_eq!(
+            list.first_messages[100].due_on,
+            Some(today + Duration::days(10))
+        );
+
+        assert_eq!(list.first_contacts.len(), 1);
+        assert_eq!(list.first_contacts[0].name, "Quai des orfèvres");
+        assert!(
+            list.first_contacts[0]
+                .cues
+                .iter()
+                .any(|c| matches!(c, PersonCue::FirstContact)),
+            "{:?}",
+            list.first_contacts[0].cues
+        );
+        assert_eq!(list.first_contacts[0].due_on, Some(today));
+        assert_eq!(list.open_conversations(), 103);
     }
 }

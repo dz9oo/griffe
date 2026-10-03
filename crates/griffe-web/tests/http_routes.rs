@@ -811,7 +811,40 @@ async fn les_affaires_lists_three_chapters_and_opens_a_dossier() {
         "plus un chapitre Fournisseurs : {list}"
     );
     assert!(list.contains("Camille"), "{list}");
+    assert!(list.contains("1 premier message"), "{list}");
     assert!(list.contains("Nouvelle conversation"), "{list}");
+
+    let filtered = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires?q=personne")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(filtered.contains("1 premier message"), "{filtered}");
+    assert!(filtered.contains("Aucun nom."), "{filtered}");
+
+    let found = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires?q=cami")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(found.contains("Camille"), "{found}");
+    assert!(!found.contains("Aucun nom."), "{found}");
     assert!(!list.contains("freeflow "), "{list}");
     assert!(
         !list.contains("impayé") && !list.contains("pipeline"),
@@ -1141,8 +1174,11 @@ async fn le_jour_nomme_les_conversations_et_le_dossier_note_fiche_estimation_ren
     assert!(jour.contains("2 prospects / 1 client"), "{jour}");
     assert!(jour.contains("class=\"day-split\""), "{jour}");
     assert!(jour.contains("En conversation"), "{jour}");
-    assert!(jour.contains("Le porc du Val"), "{jour}");
-    assert!(jour.contains("Ferme du Nord"), "{jour}");
+    assert!(jour.contains("2 autres conversations"), "{jour}");
+    assert!(
+        !jour.contains("Le porc du Val") && !jour.contains("Ferme du Nord"),
+        "le tas froid ne s'écrit pas dans la lettre du matin : {jour}"
+    );
     assert!(jour.contains("En mission"), "{jour}");
     assert!(jour.contains("Mairie test"), "{jour}");
 

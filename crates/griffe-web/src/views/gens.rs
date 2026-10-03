@@ -40,11 +40,15 @@ pub fn person_href(name: &str) -> String {
 }
 
 pub fn render(store: &Store, today: Date) -> Result<Markup, AppError> {
-    let list = people_list(store.connection(), today)?;
-    Ok(list_markup(&list, today, None))
+    render_search(store, today, "")
 }
 
-pub fn list_markup(list: &PeopleList, today: Date, flash: Option<&str>) -> Markup {
+pub fn render_search(store: &Store, today: Date, query: &str) -> Result<Markup, AppError> {
+    let list = people_list(store.connection(), today)?;
+    Ok(list_markup(&list, today, None, query.trim()))
+}
+
+pub fn list_markup(list: &PeopleList, today: Date, flash: Option<&str>, query: &str) -> Markup {
     let empty = list.is_empty();
     html! {
         div class="letter" data-view=(ViewId::Gens.slug()) {
@@ -65,7 +69,7 @@ pub fn list_markup(list: &PeopleList, today: Date, flash: Option<&str>) -> Marku
                     "Nouvelle conversation"
                 }
             }
-            (chapter("En conversation", &list.conversations, "Aucune conversation ouverte."))
+            (conversation_chapter(list, query))
             (chapter("En mission", &list.missions, "Aucune mission en cours."))
             (outgoing_chapter(&list.outgoing))
             (stopped_chapter(&list.stopped))
@@ -116,7 +120,7 @@ fn stopped_chapter(rows: &[PersonRow]) -> Markup {
 }
 
 fn list_title(list: &PeopleList) -> String {
-    let n = list.conversations.len() + list.missions.len();
+    let n = list.open_conversations() + list.missions.len();
     match n {
         0 => "Les affaires.".into(),
         1 => "Un nom.".into(),
@@ -126,14 +130,111 @@ fn list_title(list: &PeopleList) -> String {
 }
 
 fn list_lede(list: &PeopleList) -> String {
-    match list.conversations.len() {
+    match list.open_conversations() {
         0 => "Avec qui j'en suis. Un nom, pas un type de document.".into(),
         1 => {
-            let name = &list.conversations[0].name;
+            let name = sole_open(list).map_or("ce nom", |row| row.name.as_str());
             format!("Derrière {name}, personne. C'est le trou — pas un graphique.")
         }
         _ => "Avec qui j'en suis. Un nom, pas un type de document.".into(),
     }
+}
+
+fn sole_open(list: &PeopleList) -> Option<&PersonRow> {
+    list.conversations
+        .first()
+        .or(list.first_messages.first())
+        .or(list.first_contacts.first())
+}
+
+fn conversation_chapter(list: &PeopleList, query: &str) -> Markup {
+    let pile = !list.first_messages.is_empty() || !list.first_contacts.is_empty();
+    html! {
+        p class="section-label" { "En conversation" }
+        @if list.conversations.is_empty() && !pile {
+            p class="empty-state" { "Aucune conversation ouverte." }
+        } @else if !list.conversations.is_empty() {
+            ul class="people" {
+                @for row in &list.conversations {
+                    li { (row_link(row)) }
+                }
+            }
+        }
+        (pile_chapter(
+            &list.first_messages,
+            query,
+            "premier message",
+            "premiers messages",
+            "q-messages",
+        ))
+        (pile_chapter(
+            &list.first_contacts,
+            query,
+            "premier contact",
+            "premiers contacts",
+            "q-contacts",
+        ))
+    }
+}
+
+fn pile_chapter(rows: &[PersonRow], query: &str, one: &str, many: &str, field_id: &str) -> Markup {
+    if rows.is_empty() {
+        return html! {};
+    }
+    let shown: Vec<&PersonRow> = rows.iter().filter(|row| name_matches(row, query)).collect();
+    let title = if rows.len() == 1 {
+        format!("1 {one}")
+    } else {
+        format!("{} {many}", rows.len())
+    };
+    html! {
+        details class="pile" open[!query.is_empty()] {
+            summary class="section-label" {
+                (title)
+                span class="stopped-hint" { " · voir" }
+            }
+            form class="pile-find" action="/affaires" method="get"
+                hx-get="/affaires" hx-target="#content" hx-push-url="true" {
+                input id=(field_id) type="search" name="q" value=(query)
+                    placeholder="Un nom" aria-label="Un nom";
+            }
+            @if shown.is_empty() {
+                p class="empty-state" { "Aucun nom." }
+            } @else {
+                ul class="people" {
+                    @for row in shown {
+                        li { (row_link(row)) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn name_matches(row: &PersonRow, query: &str) -> bool {
+    let query = query.trim();
+    if query.is_empty() {
+        return true;
+    }
+    let needle = fold_name(query);
+    fold_name(&row.name).contains(&needle) || fold_name(&row.party).contains(&needle)
+}
+
+fn fold_name(value: &str) -> String {
+    value
+        .to_lowercase()
+        .chars()
+        .map(|c| match c {
+            'à' | 'â' | 'ä' | 'á' | 'ã' => 'a',
+            'é' | 'è' | 'ê' | 'ë' => 'e',
+            'î' | 'ï' | 'í' | 'ì' => 'i',
+            'ô' | 'ö' | 'ó' | 'ò' | 'õ' => 'o',
+            'ù' | 'û' | 'ü' | 'ú' => 'u',
+            'ç' => 'c',
+            'ñ' => 'n',
+            other => other,
+        })
+        .collect()
 }
 
 fn chapter(label: &str, rows: &[PersonRow], empty: &str) -> Markup {

@@ -1359,6 +1359,14 @@ fn people_list_json_on_an_empty_vault_has_three_empty_chapters() {
     );
     assert!(value["missions"].as_array().unwrap().is_empty(), "{value}");
     assert!(value["outgoing"].as_array().unwrap().is_empty(), "{value}");
+    assert!(
+        value["first_messages"].as_array().unwrap().is_empty(),
+        "{value}"
+    );
+    assert!(
+        value["first_contacts"].as_array().unwrap().is_empty(),
+        "{value}"
+    );
 }
 
 #[test]

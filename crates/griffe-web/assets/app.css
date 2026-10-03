@@ -664,9 +664,33 @@ ol.papers .unfold .deposit { margin-top: 0; }
 .people .st { color: var(--ink-2); font-size: 14px; margin-top: 3px; }
 .people .amt { font-family: var(--serif); font-size: 18px; align-self: center; }
 .people a:hover .nm { color: var(--seal); }
-details.stopped > summary { cursor: pointer; list-style: none; }
-details.stopped > summary::-webkit-details-marker { display: none; }
-details.stopped[open] > summary .stopped-hint { display: none; }
+details.stopped > summary,
+details.pile > summary { cursor: pointer; list-style: none; }
+details.stopped > summary::-webkit-details-marker,
+details.pile > summary::-webkit-details-marker { display: none; }
+details.stopped[open] > summary .stopped-hint,
+details.pile[open] > summary .stopped-hint { display: none; }
+.pile-find { margin: 4px 0 0; }
+.pile-find input {
+  width: 100%;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--rule);
+  font: inherit;
+  font-size: 16px;
+  color: var(--ink);
+  padding: 10px 0;
+}
+.pile-find input:focus { outline: none; border-bottom-color: var(--ink); }
+.pile-find input::placeholder { color: var(--ink-2); }
+.day-others {
+  display: block;
+  margin-top: 10px;
+  color: var(--ink-2);
+  font-size: 15px;
+  text-decoration: none;
+}
+.day-others:hover { color: var(--seal); }
 .section-label {
   font-size: 11px;
   letter-spacing: 0.2em;
