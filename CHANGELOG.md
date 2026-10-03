@@ -2,6 +2,15 @@
 
 Ce qui change pour qui se sert de Griffe. Une section par version publiée.
 
+## 0.3.6
+
+- Les phrases se choisissent sur une frise. On ouvre un moment, la lettre se lit à côté. L'écart se compte en jours. On monte, on descend, on ajoute, on retire un moment.
+- Le prénom se prend dans Qui répond. Une enseigne ne prête pas son premier mot. Sans prénom, la lettre dit Bonjour,.
+- Dans les affaires, un nom qui a déjà un corps reste écrit : brouillon prêt, estimation posée, estimation envoyée, en échange, repris. Les premiers messages et les premiers contacts se replient, avec leur nombre, et se retrouvent par le nom.
+- Le jour écrit ces noms-là. Le reste tient en une ligne, « et N autres » ou « N autres conversations », qui ouvre les affaires. Les gestes du jour et l'agenda du mois restent sur les conversations qui ont un corps.
+- Le compte des noms, sur le jour comme dans les affaires, continue de les compter tous.
+- Le coffre garde la même forme.
+
 ## 0.3.5
 
 - Les phrases que tu répètes sont dans le coffre, depuis L'identité. Les réécrire change la prochaine lettre. Une lettre déjà classée, ou un brouillon déjà préparé, garde son texte.
