@@ -14,8 +14,8 @@ use griffe_core::clients::{
 use griffe_core::company::company_profile;
 use griffe_core::domain::{
     Address, ExpenseId, FollowUpSubject, InteractionKind, InvoiceId, InvoiceLine, MissionId, Money,
-    Probability, TemplateContext, VatRate, WriteOffId, format_date, parse_date, phrase_from_editor,
-    phrase_to_editor, render_template,
+    Probability, TemplateContext, VatRate, WriteOffId, chronicle, format_date, given_name,
+    parse_date, phrase_from_editor, phrase_to_editor, render_template,
 };
 use griffe_core::expenses::{AttachReceipt, expense_by_id};
 use griffe_core::follow_up::{
@@ -238,7 +238,7 @@ pub async fn phrases_get(
 ) -> Html<String> {
     let today = state.today();
     let content = state
-        .with_store(|store| phrases_markup(store, &query, today, None, None, None))
+        .with_store(|store| phrases_markup(store, &query, today, None, None, None, None))
         .await
         .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
     page(&headers, content)
@@ -297,6 +297,7 @@ pub async fn phrases_post(
                         Some(error.to_string()),
                         None,
                         Some(&fields),
+                        Some(&fields),
                     )
                 })
                 .await
@@ -307,7 +308,7 @@ pub async fn phrases_post(
             let mut shown = query.clone();
             shown.genre.clear();
             let content = state
-                .with_store(|store| phrases_markup(store, &shown, today, None, None, None))
+                .with_store(|store| phrases_markup(store, &shown, today, None, None, None, None))
                 .await
                 .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
             with_push(
@@ -326,6 +327,7 @@ pub async fn phrases_post(
                         None,
                         Some("Les phrases sont enregistrées.".to_string()),
                         None,
+                        Some(&fields),
                     )
                 })
                 .await
@@ -411,7 +413,7 @@ pub async fn genre_new_post(
                 genre: genre.id.clone(),
             };
             let content = state
-                .with_store(|store| phrases_markup(store, &shown, today, None, None, None))
+                .with_store(|store| phrases_markup(store, &shown, today, None, None, None, None))
                 .await
                 .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
             with_push(
@@ -572,8 +574,10 @@ fn new_moment(first: bool) -> MomentDraft {
     }
 }
 
-const PHRASES_LEDE: &str = "Les phrases que tu répètes. Une lettre par moment, dans l'ordre. Changer ici ne touche pas les lettres déjà classées. Griffe n'envoie pas.";
-const GENRE_LEDE: &str = "Les phrases que tu répètes à ce genre de gens. Une lettre par moment, dans l'ordre. Changer ici ne touche pas les lettres déjà classées. Griffe n'envoie pas.";
+const PHRASES_LEDE: &str =
+    "Changer ici ne touche pas les lettres déjà classées. Griffe n'envoie pas.";
+const GENRE_LEDE: &str = "Les phrases que tu répètes à ce genre de gens. Changer ici ne touche pas les lettres déjà classées. Griffe n'envoie pas.";
+const ENSEIGNE_CAPTION: &str = "Pas de prénom pour cette enseigne. La lettre dira Bonjour,. Le prénom se prend dans Qui répond.";
 
 fn phrases_markup(
     store: &griffe_core::store::Store,
@@ -582,6 +586,7 @@ fn phrases_markup(
     mut banner: Option<String>,
     status: Option<String>,
     fields: Option<&HashMap<String, String>>,
+    navigation: Option<&HashMap<String, String>>,
 ) -> Markup {
     let genre_id = query.genre.trim();
     let genres = prospect_genres(store.connection()).unwrap_or_default();
@@ -627,7 +632,8 @@ fn phrases_markup(
     }))
     .collect();
     let alone = phrases.len() == 1;
-    let moments = phrases
+    let open_key = resolve_open(&phrases, navigation);
+    let moments: Vec<gens::PhraseMoment> = phrases
         .iter()
         .enumerate()
         .map(|(index, phrase)| {
@@ -637,9 +643,11 @@ fn phrases_markup(
                 fields,
                 index + 1 == phrases.len(),
                 alone,
+                phrase.key == open_key,
             )
         })
         .collect();
+    let chronicle = chronicle_of(&moments);
     gens::phrases_page(&gens::PhrasesView {
         back_href: reading.back_href,
         back_label: reading.back_label,
@@ -650,10 +658,92 @@ fn phrases_markup(
         other_href: gens::new_genre_href(query.depuis.trim(), query.pour.trim(), shown),
         drop: current.is_some(),
         moments,
+        chronicle,
         read_caption: reading.caption,
+        prenom: reading.ctx.prenom,
+        sujet: reading.ctx.sujet,
+        montant: reading.ctx.montant,
+        moi: reading.ctx.moi,
+        societe: reading.ctx.societe,
         banner,
         status,
     })
+}
+
+fn chronicle_of(moments: &[gens::PhraseMoment]) -> String {
+    let owned: Vec<(String, i64)> = moments
+        .iter()
+        .map(|moment| (moment.label.clone(), moment.gap.parse().unwrap_or(0)))
+        .collect();
+    let steps: Vec<(&str, i64)> = owned
+        .iter()
+        .map(|(label, days)| (label.as_str(), *days))
+        .collect();
+    chronicle(&steps)
+}
+
+fn resolve_open(
+    phrases: &[ProspectPhrase],
+    navigation: Option<&HashMap<String, String>>,
+) -> String {
+    let first = phrases
+        .first()
+        .map(|phrase| phrase.key.clone())
+        .unwrap_or_default();
+    let Some(navigation) = navigation else {
+        return first;
+    };
+    if navigation.contains_key("add") {
+        return phrases
+            .last()
+            .map(|phrase| phrase.key.clone())
+            .unwrap_or(first);
+    }
+    if let Some(dropped) = navigation.get("drop")
+        && let Some(neighbor) = neighbor_after_drop(navigation, dropped, phrases)
+    {
+        return neighbor;
+    }
+    if let Some((key, _)) = navigation.get("move").and_then(|spec| spec.split_once(':'))
+        && phrases.iter().any(|phrase| phrase.key == key)
+    {
+        return key.to_string();
+    }
+    if let Some(key) = navigation
+        .get("ouvert")
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        && phrases.iter().any(|phrase| phrase.key == key)
+    {
+        return key.to_string();
+    }
+    first
+}
+
+fn neighbor_after_drop(
+    navigation: &HashMap<String, String>,
+    dropped: &str,
+    phrases: &[ProspectPhrase],
+) -> Option<String> {
+    let keys: Vec<&str> = navigation
+        .get("order")?
+        .split(',')
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .collect();
+    let index = keys.iter().position(|key| *key == dropped)?;
+    let candidate = if index + 1 < keys.len() {
+        keys[index + 1]
+    } else if index > 0 {
+        keys[index - 1]
+    } else {
+        return None;
+    };
+    phrases
+        .iter()
+        .any(|phrase| phrase.key == candidate)
+        .then(|| candidate.to_string())
 }
 
 struct PhraseReading {
@@ -694,16 +784,10 @@ fn phrase_reading(
     let Ok(dossier) = person(store.connection(), pour, today) else {
         return example;
     };
-    let prenom = dossier
-        .contact_name
-        .as_deref()
-        .filter(|name| !name.trim().is_empty())
-        .unwrap_or(dossier.name.as_str());
-    let prenom = prenom
-        .split_whitespace()
-        .next()
-        .unwrap_or(prenom)
-        .to_string();
+    let prenom = given_name(
+        dossier.contact_name.as_deref().unwrap_or(""),
+        dossier.name.as_str(),
+    );
     let href = gens::person_href(&dossier.name);
     let (back_href, back_label) = if depuis == "lettre" {
         (format!("{href}/ecrire"), dossier.name.clone())
@@ -712,8 +796,13 @@ fn phrase_reading(
     } else {
         (href, dossier.name.clone())
     };
+    let caption = if prenom.is_empty() {
+        ENSEIGNE_CAPTION.to_string()
+    } else {
+        format!("{prenom} lira")
+    };
     PhraseReading {
-        caption: format!("{prenom} lira"),
+        caption,
         ctx: TemplateContext {
             prenom,
             sujet: dossier
@@ -758,6 +847,7 @@ fn phrase_moment(
     fields: Option<&HashMap<String, String>>,
     last: bool,
     alone: bool,
+    open: bool,
 ) -> gens::PhraseMoment {
     let (label, subject, body, gap) = if let Some(fields) = fields {
         (
@@ -787,6 +877,7 @@ fn phrase_moment(
     };
     gens::PhraseMoment {
         key: phrase.key.clone(),
+        reads_subject: render_template(&phrase_from_editor(&subject), ctx),
         reads: render_template(&phrase_from_editor(&body), ctx),
         label,
         subject,
@@ -796,6 +887,7 @@ fn phrase_moment(
         first: phrase.position == 0,
         last,
         alone,
+        open,
     }
 }
 

@@ -1431,7 +1431,7 @@ mod tests {
             &KeepGenreWords {
                 subject: mairie,
                 today,
-                subject_line: Some("Bonjour « le prénom »".into()),
+                subject_line: Some("Bonjour <prénom>".into()),
                 body: Some("Un mot pour la mairie.".into()),
                 genre_name: None,
             },

@@ -7544,7 +7544,13 @@ async fn phrases_are_a_letter_and_the_next_unopened_mail_uses_them() {
     .await;
     assert!(page.contains("Les phrases."), "{page}");
     assert!(page.contains("Premier message"), "{page}");
-    assert!(page.contains("« le prénom »"), "{page}");
+    assert!(
+        page.contains("Premier message le jour du dossier."),
+        "{page}"
+    );
+    assert!(page.contains("&lt;prénom&gt;"), "{page}");
+    assert!(page.contains("class=\"phrase-frise\""), "{page}");
+    assert!(!page.contains("class=\"phrase-moment\""), "{page}");
     assert!(
         page.contains("Griffe n'envoie pas") || page.contains("Griffe n&#x27;envoie pas"),
         "{page}"
@@ -7636,6 +7642,44 @@ label_close=Dernier+mot&subject_close=Fin&body_close=Un+dernier+mot.&revision_cl
         identity.contains("Les phrases") && identity.contains("selon qui ils sont"),
         "{identity}"
     );
+}
+
+#[tokio::test]
+async fn an_enseigne_is_not_greeted_with_its_article() {
+    let db_path = test_db_path("enseigne-prenom");
+    let state = unlocked_state(&db_path).await;
+    let router = griffe_web::router(state);
+    router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/affaires/nouvelle")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from(
+                    "who=Le+porc+de+Val+de+la+Sens%C3%A9e&phrase=charcuterie",
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let page = body_text(
+        router
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/phrases?pour=Le%20porc%20de%20Val%20de%20la%20Sens%C3%A9e")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(page.contains("Bonjour,"), "{page}");
+    assert!(!page.contains("Bonjour Le"), "{page}");
+    assert!(page.contains("Pas de prénom pour cette enseigne"), "{page}");
 }
 
 #[tokio::test]
@@ -7740,10 +7784,14 @@ async fn engaged_conversations_finish_their_series_and_a_new_one_takes_three_mom
             .unwrap(),
     )
     .await;
-    assert!(phrases.contains("class=\"letter\""), "{phrases}");
+    assert!(phrases.contains("class=\"phrase-desk\""), "{phrases}");
     assert!(!phrases.contains("letter spread"), "{phrases}");
     assert!(!phrases.contains("<table"), "{phrases}");
-    assert!(phrases.contains("Écart"), "{phrases}");
+    assert!(phrases.contains("class=\"phrase-frise\""), "{phrases}");
+    assert!(
+        phrases.contains("Premier message le jour du dossier."),
+        "{phrases}"
+    );
     assert!(
         phrases.contains("Les conversations déjà engagées finissent leur série."),
         "{phrases}"

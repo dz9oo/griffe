@@ -767,7 +767,11 @@ fn follow_up_phrases_lists_the_seed_and_a_rewrite_is_what_the_next_letter_uses()
         .clone();
     let listed = String::from_utf8(listed).unwrap();
     assert!(listed.contains("Premier message"), "{listed}");
-    assert!(listed.contains("« le prénom »"), "{listed}");
+    assert!(
+        listed.contains("Premier message le jour du dossier."),
+        "{listed}"
+    );
+    assert!(listed.contains("<prénom>"), "{listed}");
     assert!(!listed.contains("{{"), "{listed}");
     assert!(
         !listed.contains("template") && !listed.contains("cadence"),

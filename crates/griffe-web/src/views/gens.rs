@@ -1168,6 +1168,8 @@ pub struct PhraseMoment {
     pub first: bool,
     pub last: bool,
     pub alone: bool,
+    pub open: bool,
+    pub reads_subject: String,
     pub reads: String,
 }
 
@@ -1187,7 +1189,13 @@ pub struct PhrasesView {
     pub other_href: String,
     pub drop: bool,
     pub moments: Vec<PhraseMoment>,
+    pub chronicle: String,
     pub read_caption: String,
+    pub prenom: String,
+    pub sujet: String,
+    pub montant: String,
+    pub moi: String,
+    pub societe: String,
     pub banner: Option<String>,
     pub status: Option<String>,
 }
@@ -1218,8 +1226,13 @@ pub fn phrases_page(view: &PhrasesView) -> Markup {
         .map(|moment| moment.key.as_str())
         .collect::<Vec<_>>()
         .join(",");
+    let open = view.moments.iter().find(|moment| moment.open);
+    let sheet_subject = open
+        .map(|moment| moment.reads_subject.as_str())
+        .unwrap_or("");
+    let sheet_body = open.map(|moment| moment.reads.as_str()).unwrap_or("");
     html! {
-        div class="letter" data-view=(ViewId::Gens.slug()) {
+        div class="phrase-desk" data-view=(ViewId::Gens.slug()) {
             a class="back" href=(view.back_href) hx-get=(view.back_href) hx-target="#content" hx-push-url="true" {
                 "← " (view.back_label)
             }
@@ -1239,6 +1252,7 @@ pub fn phrases_page(view: &PhrasesView) -> Markup {
                 }
             }
             p class="lede" { (view.lede) }
+            p class="phrase-chronicle" id="phrase-chronicle" { (view.chronicle) }
             p class="phrase-when" { "Les conversations déjà engagées finissent leur série." }
             @if let Some(msg) = &view.banner {
                 p class="mast-note" role="alert" { (msg) }
@@ -1248,43 +1262,72 @@ pub fn phrases_page(view: &PhrasesView) -> Markup {
             }
             form hx-post=(view.action) hx-target="#content" hx-push-url="true" {
                 input type="hidden" name="order" value=(order);
-                @for moment in &view.moments {
-                    div class="phrase-moment" {
-                        @if moment.first {
-                            p class="phrase-when" { "Le jour déjà posé sur le dossier." }
-                        } @else {
-                            div class="field phrase-gap" {
-                                label for=(format!("ecart_{}", moment.key)) { "Écart" }
-                                input id=(format!("ecart_{}", moment.key))
-                                      name=(format!("ecart_{}", moment.key))
-                                      type="text"
-                                      inputmode="numeric"
-                                      value=(moment.gap);
-                                p class="phrase-caption" { "jours après le précédent" }
-                            }
-                        }
-                        @if !moment.alone {
-                            div class="token-row" {
-                                @if !moment.first {
-                                    button type="submit" name="move" value=(format!("{}:earlier", moment.key)) { "Monter" }
+                div class="phrase-stage" {
+                    div class="phrase-frise" role="radiogroup" aria-label="Les moments" {
+                        span class="phrase-playhead" aria-hidden="true" {}
+                        @for moment in &view.moments {
+                            @if !moment.first {
+                                div class="phrase-link" {
+                                    span class="phrase-rule" {}
+                                    label class="phrase-gap" {
+                                        input id=(format!("ecart_{}", moment.key))
+                                              name=(format!("ecart_{}", moment.key))
+                                              type="text"
+                                              inputmode="numeric"
+                                              value=(moment.gap)
+                                              aria-label=(format!("Jours avant {}", moment.label));
+                                        span { "j" }
+                                    }
                                 }
-                                @if !moment.last {
-                                    button type="submit" name="move" value=(format!("{}:later", moment.key)) { "Descendre" }
+                            }
+                            div class="phrase-unit" {
+                                input class="phrase-pick"
+                                      type="radio"
+                                      name="ouvert"
+                                      id=(format!("pick-{}", moment.key))
+                                      value=(moment.key)
+                                      checked[moment.open];
+                                label class="phrase-node" for=(format!("pick-{}", moment.key)) {
+                                    span class="dot" aria-hidden="true" {}
+                                    span class="phrase-node-name" { (moment.label) }
+                                    @if moment.first {
+                                        span class="phrase-node-when" { "le jour" }
+                                    }
                                 }
-                                button type="submit" name="drop" value=(moment.key) { "Retirer" }
+                                div class="phrase-panel" {
+                                    (phrase_line(&format!("label_{}", moment.key), "Ce moment", &moment.label, false))
+                                    (phrase_line(&format!("subject_{}", moment.key), "Sujet", &moment.subject, false))
+                                    (phrase_line(&format!("body_{}", moment.key), "Lettre", &moment.body, true))
+                                    input type="hidden" name=(format!("revision_{}", moment.key)) value=(moment.revision);
+                                    div class="token-row" {
+                                        @for (name, insert) in PHRASE_TOKENS {
+                                            button type="button" data-insert=(insert) { (name) }
+                                        }
+                                    }
+                                    @if !moment.alone {
+                                        div class="phrase-moves" {
+                                            @if !moment.first {
+                                                button type="submit" name="move" value=(format!("{}:earlier", moment.key)) { "Monter" }
+                                            }
+                                            @if !moment.last {
+                                                button type="submit" name="move" value=(format!("{}:later", moment.key)) { "Descendre" }
+                                            }
+                                            button type="submit" name="drop" value=(moment.key) { "Retirer" }
+                                        }
+                                    }
+                                }
                             }
                         }
-                        (phrase_line(&format!("label_{}", moment.key), "Ce moment", &moment.label, false))
-                        (phrase_line(&format!("subject_{}", moment.key), "Sujet", &moment.subject, false))
-                        (phrase_line(&format!("body_{}", moment.key), "Lettre", &moment.body, true))
-                        input type="hidden" name=(format!("revision_{}", moment.key)) value=(moment.revision);
-                        div class="token-row" {
-                            @for (name, insert) in PHRASE_TOKENS {
-                                button type="button" data-insert=(insert) { (name) }
-                            }
-                        }
+                    }
+                    aside class="phrase-sheet"
+                          data-prenom=(view.prenom)
+                          data-sujet=(view.sujet)
+                          data-montant=(view.montant)
+                          data-moi=(view.moi)
+                          data-societe=(view.societe) {
                         p class="phrase-caption" { (view.read_caption) }
-                        pre class="phrase-read" { (moment.reads) }
+                        p class="phrase-sheet-subject" { (sheet_subject) }
+                        pre class="phrase-sheet-body" { (sheet_body) }
                     }
                 }
                 div class="row-actions" {
@@ -1300,11 +1343,11 @@ pub fn phrases_page(view: &PhrasesView) -> Markup {
 }
 
 const PHRASE_TOKENS: &[(&str, &str)] = &[
-    ("« le prénom »", "« le prénom »"),
-    ("« le sujet »", "« le sujet »"),
-    ("« le montant »", "« le montant »"),
-    ("« moi »", "« moi »"),
-    ("« la société »", "« la société »"),
+    ("<prénom>", "<prénom>"),
+    ("<sujet>", "<sujet>"),
+    ("<montant>", "<montant>"),
+    ("<moi>", "<moi>"),
+    ("<société>", "<société>"),
 ];
 
 fn phrase_line(id: &str, label: &str, value: &str, letter: bool) -> Markup {

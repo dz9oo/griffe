@@ -83,9 +83,9 @@ pub(crate) struct RewritePhraseArgs {
     key: String,
     /// Nom du moment, tel qu'on le lit.
     label: String,
-    /// Sujet. « le prénom » entre guillemets, ou le jeton `{{prenom}}`.
+    /// Sujet. `<prénom>`, ou le jeton `{{prenom}}`.
     subject: String,
-    /// Corps. Mêmes mots que le sujet.
+    /// Corps. Mêmes balises que le sujet.
     body: String,
     #[serde(default)]
     dry_run: bool,
@@ -95,7 +95,7 @@ pub(crate) struct RewritePhraseArgs {
 pub(crate) struct AddMomentArgs {
     /// Nom du moment. Défaut : « Nouveau moment ».
     label: Option<String>,
-    /// Sujet. Défaut : « le sujet ».
+    /// Sujet. Défaut : `<sujet>`.
     subject: Option<String>,
     /// Corps. Défaut : une lettre courte.
     body: Option<String>,
