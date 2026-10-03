@@ -7802,8 +7802,28 @@ async fn engaged_conversations_finish_their_series_and_a_new_one_takes_three_mom
     )
     .await;
     assert!(
-        jour.contains("Écrire à Camille") && jour.contains("prévue le 5 septembre 2026"),
+        jour.contains("une autre conversation") && !jour.contains("Écrire à Camille"),
         "{jour}"
+    );
+    let listed = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        listed.contains("1 premier contact")
+            && listed.contains("Camille")
+            && listed.contains("à reprendre aujourd'hui"),
+        "{listed}"
     );
 
     let phrases = body_text(
@@ -7887,8 +7907,29 @@ label_close=Derni%C3%A8re+relance&subject_close=Fin&body_close=Le+dernier+mot.&r
     )
     .await;
     assert!(
-        jour.contains("Écrire à Camille") && jour.contains("prévue le 5 septembre 2026"),
+        jour.contains("une autre conversation") && !jour.contains("Écrire à Camille"),
         "{jour}"
+    );
+    let listed = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        listed.contains("1 premier contact")
+            && listed.contains("Camille")
+            && listed.contains("à reprendre aujourd'hui")
+            && !listed.contains("12 septembre"),
+        "{listed}"
     );
 
     router
