@@ -401,23 +401,19 @@ pub struct TemplateContext {
 }
 
 impl TemplateContext {
-    /// Prénom = premier mot du contact, sinon le client.
+    /// Prénom issu de « Qui répond » quand il diffère de « Qui ».
+    /// Sinon, premier mot de « Qui » seulement si ce n'est pas une enseigne.
     #[must_use]
     pub fn with_names(mut self, contact: &str, client: &str) -> Self {
         let contact = contact.trim();
         let client = client.trim();
+        self.prenom = given_name(contact, client);
         self.contact = if contact.is_empty() {
             client.to_string()
         } else {
             contact.to_string()
         };
         self.client = client.to_string();
-        self.prenom = self
-            .contact
-            .split_whitespace()
-            .next()
-            .unwrap_or(client)
-            .to_string();
         self
     }
 
@@ -429,16 +425,204 @@ impl TemplateContext {
     }
 }
 
-/// Mots de l'éditeur, dans l'ordre des jetons stockés. « le prénom », pas `{{prenom}}`.
+/// Balises de l'éditeur, dans l'ordre des jetons stockés. `<prénom>`, pas `{{prenom}}`.
 const EDITOR_WORDS: &[(&str, &str)] = &[
-    ("{{prenom}}", "« le prénom »"),
-    ("{{contact}}", "« le contact »"),
-    ("{{client}}", "« le client »"),
-    ("{{sujet}}", "« le sujet »"),
-    ("{{montant}}", "« le montant »"),
-    ("{{moi}}", "« moi »"),
-    ("{{societe}}", "« la société »"),
+    ("{{prenom}}", "<prénom>"),
+    ("{{contact}}", "<contact>"),
+    ("{{client}}", "<client>"),
+    ("{{sujet}}", "<sujet>"),
+    ("{{montant}}", "<montant>"),
+    ("{{moi}}", "<moi>"),
+    ("{{societe}}", "<société>"),
 ];
+
+const ARTICLES: &[&str] = &[
+    "le", "la", "les", "l", "un", "une", "du", "des", "au", "aux",
+];
+
+const ORG_WORDS: &[&str] = &[
+    "sas",
+    "sasu",
+    "sarl",
+    "eurl",
+    "sa",
+    "sci",
+    "earl",
+    "gaec",
+    "scea",
+    "association",
+    "mairie",
+    "commune",
+    "societe",
+    "société",
+    "entreprise",
+    "atelier",
+    "boulangerie",
+    "restaurant",
+    "hotel",
+    "hôtel",
+    "garage",
+    "ferme",
+];
+
+const CIVILITIES: &[&str] = &[
+    "m",
+    "mr",
+    "mme",
+    "mlle",
+    "monsieur",
+    "madame",
+    "mademoiselle",
+    "dr",
+    "docteur",
+    "me",
+    "maitre",
+    "maître",
+];
+
+/// Prénom d'une lettre. `contact` est « Qui répond », `client` est « Qui ».
+/// Une enseigne ne prête pas son premier mot.
+#[must_use]
+pub fn given_name(contact: &str, client: &str) -> String {
+    let contact = contact.trim();
+    let client = client.trim();
+    let distinct = !contact.is_empty() && !same_name(contact, client);
+    if distinct {
+        if looks_like_organization(contact) {
+            return String::new();
+        }
+        return first_given(contact);
+    }
+    let name = if contact.is_empty() { client } else { contact };
+    if name.is_empty() || looks_like_organization(name) {
+        String::new()
+    } else {
+        first_given(name)
+    }
+}
+
+fn same_name(left: &str, right: &str) -> bool {
+    fold_name(left) == fold_name(right)
+}
+
+fn fold_name(name: &str) -> String {
+    name.trim().to_lowercase().replace(['’', '‘', '´'], "'")
+}
+
+fn looks_like_organization(name: &str) -> bool {
+    let folded = fold_name(name);
+    if folded.is_empty() {
+        return false;
+    }
+    let padded = format!(" {folded} ");
+    if padded.contains(" du ")
+        || padded.contains(" des ")
+        || padded.contains(" de la ")
+        || padded.contains(" de l'")
+    {
+        return true;
+    }
+    let tokens: Vec<String> = folded.split_whitespace().map(token_key).collect();
+    let Some(first) = tokens.first() else {
+        return false;
+    };
+    if ARTICLES.contains(&first.as_str()) || first.starts_with("l'") {
+        return true;
+    }
+    tokens
+        .iter()
+        .any(|token| ORG_WORDS.contains(&token.as_str()))
+}
+
+fn token_key(token: &str) -> String {
+    token
+        .trim_matches(|c: char| {
+            matches!(
+                c,
+                '.' | ',' | ';' | ':' | '!' | '?' | '«' | '»' | '"' | '(' | ')'
+            )
+        })
+        .replace('.', "")
+}
+
+fn first_given(name: &str) -> String {
+    let mut parts = name.split_whitespace().filter(|part| !part.is_empty());
+    let Some(first) = parts.next() else {
+        return String::new();
+    };
+    if is_civility(first) {
+        parts.next().map(clean_token).unwrap_or_default()
+    } else {
+        clean_token(first)
+    }
+}
+
+fn is_civility(token: &str) -> bool {
+    let key = token_key(&fold_name(token));
+    CIVILITIES.contains(&key.as_str())
+}
+
+fn clean_token(token: &str) -> String {
+    token
+        .trim_matches(|c: char| matches!(c, ',' | '.'))
+        .to_string()
+}
+
+/// Une phrase, du premier moment au dernier. Le premier est le jour du dossier.
+#[must_use]
+pub fn chronicle(moments: &[(&str, i64)]) -> String {
+    let mut parts = Vec::new();
+    for (index, (label, offset)) in moments.iter().enumerate() {
+        let label = label.trim();
+        let label = if label.is_empty() { "Ce moment" } else { label };
+        if index == 0 {
+            parts.push(format!("{label} le jour du dossier."));
+        } else {
+            parts.push(format!("{}, {}.", apres(*offset), lower_first(label)));
+        }
+    }
+    parts.join(" ")
+}
+
+fn apres(days: i64) -> String {
+    let word = match days {
+        0 => return "Le même jour".to_string(),
+        1 => return "Un jour après".to_string(),
+        2 => "deux",
+        3 => "trois",
+        4 => "quatre",
+        5 => "cinq",
+        6 => "six",
+        7 => "sept",
+        8 => "huit",
+        9 => "neuf",
+        10 => "dix",
+        11 => "onze",
+        12 => "douze",
+        13 => "treize",
+        14 => "quatorze",
+        15 => "quinze",
+        16 => "seize",
+        n => return format!("{n} jours après"),
+    };
+    format!("{} jours après", capitalize_word(word))
+}
+
+fn capitalize_word(word: &str) -> String {
+    let mut chars = word.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+    }
+}
+
+fn lower_first(value: &str) -> String {
+    let mut chars = value.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(first) => first.to_lowercase().collect::<String>() + chars.as_str(),
+    }
+}
 
 /// Ce que la lettre des phrases montre. Les jetons inconnus restent en accolades.
 #[must_use]
@@ -461,9 +645,10 @@ pub fn phrase_from_editor(edited: &str) -> String {
 }
 
 /// Remplace les `{{clés}}` connues. Une clé inconnue reste telle quelle.
+/// Sans prénom, « Bonjour , » et « Cher , » se referment.
 #[must_use]
 pub fn render_template(template: &str, ctx: &TemplateContext) -> String {
-    template
+    let text = template
         .replace("{{prenom}}", &ctx.prenom)
         .replace("{{contact}}", &ctx.contact)
         .replace("{{client}}", &ctx.client)
@@ -474,7 +659,44 @@ pub fn render_template(template: &str, ctx: &TemplateContext) -> String {
         .replace("{{facture}}", &ctx.facture)
         .replace("{{echeance}}", &ctx.echeance)
         .replace("{{retard}}", &ctx.retard)
-        .replace("{{solde}}", &ctx.solde)
+        .replace("{{solde}}", &ctx.solde);
+    if ctx.prenom.trim().is_empty() {
+        collapse_empty_greeting(&text)
+    } else {
+        text
+    }
+}
+
+fn collapse_empty_greeting(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while !rest.is_empty() {
+        if let Some(greeting) = greeting_at(rest) {
+            let after = &rest[greeting.len()..];
+            let spaces = after
+                .chars()
+                .take_while(|c| *c == ' ' || *c == '\t')
+                .count();
+            if spaces > 0 && after.as_bytes().get(spaces) == Some(&b',') {
+                out.push_str(greeting);
+                out.push(',');
+                rest = &after[spaces + 1..];
+                continue;
+            }
+        }
+        let Some(ch) = rest.chars().next() else {
+            break;
+        };
+        out.push(ch);
+        rest = &rest[ch.len_utf8()..];
+    }
+    out
+}
+
+fn greeting_at(text: &str) -> Option<&'static str> {
+    ["Bonjour", "Cher"]
+        .into_iter()
+        .find(|greeting| text.starts_with(greeting))
 }
 
 /// Date en français pour le corps d'un mail (« 5 septembre 2026 »).
@@ -819,14 +1041,81 @@ mod tests {
     fn editor_words_roundtrip_to_the_stored_tokens() {
         let stored = "Bonjour {{prenom}},\n\n{{sujet}} ({{montant}}).\n{{moi}}\n{{societe}}\n";
         let shown = phrase_to_editor(stored);
-        assert!(shown.contains("« le prénom »"));
-        assert!(shown.contains("« le sujet »"));
-        assert!(shown.contains("« le montant »"));
-        assert!(shown.contains("« moi »"));
-        assert!(shown.contains("« la société »"));
+        assert!(shown.contains("<prénom>"));
+        assert!(shown.contains("<sujet>"));
+        assert!(shown.contains("<montant>"));
+        assert!(shown.contains("<moi>"));
+        assert!(shown.contains("<société>"));
         assert!(!shown.contains("{{"));
+        assert!(!shown.contains("« le prénom »"));
         assert_eq!(phrase_from_editor(&shown), stored);
         assert_eq!(phrase_from_editor(stored), stored);
+    }
+
+    #[test]
+    fn ordinary_words_are_not_turned_into_tokens() {
+        let prose = "Je parle du prénom, du sujet, et de la société.";
+        assert_eq!(phrase_from_editor(prose), prose);
+        assert_eq!(
+            phrase_from_editor("Bonjour <prénom>, au <sujet>."),
+            "Bonjour {{prenom}}, au {{sujet}}."
+        );
+    }
+
+    #[test]
+    fn an_enseigne_does_not_yield_a_first_word() {
+        let pig = TemplateContext::default()
+            .with_names("Le porc de Val de la Sensée", "Le porc de Val de la Sensée");
+        assert_eq!(pig.prenom, "");
+        let valley = TemplateContext::default()
+            .with_names("Porc du Val de la Sensée", "Porc du Val de la Sensée");
+        assert_eq!(valley.prenom, "");
+        let firm = TemplateContext::default().with_names("SASU Atelier Nord", "SASU Atelier Nord");
+        assert_eq!(firm.prenom, "");
+    }
+
+    #[test]
+    fn a_person_name_still_yields_the_given_name() {
+        let same = TemplateContext::default().with_names("Camille Rivière", "Camille Rivière");
+        assert_eq!(same.prenom, "Camille");
+        let replies =
+            TemplateContext::default().with_names("Madame Camille Rivière", "Mairie d'Aubigny");
+        assert_eq!(replies.prenom, "Camille");
+        let jean = TemplateContext::default().with_names("Jean", "Le porc de Val de la Sensée");
+        assert_eq!(jean.prenom, "Jean");
+        let hyphen = TemplateContext::default().with_names("Jean-Pierre Martin", "Acme");
+        assert_eq!(hyphen.prenom, "Jean-Pierre");
+    }
+
+    #[test]
+    fn an_empty_given_name_closes_the_greeting() {
+        let text = render_template(
+            "Bonjour {{prenom}},\n\nCher {{prenom}},\n",
+            &TemplateContext {
+                sujet: "la refonte".into(),
+                ..TemplateContext::default()
+            },
+        );
+        assert_eq!(text, "Bonjour,\n\nCher,\n");
+    }
+
+    #[test]
+    fn the_chronicle_reads_the_series_in_one_sentence() {
+        let sentence = chronicle(&[
+            ("Premier message", 0),
+            ("Petit rappel", 3),
+            ("Relance utile", 7),
+            ("Dernier mot", 14),
+        ]);
+        assert_eq!(
+            sentence,
+            "Premier message le jour du dossier. Trois jours après, petit rappel. Sept jours après, relance utile. Quatorze jours après, dernier mot."
+        );
+        assert_eq!(chronicle(&[("Seul", 0)]), "Seul le jour du dossier.");
+        assert_eq!(
+            chronicle(&[("Premier message", 0), ("Suite", 1), ("Bien plus tard", 21)]),
+            "Premier message le jour du dossier. Un jour après, suite. 21 jours après, bien plus tard."
+        );
     }
 
     #[test]

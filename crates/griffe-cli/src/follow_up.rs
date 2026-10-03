@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 use clap::Subcommand;
 use griffe_core::app::{ExecutionContext, Executor};
 use griffe_core::domain::{
-    FollowUpSubject, SnoozePreset, format_date, phrase_from_editor, phrase_to_editor, snooze_date,
+    FollowUpSubject, SnoozePreset, chronicle, format_date, phrase_from_editor, phrase_to_editor,
+    snooze_date,
 };
 use griffe_core::follow_up::{
     ArrangeProspectPhrases, CardStatus, CreateProspectGenre, DropProspectGenre, FollowUpCard,
@@ -209,8 +210,8 @@ pub enum FollowUpCommand {
         label: String,
         #[arg(long)]
         subject: String,
-        /// Corps. Les mots « le prénom », « le sujet », « le montant », « moi », « la société »
-        /// entre guillemets sont les jetons.
+        /// Corps. Les balises `<prénom>`, `<sujet>`, `<montant>`, `<moi>` et `<société>`
+        /// sont les jetons. Un mot ordinaire reste tel quel.
         #[arg(long)]
         body: Option<String>,
         #[arg(long, conflicts_with = "body")]
@@ -297,7 +298,7 @@ pub enum MomentsCommand {
         /// Nom du moment. Défaut : « Nouveau moment ».
         #[arg(long)]
         label: Option<String>,
-        /// Sujet. Défaut : « le sujet ».
+        /// Sujet. Défaut : `<sujet>`.
         #[arg(long)]
         subject: Option<String>,
         /// Corps. Défaut : une lettre courte.
@@ -442,11 +443,21 @@ fn render_genres(genres: &[ProspectGenre]) -> String {
 }
 
 fn render_phrases(phrases: &[ProspectPhrase]) -> String {
-    phrases
+    let steps: Vec<(&str, i64)> = phrases
+        .iter()
+        .map(|phrase| (phrase.label.as_str(), phrase.offset_days))
+        .collect();
+    let body = phrases
         .iter()
         .map(format_phrase)
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n");
+    let sentence = chronicle(&steps);
+    if sentence.is_empty() {
+        body
+    } else {
+        format!("{sentence}\n\n{body}")
+    }
 }
 
 fn living_drafts(store: &Store) -> Result<Vec<MomentDraft>, CliError> {

@@ -56,8 +56,8 @@ pub fn render(store: &Store, today: Date) -> Result<Markup, AppError> {
     let note = mast_note(&mast, setup.is_done());
     let alarming = mast.is_alarming();
 
-    let roster = roster_label(people.conversations.len(), people.missions.len());
-    let has_people = !people.conversations.is_empty() || !people.missions.is_empty();
+    let roster = roster_label(people.open_conversations(), people.missions.len());
+    let has_people = people.open_conversations() > 0 || !people.missions.is_empty();
 
     Ok(html! {
         div class="letter spread" data-view=(ViewId::Jour.slug()) {
@@ -135,16 +135,25 @@ fn gestes_block(
 }
 
 fn day_people(list: &PeopleList) -> Markup {
-    if list.conversations.is_empty() && list.missions.is_empty() {
+    let pile = list.first_messages.len() + list.first_contacts.len();
+    if list.conversations.is_empty() && list.missions.is_empty() && pile == 0 {
         return html! {};
     }
     html! {
         div class="day-who" {
-            @if !list.conversations.is_empty() {
+            @if !list.conversations.is_empty() || pile > 0 {
                 p class="section-label" { "En conversation" }
-                ul class="people" {
-                    @for row in &list.conversations {
-                        li { (person_line(row)) }
+                @if !list.conversations.is_empty() {
+                    ul class="people" {
+                        @for row in &list.conversations {
+                            li { (person_line(row)) }
+                        }
+                    }
+                }
+                @if pile > 0 {
+                    a class="day-others" href="/affaires"
+                      hx-get="/affaires" hx-target="#content" hx-push-url="true" {
+                        (others_fr(list.conversations.len(), pile))
                     }
                 }
             }
@@ -157,6 +166,21 @@ fn day_people(list: &PeopleList) -> Markup {
                 }
             }
         }
+    }
+}
+
+fn others_fr(bodies: usize, pile: usize) -> String {
+    if bodies == 0 {
+        return if pile == 1 {
+            "une autre conversation".into()
+        } else {
+            format!("{pile} autres conversations")
+        };
+    }
+    if pile == 1 {
+        "et une autre".into()
+    } else {
+        format!("et {pile} autres")
     }
 }
 

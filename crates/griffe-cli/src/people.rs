@@ -23,6 +23,14 @@ impl HumanRender for PeopleList {
         let mut out = String::new();
         out.push_str("En conversation\n");
         out.push_str(&chapter_table(&self.conversations));
+        if !self.first_messages.is_empty() {
+            out.push_str("\nPremiers messages\n");
+            out.push_str(&chapter_table(&self.first_messages));
+        }
+        if !self.first_contacts.is_empty() {
+            out.push_str("\nPremiers contacts\n");
+            out.push_str(&chapter_table(&self.first_contacts));
+        }
         out.push_str("\nEn mission\n");
         out.push_str(&chapter_table(&self.missions));
         out.push_str("\nChez qui ça sort\n");

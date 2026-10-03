@@ -3,6 +3,8 @@
 //! Lot 49. Le cœur compose des faits typés ; c'est la fenêtre (et le rendu CLI) qui rédige le
 //! français. `today` est un argument d'adaptateur, jamais lu ici.
 
+use std::collections::HashSet;
+
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use time::Date;
@@ -12,7 +14,8 @@ use crate::billing::{aged_balance, list_bank_transactions, list_invoices};
 use crate::clients::client_by_id;
 use crate::company::company_profile;
 use crate::domain::{
-    ClientId, FollowUpKind, FollowUpSubject, InvoiceId, MissionId, Money, Month, format_date,
+    ClientId, FollowUpKind, FollowUpSubject, InvoiceId, MissionId, Money, Month, OpportunityId,
+    format_date,
 };
 use crate::fiscal::{FiscalDeadline, FiscalDeadlineKind, fiscal_calendar};
 use crate::follow_up::{CardStatus, FollowUpCard, follow_up_board, follow_up_queue};
@@ -301,6 +304,7 @@ pub fn day_gestures(conn: &Connection, today: Date) -> Result<Vec<DayGesture>, A
     let calendar = fiscal_calendar(conn, today)?;
     let duty = next_state_duty(conn, &calendar, today)?;
 
+    let cold = cold_opportunity_ids(conn, today)?;
     let mut gestes = Vec::new();
     if !setup.is_done() {
         gestes.push(setup_gesture(&setup));
@@ -308,6 +312,9 @@ pub fn day_gestures(conn: &Connection, today: Date) -> Result<Vec<DayGesture>, A
     for card in &queue {
         if gestes.len() >= MAX_GESTURES {
             break;
+        }
+        if cold_prospect(card, &cold) {
+            continue;
         }
         gestes.push(follow_up_gesture(card));
     }
@@ -359,6 +366,26 @@ pub fn day_gestures(conn: &Connection, today: Date) -> Result<Vec<DayGesture>, A
         gestes.push(state_duty_gesture(d));
     }
     Ok(gestes)
+}
+
+fn cold_opportunity_ids(
+    conn: &Connection,
+    today: Date,
+) -> Result<HashSet<OpportunityId>, AppError> {
+    let list = crate::people::people_list(conn, today)?;
+    Ok(list
+        .first_messages
+        .iter()
+        .chain(list.first_contacts.iter())
+        .filter_map(|row| row.opportunity_id)
+        .collect())
+}
+
+fn cold_prospect(card: &FollowUpCard, cold: &HashSet<OpportunityId>) -> bool {
+    match card.subject {
+        FollowUpSubject::Opportunity(id) => cold.contains(&id),
+        FollowUpSubject::Invoice(_) => false,
+    }
 }
 
 fn unmatched_count(conn: &Connection) -> Result<u32, AppError> {
@@ -594,7 +621,11 @@ fn collect_follow_up_events(
     today: Date,
     events: &mut Vec<MonthEvent>,
 ) -> Result<(), AppError> {
+    let cold = cold_opportunity_ids(conn, today)?;
     for card in follow_up_board(conn, today)? {
+        if cold_prospect(&card, &cold) {
+            continue;
+        }
         let Some(on) = card.due_on else { continue };
         if month_of(on) != month {
             continue;
@@ -930,10 +961,10 @@ mod tests {
     use crate::expenses::RecordExpense;
     use crate::fiscal::FiscalDeadlineKind;
     use crate::fiscal_year::CloseFiscalYear;
-    use crate::follow_up::SetFollowUpSender;
+    use crate::follow_up::{PrepareFollowUp, SetFollowUpSender};
     use crate::missions::{CloseMission, CreateMission};
     use crate::opening_balance::RecordOpeningBalance;
-    use crate::prospection::{CreateOpportunity, LogInteraction};
+    use crate::prospection::{CreateOpportunity, CreateProspect, LogInteraction};
     use crate::store::Store;
     use crate::store::testing::test_store;
 
@@ -1382,6 +1413,106 @@ mod tests {
         assert!(
             !gestes.iter().any(|g| g.verb == GestureVerb::Setup),
             "profil, bilan et relevé sont en place"
+        );
+    }
+
+    #[test]
+    fn a_cold_batch_due_today_leaves_the_draft_in_the_morning() {
+        let mut store = test_store("cold-gestes");
+        let today = today();
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &SetFollowUpSender {
+                        email: "moi@lumen.test".into(),
+                        name: Some("Moi".into()),
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        for i in 0..6 {
+            applied(
+                Executor::new(&mut store)
+                    .execute(
+                        &CreateProspect {
+                            prospect_name: format!("Froid {i}"),
+                            address: None,
+                            representative: None,
+                            email: None,
+                            phone: None,
+                            name: "premier mot".into(),
+                            amount: Money::ZERO,
+                            probability: Probability::new(10).unwrap(),
+                            next_action_at: today,
+                            source: None,
+                        },
+                        &human(),
+                    )
+                    .unwrap(),
+            );
+        }
+        let warm = applied(
+            Executor::new(&mut store)
+                .execute(
+                    &CreateProspect {
+                        prospect_name: "Brouillon chaud".into(),
+                        address: None,
+                        representative: None,
+                        email: Some("chaud@atelier.test".into()),
+                        phone: None,
+                        name: "lettre".into(),
+                        amount: Money::ZERO,
+                        probability: Probability::new(10).unwrap(),
+                        next_action_at: today,
+                        source: None,
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &PrepareFollowUp {
+                        subject: FollowUpSubject::Opportunity(warm),
+                        today,
+                        subject_line: Some("Bonjour".into()),
+                        body: Some("Le texte est prêt.\n".into()),
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+
+        let gestes = day_gestures(store.connection(), today).unwrap();
+        let writes: Vec<_> = gestes
+            .iter()
+            .filter(|g| g.verb == GestureVerb::Write)
+            .collect();
+        assert_eq!(writes.len(), 1, "{gestes:?}");
+        match &writes[0].source {
+            GestureSource::FollowUp { party, drafted, .. } => {
+                assert_eq!(party, "Brouillon chaud");
+                assert!(*drafted, "{gestes:?}");
+            }
+            other => panic!("{other:?}"),
+        }
+
+        let month = Month::new(2026, 9).unwrap();
+        let view = day_month(store.connection(), month, today).unwrap();
+        let parties: Vec<&str> = view
+            .events
+            .iter()
+            .filter_map(|event| event.party.as_deref())
+            .collect();
+        assert!(
+            parties.contains(&"Brouillon chaud"),
+            "le brouillon reste au mois : {parties:?}"
+        );
+        assert!(
+            !parties.iter().any(|party| party.starts_with("Froid")),
+            "le tas froid ne remplit pas le mois : {parties:?}"
         );
     }
 
