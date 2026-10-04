@@ -767,7 +767,11 @@ fn follow_up_phrases_lists_the_seed_and_a_rewrite_is_what_the_next_letter_uses()
         .clone();
     let listed = String::from_utf8(listed).unwrap();
     assert!(listed.contains("Premier message"), "{listed}");
-    assert!(listed.contains("« le prénom »"), "{listed}");
+    assert!(
+        listed.contains("Premier message le jour du dossier."),
+        "{listed}"
+    );
+    assert!(listed.contains("<prénom>"), "{listed}");
     assert!(!listed.contains("{{"), "{listed}");
     assert!(
         !listed.contains("template") && !listed.contains("cadence"),
@@ -1355,6 +1359,14 @@ fn people_list_json_on_an_empty_vault_has_three_empty_chapters() {
     );
     assert!(value["missions"].as_array().unwrap().is_empty(), "{value}");
     assert!(value["outgoing"].as_array().unwrap().is_empty(), "{value}");
+    assert!(
+        value["first_messages"].as_array().unwrap().is_empty(),
+        "{value}"
+    );
+    assert!(
+        value["first_contacts"].as_array().unwrap().is_empty(),
+        "{value}"
+    );
 }
 
 #[test]

@@ -43,7 +43,16 @@ function markNav(slug) {
 
 document.body.addEventListener("change", (event) => {
   const input = event.target;
-  if (!(input instanceof HTMLInputElement) || input.type !== "file") return;
+  if (!(input instanceof HTMLInputElement)) return;
+  if (input.classList.contains("phrase-pick")) {
+    const desk = input.closest(".phrase-desk");
+    if (desk) {
+      placePlayhead(desk, false);
+      fillSheet(desk);
+    }
+    return;
+  }
+  if (input.type !== "file") return;
   const name = input.closest(".pick-file")?.querySelector(".pick-name");
   if (!name) return;
   name.textContent = input.files && input.files[0] ? input.files[0].name : "le fichier";
@@ -52,17 +61,21 @@ document.body.addEventListener("change", (event) => {
 document.body.addEventListener("click", (event) => {
   const token = event.target.closest("[data-insert]");
   if (token) {
-    const area = token.closest(".phrase-moment")?.querySelector("textarea");
-    if (area) {
+    const panel = token.closest(".phrase-panel");
+    const desk = token.closest(".phrase-desk");
+    const active = document.activeElement;
+    const field = phraseField(panel, active) || panel?.querySelector("textarea");
+    if (field) {
       event.preventDefault();
       const text = token.dataset.insert || "";
-      const start = area.selectionStart ?? area.value.length;
-      const end = area.selectionEnd ?? start;
-      area.value = area.value.slice(0, start) + text + area.value.slice(end);
+      const start = field.selectionStart ?? field.value.length;
+      const end = field.selectionEnd ?? start;
+      field.value = field.value.slice(0, start) + text + field.value.slice(end);
       const caret = start + text.length;
-      area.selectionStart = caret;
-      area.selectionEnd = caret;
-      area.focus();
+      field.selectionStart = caret;
+      field.selectionEnd = caret;
+      field.focus();
+      if (desk) fillSheet(desk);
     }
     return;
   }
@@ -104,11 +117,138 @@ document.body.addEventListener("click", (event) => {
   }
 });
 
+document.body.addEventListener("input", (event) => {
+  const desk = event.target.closest?.(".phrase-desk");
+  if (!desk) return;
+  const field = event.target;
+  if (!(field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement)) return;
+  if (field.name.startsWith("label_")) {
+    const panel = field.closest(".phrase-panel");
+    const key = panel?.closest(".phrase-unit")?.querySelector(".phrase-pick")?.value;
+    const tab = key && desk.querySelector(`.phrase-pick[value="${cssAttr(key)}"]`);
+    const name = tab?.closest(".phrase-unit")?.querySelector(".phrase-node-name");
+    if (name) name.textContent = field.value.trim() || "Ce moment";
+  }
+  if (field.name.startsWith("label_") || field.name.startsWith("ecart_")) refreshChronicle(desk);
+  if (field.name.startsWith("subject_") || field.tagName === "TEXTAREA") fillSheet(desk);
+});
+
 document.body.addEventListener("htmx:afterSwap", (event) => {
   if (event.detail?.target?.id !== "content") return;
   const slug = viewSlugFrom(event.detail.target);
   if (slug) markNav(slug);
+  bootPhrases(event.detail.target);
 });
+
+const JOUR_MOTS = [
+  "deux", "trois", "quatre", "cinq", "six", "sept", "huit", "neuf", "dix",
+  "onze", "douze", "treize", "quatorze", "quinze", "seize",
+];
+
+function cssAttr(value) {
+  return window.CSS && CSS.escape ? CSS.escape(value) : value.replace(/["\\]/g, "\\$&");
+}
+
+function phraseField(panel, active) {
+  if (!panel || !active || !panel.contains(active)) return null;
+  if (active instanceof HTMLTextAreaElement) return active;
+  if (active instanceof HTMLInputElement && active.name.startsWith("subject_")) return active;
+  return null;
+}
+
+function bootPhrases(root) {
+  const desk = root?.querySelector?.(".phrase-desk");
+  if (!desk) return;
+  placePlayhead(desk, true);
+}
+
+function placePlayhead(desk, instant) {
+  const frise = desk.querySelector(".phrase-frise");
+  const head = frise?.querySelector(".phrase-playhead");
+  const dot = frise?.querySelector(".phrase-pick:checked")?.closest(".phrase-unit")?.querySelector(".dot");
+  if (!frise || !head || !dot) return;
+  const left = dot.getBoundingClientRect().left - frise.getBoundingClientRect().left + dot.offsetWidth / 2 + frise.scrollLeft;
+  if (instant) head.style.transition = "none";
+  head.style.left = `${left}px`;
+  if (instant) {
+    head.getBoundingClientRect();
+    head.style.transition = "";
+  }
+  frise.classList.add("ready");
+}
+
+function openPanel(desk) {
+  return desk.querySelector(".phrase-unit:has(.phrase-pick:checked) .phrase-panel");
+}
+
+function fillSheet(desk) {
+  const sheet = desk.querySelector(".phrase-sheet");
+  const panel = openPanel(desk);
+  if (!sheet || !panel) return;
+  const subject = panel.querySelector("input[name^='subject_']");
+  const body = panel.querySelector("textarea");
+  const subjectOut = sheet.querySelector(".phrase-sheet-subject");
+  const bodyOut = sheet.querySelector(".phrase-sheet-body");
+  if (subjectOut && subject) subjectOut.textContent = applyTags(subject.value, sheet.dataset);
+  if (bodyOut && body) bodyOut.textContent = applyTags(body.value, sheet.dataset);
+}
+
+function applyTags(text, data) {
+  const tags = [
+    ["<prénom>", data.prenom || ""],
+    ["<contact>", data.contact || ""],
+    ["<client>", data.client || ""],
+    ["<sujet>", data.sujet || ""],
+    ["<montant>", data.montant || ""],
+    ["<moi>", data.moi || ""],
+    ["<société>", data.societe || ""],
+  ];
+  let out = text;
+  tags.forEach(([tag, value]) => {
+    out = out.split(tag).join(value);
+  });
+  if (!data.prenom) out = out.replace(/(Bonjour|Cher)[ \t]+,/g, "$1,");
+  return out;
+}
+
+function refreshChronicle(desk) {
+  const units = [...desk.querySelectorAll(".phrase-unit")];
+  if (!units.length) return;
+  const parts = [];
+  for (let index = 0; index < units.length; index += 1) {
+    const unit = units[index];
+    const key = unit.querySelector(".phrase-pick")?.value || "";
+    const labelField = unit.querySelector("input[name^='label_']");
+    const label = (labelField?.value || unit.querySelector(".phrase-node-name")?.textContent || "").trim() || "Ce moment";
+    if (index === 0) {
+      parts.push(`${label} le jour du dossier.`);
+      continue;
+    }
+    const gap = desk.querySelector(`input[name="ecart_${cssAttr(key)}"]`);
+    const days = Number.parseInt(gap?.value ?? "", 10);
+    if (!Number.isFinite(days)) return;
+    parts.push(`${apres(days)}, ${lowerFirst(label)}.`);
+  }
+  const chronicle = desk.querySelector("#phrase-chronicle");
+  if (chronicle) chronicle.textContent = parts.join(" ");
+}
+
+function apres(days) {
+  if (days === 0) return "Le même jour";
+  if (days === 1) return "Un jour après";
+  if (days >= 2 && days <= 16) {
+    const word = JOUR_MOTS[days - 2];
+    return `${word.charAt(0).toUpperCase()}${word.slice(1)} jours après`;
+  }
+  return `${days} jours après`;
+}
+
+function lowerFirst(value) {
+  if (!value) return value;
+  return value.charAt(0).toLowerCase() + value.slice(1);
+}
+
+bootPhrases(document);
 
 const paletteOverlay = document.getElementById("palette-overlay");
 const paletteInput = document.getElementById("palette-input");
