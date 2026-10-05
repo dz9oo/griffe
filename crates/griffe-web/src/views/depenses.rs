@@ -110,6 +110,8 @@ pub struct ExpenseFormValues {
     pub bank_transaction_note: Option<String>,
     /// `company` / `me` / vide (création sans relevé : obligatoire).
     pub paid_by: String,
+    /// Prestation intracommunautaire autoliquidée.
+    pub reverse_charge: bool,
 }
 
 impl From<&Expense> for ExpenseFormValues {
@@ -129,6 +131,7 @@ impl From<&Expense> for ExpenseFormValues {
                 ExpensePaidBy::Associate => "me".into(),
                 ExpensePaidBy::Company => "company".into(),
             },
+            reverse_charge: e.reverse_charge,
         }
     }
 }
@@ -160,6 +163,7 @@ pub fn form_values_from_debit(tx: &BankTransaction) -> ExpenseFormValues {
         bank_transaction_id: Some(tx.id.to_string()),
         bank_transaction_note: Some(debit_summary(tx)),
         paid_by: "company".into(),
+        reverse_charge: false,
     }
 }
 
@@ -205,6 +209,12 @@ fn expense_form(
                 (form::select("vat_rate", "Taux de TVA", &VAT_RATE_OPTIONS, &values.vat_rate, None))
                 (form::number("vat_deductible", "TVA déductible (€)", &values.vat_deductible, "0.01", errors.vat_deductible.as_deref()))
                 (form::field_help("La TVA effectivement déductible peut être inférieure à montant × taux (véhicules, restauration…)."))
+                (form::checkbox_checked(
+                    "reverse_charge",
+                    "Prestation intracommunautaire autoliquidée",
+                    values.reverse_charge,
+                ))
+                (form::field_help("Le montant payé est la charge. La TVA française au taux choisi est à la fois due et déductible. Le champ TVA déductible n'est pas utilisé quand cette case est cochée."))
                 (form::date("incurred_on", "Date d'engagement", &values.incurred_on, errors.incurred_on.as_deref()))
                 (form::text("supplier", "Bénéficiaire (fournisseur)", &values.supplier, None))
                 (form::field_help("Pour des honoraires, c'est ce nom qui cumule sur la DAS2 (seuil 2 400 € par bénéficiaire et par année civile)."))
@@ -291,6 +301,10 @@ pub fn detail_panel(
             dt { "Montant TTC" } dd class="mono" { (expense.amount) }
             dt { "TVA déductible" } dd class="mono" { (expense.vat_deductible) }
             dt { "Taux de TVA" } dd { (expense.vat_rate.as_str()) }
+            @if expense.reverse_charge {
+                dt { "Prestation" }
+                dd { "intracommunautaire autoliquidée" }
+            }
             dt { "Engagée le" } dd { (format_date(expense.incurred_on)) }
             @if let Some(supplier) = &expense.supplier {
                 dt { "Bénéficiaire" } dd { (supplier) }

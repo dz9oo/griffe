@@ -17,19 +17,17 @@
 //! tant que l'exercice n'est qu'un projet non approuvé : `freeflow year rm` d'abord, corriger,
 //! re-clore. Un exercice approuvé, lui, est définitif — comme la liasse qu'il a produite.
 //!
-//! Lot 33 : **rapprochement bancaire des dépenses.** Un débit du relevé importé (`bank import`)
-//! se rapproche d'une dépense ([`ReconcileExpense`], ou [`RecordExpense`] avec
-//! `bank_transaction_id` pour créer la dépense *depuis* le débit), au montant exact — comme un
-//! crédit se rapproche d'une facture (`billing::ReconcileTransaction`). Le rapprochement n'est
-//! pas un attribut de la dépense mais de la transaction (`bank_transactions.matched_expense_id`,
-//! migration `0016`) : il ne touche ni au montant ni à la date de la dépense, donc jamais au
-//! résultat figé d'un exercice clos — il n'est pas soumis à la garde « exercice clôturé ». Sa
-//! seule conséquence comptable est dans le grand livre dérivé (`crate::ledger`) : une dépense
-//! rapprochée n'est plus réputée payée à sa date, son décaissement est daté du relevé, via un
-//! compte fournisseur. Une dépense rapprochée garde le montant de son débit
-//! ([`ExpensesError::ReconciledAmountLocked`]) ; la supprimer libère la transaction (elle
-//! redevient « à rapprocher ») ; `billing::UnreconcileTransaction` libère la transaction sans
-//! toucher à la dépense.
+//! **Paiement conservé.** Rapprocher un débit, ou noter que l'associé a avancé,
+//! pose une écriture une fois (`crate::journal`) : charge et TVA au jour du relevé
+//! contre 512, ou au jour de la facture contre 455. Une prestation
+//! intracommunautaire autoliquidée écrit la charge pour le montant payé, la
+//! paire 445662 / 445200 pour la TVA française, et 512 ou 455 pour le montant
+//! payé. Une facture non payée n'entre pas. Pas de compte 401. Un paiement daté
+//! dans un exercice clos est refusé :
+//! il changerait le résultat figé. Corriger, c'est une extourne.
+//! Une dépense rapprochée garde le montant de son débit
+//! ([`ExpensesError::ReconciledAmountLocked`]) ; la supprimer ou défaire le
+//! rapprochement extourne l'écriture et libère la transaction.
 
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Deserialize, Serialize};
@@ -201,6 +199,23 @@ pub fn max_deductible_vat(amount: Money, rate: VatRate) -> Money {
     Money::from_cents(i64::try_from(max).unwrap_or(i64::MAX))
 }
 
+/// TVA portée au livre. Autoliquidation : [`VatRate::tax_on`] du montant payé,
+/// le champ saisi est ignoré. Paiement domestique : la TVA déductible saisie,
+/// bornée par la TVA contenue dans le TTC.
+fn posted_vat(
+    reverse_charge: bool,
+    amount: Money,
+    rate: VatRate,
+    vat_deductible: Money,
+) -> Result<Money, AppError> {
+    if reverse_charge {
+        Ok(rate.tax_on(amount))
+    } else {
+        ensure_vat_within_amount(vat_deductible, amount, rate)?;
+        Ok(vat_deductible)
+    }
+}
+
 fn ensure_vat_within_amount(
     vat_deductible: Money,
     amount: Money,
@@ -280,6 +295,10 @@ pub struct RecordExpense {
     /// Qui a payé (lot 63). Défaut `Company` : audit antérieur et CLI sans `--paid-by`.
     #[serde(default)]
     pub paid_by: ExpensePaidBy,
+    /// Prestation intracommunautaire autoliquidée. Défaut : paiement domestique.
+    /// Un audit antérieur sans ce champ reste domestique.
+    #[serde(default)]
+    pub reverse_charge: bool,
 }
 
 impl Command for RecordExpense {
@@ -293,7 +312,12 @@ impl Command for RecordExpense {
     }
 
     fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
-        ensure_vat_within_amount(self.vat_deductible, self.amount, self.vat_rate)?;
+        let vat_deductible = posted_vat(
+            self.reverse_charge,
+            self.amount,
+            self.vat_rate,
+            self.vat_deductible,
+        )?;
         ensure_outside_closed_fiscal_year(conn, self.incurred_on)?;
         ensure_not_before_opening_balance(conn, self.incurred_on)?;
         if self.paid_by == ExpensePaidBy::Associate && self.bank_transaction_id.is_some() {
@@ -308,12 +332,13 @@ impl Command for RecordExpense {
             category: self.category,
             amount: self.amount,
             vat_rate: self.vat_rate,
-            vat_deductible: self.vat_deductible,
+            vat_deductible,
             incurred_on: self.incurred_on,
             receipt_hash: self.receipt_hash.clone(),
             receipt_filename: self.receipt_filename.clone(),
             supplier: self.supplier.clone(),
             paid_by: self.paid_by,
+            reverse_charge: self.reverse_charge,
             created_at: OffsetDateTime::now_utc(),
             revision: 1,
         };
@@ -321,6 +346,11 @@ impl Command for RecordExpense {
         if let Some(transaction_id) = self.bank_transaction_id {
             billing::mark_transaction_matched_expense(conn, transaction_id, expense.id)?;
         }
+        crate::journal::sync_expense_payment(
+            conn,
+            expense.id,
+            crate::journal::SyncGuard::RefuseClosedYear,
+        )?;
         Ok(expense.id)
     }
 }
@@ -355,6 +385,11 @@ impl Command for ReconcileExpense {
         }
         rapprochable_debit(conn, self.transaction_id, expense.amount)?;
         billing::mark_transaction_matched_expense(conn, self.transaction_id, self.expense_id)?;
+        crate::journal::sync_expense_payment(
+            conn,
+            self.expense_id,
+            crate::journal::SyncGuard::RefuseClosedYear,
+        )?;
         Ok(())
     }
 }
@@ -384,6 +419,10 @@ pub struct UpdateExpense {
     pub supplier: Option<String>,
     #[serde(default)]
     pub paid_by: ExpensePaidBy,
+    /// Prestation intracommunautaire autoliquidée. Défaut : paiement domestique.
+    /// Un audit antérieur sans ce champ reste domestique.
+    #[serde(default)]
+    pub reverse_charge: bool,
 }
 
 impl Command for UpdateExpense {
@@ -396,7 +435,12 @@ impl Command for UpdateExpense {
     }
 
     fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
-        ensure_vat_within_amount(self.vat_deductible, self.amount, self.vat_rate)?;
+        let vat_deductible = posted_vat(
+            self.reverse_charge,
+            self.amount,
+            self.vat_rate,
+            self.vat_deductible,
+        )?;
         let current = expense_by_id(conn, self.id)?.ok_or(ExpensesError::NotFound(self.id))?;
         // Les deux dates comptent : sortir une dépense d'un exercice clos (ancienne date) le
         // viderait autant que d'en faire entrer une (nouvelle date).
@@ -414,7 +458,7 @@ impl Command for UpdateExpense {
             return Err(ExpensesError::PaidByLockedWhenReconciled(self.id).into());
         }
         // Une dépense immobilisée (lot 42) a donné sa base amortissable : montant et TVA figés.
-        if (self.amount != current.amount || self.vat_deductible != current.vat_deductible)
+        if (self.amount != current.amount || vat_deductible != current.vat_deductible)
             && crate::fixed_assets::asset_for_expense(conn, self.id)?.is_some()
         {
             return Err(ExpensesError::Immobilized(self.id).into());
@@ -424,14 +468,15 @@ impl Command for UpdateExpense {
             "UPDATE expenses
                 SET label = ?1, category = ?2, amount_cents = ?3, vat_rate = ?4,
                     vat_deductible_cents = ?5, incurred_on = ?6, receipt_hash = ?7,
-                    receipt_filename = ?8, revision = ?9, supplier = ?12, paid_by = ?13
+                    receipt_filename = ?8, revision = ?9, supplier = ?12, paid_by = ?13,
+                    reverse_charge = ?14
               WHERE id = ?10 AND revision = ?11",
             params![
                 self.label,
                 self.category.as_str(),
                 self.amount.cents(),
                 self.vat_rate.as_str(),
-                self.vat_deductible.cents(),
+                vat_deductible.cents(),
                 domain::format_date(self.incurred_on),
                 self.receipt_hash,
                 self.receipt_filename,
@@ -440,7 +485,13 @@ impl Command for UpdateExpense {
                 self.revision,
                 self.supplier,
                 self.paid_by.as_str(),
+                i64::from(self.reverse_charge),
             ],
+        )?;
+        crate::journal::sync_expense_payment(
+            conn,
+            self.id,
+            crate::journal::SyncGuard::RefuseClosedYear,
         )?;
         Ok(new_revision)
     }
@@ -478,6 +529,11 @@ impl Command for AttachReceipt {
                 self.id.to_string(),
                 self.revision,
             ],
+        )?;
+        crate::journal::sync_expense_payment(
+            conn,
+            self.id,
+            crate::journal::SyncGuard::RefuseClosedYear,
         )?;
         Ok(new_revision)
     }
@@ -519,6 +575,11 @@ impl Command for DeleteExpense {
             "DELETE FROM expenses WHERE id = ?1 AND revision = ?2",
             params![self.id.to_string(), self.revision],
         )?;
+        crate::journal::sync_expense_payment(
+            conn,
+            self.id,
+            crate::journal::SyncGuard::RefuseClosedYear,
+        )?;
         Ok(())
     }
 }
@@ -527,8 +588,9 @@ fn insert_expense(conn: &Connection, expense: &Expense) -> Result<(), AppError> 
     conn.execute(
         "INSERT INTO expenses
             (id, label, category, amount_cents, vat_rate, vat_deductible_cents, incurred_on,
-             receipt_hash, receipt_filename, created_at, revision, supplier, paid_by)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+             receipt_hash, receipt_filename, created_at, revision, supplier, paid_by,
+             reverse_charge)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         params![
             expense.id.to_string(),
             expense.label,
@@ -543,6 +605,7 @@ fn insert_expense(conn: &Connection, expense: &Expense) -> Result<(), AppError> 
             expense.revision,
             expense.supplier,
             expense.paid_by.as_str(),
+            i64::from(expense.reverse_charge),
         ],
     )?;
     Ok(())
@@ -565,6 +628,7 @@ fn row_to_expense(row: &Row) -> rusqlite::Result<Expense> {
         receipt_filename: row.get("receipt_filename")?,
         supplier: row.get("supplier")?,
         paid_by: row.get::<_, String>("paid_by")?.parse().map_err(conv_err)?,
+        reverse_charge: row.get::<_, i64>("reverse_charge")? != 0,
         created_at: OffsetDateTime::parse(&created_at, &Rfc3339).map_err(conv_err)?,
         revision: row.get("revision")?,
     })
@@ -695,8 +759,11 @@ mod tests {
     use crate::billing::{
         ImportBankTransactions, ParsedTransaction, UnreconcileTransaction, list_bank_transactions,
     };
-    use crate::store::Store;
-    use crate::store::testing::test_store;
+    use crate::company::SetCompanyProfile;
+    use crate::domain::{Address, FiscalYear, FiscalYearEnd, Siren, VatRegime};
+    use crate::ledger::{Journal, accounts, build_ledger};
+    use crate::store::testing::{PASSPHRASE, test_store};
+    use crate::store::{Passphrase, Store};
     use time::Month;
 
     fn human_ctx() -> ExecutionContext {
@@ -720,6 +787,7 @@ mod tests {
             supplier: None,
             bank_transaction_id: None,
             paid_by: ExpensePaidBy::Company,
+            reverse_charge: false,
         }
     }
 
@@ -865,6 +933,7 @@ mod tests {
             receipt_filename: expense.receipt_filename.clone(),
             supplier: None,
             paid_by: expense.paid_by,
+            reverse_charge: expense.reverse_charge,
         }
     }
 
@@ -1277,13 +1346,55 @@ mod tests {
     }
 
     #[test]
-    fn reconciling_is_not_blocked_by_a_closed_fiscal_year() {
-        // Le rapprochement ne touche ni au montant ni à la date : le résultat figé ne bouge
-        // pas, seul le grand livre dérivé date autrement le décaissement.
+    fn reconciling_into_a_closed_fiscal_year_is_refused() {
+        // Le paiement du 2 octobre 2026 tombe dans l'exercice civil 2026 déjà clos.
+        // Il constaterait la charge dans le résultat figé.
         let mut store = test_store("reconcile-closed-year");
         let id = record(&mut store, &sample()); // 2026-09-05
         let tx = import_transaction(&mut store, date(2026, Month::October, 2), -12_000);
         seed_closed_year(store.connection(), 2026);
+        let err = Executor::new(&mut store)
+            .execute(
+                &ReconcileExpense {
+                    transaction_id: tx,
+                    expense_id: id,
+                },
+                &human_ctx(),
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("clôturé"), "{err}");
+    }
+
+    /// Pas de 401 : la charge est au jour du relevé (journal BQ). Une facture
+    /// non payée n'entre pas au livre. 120,00 € TTC, TVA déductible 20,00 € :
+    /// charge 100,00 €. CGI 302 septies A ter A, 1 bis — les dettes peuvent
+    /// n'être constatées qu'à la clôture.
+    #[test]
+    fn an_unpaid_expense_is_absent_and_the_bank_payment_is_reread_after_reopen() {
+        let mut store = test_store("payment-kept");
+        Executor::new(&mut store)
+            .execute(&company_profile(), &human_ctx())
+            .unwrap();
+        let mut expense = sample();
+        expense.incurred_on = date(2026, Month::March, 15);
+        expense.label = "Licence".to_string();
+        let id = record(&mut store, &expense);
+
+        let before = build_ledger(store.connection(), FiscalYear::calendar(2026)).unwrap();
+        assert!(
+            before
+                .entries
+                .iter()
+                .all(|e| !e.piece_ref.starts_with("DEP-")),
+            "facture non payée : aucune écriture, {:?}",
+            before
+                .entries
+                .iter()
+                .map(|e| e.piece_ref.as_str())
+                .collect::<Vec<_>>()
+        );
+
+        let tx = import_transaction(&mut store, date(2026, Month::April, 2), -12_000);
         Executor::new(&mut store)
             .execute(
                 &ReconcileExpense {
@@ -1293,9 +1404,392 @@ mod tests {
                 &human_ctx(),
             )
             .unwrap();
+
+        let path = store.db_path().to_path_buf();
+        drop(store);
+        let store = Store::open_with_passphrase(&path, &Passphrase::from(PASSPHRASE)).unwrap();
+        let ledger = build_ledger(store.connection(), FiscalYear::calendar(2026)).unwrap();
+        let payments: Vec<_> = ledger
+            .entries
+            .iter()
+            .filter(|e| e.piece_ref.starts_with("DEP-"))
+            .collect();
+        assert_eq!(payments.len(), 1, "{:?}", ledger.entries);
+        let payment = payments[0];
+        assert_eq!(payment.journal, Journal::Bank);
+        assert_eq!(payment.date, date(2026, Month::April, 2));
+        assert_eq!(payment.piece_ref, format!("DEP-{id}"));
+        assert!(payment.is_balanced());
+        assert_eq!(payment.lines.len(), 3);
+        assert_eq!(payment.lines[0].account, accounts::SOFTWARE);
+        assert_eq!(payment.lines[0].amount, Money::from_cents(10_000));
+        assert_eq!(payment.lines[1].account, accounts::VAT_DEDUCTIBLE);
+        assert_eq!(payment.lines[1].amount, Money::from_cents(2_000));
+        assert_eq!(payment.lines[2].account, accounts::BANK);
+        assert_eq!(payment.lines[2].amount, Money::from_cents(-12_000));
+        assert!(
+            ledger
+                .entries
+                .iter()
+                .flat_map(|e| e.lines.iter())
+                .all(|l| l.account.number != "401000"),
+            "pas de compte 401"
+        );
+    }
+
+    /// Une taxe avancée par l'associé : 635 au débit, 455 au crédit, pas de banque.
+    #[test]
+    fn an_associate_advance_is_kept_on_the_shareholder_account() {
+        let mut store = test_store("associate-kept");
+        Executor::new(&mut store)
+            .execute(&company_profile(), &human_ctx())
+            .unwrap();
+        let mut expense = sample();
+        expense.label = "Taxe locale".to_string();
+        expense.category = ExpenseCategory::Taxes;
+        expense.amount = Money::from_cents(18_000);
+        expense.vat_rate = VatRate::Zero;
+        expense.vat_deductible = Money::ZERO;
+        expense.paid_by = ExpensePaidBy::Associate;
+        expense.incurred_on = date(2026, Month::January, 15);
+        expense.bank_transaction_id = None;
+        let id = record(&mut store, &expense);
+
+        let path = store.db_path().to_path_buf();
+        drop(store);
+        let store = Store::open_with_passphrase(&path, &Passphrase::from(PASSPHRASE)).unwrap();
+        let ledger = build_ledger(store.connection(), FiscalYear::calendar(2026)).unwrap();
+        let pieces: Vec<_> = ledger
+            .entries
+            .iter()
+            .filter(|e| e.piece_ref == format!("DEP-{id}"))
+            .collect();
+        assert_eq!(pieces.len(), 1, "{:?}", ledger.entries);
+        let piece = pieces[0];
+        assert_eq!(piece.journal, Journal::Purchases);
+        assert_eq!(piece.date, date(2026, Month::January, 15));
+        assert!(piece.is_balanced());
+        assert_eq!(piece.lines.len(), 2);
+        assert_eq!(piece.lines[0].account, accounts::TAXES);
+        assert_eq!(piece.lines[0].amount, Money::from_cents(18_000));
+        assert_eq!(piece.lines[1].account, accounts::SHAREHOLDER_ACCOUNT);
+        assert_eq!(piece.lines[1].amount, Money::from_cents(-18_000));
+        assert!(
+            ledger
+                .entries
+                .iter()
+                .filter(|e| e.piece_ref.starts_with("DEP-"))
+                .all(|e| e.journal != Journal::Bank)
+        );
+    }
+
+    /// Facture du 15 mars, relevé du 2 avril. L'exercice qui se termine le 31 mars
+    /// ne contient pas la charge. Elle est dans l'exercice qui contient le relevé.
+    #[test]
+    fn the_charge_follows_the_statement_date_across_the_exercise_end() {
+        let mut store = test_store("statement-date");
+        Executor::new(&mut store)
+            .execute(&company_profile(), &human_ctx())
+            .unwrap();
+        let mut expense = sample();
+        expense.incurred_on = date(2026, Month::March, 15);
+        let id = record(&mut store, &expense);
+        let closing = FiscalYear::new(date(2025, Month::October, 1), date(2026, Month::March, 31));
+        let before = build_ledger(store.connection(), closing).unwrap();
+        assert!(
+            before
+                .entries
+                .iter()
+                .all(|e| !e.piece_ref.starts_with("DEP-"))
+        );
+
+        let tx = import_transaction(&mut store, date(2026, Month::April, 2), -12_000);
+        Executor::new(&mut store)
+            .execute(
+                &ReconcileExpense {
+                    transaction_id: tx,
+                    expense_id: id,
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+        let closed = build_ledger(store.connection(), closing).unwrap();
+        assert!(
+            closed
+                .entries
+                .iter()
+                .all(|e| !e.piece_ref.starts_with("DEP-")),
+            "la charge n'est pas dans l'exercice clos le 31 mars"
+        );
+        let next = FiscalYear::new(
+            date(2026, Month::April, 1),
+            date(2026, Month::September, 30),
+        );
+        let open = build_ledger(store.connection(), next).unwrap();
+        let payment = open
+            .entries
+            .iter()
+            .find(|e| e.piece_ref == format!("DEP-{id}"))
+            .expect("le paiement est dans l'exercice du relevé");
+        assert_eq!(payment.date, date(2026, Month::April, 2));
+        assert_eq!(payment.lines[0].amount, Money::from_cents(10_000));
+        assert_eq!(payment.lines[2].amount, Money::from_cents(-12_000));
+    }
+
+    /// Défaire le rapprochement extourne. Les montants d'origine restent en base.
+    #[test]
+    fn unreconciling_reverses_the_payment_and_leaves_the_original_amounts() {
+        let mut store = test_store("reversal");
+        Executor::new(&mut store)
+            .execute(&company_profile(), &human_ctx())
+            .unwrap();
+        let id = record(&mut store, &sample());
+        let tx = import_transaction(&mut store, date(2026, Month::September, 7), -12_000);
+        Executor::new(&mut store)
+            .execute(
+                &ReconcileExpense {
+                    transaction_id: tx,
+                    expense_id: id,
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+        let original = line_cents(store.connection(), &format!("DEP-{id}"));
+        assert_eq!(original, vec![10_000, 2_000, -12_000]);
+
         Executor::new(&mut store)
             .execute(&UnreconcileTransaction { transaction_id: tx }, &human_ctx())
             .unwrap();
+        assert_eq!(
+            line_cents(store.connection(), &format!("DEP-{id}")),
+            vec![10_000, 2_000, -12_000],
+            "l'écriture d'origine n'est pas réécrite"
+        );
+        let reversed: Option<String> = store
+            .connection()
+            .query_row(
+                "SELECT reversed_at FROM journal_entries
+                  WHERE piece_ref = ?1 AND reversal_of IS NULL",
+                [format!("DEP-{id}")],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(reversed.is_some(), "l'originale est marquée extournée");
+        let reversal: Vec<i64> = store
+            .connection()
+            .prepare(
+                "SELECT l.amount_cents FROM journal_lines l
+                   JOIN journal_entries e ON e.id = l.entry_id
+                  WHERE e.reversal_of IS NOT NULL
+                  ORDER BY l.position",
+            )
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(reversal, vec![-10_000, -2_000, 12_000]);
+
+        let ledger = build_ledger(store.connection(), FiscalYear::calendar(2026)).unwrap();
+        let net: i64 = ledger
+            .entries
+            .iter()
+            .flat_map(|e| e.lines.iter())
+            .filter(|l| l.account == accounts::SOFTWARE || l.account == accounts::BANK)
+            .map(|l| l.amount.cents())
+            .sum();
+        assert_eq!(net, 0, "l'extourne solde la charge et la banque");
+    }
+
+    /// Changer la TVA déductible de 20,00 € à 10,00 € extourne. La charge passe
+    /// de 100,00 € à 110,00 €. Les centimes de la première écriture restent.
+    #[test]
+    fn correcting_the_deductible_vat_posts_a_new_entry() {
+        let mut store = test_store("vat-correction");
+        Executor::new(&mut store)
+            .execute(&company_profile(), &human_ctx())
+            .unwrap();
+        let mut expense = sample();
+        expense.incurred_on = date(2026, Month::March, 15);
+        let id = record(&mut store, &expense);
+        let tx = import_transaction(&mut store, date(2026, Month::April, 2), -12_000);
+        Executor::new(&mut store)
+            .execute(
+                &ReconcileExpense {
+                    transaction_id: tx,
+                    expense_id: id,
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+        let current = expense_by_id(store.connection(), id).unwrap().unwrap();
+        let mut update = update_from(&current);
+        update.vat_deductible = Money::from_cents(1_000);
+        Executor::new(&mut store)
+            .execute(&update, &human_ctx())
+            .unwrap();
+
+        let originals: Vec<i64> = store
+            .connection()
+            .prepare(
+                "SELECT l.amount_cents FROM journal_lines l
+                   JOIN journal_entries e ON e.id = l.entry_id
+                  WHERE e.piece_ref = ?1 AND e.reversed_at IS NOT NULL
+                  ORDER BY l.position",
+            )
+            .unwrap()
+            .query_map([format!("DEP-{id}")], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(originals, vec![10_000, 2_000, -12_000]);
+
+        let ledger = build_ledger(store.connection(), FiscalYear::calendar(2026)).unwrap();
+        let balance = ledger.trial_balance();
+        let of = |number: &str| {
+            balance
+                .rows
+                .iter()
+                .find(|row| row.account.number == number)
+                .map_or(Money::ZERO, |row| row.balance)
+        };
+        assert_eq!(of("651000"), Money::from_cents(11_000));
+        assert_eq!(of("445660"), Money::from_cents(1_000));
+        assert_eq!(of("512000"), Money::from_cents(-12_000));
+    }
+
+    /// Un rapprochement posé hors commande (reprise d'un coffre déjà rapproché)
+    /// écrit une seule fois, et une seconde ouverture ne double pas.
+    #[test]
+    fn opening_backfills_a_raw_match_once() {
+        let mut store = test_store("backfill-once");
+        Executor::new(&mut store)
+            .execute(&company_profile(), &human_ctx())
+            .unwrap();
+        let mut expense = sample();
+        expense.incurred_on = date(2026, Month::March, 15);
+        let id = record(&mut store, &expense);
+        let tx = import_transaction(&mut store, date(2026, Month::April, 2), -12_000);
+        store
+            .connection()
+            .execute(
+                "UPDATE bank_transactions SET matched_expense_id = ?1 WHERE id = ?2",
+                [id.to_string(), tx.to_string()],
+            )
+            .unwrap();
+        let before = build_ledger(store.connection(), FiscalYear::calendar(2026)).unwrap();
+        assert!(
+            before
+                .entries
+                .iter()
+                .all(|e| !e.piece_ref.starts_with("DEP-"))
+        );
+
+        let path = store.db_path().to_path_buf();
+        drop(store);
+        let store = Store::open_with_passphrase(&path, &Passphrase::from(PASSPHRASE)).unwrap();
+        assert_eq!(live_payments(store.connection()), 1);
+        drop(store);
+        let store = Store::open_with_passphrase(&path, &Passphrase::from(PASSPHRASE)).unwrap();
+        assert_eq!(live_payments(store.connection()), 1);
+        let ledger = build_ledger(store.connection(), FiscalYear::calendar(2026)).unwrap();
+        let payment = ledger
+            .entries
+            .iter()
+            .find(|e| e.piece_ref == format!("DEP-{id}"))
+            .unwrap();
+        assert_eq!(payment.date, date(2026, Month::April, 2));
+        assert_eq!(payment.lines[0].amount, Money::from_cents(10_000));
+        assert_eq!(payment.lines[2].amount, Money::from_cents(-12_000));
+    }
+
+    /// Le paiement du 4 janvier 2027 d'une facture de septembre 2026 est dans
+    /// l'exercice ouvert, même si 2026 est déjà clos.
+    #[test]
+    fn a_payment_dated_after_the_closed_year_is_booked() {
+        let mut store = test_store("payment-after-close");
+        Executor::new(&mut store)
+            .execute(&company_profile(), &human_ctx())
+            .unwrap();
+        let id = record(&mut store, &sample()); // 2026-09-05
+        seed_closed_year(store.connection(), 2026);
+        let tx = import_transaction(&mut store, date(2027, Month::January, 4), -12_000);
+        Executor::new(&mut store)
+            .execute(
+                &ReconcileExpense {
+                    transaction_id: tx,
+                    expense_id: id,
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+        let closed = build_ledger(store.connection(), FiscalYear::calendar(2026)).unwrap();
+        assert!(
+            closed
+                .entries
+                .iter()
+                .all(|e| !e.piece_ref.starts_with("DEP-"))
+        );
+        let open = build_ledger(store.connection(), FiscalYear::calendar(2027)).unwrap();
+        let payment = open
+            .entries
+            .iter()
+            .find(|e| e.piece_ref == format!("DEP-{id}"))
+            .expect("charge dans l'exercice du relevé");
+        assert_eq!(payment.date, date(2027, Month::January, 4));
+        assert_eq!(payment.journal, Journal::Bank);
+        assert_eq!(payment.lines[0].amount, Money::from_cents(10_000));
+    }
+
+    fn line_cents(conn: &rusqlite::Connection, piece_ref: &str) -> Vec<i64> {
+        conn.prepare(
+            "SELECT l.amount_cents FROM journal_lines l
+               JOIN journal_entries e ON e.id = l.entry_id
+              WHERE e.piece_ref = ?1 AND e.reversal_of IS NULL
+              ORDER BY l.position",
+        )
+        .unwrap()
+        .query_map([piece_ref], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+    }
+
+    fn live_payments(conn: &rusqlite::Connection) -> i64 {
+        conn.query_row(
+            "SELECT count(*) FROM journal_entries
+              WHERE source_kind = 'expense_payment'
+                AND reversed_at IS NULL AND reversal_of IS NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    fn company_profile() -> SetCompanyProfile {
+        SetCompanyProfile {
+            name: "Argon Digital".to_string(),
+            legal_form: "SASU".to_string(),
+            siren: Siren::parse("552100554").unwrap(),
+            vat_number: None,
+            address: Address {
+                street: "12 rue de la Paix".to_string(),
+                postal_code: "75002".to_string(),
+                city: "Paris".to_string(),
+                country: "FR".to_string(),
+            },
+            share_capital: Some(Money::from_cents(100_000)),
+            rcs_city: Some("Paris".to_string()),
+            iban: None,
+            fiscal_year_end: Some(FiscalYearEnd::new(9, 30).unwrap()),
+            vat_regime: Some(VatRegime::RealNormalMonthly),
+            director_monthly_gross: None,
+            director_charge_ratio_bps: None,
+            president_name: None,
+            sole_shareholder_name: None,
+            sole_shareholder_address: None,
+            share_count: None,
+        }
     }
 
     #[test]
@@ -1375,9 +1869,9 @@ mod tests {
 
     fn cfe_advance() -> RecordExpense {
         RecordExpense {
-            label: "CFE 2025".to_string(),
+            label: "Taxe locale".to_string(),
             category: ExpenseCategory::Taxes,
-            amount: Money::from_cents(20_400),
+            amount: Money::from_cents(18_000),
             vat_rate: VatRate::Zero,
             vat_deductible: Money::ZERO,
             incurred_on: date(2026, Month::January, 15),
@@ -1386,6 +1880,8 @@ mod tests {
             supplier: None,
             bank_transaction_id: None,
             paid_by: ExpensePaidBy::Associate,
+
+            reverse_charge: false,
         }
     }
 
@@ -1395,14 +1891,14 @@ mod tests {
         let id = record(&mut store, &cfe_advance());
         let got = expense_by_id(store.connection(), id).unwrap().unwrap();
         assert_eq!(got.paid_by, ExpensePaidBy::Associate);
-        assert_eq!(got.amount, Money::from_cents(20_400));
+        assert_eq!(got.amount, Money::from_cents(18_000));
         assert_eq!(got.category, ExpenseCategory::Taxes);
     }
 
     #[test]
     fn associate_and_a_bank_debit_together_are_refused() {
         let mut store = test_store("associate-and-debit");
-        let tx = import_transaction(&mut store, date(2026, Month::January, 15), -20_400);
+        let tx = import_transaction(&mut store, date(2026, Month::January, 15), -18_000);
         let mut cmd = cfe_advance();
         cmd.bank_transaction_id = Some(tx);
         let err = Executor::new(&mut store)
@@ -1420,7 +1916,7 @@ mod tests {
     fn reconciling_an_associate_paid_expense_is_refused() {
         let mut store = test_store("reconcile-associate");
         let id = record(&mut store, &cfe_advance());
-        let tx = import_transaction(&mut store, date(2026, Month::January, 15), -20_400);
+        let tx = import_transaction(&mut store, date(2026, Month::January, 15), -18_000);
         let err = Executor::new(&mut store)
             .execute(
                 &ReconcileExpense {
@@ -1466,6 +1962,184 @@ mod tests {
         value.as_object_mut().expect("object").remove("paid_by");
         let cmd: RecordExpense = serde_json::from_value(value).unwrap();
         assert_eq!(cmd.paid_by, ExpensePaidBy::Company);
+    }
+
+    #[test]
+    fn omitted_reverse_charge_deserializes_as_domestic() {
+        let mut value = serde_json::to_value(sample()).unwrap();
+        value
+            .as_object_mut()
+            .expect("object")
+            .remove("reverse_charge");
+        let cmd: RecordExpense = serde_json::from_value(value).unwrap();
+        assert!(!cmd.reverse_charge);
+    }
+
+    fn shifted_exercise() -> FiscalYear {
+        FiscalYear::new(
+            date(2024, Month::October, 1),
+            date(2025, Month::September, 30),
+        )
+    }
+
+    fn payment_lines(
+        store: &Store,
+        exercise: FiscalYear,
+        id: ExpenseId,
+    ) -> (Journal, time::Date, Vec<(String, i64)>) {
+        let ledger = build_ledger(store.connection(), exercise).unwrap();
+        let payment = ledger
+            .entries
+            .iter()
+            .find(|entry| entry.piece_ref == format!("DEP-{id}"))
+            .expect("paiement");
+        let lines = payment
+            .lines
+            .iter()
+            .map(|line| (line.account.number.to_string(), line.amount.cents()))
+            .collect();
+        (payment.journal, payment.date, lines)
+    }
+
+    /// 100,00 € payés à la banque, taux normal. Le drapeau posé : la charge est
+    /// 10 000 centimes, la TVA française 2 000 centimes est due et déductible,
+    /// la banque est créditée de 10 000. `10 000 × 2 000 / 10 000 = 2 000`.
+    #[test]
+    fn a_reverse_charged_bank_payment_keeps_the_full_amount_as_the_charge() {
+        let mut store = test_store("reverse-charge-bank");
+        Executor::new(&mut store)
+            .execute(&company_profile(), &human_ctx())
+            .unwrap();
+        let mut flagged = sample();
+        flagged.label = "Prestation".to_string();
+        flagged.supplier = Some("Atelier".to_string());
+        flagged.amount = Money::from_cents(10_000);
+        flagged.vat_rate = VatRate::Standard;
+        flagged.vat_deductible = Money::ZERO;
+        flagged.incurred_on = date(2024, Month::November, 1);
+        flagged.reverse_charge = true;
+        flagged.bank_transaction_id = Some(import_transaction(
+            &mut store,
+            date(2024, Month::November, 6),
+            -10_000,
+        ));
+        let id = record(&mut store, &flagged);
+        let stored = expense_by_id(store.connection(), id).unwrap().unwrap();
+        assert!(stored.reverse_charge);
+        let (journal, on, lines) = payment_lines(&store, shifted_exercise(), id);
+        assert_eq!(journal, Journal::Bank);
+        assert_eq!(on, date(2024, Month::November, 6));
+        assert_eq!(
+            lines,
+            vec![
+                ("651000".to_string(), 10_000),
+                ("445662".to_string(), 2_000),
+                ("445200".to_string(), -2_000),
+                ("512000".to_string(), -10_000),
+            ]
+        );
+        assert!(lines.iter().all(|(account, _)| *account != "445660"));
+        assert!(lines.iter().all(|(account, _)| *account != "445710"));
+        assert_eq!(stored.vat_deductible, Money::from_cents(2_000));
+        assert!(Money::from_cents(2_000) <= Money::from_cents(10_000));
+    }
+
+    /// Même montant, sans le drapeau : la charge est le montant diminué de la
+    /// TVA déductible saisie. 500 centimes tiennent dans la TVA que 10 000
+    /// peuvent contenir au taux normal.
+    #[test]
+    fn a_domestic_bank_payment_still_reduces_the_charge_by_the_vat() {
+        let mut store = test_store("domestic-3045");
+        Executor::new(&mut store)
+            .execute(&company_profile(), &human_ctx())
+            .unwrap();
+        let mut domestic = sample();
+        domestic.label = "Prestation domestique".to_string();
+        domestic.amount = Money::from_cents(10_000);
+        domestic.vat_rate = VatRate::Standard;
+        domestic.vat_deductible = Money::from_cents(500);
+        domestic.incurred_on = date(2024, Month::November, 2);
+        domestic.reverse_charge = false;
+        domestic.bank_transaction_id = Some(import_transaction(
+            &mut store,
+            date(2024, Month::November, 7),
+            -10_000,
+        ));
+        let id = record(&mut store, &domestic);
+        let (journal, on, lines) = payment_lines(&store, shifted_exercise(), id);
+        assert_eq!(journal, Journal::Bank);
+        assert_eq!(on, date(2024, Month::November, 7));
+        assert_eq!(
+            lines,
+            vec![
+                ("651000".to_string(), 9_500),
+                ("445660".to_string(), 500),
+                ("512000".to_string(), -10_000),
+            ]
+        );
+        assert!(lines.iter().all(|(account, _)| *account != "445200"));
+        assert!(lines.iter().all(|(account, _)| *account != "445662"));
+    }
+
+    #[test]
+    fn an_unpaid_reverse_charged_expense_posts_nothing() {
+        let mut store = test_store("reverse-charge-unpaid");
+        Executor::new(&mut store)
+            .execute(&company_profile(), &human_ctx())
+            .unwrap();
+        let mut expense = sample();
+        expense.label = "Prestation non payée".to_string();
+        expense.supplier = Some("Atelier".to_string());
+        expense.amount = Money::from_cents(10_000);
+        expense.vat_rate = VatRate::Standard;
+        expense.vat_deductible = Money::ZERO;
+        expense.incurred_on = date(2024, Month::November, 6);
+        expense.reverse_charge = true;
+        expense.paid_by = ExpensePaidBy::Company;
+        expense.bank_transaction_id = None;
+        record(&mut store, &expense);
+        let ledger = build_ledger(store.connection(), shifted_exercise()).unwrap();
+        assert!(
+            ledger
+                .entries
+                .iter()
+                .all(|entry| !entry.piece_ref.starts_with("DEP-")),
+            "{:?}",
+            ledger.entries
+        );
+    }
+
+    /// L'associé avance les 100,00 €. Le crédit est le 455, au jour de la facture.
+    /// La paire de TVA est la même que pour un paiement banque.
+    #[test]
+    fn an_associate_reverse_charge_credits_the_shareholder_for_the_amount_paid() {
+        let mut store = test_store("reverse-charge-associate");
+        Executor::new(&mut store)
+            .execute(&company_profile(), &human_ctx())
+            .unwrap();
+        let mut expense = sample();
+        expense.label = "Prestation avancée".to_string();
+        expense.supplier = Some("Atelier".to_string());
+        expense.amount = Money::from_cents(10_000);
+        expense.vat_rate = VatRate::Standard;
+        expense.vat_deductible = Money::ZERO;
+        expense.incurred_on = date(2024, Month::November, 6);
+        expense.reverse_charge = true;
+        expense.paid_by = ExpensePaidBy::Associate;
+        expense.bank_transaction_id = None;
+        let id = record(&mut store, &expense);
+        let (journal, on, lines) = payment_lines(&store, shifted_exercise(), id);
+        assert_eq!(journal, Journal::Purchases);
+        assert_eq!(on, date(2024, Month::November, 6));
+        assert_eq!(
+            lines,
+            vec![
+                ("651000".to_string(), 10_000),
+                ("445662".to_string(), 2_000),
+                ("445200".to_string(), -2_000),
+                ("455000".to_string(), -10_000),
+            ]
+        );
     }
 
     #[test]

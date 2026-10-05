@@ -2,8 +2,15 @@
 //! des procédures fiscales (lot 28).
 //!
 //! Depuis le lot 31, ce module n'est plus que le **format** : les écritures viennent du grand
-//! livre dérivé de [`crate::ledger`] (journaux `AN`, `VE`, `AC`, `BQ`, `OD`), qui porte aussi la
-//! balance et le bilan. Le format suit le BOI-CF-IOR-60-40-20 : 18 colonnes dans l'ordre imposé,
+//! livre ([`crate::ledger`], journaux `AN`, `VE`, `AC`, `BQ`, `OD`), qui porte aussi la
+//! balance et le bilan. Les paiements de dépenses, les factures de prestation et leurs
+//! encaissements y sont des écritures conservées, de même que la liquidation de
+//! TVA d'un mois écoulé. Une rémunération n'entre au livre que lorsqu'elle est
+//! saisie. L'écriture d'IS est posée à la clôture. Le prévisionnel d'un
+//! exercice ouvert peut l'afficher sans l'écrire. Le résultat de clôture lit
+//! le livre : une dépense sans écriture vivante reste hors résultat, de même
+//! que le brut déclaré au profil.
+//! Le format suit le BOI-CF-IOR-60-40-20 : 18 colonnes dans l'ordre imposé,
 //! séparateur `|`, dates en `AAAAMMJJ`, montants avec la virgule décimale et sans séparateur de
 //! milliers, encodage UTF-8, nom de fichier `<SIREN>FEC<AAAAMMJJ>.txt` daté de la clôture. Les
 //! colonnes de lettrage et de devise restent vides (euro seul ; le lettrage n'est pas modélisé).
@@ -94,8 +101,9 @@ impl Fec {
 
     /// Construit le FEC d'un exercice à partir des faits du domaine — fonction pure, testable
     /// sans base. Le bilan d'ouverture (lot 30) fournit les à-nouveaux si, et seulement si, il
-    /// ouvre cet exercice ; sans exercice clos enregistré, l'IS et la rémunération du dirigeant
-    /// sont recalculés depuis le profil (voir [`Ledger::build`]).
+    /// ouvre cet exercice ; sans exercice clos enregistré, l'IS est recalculé à la
+    /// lecture (voir [`Ledger::build`]). Une rémunération n'y entre que si elle a
+    /// été saisie.
     ///
     /// # Errors
     ///
@@ -109,6 +117,7 @@ impl Fec {
         expenses: &[Expense],
         opening: Option<&OpeningBalance>,
     ) -> Result<Self, crate::ledger::LedgerError> {
+        let posted = crate::ledger::book_service_activity(invoices, clients, payments);
         let ledger = Ledger::build(LedgerFacts {
             profile,
             exercise,
@@ -117,6 +126,7 @@ impl Fec {
             clients,
             payments,
             expenses,
+            posted: &posted,
             assets: &[],
             bank_transactions: &[],
             opening: opening
@@ -183,6 +193,7 @@ impl Fec {
                     .aux
                     .as_ref()
                     .map_or(("", ""), |a| (a.number.as_str(), a.label.as_str()));
+                let lib = l.line_label.as_deref().unwrap_or(&entry.label);
                 let fields: [&str; 18] = [
                     entry.journal.code(),
                     entry.journal.label(),
@@ -194,7 +205,7 @@ impl Fec {
                     aux_lib,
                     &entry.piece_ref,
                     &piece_date,
-                    &entry.label,
+                    lib,
                     &decimal_comma(debit),
                     &decimal_comma(credit),
                     "",
@@ -397,6 +408,8 @@ mod tests {
             paid_by: crate::domain::ExpensePaidBy::Company,
             created_at: OffsetDateTime::UNIX_EPOCH,
             revision: 1,
+
+            reverse_charge: false,
         }
     }
 
@@ -496,13 +509,8 @@ mod tests {
             date(2026, TimeMonth::March, 31),
             None,
         )];
-        let expenses = vec![expense(
-            "Licence IDE",
-            ExpenseCategory::Software,
-            12_000,
-            2_000,
-            date(2026, TimeMonth::March, 12),
-        )];
+        // Facture non payée : elle n'entre pas au FEC. Le paiement conservé est
+        // couvert par le test de grand livre, pas par ce gabarit de colonnes.
 
         let fec = Fec::build(
             &profile(),
@@ -510,7 +518,7 @@ mod tests {
             &invoices,
             &clients,
             &payments,
-            &expenses,
+            &[],
             None,
         )
         .unwrap();
@@ -522,8 +530,9 @@ mod tests {
         let mut lines = rendered.lines();
         assert_eq!(lines.next().unwrap(), HEADER.join("|"));
         let body: Vec<&str> = lines.collect();
-        // Facture : 3 lignes ; dépense : 3 ; règlement : 2 ; avoir : 3.
-        assert_eq!(body.len(), 11, "{rendered}");
+        // Facture : 3 lignes ; règlement soldé : 4 (la TVA passe en 445710) ; avoir : 3.
+        // Pas de dépense non payée.
+        assert_eq!(body.len(), 10, "{rendered}");
         assert!(
             body.iter().all(|l| l.split('|').count() == 18),
             "{rendered}"
@@ -542,50 +551,44 @@ mod tests {
         );
         assert_eq!(
             body[2],
-            "VE|Ventes|1|20260310|445710|TVA collectée|||FA-2026-0001|20260310|Facture FA-2026-0001 — Acme   Cie|0,00|400,00|||20260310||"
+            "VE|Ventes|1|20260310|445881|TVA collectée en attente d'exigibilité - 20%|||FA-2026-0001|20260310|Facture FA-2026-0001 — Acme   Cie|0,00|400,00|||20260310||"
         );
-        // Dépense du 12 mars, journal AC : charge HT 100 €, TVA 20 €, banque 120 €.
-        assert!(
-            body[3].starts_with("AC|Achats|1|20260312|651000|"),
-            "{}",
-            body[3]
-        );
-        assert!(
-            body[3].ends_with("|Licence IDE|100,00|0,00|||20260312||"),
-            "{}",
-            body[3]
-        );
-        assert!(body[4].contains("|445660|"), "{}", body[4]);
-        assert!(body[4].ends_with("|20,00|0,00|||20260312||"), "{}", body[4]);
-        assert!(body[5].contains("|512000|Banque|||DEP-"), "{}", body[5]);
-        assert!(
-            body[5].ends_with("|0,00|120,00|||20260312||"),
-            "{}",
-            body[5]
-        );
-        // Règlement du 31 mars, journal BQ.
+        // Règlement du 31 mars, avant l'avoir : toute la TVA passe en 445710.
         assert_eq!(
-            body[6],
+            body[3],
             "BQ|Banque|1|20260331|512000|Banque|||FA-2026-0001|20260331|Règlement FA-2026-0001 (virement)|2400,00|0,00|||20260331||"
         );
         assert_eq!(
-            body[7],
+            body[4],
             "BQ|Banque|1|20260331|411000|Clients|C01900000|Acme   Cie|FA-2026-0001|20260331|Règlement FA-2026-0001 (virement)|0,00|2400,00|||20260331||"
         );
-        // Avoir : les côtés s'inversent, le numéro VE continue.
         assert_eq!(
-            body[8],
+            body[5],
+            "BQ|Banque|1|20260331|445881|TVA collectée en attente d'exigibilité - 20%|||FA-2026-0001|20260331|Règlement FA-2026-0001 (virement)|400,00|0,00|||20260331||"
+        );
+        assert_eq!(
+            body[6],
+            "BQ|Banque|1|20260331|445710|TVA collectée|||FA-2026-0001|20260331|Règlement FA-2026-0001 (virement)|0,00|400,00|||20260331||"
+        );
+        // Avoir : les côtés s'inversent, le numéro VE continue. La TVA revient sur 445881.
+        assert_eq!(
+            body[7],
             "VE|Ventes|2|20260402|411000|Clients|C01900000|Acme   Cie|FA-2026-0002|20260402|Avoir FA-2026-0002 sur FA-2026-0001 — Acme   Cie|0,00|2400,00|||20260402||"
         );
         assert!(
-            body[9].ends_with("|2000,00|0,00|||20260402||"),
+            body[8].ends_with("|2000,00|0,00|||20260402||"),
+            "{}",
+            body[8]
+        );
+        assert!(
+            body[9].contains("|445881|TVA collectée en attente d'exigibilité - 20%|"),
             "{}",
             body[9]
         );
         assert!(
-            body[10].ends_with("|400,00|0,00|||20260402||"),
+            body[9].ends_with("|400,00|0,00|||20260402||"),
             "{}",
-            body[10]
+            body[9]
         );
     }
 
@@ -601,7 +604,8 @@ mod tests {
             date(2025, TimeMonth::December, 20),
             None,
         )];
-        // Encaissé fin 2025, annulé en 2026 : l'extourne seule figure au FEC 2026.
+        // Encaissé fin 2025, annulé en 2026 : l'extourne est datée de l'encaissement,
+        // donc elle reste au FEC 2025. Le FEC 2026 n'a pas cette annulation.
         let payments = vec![payment(
             inv_id,
             120_000,
@@ -625,18 +629,7 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(fec.entries.len(), 1, "{:?}", fec.entries);
-        let void = &fec.entries[0];
-        assert_eq!(void.journal, Journal::Bank);
-        assert_eq!(void.date, date(2026, TimeMonth::January, 15));
-        assert!(
-            void.label
-                .starts_with("Annulation du règlement FA-2025-0001 du 2025-12-30")
-        );
-        assert_eq!(void.lines[0].account, accounts::CLIENTS);
-        assert_eq!(void.lines[0].amount, Money::from_cents(120_000));
-        assert_eq!(void.lines[1].account, accounts::BANK);
-        assert_eq!(void.lines[1].amount, Money::from_cents(-120_000));
+        assert_eq!(fec.entries.len(), 0, "{:?}", fec.entries);
 
         let fec_2025 = Fec::build(
             &profile(),
@@ -648,17 +641,31 @@ mod tests {
             None,
         )
         .unwrap();
-        // Facture et règlement, puis l'IS de clôture sur le bénéfice de 1 000 € (150 €) en OD
-        // (lot 31).
+        // Facture, extourne de l'encaissement, encaissement, puis l'IS de clôture sur le
+        // bénéfice de 1 000 € (150 €). L'extourne précède l'encaissement : `EXT-` trie
+        // avant `FA-` le même jour.
         let kinds: Vec<_> = fec_2025.entries.iter().map(|e| e.journal).collect();
-        assert_eq!(kinds, vec![Journal::Sales, Journal::Bank, Journal::Misc]);
-        assert_eq!(fec_2025.entries[2].piece_ref, "OD-IS");
         assert_eq!(
-            fec_2025.entries[2].lines[0].amount,
+            kinds,
+            vec![Journal::Sales, Journal::Bank, Journal::Bank, Journal::Misc]
+        );
+        assert_eq!(
+            fec_2025.entries[1].date,
+            date(2025, TimeMonth::December, 30)
+        );
+        assert_eq!(fec_2025.entries[1].piece_ref, "EXT-FA-2025-0001");
+        assert!(
+            fec_2025.entries[1]
+                .label
+                .starts_with("Extourne — Règlement FA-2025-0001")
+        );
+        assert_eq!(fec_2025.entries[3].piece_ref, "OD-IS");
+        assert_eq!(
+            fec_2025.entries[3].lines[0].amount,
             Money::from_cents(15_000)
         );
         assert!(
-            fec_2025.entries[1].label.starts_with("Règlement"),
+            fec_2025.entries[2].label.starts_with("Règlement"),
             "l'encaissement lui-même reste au FEC 2025"
         );
     }
@@ -680,23 +687,41 @@ mod tests {
 
     #[test]
     fn a_non_deductible_vat_share_stays_in_the_charge() {
-        // Restaurant 120 € TTC, TVA déductible plafonnée à 8 € : charge 112 €, TVA 8 €.
-        let fec = Fec::build(
-            &profile(),
-            FiscalYear::calendar(2026),
-            &[],
-            &[],
-            &[],
-            &[expense(
-                "Déjeuner client",
-                ExpenseCategory::Meals,
-                12_000,
-                800,
-                date(2026, TimeMonth::May, 5),
-            )],
+        // Restaurant 120,00 € TTC, TVA déductible plafonnée à 8,00 € : charge 112,00 €.
+        let meal = expense(
+            "Déjeuner client",
+            ExpenseCategory::Meals,
+            12_000,
+            800,
+            date(2026, TimeMonth::May, 5),
+        );
+        let posted = crate::ledger::expense_payment_entry(
+            &meal,
+            crate::ledger::ExpensePayment::Bank {
+                on: meal.incurred_on,
+            },
             None,
         )
+        .expect("paiement non nul");
+        let profile = profile();
+        let ledger = Ledger::build(LedgerFacts {
+            profile: &profile,
+            exercise: FiscalYear::calendar(2026),
+            invoices: &[],
+            write_offs: &[],
+            clients: &[],
+            payments: &[],
+            expenses: &[],
+            posted: std::slice::from_ref(&posted),
+            assets: &[],
+            bank_transactions: &[],
+            opening: None,
+            snapshot: None,
+            prior_losses: Money::ZERO,
+            appropriations: &[],
+        })
         .unwrap();
+        let fec = Fec::from_ledger(profile.siren, ledger);
         let entry = &fec.entries[0];
         assert_eq!(entry.lines[0].account, accounts::MEALS);
         assert_eq!(entry.lines[0].amount, Money::from_cents(11_200));
@@ -886,6 +911,8 @@ mod tests {
                     supplier: None,
                     bank_transaction_id: None,
                     paid_by: crate::domain::ExpensePaidBy::Company,
+
+                    reverse_charge: false,
                 },
                 &human,
             )
@@ -905,6 +932,8 @@ mod tests {
                     supplier: None,
                     bank_transaction_id: None,
                     paid_by: crate::domain::ExpensePaidBy::Company,
+
+                    reverse_charge: false,
                 },
                 &human,
             )
@@ -917,32 +946,27 @@ mod tests {
         assert_eq!(fec.exercise.end(), date(2026, TimeMonth::June, 30));
         assert_eq!(fec.file_name(), "552100554FEC20260630.txt");
         let labels: Vec<&str> = fec.entries.iter().map(|e| e.label.as_str()).collect();
+        // Train et « Après clôture » ne sont pas payés : ils n'entrent pas.
+        // L'extourne de l'encaissement est datée du 1er octobre 2025, avant le règlement.
         assert_eq!(labels.len(), 4, "{labels:?}");
         assert!(
             labels[0].starts_with("Facture FA-2025-0001 — Acme"),
             "{labels:?}"
         );
         assert!(
-            labels[1].starts_with("Règlement FA-2025-0001 (carte)"),
+            labels[1].starts_with("Extourne — Règlement FA-2025-0001 (carte)"),
             "{labels:?}"
         );
         assert!(
-            labels[2].starts_with("Avoir FA-2025-0002 sur FA-2025-0001"),
+            labels[2].starts_with("Règlement FA-2025-0001 (carte)"),
             "{labels:?}"
         );
-        // Lot 37 : la pièce est l'UUID de la dépense, le justificatif est nommé dans le libellé.
-        assert_eq!(labels[3], "Train — billet.pdf");
         assert!(
-            fec.entries[3].piece_ref.starts_with("DEP-"),
-            "{}",
-            fec.entries[3].piece_ref
+            labels[3].starts_with("Avoir FA-2025-0002 sur FA-2025-0001"),
+            "{labels:?}"
         );
-        assert_eq!(fec.entries[3].piece_ref.len(), 4 + 36);
-        assert_eq!(fec.entries[3].lines[0].account, accounts::TRAVEL);
-        assert_eq!(fec.entries[3].lines[0].amount, Money::from_cents(10_000));
         assert!(fec.entries.iter().all(FecEntry::is_balanced));
         assert_eq!(fec.total_debit(), fec.total_credit());
-        // Numérotation par journal : VE 1-2, BQ 1, AC 1.
         let numbers: Vec<(Journal, u32)> =
             fec.entries.iter().map(|e| (e.journal, e.number)).collect();
         assert_eq!(
@@ -950,24 +974,20 @@ mod tests {
             vec![
                 (Journal::Sales, 1),
                 (Journal::Bank, 1),
+                (Journal::Bank, 2),
                 (Journal::Sales, 2),
-                (Journal::Purchases, 1),
             ]
         );
 
-        // L'annulation est horodatée au moment de la commande (aujourd'hui) : elle relève de
-        // l'exercice suivant, avec la dépense d'après clôture.
+        // L'annulation est datée de l'encaissement, déjà dans l'exercice clos le 30 juin.
+        // La dépense non payée d'après clôture n'entre pas non plus.
         let next = build_fec(store.connection(), 2027).unwrap();
         assert_eq!(next.exercise.start(), date(2026, TimeMonth::July, 1));
-        let labels: Vec<&str> = next.entries.iter().map(|e| e.label.as_str()).collect();
-        assert_eq!(labels.len(), 2, "{labels:?}");
-        assert_eq!(labels[0], "Après clôture");
         assert!(
-            labels[1].starts_with("Annulation du règlement FA-2025-0001 du 2025-10-01"),
-            "{labels:?}"
+            next.entries.is_empty(),
+            "{:?}",
+            next.entries.iter().map(|e| &e.label).collect::<Vec<_>>()
         );
-        assert_eq!(next.entries[1].lines[0].amount, Money::from_cents(180_000));
-        assert!(next.entries[1].is_balanced());
     }
 
     #[test]

@@ -48,6 +48,12 @@ pub(crate) struct RecordExpenseArgs {
     /// `bank_transaction_id`.
     #[serde(default)]
     paid_by: Option<String>,
+    /// Prestation intracommunautaire autoliquidée. Défaut : paiement domestique.
+    /// Le montant payé est la charge. La TVA française au taux choisi est à la fois
+    /// due et déductible. `vat_deductible_cents` n'est pas utilisé.
+    #[serde(default)]
+    #[schemars(default)]
+    reverse_charge: bool,
     #[serde(default)]
     dry_run: bool,
 }
@@ -99,6 +105,11 @@ pub(crate) struct UpdateExpenseArgs {
     /// Efface le bénéficiaire (défaut : faux).
     #[serde(default)]
     clear_supplier: bool,
+    /// Prestation intracommunautaire autoliquidée. Inchangée si absente.
+    /// `true` : le montant payé est la charge, et `vat_deductible_cents` n'est pas utilisé.
+    #[serde(default)]
+    #[schemars(default)]
+    reverse_charge: Option<bool>,
     #[serde(default)]
     dry_run: bool,
 }
@@ -176,6 +187,7 @@ impl FreeflowServer {
             supplier: args.supplier,
             bank_transaction_id,
             paid_by,
+            reverse_charge: args.reverse_charge,
         };
         match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
@@ -295,6 +307,7 @@ impl FreeflowServer {
                 args.supplier.or(current.supplier)
             },
             paid_by: current.paid_by,
+            reverse_charge: args.reverse_charge.unwrap_or(current.reverse_charge),
         };
         match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),

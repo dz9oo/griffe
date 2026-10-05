@@ -5,10 +5,10 @@ use griffe_core::clock::today_local;
 use griffe_core::domain::Money;
 use griffe_core::fiscal::FiscalDeadlineKind;
 use griffe_core::society::{
-    DeleteVatCarryIn, MarkDutyFiled, RecordVatCarryIn, RecordVatReversal, RequestVatRefund,
-    RetractDutyFiled, RetractVatRefund, RetractVatReversal, VatRefundStatus, closing_story,
-    current_account, duty_briefing, pay_yourself, society_duties, society_home, society_identity,
-    statement_moves, vat_carry_in,
+    DeleteVatCarryIn, LiquidateCa3, MarkDutyFiled, RecordPayroll, RecordVatCarryIn,
+    RecordVatReversal, RequestVatRefund, RetractDutyFiled, RetractVatRefund, RetractVatReversal,
+    VatRefundStatus, closing_story, current_account, duty_briefing, pay_yourself, society_duties,
+    society_home, society_identity, statement_moves, vat_carry_in,
 };
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
@@ -500,6 +500,73 @@ impl FreeflowServer {
             Err(e) => err_text(e.to_string()),
         }
     }
+
+    /// Écrire la TVA du mois. Confirmation humaine requise.
+    #[tool(
+        name = "society.liquidate_ca3",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true
+        )
+    )]
+    async fn society_liquidate_ca3(
+        &self,
+        Parameters(args): Parameters<LiquidateCa3Args>,
+    ) -> CallToolResult {
+        let today = match today_or(args.today) {
+            Ok(d) => d,
+            Err(e) => return err_text(e),
+        };
+        let mut store = self.store.lock().await;
+        let briefing = match duty_briefing(
+            store.connection(),
+            FiscalDeadlineKind::Ca3,
+            today,
+            Some(&args.period),
+        ) {
+            Ok(b) => b,
+            Err(e) => return err_text(e.to_string()),
+        };
+        let cmd = LiquidateCa3 {
+            period_key: briefing.period_key,
+            on: today,
+        };
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
+            Ok(outcome) => ok_json(outcome_json(&outcome)),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
+
+    /// Écrire une paie déjà chiffrée. Confirmation humaine requise.
+    #[tool(
+        name = "society.record_payroll",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true
+        )
+    )]
+    async fn society_record_payroll(
+        &self,
+        Parameters(args): Parameters<RecordPayrollArgs>,
+    ) -> CallToolResult {
+        let on = match griffe_core::domain::parse_date(&args.on) {
+            Ok(date) => date,
+            Err(error) => return err_text(error.to_string()),
+        };
+        let mut store = self.store.lock().await;
+        let cmd = RecordPayroll {
+            on,
+            gross: Money::from_cents(args.gross_cents),
+            employee_withholding: Money::from_cents(args.withholding_cents),
+            employer_contributions: Money::from_cents(args.employer_cents),
+        };
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
+            Ok(outcome) => ok_json(outcome_json(&outcome)),
+            Err(e) => err_text(e.to_string()),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -552,6 +619,32 @@ pub(crate) struct RecordVatReversalArgs {
     period: String,
     /// Case 15, en centimes.
     amount_cents: i64,
+    /// Date `AAAA-MM-JJ`. Défaut : aujourd'hui (heure locale).
+    today: Option<String>,
+    /// `true` : montre ce qui serait fait, n'écrit rien.
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct RecordPayrollArgs {
+    /// Jour de la paie, `AAAA-MM-JJ`.
+    on: String,
+    /// Brut, en centimes.
+    gross_cents: i64,
+    /// Retenue salariale, en centimes.
+    withholding_cents: i64,
+    /// Cotisations patronales, en centimes.
+    employer_cents: i64,
+    /// `true` : montre ce qui serait fait, n'écrit rien.
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct LiquidateCa3Args {
+    /// Période `AAAA-MM`.
+    period: String,
     /// Date `AAAA-MM-JJ`. Défaut : aujourd'hui (heure locale).
     today: Option<String>,
     /// `true` : montre ce qui serait fait, n'écrit rien.

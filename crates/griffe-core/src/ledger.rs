@@ -22,22 +22,40 @@
 //! `fiscal_year::prior_chain`, qui n'attend pas l'approbation non plus). Sans exercice clos
 //! entre deux, la chaîne s'arrête : pas d'à-nouveaux, ni d'écriture d'affectation.
 //!
-//! **Opérations de clôture** (`OD`, datées du dernier jour) : la rémunération du dirigeant
-//! (641/645 contre 421/431 — réputée *due, non décaissée* : le domaine n'enregistre aucun fait
-//! de paie, l'expert-comptable substitue les écritures réelles) et l'IS (695 contre 444), pris
-//! dans le snapshot de clôture s'il existe, recalculés sinon — en imputant d'abord les déficits
-//! antérieurs de la chaîne sur le bénéfice (lot 32) — et, depuis un snapshot ayant opté pour le
-//! report en arrière, la créance d'IS qui en naît (444 contre le produit 699). Le résultat de
-//! l'exercice est la somme des comptes de gestion (classes 6 et 7) ; il se retrouve donc au
-//! passif du bilan *après* IS.
+//! **Opérations de clôture** (`OD`, datées du dernier jour) : l'IS (695 contre 444).
+//! Une écriture déjà posée à la clôture est lue telle quelle. Sans elle, un snapshot
+//! fixe le montant, et un exercice ouvert montre le prévisionnel sur le résultat du
+//! livre — la lecture ne l'insère pas. Le report en arrière, depuis un snapshot,
+//! reste dérivé (444 contre le produit 699). Le résultat de l'exercice est la somme
+//! des comptes de gestion (classes 6 et 7) ; il se retrouve donc au passif du bilan
+//! *après* IS.
 //!
-//! **Dépenses et relevé** (lot 33) : une dépense *rapprochée* d'un débit du relevé bancaire
-//! (`expenses::ReconcileExpense`) est comptabilisée en deux temps — la charge à sa date
-//! d'engagement (`AC`, 6xx et 445660 contre 401), le décaissement à la date du relevé (`BQ`,
-//! 401 contre 512) — qui peuvent tomber dans deux exercices : un 401 créditeur au bilan est une
-//! facture fournisseur reçue avant la clôture et payée après. Une dépense non rapprochée reste
-//! réputée payée à sa date (charge contre 512 directement) : sans relevé, le domaine n'a pas de
-//! meilleure date. Le 512 dérivé suit donc le relevé exactement là où il a été rapproché.
+//! **Rémunération.** Une rémunération n'entre au livre que lorsqu'elle est saisie.
+//! [`payroll_form`] fige la forme (641, 645, 421, 431, puis les règlements).
+//! La commande l'écrit ; [`Ledger::build`] ne l'appelle pas, il lit les écritures
+//! conservées. Un brut mensuel déclaré au profil ne poste rien. Un à-nouveau 421
+//! reste ce crédit tant qu'un règlement de banque ne le solde pas : on ne l'efface
+//! pas en inventant un 641.
+//!
+//! **Dépenses.** Une facture non payée n'entre pas au livre. Le paiement est une
+//! écriture conservée ([`crate::journal`]) : au jour du relevé, journal `BQ`,
+//! charge et 445660 contre 512 ; ou, si l'associé a avancé, journal `AC` contre
+//! 455 au jour de la facture. Une prestation intracommunautaire autoliquidée
+//! débite la charge pour le montant payé entier, débite 445662 et crédite
+//! 445200 de la TVA française, et crédite 512 ou 455 du montant payé. Pas de
+//! 445660 sur cette écriture. Pas de 401 : une facture non payée n'écrit rien
+//! (CGI art. 302 septies A ter A, 1 bis). Corriger, c'est une extourne. Une immobilisation liée à une dépense
+//! n'est amortie ici que si son entrée en 2xx est déjà dans les écritures
+//! conservées : pas de dotation sans actif.
+//!
+//! **Ventes.** Une facture de prestation est une écriture conservée à sa date :
+//! 411 au TTC, 706 au HT, 445881 à la TVA (CGI art. 269, 2, c — exigibilité à
+//! l'encaissement). L'encaissement est une écriture `BQ` : 512 / 411 au TTC
+//! encaissé, et 445881 / 445710 pour la part de TVA de cet encaissement. Un
+//! avoir sur une facture non encaissée inverse 411, 706 et 445881. Annuler un
+//! encaissement extourne le mouvement de trésorerie et ramène la TVA de 445710
+//! vers 445881, à la date de l'encaissement. Une facture déjà émise n'est pas
+//! réécrite.
 //!
 //! **Immobilisations** (lot 42) : une dépense `equipment` immobilisée entre à l'actif (2xx)
 //! plutôt qu'en charge ; la dotation linéaire de l'exercice est une `OD` 681 / 28x au dernier
@@ -48,9 +66,25 @@
 //! datée du geste ; une rétractation l'extourne à `retracted_on`. Le 706 de la vente n'est
 //! pas touché — seul un avoir inverse le chiffre d'affaires.
 //!
-//! Limites assumées, dites dans les libellés : les dépenses non rapprochées sont réputées payées
-//! à leur date, la TVA n'est jamais liquidée (445660/445710 restent bruts, aucune CA3 n'étant
-//! un fait daté), pas de provision ni de cession d'immobilisation. Un export pour
+//! **Liquidation de TVA.** L'OD d'un mois écoulé est une écriture conservée
+//! (`CA3-AAAA-MM`, journal `OD`, dernier jour). [`Ledger::build`] ne l'insère
+//! pas. Elle solde le 445710, le 445660 et le 445670 tels qu'ils sont au livre,
+//! plus le reversement enregistré du mois. Elle solde aussi la paire 445200 /
+//! 445662 du mois, au centime, quand les deux nets sont opposés. Elle ne relit
+//! pas les factures à leur date d'émission. L'arrondi à l'euro est celui de
+//! [`crate::accounting::round_to_euro`] (art. 1657 CGI) : il ne s'applique pas
+//! à cette paire.
+//!
+//! Limites assumées : le prévisionnel d'un exercice ouvert affiche l'IS sans
+//! l'écrire. Le résultat de clôture lit le livre. Une dépense sans écriture
+//! vivante reste hors résultat, de même que le brut déclaré au profil.
+//! Les cases de TVA du mois et `vat_due_for_period` lisent le même
+//! livre que l'OD : exigibilité à l'encaissement, déductible au paiement.
+//! Si la déductible du livre dépasse la ligne arrondie, l'OD n'est pas posée.
+//! Les pertes sur créances restent dérivées. Pas de 445882 : un seul
+//! sous-compte 445881, libellé pour le taux normal. L'autoliquidation d'une vente n'est pas écrite.
+//! Celle d'un paiement de prestation l'est, en 445662 et 445200. Pas de
+//! provision ni de cession d'immobilisation. Un export pour
 //! l'expert-comptable, qui reste maître des écritures définitives.
 
 use std::borrow::Cow;
@@ -60,7 +94,7 @@ use rusqlite::Connection;
 use serde::Serialize;
 use time::Date;
 
-use crate::accounting::{corporate_income_tax, director_gross, impute_prior_losses};
+use crate::accounting::{corporate_income_tax, impute_prior_losses};
 use crate::app::AppError;
 
 /// Ce que la construction du grand livre peut refuser (lot 36).
@@ -88,9 +122,9 @@ use crate::billing::{
 use crate::clients::list_clients;
 use crate::company::{CompanyProfile, company_profile};
 use crate::domain::{
-    BankTransaction, Client, ClientId, Expense, ExpenseCategory, ExpenseId, ExpensePaidBy,
-    FiscalYear, FiscalYearEnd, FixedAsset, Invoice, InvoiceId, InvoiceWriteOff, Money,
-    OpeningBalance, Payment, PaymentMethod, format_date,
+    BankTransaction, Client, ClientId, Expense, ExpenseCategory, FiscalYear, FiscalYearEnd,
+    FixedAsset, Invoice, InvoiceId, InvoiceWriteOff, Money, OpeningBalance, Payment, PaymentMethod,
+    format_date,
 };
 use crate::expenses::list_expenses;
 use crate::fiscal_year::{FiscalYearRecord, fiscal_year_ending_in, list_fiscal_years};
@@ -109,8 +143,10 @@ pub enum Journal {
     Purchases,
     /// `BQ` : encaissements et leurs annulations, décaissements des dépenses rapprochées.
     Bank,
-    /// `OD` : opérations diverses — rémunération du dirigeant, IS, affectation du résultat,
-    /// pertes sur créances irrécouvrables.
+    /// `OD` : opérations diverses — liquidation de TVA d'un mois écoulé, IS
+    /// posé à la clôture, affectation du résultat, pertes sur créances
+    /// irrécouvrables, paie saisie. Le prévisionnel d'IS d'un exercice ouvert
+    /// est affiché sans être écrit.
     Misc,
 }
 
@@ -134,6 +170,19 @@ impl Journal {
             Self::Purchases => "Achats",
             Self::Bank => "Banque",
             Self::Misc => "Opérations diverses",
+        }
+    }
+
+    /// Le code stocké (`AN`, `VE`, `AC`, `BQ`, `OD`). `None` si la base porte autre chose.
+    #[must_use]
+    pub fn parse_code(code: &str) -> Option<Self> {
+        match code {
+            "AN" => Some(Self::Opening),
+            "VE" => Some(Self::Sales),
+            "AC" => Some(Self::Purchases),
+            "BQ" => Some(Self::Bank),
+            "OD" => Some(Self::Misc),
+            _ => None,
         }
     }
 }
@@ -195,14 +244,30 @@ pub mod accounts {
     use super::Account;
 
     pub const CLIENTS: Account = Account::fixed("411000", "Clients");
-    /// Fournisseurs (lot 33) : la charge d'une dépense rapprochée y attend son décaissement,
-    /// daté du relevé.
+    /// Fournisseurs. Les charges courantes n'y passent pas : elles sont constatées au
+    /// paiement (512 ou 455). Le compte sert à un solde repris au bilan d'ouverture,
+    /// soldé ensuite par un règlement du relevé.
     pub const SUPPLIERS: Account = Account::fixed("401000", "Fournisseurs");
     pub const BANK: Account = Account::fixed("512000", "Banque");
     pub const SERVICES: Account = Account::fixed("706000", "Prestations de services");
     pub const VAT_COLLECTED: Account = Account::fixed("445710", "TVA collectée");
+    /// TVA d'une prestation facturée et pas encore encaissée. Le plan reste
+    /// à six chiffres.
+    pub const VAT_PENDING: Account =
+        Account::fixed("445881", "TVA collectée en attente d'exigibilité - 20%");
     pub const VAT_DEDUCTIBLE: Account =
         Account::fixed("445660", "TVA déductible sur autres biens et services");
+    /// TVA due sur une prestation intracommunautaire. Le plan reste à six
+    /// chiffres. Ce compte n'entre pas dans la TVA collectée ni dans la
+    /// déductible du mois.
+    pub const VAT_INTRACOM_DUE: Account = Account::fixed("445200", "TVA due intracommunautaire");
+    /// TVA déductible sur une prestation de services intracommunautaire.
+    /// Six chiffres. Ce compte n'entre pas dans la TVA collectée ni dans la
+    /// déductible du mois.
+    pub const VAT_INTRACOM_DEDUCTIBLE: Account = Account::fixed(
+        "445662",
+        "TVA déductible sur prestations de services intracommunautaire",
+    );
     pub const SOFTWARE: Account = Account::fixed("651000", "Redevances pour logiciels et licences");
     /// Pertes sur créances irrécouvrables (PCG 2025) : le HT d'une créance passée en perte,
     /// sans inverser le 706.
@@ -219,6 +284,11 @@ pub mod accounts {
     /// Impôts et taxes (lot 37) : CFE, CVAE… — case 244 du 2033-B.
     pub const TAXES: Account = Account::fixed("635000", "Impôts, taxes et versements assimilés");
     pub const OTHER: Account = Account::fixed("658000", "Charges diverses de gestion courante");
+    /// Produits divers de gestion courante. Le plan reste à six chiffres.
+    /// L'écart d'arrondi de TVA (ligne arrondie supérieure aux centimes) y
+    /// est crédité.
+    pub const SUNDRY_INCOME: Account =
+        Account::fixed("758000", "Produits divers de gestion courante");
 
     // Comptes de bilan que le relevé règle (lot 37) — repris d'un bilan de cabinet, ou mouvements
     // qui ne sont ni une charge ni un produit.
@@ -272,7 +342,7 @@ pub mod accounts {
     /// Tout le plan fixe — la source unique du libellé d'un compte (lot 37 : un `CompteNum` du
     /// FEC n'a qu'un seul `CompteLib`, celui-ci ; un libellé saisi au bilan d'ouverture ne
     /// sert qu'à un compte hors de cette liste).
-    pub const FIXED_PLAN: [Account; 41] = [
+    pub const FIXED_PLAN: [Account; 45] = [
         SHARE_CAPITAL,
         LEGAL_RESERVE,
         RETAINED_CREDIT,
@@ -287,7 +357,10 @@ pub mod accounts {
         CORPORATE_TAX_DUE,
         VAT_DUE,
         VAT_DEDUCTIBLE,
+        VAT_INTRACOM_DUE,
+        VAT_INTRACOM_DEDUCTIBLE,
         VAT_COLLECTED,
+        VAT_PENDING,
         VAT_CREDIT,
         SHAREHOLDER_ACCOUNT,
         DIVIDENDS_DUE,
@@ -306,6 +379,7 @@ pub mod accounts {
         SOFTWARE,
         BAD_DEBT,
         OTHER,
+        SUNDRY_INCOME,
         CORPORATE_TAX,
         CARRY_BACK_INCOME,
         DEPRECIATION,
@@ -344,7 +418,7 @@ pub struct AuxAccount {
 }
 
 impl AuxAccount {
-    fn for_client(client: &Client) -> Self {
+    pub(crate) fn for_client(client: &Client) -> Self {
         let hex: String = client
             .id
             .as_uuid()
@@ -367,6 +441,9 @@ pub struct LedgerLine {
     pub account: Account,
     pub aux: Option<AuxAccount>,
     pub amount: Money,
+    /// Libellé de ligne (`EcritureLib`). `None` : le FEC reprend le libellé de l'écriture.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_label: Option<String>,
 }
 
 /// Une écriture : ses lignes somment à zéro (voir [`LedgerEntry::is_balanced`]).
@@ -433,6 +510,7 @@ impl OpeningLines {
                         .expect("un libellé est toujours fourni"),
                     aux: None,
                     amount: l.signed(),
+                    line_label: None,
                 })
                 .collect(),
         }
@@ -450,6 +528,10 @@ pub struct LedgerFacts<'a> {
     pub clients: &'a [Client],
     pub payments: &'a [Payment],
     pub expenses: &'a [Expense],
+    /// Écritures déjà posées : paiements de dépenses, factures de prestation et
+    /// leurs encaissements. Le livre ne les redérive pas. Une facture d'achat non
+    /// payée n'y figure pas.
+    pub posted: &'a [LedgerEntry],
     /// Immobilisations déclarées (lot 42) : une dépense liée entre à l'actif, et chaque
     /// immobilisation produit sa dotation `681 / 28x` au dernier jour.
     pub assets: &'a [FixedAsset],
@@ -459,7 +541,7 @@ pub struct LedgerFacts<'a> {
     /// À-nouveaux au premier jour, s'il y en a (voir le commentaire de module).
     pub opening: Option<OpeningLines>,
     /// Le snapshot de clôture de *cet* exercice, s'il est clos dans l'application : il fixe
-    /// l'IS et la rémunération du dirigeant (figés à la clôture) au lieu de les recalculer.
+    /// l'IS au lieu de le recalculer. La rémunération figée au snapshot n'est pas postée.
     pub snapshot: Option<&'a FiscalYearRecord>,
     /// Les exercices clos antérieurs dont l'écriture d'affectation du résultat peut tomber
     /// dans cet exercice — seulement ceux de la chaîne dont les à-nouveaux dérivent.
@@ -489,9 +571,8 @@ fn short_id(id: impl std::fmt::Display) -> String {
     id.to_string().chars().take(8).collect::<String>()
 }
 
-/// Ligne signée sur un compte général, sans tiers.
 /// Compte du plan fixe s'il y figure, sinon un compte dynamique portant `label`.
-fn numbered_account(number: &str, label: &str) -> Account {
+pub(crate) fn numbered_account(number: &str, label: &str) -> Account {
     Account::for_number(number, Some(label)).unwrap_or_else(|| Account {
         number: Cow::Owned(number.to_string()),
         label: Cow::Owned(label.to_string()),
@@ -503,6 +584,7 @@ fn line(account: Account, amount: Money) -> LedgerLine {
         account,
         aux: None,
         amount,
+        line_label: None,
     }
 }
 
@@ -526,6 +608,360 @@ fn entry(
         label: label.into(),
         lines,
     })
+}
+
+/// Forme d'une paie saisie, en centimes entiers. [`Ledger::build`] ne l'appelle
+/// pas : la commande pose ces écritures, et la lecture les conserve. Un brut
+/// déclaré au profil ne poste rien.
+///
+/// Le net est `brut − retenue salariale`. Le compte 431 reçoit la retenue
+/// salariale et les cotisations patronales. Pas de prélèvement à la source.
+///
+/// Trois écritures, chacune équilibrée, datées de `on` :
+/// - `PAIE`, journal `OD` : débit [`accounts::DIRECTOR_PAY`] (641100) du brut,
+///   débit [`accounts::SOCIAL_CHARGES`] (645000) des cotisations patronales,
+///   crédit [`accounts::PAY_DUE`] (421000) du net, crédit [`accounts::SOCIAL_DUE`]
+///   (431000) ;
+/// - `PAIE-NET`, journal `BQ` : débit 421000, crédit [`accounts::BANK`] (512000),
+///   du net ;
+/// - `PAIE-URSSAF`, journal `BQ` : débit 431000, crédit 512000, du montant porté
+///   en 431.
+///
+/// Une ligne nulle est omise. Les numéros restent ceux du plan, à six chiffres.
+#[must_use]
+pub fn payroll_form(
+    on: Date,
+    gross: Money,
+    employee_withholding: Money,
+    employer_contributions: Money,
+) -> Vec<LedgerEntry> {
+    let net = gross - employee_withholding;
+    let social = employee_withholding + employer_contributions;
+    let mut entries = Vec::new();
+    entries.extend(entry(
+        Journal::Misc,
+        on,
+        "PAIE",
+        "Paie — brut, retenue salariale et cotisations patronales",
+        vec![
+            line(accounts::DIRECTOR_PAY, gross),
+            line(accounts::SOCIAL_CHARGES, employer_contributions),
+            line(accounts::PAY_DUE, -net),
+            line(accounts::SOCIAL_DUE, -social),
+        ],
+    ));
+    entries.extend(entry(
+        Journal::Bank,
+        on,
+        "PAIE-NET",
+        "Règlement du net",
+        vec![line(accounts::PAY_DUE, net), line(accounts::BANK, -net)],
+    ));
+    entries.extend(entry(
+        Journal::Bank,
+        on,
+        "PAIE-URSSAF",
+        "Règlement des cotisations",
+        vec![
+            line(accounts::SOCIAL_DUE, social),
+            line(accounts::BANK, -social),
+        ],
+    ));
+    entries
+}
+
+/// Comment un paiement de dépense est constaté. Pas de compte 401 :
+/// une facture non payée n'écrit rien.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExpensePayment {
+    /// Journal `BQ`, au jour du relevé, contre 512.
+    Bank { on: Date },
+    /// Journal `AC`, au jour de la facture, contre 455.
+    Associate,
+}
+
+/// Écriture de paiement. Le net (TTC − TVA déductible) est débité au compte de
+/// charge, ou au 2xx si `immobilized` est fourni (numéro, libellé). La TVA
+/// déductible reste en 445660. Le TTC est crédité en 512 ou en 455.
+///
+/// Prestation intracommunautaire : la charge est le montant payé entier. La
+/// TVA française est [`crate::domain::VatRate::tax_on`] de ce montant, débitée
+/// en 445662 et créditée en 445200. Pas de 445660. La banque ou le 455 est
+/// crédité du montant payé.
+///
+/// `None` si toutes les lignes sont nulles.
+#[must_use]
+pub fn expense_payment_entry(
+    expense: &Expense,
+    payment: ExpensePayment,
+    immobilized: Option<(&str, &str)>,
+) -> Option<LedgerEntry> {
+    let (journal, on, credit, tail) = match payment {
+        ExpensePayment::Bank { on } => (
+            Journal::Bank,
+            on,
+            accounts::BANK,
+            format!("relevé du {}", format_date(on)),
+        ),
+        ExpensePayment::Associate => (
+            Journal::Purchases,
+            expense.incurred_on,
+            accounts::SHAREHOLDER_ACCOUNT,
+            "payé par l'associé".to_string(),
+        ),
+    };
+    let base = expense.receipt_filename.as_ref().map_or_else(
+        || expense.label.clone(),
+        |file| format!("{} — {file}", expense.label),
+    );
+    let debit = match immobilized {
+        Some((number, label)) => numbered_account(number, label),
+        None => charge_account(expense.category),
+    };
+    let (charge, vat_lines) = if expense.reverse_charge {
+        let vat = expense.vat_rate.tax_on(expense.amount);
+        (
+            expense.amount,
+            vec![
+                line(accounts::VAT_INTRACOM_DEDUCTIBLE, vat),
+                line(accounts::VAT_INTRACOM_DUE, -vat),
+            ],
+        )
+    } else {
+        (
+            expense.amount - expense.vat_deductible,
+            vec![line(accounts::VAT_DEDUCTIBLE, expense.vat_deductible)],
+        )
+    };
+    let mut lines = vec![line(debit, charge)];
+    lines.extend(vat_lines);
+    lines.push(line(credit, -expense.amount));
+    entry(
+        journal,
+        on,
+        format!("DEP-{}", expense.id),
+        format!("{base} — {tail}"),
+        lines,
+    )
+}
+
+/// Écriture de vente d'une prestation, à la date de facture.
+///
+/// Débit 411 au TTC, crédit 706 au HT, crédit 445881 à la TVA. Un avoir (lignes
+/// négatives) inverse ces côtés. La TVA n'est pas encore collectée : elle le
+/// devient à l'encaissement ([`receipt_entry`]). CGI art. 269, 2, c.
+///
+/// `None` si toutes les lignes sont nulles.
+///
+/// Limite : un seul sous-compte, 445881, libellé pour le taux normal.
+/// Les autres taux, s'il y en a, y sont portés ensemble. Pas de
+/// 445882, pas d'autoliquidation intracommunautaire.
+#[must_use]
+pub(crate) fn service_sale_entry(
+    invoice: &Invoice,
+    client: Option<&Client>,
+    original_number: Option<&str>,
+) -> Option<LedgerEntry> {
+    let totals = compute_totals(&invoice.lines);
+    let name = client.map_or("client inconnu", |c| c.name.as_str());
+    let label = match original_number {
+        Some(original) => format!("Avoir {} sur {original} — {name}", invoice.number),
+        None => format!("Facture {} — {name}", invoice.number),
+    };
+    entry(
+        Journal::Sales,
+        invoice.issued_on,
+        invoice.number.clone(),
+        label,
+        vec![
+            LedgerLine {
+                account: accounts::CLIENTS,
+                aux: Some(client_aux(invoice.client_id, client)),
+                amount: totals.total_ttc,
+                line_label: None,
+            },
+            line(accounts::SERVICES, -totals.subtotal_ht),
+            line(accounts::VAT_PENDING, -totals.total_vat),
+        ],
+    )
+}
+
+/// Part de TVA qui passe de 445881 à 445710 pour cet encaissement.
+///
+/// `pending_vat × collected / ttc_still_due`, division entière vers zéro
+/// ([`Money::scale`]). Le dernier encaissement qui solde la facture prend le
+/// reste, pour que la somme des parts égale la TVA de la facture. CGI art.
+/// 269, 2, c.
+///
+/// Un encaissement nul, un TTC encore dû nul ou négatif, ou une TVA en attente
+/// nulle ou négative ne déplace rien. On ne déplace jamais plus que `pending_vat`.
+#[must_use]
+pub(crate) fn vat_transferred_on_receipt(
+    pending_vat: Money,
+    collected: Money,
+    ttc_still_due: Money,
+) -> Money {
+    if ttc_still_due.cents() <= 0 || pending_vat.cents() <= 0 || collected.cents() <= 0 {
+        return Money::ZERO;
+    }
+    if collected.cents() >= ttc_still_due.cents() {
+        return pending_vat;
+    }
+    pending_vat.scale(collected, ttc_still_due)
+}
+
+/// Encaissement : 512 / 411 au TTC encaissé, et 445881 / 445710 pour `vat_moved`.
+///
+/// Les lignes de TVA nulles sont omises. `None` s'il ne reste aucune ligne.
+#[must_use]
+pub(crate) fn receipt_entry(
+    payment: &Payment,
+    invoice_number: &str,
+    client_id: ClientId,
+    client: Option<&Client>,
+    vat_moved: Money,
+) -> Option<LedgerEntry> {
+    entry(
+        Journal::Bank,
+        payment.received_on,
+        invoice_number.to_string(),
+        format!(
+            "Règlement {invoice_number} ({})",
+            method_label(payment.method)
+        ),
+        vec![
+            line(accounts::BANK, payment.amount),
+            LedgerLine {
+                account: accounts::CLIENTS,
+                aux: Some(client_aux(client_id, client)),
+                amount: -payment.amount,
+                line_label: None,
+            },
+            line(accounts::VAT_PENDING, vat_moved),
+            line(accounts::VAT_COLLECTED, -vat_moved),
+        ],
+    )
+}
+
+/// Extourne datée du jour de l'écriture d'origine. Les montants changent de
+/// signe ; le compte auxiliaire est recopié. La pièce se nomme `EXT-{pièce}`.
+#[must_use]
+pub(crate) fn extourne_entry(entry: &LedgerEntry) -> LedgerEntry {
+    LedgerEntry {
+        journal: entry.journal,
+        number: 0,
+        date: entry.date,
+        piece_ref: format!("EXT-{}", entry.piece_ref),
+        piece_date: entry.date,
+        label: format!("Extourne — {}", entry.label),
+        lines: entry
+            .lines
+            .iter()
+            .map(|line| LedgerLine {
+                account: line.account.clone(),
+                aux: line.aux.clone(),
+                amount: -line.amount,
+                line_label: line.line_label.clone(),
+            })
+            .collect(),
+    }
+}
+
+/// Rejoue les ventes et les encaissements pour un FEC construit sans journal.
+///
+/// Les avoirs dont la date est postérieure à l'encaissement ne réduisent pas
+/// la TVA de cet encaissement : elle a déjà été exigée. Un encaissement annulé
+/// est extourné à sa date d'encaissement, et ne réduit pas les encaissements
+/// suivants.
+#[must_use]
+pub(crate) fn book_service_activity(
+    invoices: &[Invoice],
+    clients: &[Client],
+    payments: &[Payment],
+) -> Vec<LedgerEntry> {
+    let clients_by_id: HashMap<ClientId, &Client> = clients.iter().map(|c| (c.id, c)).collect();
+    let invoices_by_id: HashMap<InvoiceId, &Invoice> = invoices
+        .iter()
+        .map(|invoice| (invoice.id, invoice))
+        .collect();
+    let mut entries = Vec::new();
+    for invoice in invoices {
+        let original = invoice.credited_invoice_id.and_then(|id| {
+            invoices_by_id
+                .get(&id)
+                .map(|original| original.number.as_str())
+        });
+        entries.extend(service_sale_entry(
+            invoice,
+            clients_by_id.get(&invoice.client_id).copied(),
+            original,
+        ));
+    }
+
+    let mut ordered: Vec<&Payment> = payments.iter().collect();
+    ordered.sort_by_key(|payment| (payment.received_on, payment.id));
+    let mut taken_ttc: HashMap<InvoiceId, Money> = HashMap::new();
+    let mut taken_vat: HashMap<InvoiceId, Money> = HashMap::new();
+    for payment in ordered {
+        let Some(invoice) = invoices_by_id.get(&payment.invoice_id).copied() else {
+            continue;
+        };
+        let (credit_vat, credit_ttc) = credited_before(invoices, invoice.id, payment.received_on);
+        let totals = compute_totals(&invoice.lines);
+        let already_vat = taken_vat.get(&invoice.id).copied().unwrap_or(Money::ZERO);
+        let already_ttc = taken_ttc.get(&invoice.id).copied().unwrap_or(Money::ZERO);
+        let pending = non_negative(totals.total_vat + credit_vat - already_vat);
+        let due = totals.total_ttc + credit_ttc - already_ttc;
+        let vat_moved = vat_transferred_on_receipt(pending, payment.amount, due);
+        let Some(receipt) = receipt_entry(
+            payment,
+            &invoice.number,
+            invoice.client_id,
+            clients_by_id.get(&invoice.client_id).copied(),
+            vat_moved,
+        ) else {
+            continue;
+        };
+        if !payment.is_voided() {
+            *taken_ttc.entry(invoice.id).or_insert(Money::ZERO) += payment.amount;
+            *taken_vat.entry(invoice.id).or_insert(Money::ZERO) += vat_moved;
+        }
+        let reversal = payment.is_voided().then(|| extourne_entry(&receipt));
+        entries.push(receipt);
+        entries.extend(reversal);
+    }
+    entries
+}
+
+fn client_aux(client_id: ClientId, client: Option<&Client>) -> AuxAccount {
+    client.map_or_else(
+        || AuxAccount {
+            number: format!("C{}", short_id(client_id).to_ascii_uppercase()),
+            label: "Client inconnu".to_string(),
+        },
+        AuxAccount::for_client,
+    )
+}
+
+fn credited_before(invoices: &[Invoice], invoice_id: InvoiceId, on: Date) -> (Money, Money) {
+    invoices
+        .iter()
+        .filter(|credit| credit.credited_invoice_id == Some(invoice_id) && credit.issued_on <= on)
+        .map(|credit| {
+            let totals = compute_totals(&credit.lines);
+            (totals.total_vat, totals.total_ttc)
+        })
+        .fold((Money::ZERO, Money::ZERO), |acc, (vat, ttc)| {
+            (acc.0 + vat, acc.1 + ttc)
+        })
+}
+
+fn non_negative(amount: Money) -> Money {
+    if amount.is_negative() {
+        Money::ZERO
+    } else {
+        amount
+    }
 }
 
 /// Le compte qui porte le résultat de l'exercice avant affectation : 120 pour un bénéfice, 129
@@ -587,99 +1023,6 @@ impl Facts<'_> {
         .collect()
     }
 
-    /// Ventes : une écriture par facture ou avoir émis dans l'exercice — 411 au TTC, 706 au HT,
-    /// 445710 par taux ; les lignes négatives d'un avoir inversent les côtés d'elles-mêmes.
-    fn sales_entries(&self, invoices: &[Invoice]) -> Vec<LedgerEntry> {
-        let mut entries = Vec::new();
-        for invoice in invoices
-            .iter()
-            .filter(|i| self.exercise.contains(i.issued_on))
-        {
-            let totals = compute_totals(&invoice.lines);
-            let ttc = totals.subtotal_ht + totals.total_vat;
-            let mut lines = vec![LedgerLine {
-                account: accounts::CLIENTS,
-                aux: Some(self.aux_of(invoice.client_id)),
-                amount: ttc,
-            }];
-            lines.push(line(accounts::SERVICES, -totals.subtotal_ht));
-            for vat in &totals.vat_breakdown {
-                lines.push(line(accounts::VAT_COLLECTED, -vat.vat_amount));
-            }
-            let label = match invoice.credited_invoice_id {
-                Some(original) => format!(
-                    "Avoir {} sur {} — {}",
-                    invoice.number,
-                    self.invoice_number(original),
-                    self.client_name(invoice.client_id)
-                ),
-                None => format!(
-                    "Facture {} — {}",
-                    invoice.number,
-                    self.client_name(invoice.client_id)
-                ),
-            };
-            entries.extend(entry(
-                Journal::Sales,
-                invoice.issued_on,
-                invoice.number.clone(),
-                label,
-                lines,
-            ));
-        }
-        entries
-    }
-
-    /// Banque : un encaissement (512 / 411) daté de sa réception, et l'extourne d'un
-    /// encaissement annulé (411 / 512) datée de son annulation — deux écritures distinctes, qui
-    /// peuvent tomber dans deux exercices.
-    fn bank_entries(&self, payments: &[Payment]) -> Vec<LedgerEntry> {
-        let mut entries = Vec::new();
-        for payment in payments.iter().filter(|p| !p.amount.is_zero()) {
-            let number = self.invoice_number(payment.invoice_id);
-            let client_id = self
-                .invoices_by_id
-                .get(&payment.invoice_id)
-                .map(|i| i.client_id);
-            let client_line = |amount| LedgerLine {
-                account: accounts::CLIENTS,
-                aux: client_id.map(|id| self.aux_of(id)),
-                amount,
-            };
-            if self.exercise.contains(payment.received_on) {
-                entries.extend(entry(
-                    Journal::Bank,
-                    payment.received_on,
-                    number.clone(),
-                    format!("Règlement {number} ({})", method_label(payment.method)),
-                    vec![
-                        line(accounts::BANK, payment.amount),
-                        client_line(-payment.amount),
-                    ],
-                ));
-            }
-            let Some(voided_on) = payment.voided_at.map(time::OffsetDateTime::date) else {
-                continue;
-            };
-            if self.exercise.contains(voided_on) {
-                entries.extend(entry(
-                    Journal::Bank,
-                    voided_on,
-                    number.clone(),
-                    format!(
-                        "Annulation du règlement {number} du {}",
-                        format_date(payment.received_on)
-                    ),
-                    vec![
-                        client_line(payment.amount),
-                        line(accounts::BANK, -payment.amount),
-                    ],
-                ));
-            }
-        }
-        entries
-    }
-
     /// Pertes sur créances : une `OD` 654 / 445710 / 411 datée du geste, et l'extourne
     /// (411 / 654 / 445710) datée de la rétractation — deux écritures distinctes, qui
     /// peuvent tomber dans deux exercices. Le 706 de la vente n'est pas touché.
@@ -696,6 +1039,7 @@ impl Facts<'_> {
                 account: accounts::CLIENTS,
                 aux: client_id.map(|id| self.aux_of(id)),
                 amount,
+                line_label: None,
             };
             let piece = format!("OD-654-{number}");
             if self.exercise.contains(write_off.written_off_on) {
@@ -727,80 +1071,6 @@ impl Facts<'_> {
                         client_line(write_off.ttc),
                         line(accounts::BAD_DEBT, -write_off.ht),
                         line(accounts::VAT_COLLECTED, -write_off.vat),
-                    ],
-                ));
-            }
-        }
-        entries
-    }
-
-    /// Achats : une dépense non rapprochée est réputée payée à sa date (le domaine enregistre
-    /// un montant TTC réellement payé) — charge HT (TTC − TVA déductible) et 445660 contre 512.
-    /// Une dépense rapprochée d'un débit du relevé (lot 33) passe par 401 : la charge à sa date
-    /// (`AC`), le décaissement 401/512 à la date du relevé (`BQ`) — deux écritures distinctes,
-    /// chacune retenue si *sa* date tombe dans l'exercice.
-    fn purchase_entries(
-        &self,
-        expenses: &[Expense],
-        bank_transactions: &[BankTransaction],
-        assets: &[FixedAsset],
-    ) -> Vec<LedgerEntry> {
-        let debits: HashMap<ExpenseId, &BankTransaction> = bank_transactions
-            .iter()
-            .filter_map(|t| t.matched_expense_id.map(|id| (id, t)))
-            .collect();
-        let immobilized = crate::fixed_assets::assets_by_expense(assets);
-        let mut entries = Vec::new();
-        for expense in expenses {
-            // Lot 37 : une pièce **unique** par dépense (l'UUID complet — huit caractères d'un
-            // UUIDv7 sont un horodatage à la seconde, partagé par tout un import), la même pour
-            // la charge et son décaissement ; le justificatif, lui, est nommé dans le libellé.
-            let piece = format!("DEP-{}", expense.id);
-            let label = expense.receipt_filename.as_ref().map_or_else(
-                || expense.label.clone(),
-                |file| format!("{} — {file}", expense.label),
-            );
-            let charge = expense.amount - expense.vat_deductible;
-            let debit = debits.get(&expense.id).copied();
-            let paid_through = match expense.paid_by {
-                ExpensePaidBy::Associate => accounts::SHAREHOLDER_ACCOUNT,
-                ExpensePaidBy::Company => debit.map_or(accounts::BANK, |_| accounts::SUPPLIERS),
-            };
-            // Lot 42 : une dépense immobilisée entre à l'actif (2xx) au lieu du compte de charge.
-            let debit_account = immobilized.get(&expense.id).map_or_else(
-                || charge_account(expense.category),
-                |asset| numbered_account(asset.account.as_str(), &asset.label),
-            );
-            if self.exercise.contains(expense.incurred_on) {
-                entries.extend(entry(
-                    Journal::Purchases,
-                    expense.incurred_on,
-                    piece.clone(),
-                    label,
-                    vec![
-                        line(debit_account, charge),
-                        line(accounts::VAT_DEDUCTIBLE, expense.vat_deductible),
-                        line(paid_through, -expense.amount),
-                    ],
-                ));
-            }
-            let Some(debit) = debit else {
-                continue;
-            };
-            if self.exercise.contains(debit.occurred_on) {
-                entries.extend(entry(
-                    Journal::Bank,
-                    debit.occurred_on,
-                    piece,
-                    format!(
-                        "Paiement {} — relevé du {} ({})",
-                        expense.label,
-                        format_date(debit.occurred_on),
-                        debit.description
-                    ),
-                    vec![
-                        line(accounts::SUPPLIERS, expense.amount),
-                        line(accounts::BANK, -expense.amount),
                     ],
                 ));
             }
@@ -888,37 +1158,23 @@ impl Facts<'_> {
         entries
     }
 
-    /// Rémunération du dirigeant sur l'exercice, réputée due et non décaissée : brut en 641,
-    /// cotisations patronales en 645, contre 421 et 431. Le brut vient du profil ; si le total
-    /// figé au snapshot ne s'y prête plus (profil modifié depuis), tout va en 641/421.
-    fn director_entry(&self, profile: &CompanyProfile, total: Money) -> Option<LedgerEntry> {
-        if total.is_zero() {
-            return None;
-        }
-        let (gross, charges) = match director_gross(profile, self.exercise) {
-            Some(gross) if !gross.is_negative() && gross <= total => (gross, total - gross),
-            _ => (total, Money::ZERO),
-        };
-        entry(
-            Journal::Misc,
-            self.exercise.end(),
-            "OD-REM",
-            "Rémunération du dirigeant — coût employeur estimé, réputée due (aucun fait de paie \
-             enregistré)",
-            vec![
-                line(accounts::DIRECTOR_PAY, gross),
-                line(accounts::SOCIAL_CHARGES, charges),
-                line(accounts::PAY_DUE, -gross),
-                line(accounts::SOCIAL_DUE, -charges),
-            ],
-        )
-    }
-
     /// Dotations de l'exercice (lot 42) : une `OD` 681 / 28x par immobilisation, datée du
     /// dernier jour, prorata temporis par construction de [`FixedAsset::depreciation_for`].
-    fn depreciation_entries(&self, assets: &[FixedAsset]) -> Vec<LedgerEntry> {
+    ///
+    /// Une immobilisation née d'une dépense n'est amortie que si l'entrée en 2xx est
+    /// déjà conservée au plus tard à la clôture. Une facture non payée n'a pas d'actif,
+    /// donc pas de dotation. Une reprise du bilan d'ouverture (sans dépense) reste due :
+    /// le brut est dans les à-nouveaux.
+    fn depreciation_entries(
+        &self,
+        assets: &[FixedAsset],
+        posted: &[LedgerEntry],
+    ) -> Vec<LedgerEntry> {
         let mut entries = Vec::new();
         for asset in assets {
+            if !acquisition_is_booked(asset, posted, self.exercise.end()) {
+                continue;
+            }
             let amount = asset.depreciation_for(self.exercise);
             if amount.is_zero() {
                 continue;
@@ -988,20 +1244,51 @@ impl Facts<'_> {
     /// Impôt sur les sociétés de l'exercice : 695 contre 444 (dette d'IS, les acomptes n'étant
     /// pas des faits datés).
     fn corporate_tax_entry(&self, tax: Money) -> Option<LedgerEntry> {
-        if tax.cents() <= 0 {
-            return None;
-        }
-        entry(
-            Journal::Misc,
-            self.exercise.end(),
-            "OD-IS",
-            "Impôt sur les sociétés de l'exercice",
-            vec![
-                line(accounts::CORPORATE_TAX, tax),
-                line(accounts::CORPORATE_TAX_DUE, -tax),
-            ],
-        )
+        corporate_tax_booking(self.exercise.end(), tax)
     }
+}
+
+/// Écriture d'IS : débit 695, crédit 444, pièce `OD-IS`, datée de `on`.
+/// `None` quand l'impôt est nul.
+#[must_use]
+pub fn corporate_tax_booking(on: Date, tax: Money) -> Option<LedgerEntry> {
+    if tax.cents() <= 0 {
+        return None;
+    }
+    entry(
+        Journal::Misc,
+        on,
+        "OD-IS",
+        "Impôt sur les sociétés de l'exercice",
+        vec![
+            line(accounts::CORPORATE_TAX, tax),
+            line(accounts::CORPORATE_TAX_DUE, -tax),
+        ],
+    )
+}
+
+/// L'actif lié à une dépense est dans les écritures quand le net des comptes de classe 2
+/// (hors 28, les amortissements) des pièces `DEP-{id}` et `EXT-DEP-{id}` n'est pas nul au
+/// plus tard à `until`. Sans dépense, c'est une reprise : le brut est dans les à-nouveaux.
+fn acquisition_is_booked(asset: &FixedAsset, posted: &[LedgerEntry], until: Date) -> bool {
+    let Some(expense_id) = asset.expense_id else {
+        return true;
+    };
+    let piece = format!("DEP-{expense_id}");
+    let reversal = format!("EXT-{piece}");
+    let net: Money = posted
+        .iter()
+        .filter(|entry| {
+            entry.date <= until && (entry.piece_ref == piece || entry.piece_ref == reversal)
+        })
+        .flat_map(|entry| entry.lines.iter())
+        .filter(|line| {
+            let number = line.account.number.as_ref();
+            number.starts_with('2') && !number.starts_with("28")
+        })
+        .map(|line| line.amount)
+        .sum();
+    !net.is_zero()
 }
 
 /// Résultat porté par des écritures : produits − charges, soit l'opposé de la somme signée des
@@ -1015,13 +1302,28 @@ fn income_of(entries: &[LedgerEntry]) -> Money {
         .sum::<Money>()
 }
 
+/// Résultat des classes 6 et 7 avant l'impôt (695) et le produit de report en arrière (699).
+fn income_before_tax(entries: &[LedgerEntry]) -> Money {
+    -entries
+        .iter()
+        .flat_map(|entry| entry.lines.iter())
+        .filter(|line| {
+            let number = line.account.number.as_ref();
+            line.account.is_income_statement()
+                && !number.starts_with("695")
+                && !number.starts_with("699")
+        })
+        .map(|line| line.amount)
+        .sum::<Money>()
+}
+
 impl Ledger {
     /// Construit le grand livre d'un exercice à partir des faits du domaine — fonction pure,
-    /// testable sans base. Seuls les faits *datés dans l'exercice* sont retenus : une facture
-    /// par sa date d'émission, un encaissement par sa date de réception, son annulation par sa
-    /// date d'annulation, une perte sur créance par `written_off_on` et son extourne par
-    /// `retracted_on`, une dépense par sa date d'engagement et son décaissement rapproché
-    /// par la date du relevé ; les opérations de clôture sont datées du dernier jour.
+    /// testable sans base. Seuls les faits *datés dans l'exercice* sont retenus. Les
+    /// factures de prestation, leurs encaissements et les paiements de dépenses
+    /// arrivent par `posted` (écritures conservées) ; une perte sur créance par
+    /// `written_off_on` et son extourne par `retracted_on`. Les opérations de
+    /// clôture sont datées du dernier jour.
     ///
     /// # Errors
     ///
@@ -1038,31 +1340,38 @@ impl Ledger {
         };
         let mut entries = index.prepaid_entries(facts.opening.as_ref());
         entries.extend(index.opening_entries(facts.opening));
-        entries.extend(index.sales_entries(facts.invoices));
         entries.extend(index.write_off_entries(facts.write_offs));
-        entries.extend(index.bank_entries(facts.payments));
-        entries.extend(index.purchase_entries(
-            facts.expenses,
-            facts.bank_transactions,
-            facts.assets,
-        ));
+        entries.extend(
+            facts
+                .posted
+                .iter()
+                .filter(|posted| facts.exercise.contains(posted.date))
+                .cloned(),
+        );
         entries.extend(index.settlement_entries(facts.bank_transactions));
         entries.extend(index.appropriation_entries(facts.appropriations));
-        entries.extend(index.depreciation_entries(facts.assets));
+        entries.extend(index.depreciation_entries(facts.assets, facts.posted));
 
-        let director_total = facts.snapshot.map_or_else(
-            || crate::accounting::director_cost(facts.profile, facts.exercise),
-            |r| r.director_remuneration,
-        );
-        entries.extend(index.director_entry(facts.profile, director_total));
-        let tax = facts.snapshot.map_or_else(
-            || {
-                corporate_income_tax(
-                    impute_prior_losses(income_of(&entries), facts.prior_losses).taxable_result,
-                )
-            },
-            |r| r.corporate_tax,
-        );
+        // Une rémunération n'entre que si elle est déjà dans `posted`. Le brut
+        // déclaré au profil, et celui figé au snapshot, ne postent rien.
+        // Une 695 déjà écrite est lue : elle ne sert pas de base à un nouvel
+        // impôt, et la lecture n'en ajoute pas une seconde. Sans elle, un
+        // snapshot fixe le montant ; un exercice ouvert montre le prévisionnel.
+        let stored_tax: Money = entries
+            .iter()
+            .flat_map(|entry| entry.lines.iter())
+            .filter(|line| line.account.number.as_ref().starts_with("695"))
+            .map(|line| line.amount)
+            .sum();
+        let tax = if !stored_tax.is_zero() {
+            Money::ZERO
+        } else if let Some(record) = facts.snapshot {
+            record.corporate_tax
+        } else {
+            corporate_income_tax(
+                impute_prior_losses(income_before_tax(&entries), facts.prior_losses).taxable_result,
+            )
+        };
         entries.extend(index.corporate_tax_entry(tax));
         let credit = facts.snapshot.map_or(Money::ZERO, |r| r.carry_back_credit);
         entries.extend(index.carry_back_entry(credit));
@@ -1811,6 +2120,7 @@ struct Loaded {
     expenses: Vec<Expense>,
     assets: Vec<FixedAsset>,
     bank_transactions: Vec<BankTransaction>,
+    posted: Vec<LedgerEntry>,
     opening: Option<OpeningBalance>,
     fiscal_years: Vec<FiscalYearRecord>,
 }
@@ -1832,6 +2142,7 @@ impl Loaded {
             expenses: list_expenses(conn)?,
             assets: crate::fixed_assets::list_fixed_assets(conn)?,
             bank_transactions: list_bank_transactions(conn)?,
+            posted: crate::journal::list_entries(conn)?,
             opening: opening_balance(conn)?.map(|r| r.balance),
             fiscal_years: list_fiscal_years(conn)?,
         })
@@ -1893,6 +2204,7 @@ impl Loaded {
             clients: &self.clients,
             payments: &self.payments,
             expenses: &self.expenses,
+            posted: &self.posted,
             assets: &self.assets,
             bank_transactions: &self.bank_transactions,
             opening,
@@ -1934,27 +2246,12 @@ pub fn ledger_ending_in(
 mod tests {
     use super::*;
     use crate::domain::{
-        Address, BankTransactionId, FiscalYearId, InvoiceLine, InvoiceOrigin, InvoiceStatus, Siren,
-        VatRate, WriteOffId,
+        Address, BankTransactionId, ExpensePaidBy, FiscalYearId, InvoiceLine, InvoiceOrigin,
+        InvoiceStatus, Siren, VatRate, WriteOffId,
     };
     use proptest::prelude::*;
     use time::Month as TimeMonth;
     use time::OffsetDateTime;
-
-    /// Un débit du relevé rapproché de `expense`, daté de `on` (lot 33).
-    fn debit_for(expense: &Expense, on: Date) -> BankTransaction {
-        BankTransaction {
-            settlement_account: None,
-            settlement_label: None,
-            fitid: None,
-            id: BankTransactionId::new(),
-            occurred_on: on,
-            amount_cents: -expense.amount.cents(),
-            description: "CB FOURNISSEUR".to_string(),
-            matched_invoice_id: None,
-            matched_expense_id: Some(expense.id),
-        }
-    }
 
     fn date(year: i32, month: TimeMonth, day: u8) -> Date {
         Date::from_calendar_date(year, month, day).unwrap()
@@ -2023,7 +2320,32 @@ mod tests {
             paid_by: crate::domain::ExpensePaidBy::Company,
             created_at: OffsetDateTime::UNIX_EPOCH,
             revision: 1,
+
+            reverse_charge: false,
         }
+    }
+
+    /// Vente conservée, pour les tests qui attendent le 706 d'une facture émise.
+    fn posted_sales(invoices: &[Invoice]) -> Vec<LedgerEntry> {
+        invoices
+            .iter()
+            .filter_map(|invoice| service_sale_entry(invoice, None, None))
+            .collect()
+    }
+
+    /// Paiement au jour de la facture, pour les tests qui posent une charge déjà payée.
+    ///
+    /// # Panics
+    ///
+    /// Si le montant et la TVA sont tous deux nuls : aucune ligne à écrire.
+    fn posted_payment(expense: &Expense, immobilized: Option<(&str, &str)>) -> LedgerEntry {
+        let payment = match expense.paid_by {
+            ExpensePaidBy::Associate => ExpensePayment::Associate,
+            ExpensePaidBy::Company => ExpensePayment::Bank {
+                on: expense.incurred_on,
+            },
+        };
+        expense_payment_entry(expense, payment, immobilized).expect("paiement non nul")
     }
 
     fn opening_2026() -> OpeningBalance {
@@ -2057,6 +2379,7 @@ mod tests {
             clients: &[],
             payments: &[],
             expenses,
+            posted: &[],
             assets: &[],
             bank_transactions: &[],
             opening,
@@ -2104,18 +2427,24 @@ mod tests {
         let p = profile(None, None);
         let exercise = FiscalYear::calendar(2026);
         let expenses = vec![expense(120_000, 20_000, date(2026, TimeMonth::March, 3))];
-        let ledger = Ledger::build(facts(
-            &p,
-            exercise,
-            &[],
-            &expenses,
-            Some(OpeningLines::from_opening_balance(&opening_2026())),
-        ))
+        // Le paiement est fourni : une facture non payée n'entrerait pas.
+        // 1 200,00 € TTC, TVA déductible 200,00 €, charge 1 000,00 €.
+        let posted = vec![posted_payment(&expenses[0], None)];
+        let ledger = Ledger::build(LedgerFacts {
+            posted: &posted,
+            ..facts(
+                &p,
+                exercise,
+                &[],
+                &expenses,
+                Some(OpeningLines::from_opening_balance(&opening_2026())),
+            )
+        })
         .unwrap();
 
-        // AN + AC, aucune OD : pas d'IS sur une perte, pas de rémunération.
+        // AN + BQ, aucune OD : pas d'IS sur une perte, pas de rémunération.
         let journals: Vec<Journal> = ledger.entries.iter().map(|e| e.journal).collect();
-        assert_eq!(journals, vec![Journal::Opening, Journal::Purchases]);
+        assert_eq!(journals, vec![Journal::Opening, Journal::Bank]);
         assert!(ledger.entries.iter().all(LedgerEntry::is_balanced));
         assert_eq!(ledger.net_result(), Money::from_cents(-100_000));
 
@@ -2178,10 +2507,167 @@ mod tests {
         assert_eq!(sheet.total_liabilities, Money::from_cents(70_000));
     }
 
+    /// Centimes d'une ligne, ou échec si le compte n'y est pas.
+    fn cents_on(entry: &LedgerEntry, number: &str) -> i64 {
+        let piece = entry.piece_ref.as_str();
+        entry
+            .lines
+            .iter()
+            .find(|l| l.account.number == number)
+            .map_or_else(
+                || panic!("compte {number} absent de {piece}"),
+                |l| l.amount.cents(),
+            )
+    }
+
+    fn posts_payroll_account(ledger: &Ledger) -> bool {
+        ledger.entries.iter().any(|entry| {
+            entry.piece_ref == "OD-REM"
+                || entry.lines.iter().any(|l| {
+                    let number = l.account.number.as_ref();
+                    number.starts_with("641")
+                        || number.starts_with("645")
+                        || number.starts_with("421")
+                        || number.starts_with("431")
+                })
+        })
+    }
+
+    #[test]
+    fn a_declared_monthly_gross_without_a_payroll_fact_posts_nothing() {
+        // Brut déclaré 3 000,00 € par mois, ratio 80 %. Aucun fait de paie.
+        let p = profile(Some(300_000), Some(8_000));
+        let exercise = FiscalYear::calendar(2026);
+        let ledger = Ledger::build(facts(&p, exercise, &[], &[], None)).unwrap();
+        assert!(
+            !posts_payroll_account(&ledger),
+            "un brut déclaré ne produit ni OD-REM, ni 641, ni 645, ni 421, ni 431 : {ledger:?}"
+        );
+
+        // Le même brut figé au snapshot de clôture n'est pas non plus une paie.
+        let snapshot = FiscalYearRecord {
+            director_remuneration: Money::from_cents(6_480_000),
+            ..record(exercise, 0, 0, 0, None)
+        };
+        let from_snapshot = Ledger::build(LedgerFacts {
+            snapshot: Some(&snapshot),
+            ..facts(&p, exercise, &[], &[], None)
+        })
+        .unwrap();
+        assert!(
+            !posts_payroll_account(&from_snapshot),
+            "le snapshot ne poste pas la rémunération : {from_snapshot:?}"
+        );
+    }
+
+    #[test]
+    fn an_opening_credit_on_421_stays_and_does_not_create_641() {
+        // Un crédit d'ouverture sur 421 reste dû. La banque équilibre
+        // l'à-nouveau. Un brut déclaré ne solde pas ce crédit et ne crée pas
+        // de 641 en face.
+        let p = profile(Some(300_000), Some(8_000));
+        let exercise = FiscalYear::new(
+            date(2024, TimeMonth::October, 1),
+            date(2025, TimeMonth::September, 30),
+        );
+        let opening = OpeningLines {
+            label: "À-nouveaux".to_string(),
+            lines: vec![
+                line(accounts::PAY_DUE, Money::from_cents(-150_000)),
+                line(accounts::BANK, Money::from_cents(150_000)),
+            ],
+        };
+        let ledger = Ledger::build(facts(&p, exercise, &[], &[], Some(opening))).unwrap();
+        let balance = ledger.trial_balance();
+        let pay_due = balance
+            .rows
+            .iter()
+            .find(|row| row.account.number == "421000")
+            .expect("le 421 d'ouverture");
+        assert_eq!(pay_due.debit, Money::ZERO);
+        assert_eq!(pay_due.credit, Money::from_cents(150_000));
+        assert_eq!(pay_due.balance, Money::from_cents(-150_000));
+        assert!(
+            ledger
+                .entries
+                .iter()
+                .flat_map(|e| e.lines.iter())
+                .all(|l| { !l.account.number.starts_with("641") }),
+            "pas de 641 en face du 421 d'ouverture"
+        );
+        assert!(ledger.entries.iter().all(|e| e.piece_ref != "OD-REM"));
+    }
+
+    #[test]
+    fn payroll_form_books_gross_withholding_and_employer_contributions_in_cents() {
+        // Forme d'essai, centimes écrits à la main. Ce n'est pas un bulletin.
+        // Brut 100 000, retenue salariale 20 000, cotisations patronales 40 000.
+        // 641 = 100 000, 645 = 40 000, 421 = net 80 000, 431 = 20 000 + 40 000 = 60 000.
+        // Règlement du net : 421 / 512 pour 80 000. Règlement URSSAF : 431 / 512 pour 60 000.
+        let on = date(2026, TimeMonth::January, 31);
+        let entries = payroll_form(
+            on,
+            Money::from_cents(100_000),
+            Money::from_cents(20_000),
+            Money::from_cents(40_000),
+        );
+        assert_eq!(entries.len(), 3);
+        assert!(entries.iter().all(LedgerEntry::is_balanced));
+        assert!(entries.iter().all(|entry| entry.date == on));
+        assert!(
+            entries
+                .iter()
+                .flat_map(|e| e.lines.iter())
+                .all(|l| { !l.account.number.starts_with("442") }),
+            "pas de prélèvement à la source"
+        );
+
+        let accrual = entries
+            .iter()
+            .find(|e| e.piece_ref == "PAIE")
+            .expect("constatation");
+        assert_eq!(accrual.journal, Journal::Misc);
+        assert_eq!(accrual.lines.len(), 4);
+        assert_eq!(cents_on(accrual, "641100"), 100_000);
+        assert_eq!(cents_on(accrual, "645000"), 40_000);
+        assert_eq!(cents_on(accrual, "421000"), -80_000);
+        assert_eq!(cents_on(accrual, "431000"), -60_000);
+        assert_eq!(accrual.lines[0].account, accounts::DIRECTOR_PAY);
+        assert_eq!(accrual.lines[1].account, accounts::SOCIAL_CHARGES);
+        assert_eq!(accrual.lines[2].account, accounts::PAY_DUE);
+        assert_eq!(accrual.lines[3].account, accounts::SOCIAL_DUE);
+
+        let net = entries
+            .iter()
+            .find(|e| e.piece_ref == "PAIE-NET")
+            .expect("règlement du net");
+        assert_eq!(net.journal, Journal::Bank);
+        assert_eq!(net.lines.len(), 2);
+        assert_eq!(cents_on(net, "421000"), 80_000);
+        assert_eq!(cents_on(net, "512000"), -80_000);
+        assert_eq!(net.lines[0].account, accounts::PAY_DUE);
+        assert_eq!(net.lines[1].account, accounts::BANK);
+
+        let social = entries
+            .iter()
+            .find(|e| e.piece_ref == "PAIE-URSSAF")
+            .expect("règlement URSSAF");
+        assert_eq!(social.journal, Journal::Bank);
+        assert_eq!(social.lines.len(), 2);
+        assert_eq!(cents_on(social, "431000"), 60_000);
+        assert_eq!(cents_on(social, "512000"), -60_000);
+        assert_eq!(social.lines[0].account, accounts::SOCIAL_DUE);
+        assert_eq!(social.lines[1].account, accounts::BANK);
+    }
+
     #[test]
     #[allow(clippy::too_many_lines)]
-    fn closing_entries_book_director_pay_and_corporate_tax_then_chain_into_the_next_exercise() {
-        // Brut 1 000 €/mois × 12, cotisations 50 % → 18 000 € ; CA 30 000 € HT.
+    fn closing_entries_book_corporate_tax_then_chain_the_result_into_the_next_exercise() {
+        // CA 30 000 € HT, créance client 36 000 € TTC, TVA en attente 6 000 €.
+        // Le profil déclare un brut mensuel : il ne poste pas de paie.
+        // Résultat avant IS 30 000 €. IS au taux déjà utilisé de 15 % = 4 500 €,
+        // soit 450 000 centimes. Résultat net 25 500 € (2 550 000 centimes).
+        // Autres dettes = IS 4 500 + TVA en attente 6 000 = 10 500 € (1 050 000).
         let p = profile(Some(100_000), Some(5_000));
         let exercise = FiscalYear::calendar(2026);
         let client_id = ClientId::new();
@@ -2190,66 +2676,62 @@ mod tests {
             3_000_000,
             date(2026, TimeMonth::June, 1),
         )];
-        let ledger = Ledger::build(facts(
-            &p,
-            exercise,
-            &invoices,
-            &[],
-            Some(OpeningLines::from_opening_balance(&opening_2026())),
-        ))
+        let posted = posted_sales(&invoices);
+        let ledger = Ledger::build(LedgerFacts {
+            posted: &posted,
+            ..facts(
+                &p,
+                exercise,
+                &invoices,
+                &[],
+                Some(OpeningLines::from_opening_balance(&opening_2026())),
+            )
+        })
         .unwrap();
         let journals: Vec<Journal> = ledger.entries.iter().map(|e| e.journal).collect();
         assert_eq!(
             journals,
-            vec![
-                Journal::Opening,
-                Journal::Sales,
-                Journal::Misc,
-                Journal::Misc
-            ]
+            vec![Journal::Opening, Journal::Sales, Journal::Misc]
         );
-        let pay = ledger
-            .entries
-            .iter()
-            .find(|e| e.piece_ref == "OD-REM")
-            .unwrap();
-        assert_eq!(pay.date, date(2026, TimeMonth::December, 31));
-        assert_eq!(pay.lines[0].account, accounts::DIRECTOR_PAY);
-        assert_eq!(pay.lines[0].amount, Money::from_cents(1_200_000));
-        assert_eq!(pay.lines[1].account, accounts::SOCIAL_CHARGES);
-        assert_eq!(pay.lines[1].amount, Money::from_cents(600_000));
-        assert!(pay.is_balanced());
-        // Résultat avant IS : 30 000 − 18 000 = 12 000 € → IS 15 % = 1 800 €.
+        assert!(
+            !posts_payroll_account(&ledger),
+            "pas de rémunération inventée : {ledger:?}"
+        );
         let tax = ledger
             .entries
             .iter()
             .find(|e| e.piece_ref == "OD-IS")
             .unwrap();
+        assert_eq!(tax.journal, Journal::Misc);
         assert_eq!(tax.lines[0].account, accounts::CORPORATE_TAX);
-        assert_eq!(tax.lines[0].amount, Money::from_cents(180_000));
-        assert_eq!(ledger.net_result(), Money::from_cents(1_020_000));
+        assert_eq!(tax.lines[0].amount, Money::from_cents(450_000));
+        assert_eq!(tax.lines[1].account, accounts::CORPORATE_TAX_DUE);
+        assert_eq!(tax.lines[1].amount, Money::from_cents(-450_000));
+        assert!(tax.is_balanced());
+        assert_eq!(ledger.net_result(), Money::from_cents(2_550_000));
 
         let sheet = ledger.balance_sheet();
         assert!(sheet.is_balanced());
         assert_eq!(
             sheet.liability(LiabilityRubric::Result),
-            Money::from_cents(1_020_000)
+            Money::from_cents(2_550_000)
         );
-        // Dettes : IS 1 800 + rémunérations dues 12 000 + URSSAF 6 000 + TVA collectée 6 000.
         assert_eq!(
             sheet.liability(LiabilityRubric::OtherDebts),
-            Money::from_cents(2_580_000)
+            Money::from_cents(1_050_000)
         );
         assert_eq!(
             sheet.asset_net(AssetRubric::Clients),
             Money::from_cents(3_600_000)
         );
 
-        // L'exercice suivant s'ouvre sur ce bilan : le résultat est en 120, puis affecté.
+        // L'exercice suivant reprend 120 pour 25 500 €, puis affecte.
+        // Réserve 50 € et dividendes 1 000 € sont les décisions déjà posées
+        // dans ce test. Report 24 450 €. Le brut déclaré ne crée pas de perte.
         let next_exercise = FiscalYear::calendar(2027);
         let closed = record(
             exercise,
-            1_020_000,
+            2_550_000,
             5_000,
             100_000,
             Some(date(2027, TimeMonth::May, 15)),
@@ -2263,6 +2745,7 @@ mod tests {
             clients: &[],
             payments: &[],
             expenses: &[],
+            posted: &[],
             assets: &[],
             bank_transactions: &[],
             opening: Some(ledger.closing_opening_lines()),
@@ -2280,12 +2763,11 @@ mod tests {
             .iter()
             .find(|l| l.account.number == "120000")
             .unwrap();
-        assert_eq!(profit.amount, Money::from_cents(-1_020_000));
+        assert_eq!(profit.amount, Money::from_cents(-2_550_000));
         assert!(
             an.lines.iter().all(|l| !l.account.is_income_statement()),
             "les comptes de gestion sont soldés dans le résultat"
         );
-        // Affectation datée de l'AG : 120 débité, 1061 + 457 + 110 crédités.
         let appropriation = next
             .entries
             .iter()
@@ -2302,27 +2784,26 @@ mod tests {
         assert_eq!(
             amounts,
             vec![
-                ("120000", 1_020_000),
+                ("120000", 2_550_000),
                 ("106100", -5_000),
                 ("457000", -100_000),
-                ("110000", -915_000),
+                ("110000", -2_445_000),
             ]
         );
-        // Rémunération à nouveau due en 2027 (profil inchangé), pas d'IS (perte).
         let next_sheet = next.balance_sheet();
         assert!(next_sheet.is_balanced());
+        // Report d'ouverture 250 € + report affecté 24 450 €.
         assert_eq!(
             next_sheet.liability(LiabilityRubric::RetainedEarnings),
-            Money::from_cents(25_000 + 915_000)
+            Money::from_cents(2_470_000)
         );
+        // Réserve d'ouverture 60 € + dotation 50 €.
         assert_eq!(
             next_sheet.liability(LiabilityRubric::LegalReserve),
-            Money::from_cents(6_000 + 5_000)
+            Money::from_cents(11_000)
         );
-        assert_eq!(
-            next_sheet.liability(LiabilityRubric::Result),
-            Money::from_cents(-1_800_000)
-        );
+        assert_eq!(next_sheet.liability(LiabilityRubric::Result), Money::ZERO);
+        assert!(next.entries.iter().all(|e| e.piece_ref != "OD-REM"));
     }
 
     #[test]
@@ -2339,6 +2820,7 @@ mod tests {
             clients: &[],
             payments: &[],
             expenses: &[],
+            posted: &[],
             assets: &[],
             bank_transactions: &[],
             opening: Some(OpeningLines {
@@ -2409,8 +2891,10 @@ mod tests {
             1_000_000,
             date(2026, TimeMonth::June, 1),
         )];
+        let posted = posted_sales(&invoices);
         let ledger = Ledger::build(LedgerFacts {
             prior_losses: Money::from_cents(400_000),
+            posted: &posted,
             ..facts(&p, exercise, &invoices, &[], None)
         })
         .unwrap();
@@ -2432,6 +2916,8 @@ mod tests {
         let p = profile(None, None);
         let exercise = FiscalYear::calendar(2027);
         let expenses = vec![expense(96_000, 16_000, date(2027, TimeMonth::March, 5))];
+        // 960,00 € TTC payés dans l'exercice : charge 800,00 €, TVA déductible 160,00 €.
+        let posted = vec![posted_payment(&expenses[0], None)];
         let snapshot = FiscalYearRecord {
             result_before_tax: Money::from_cents(-80_000),
             carried_back: Money::from_cents(80_000),
@@ -2441,6 +2927,7 @@ mod tests {
         };
         let ledger = Ledger::build(LedgerFacts {
             snapshot: Some(&snapshot),
+            posted: &posted,
             ..facts(&p, exercise, &[], &expenses, None)
         })
         .unwrap();
@@ -2495,6 +2982,7 @@ mod tests {
             ("419000", -1, "liab:advances_received"),
             ("445660", 1, "gross:other_receivables"),
             ("445710", -1, "liab:other_debts"),
+            ("445881", -1, "liab:other_debts"),
             ("455000", -1, "liab:other_debts"),
             ("486000", 1, "gross:prepaid"),
             ("487000", -1, "liab:deferred"),
@@ -2572,13 +3060,23 @@ mod tests {
                 .iter()
                 .map(|(ttc, ded)| expense(*ttc, (*ded).min(*ttc), date(2026, TimeMonth::April, 1)))
                 .collect();
-            let ledger = Ledger::build(facts(
-                &p,
-                exercise,
-                &invoices,
-                &expenses,
-                Some(OpeningLines { label: "AN".to_string(), lines }),
-            )).unwrap();
+            let mut posted: Vec<_> = invoices
+                .iter()
+                .filter_map(|invoice| service_sale_entry(invoice, None, None))
+                .collect();
+            posted.extend(expenses.iter().filter_map(|e| {
+                expense_payment_entry(e, ExpensePayment::Bank { on: e.incurred_on }, None)
+            }));
+            let ledger = Ledger::build(LedgerFacts {
+                posted: &posted,
+                ..facts(
+                    &p,
+                    exercise,
+                    &invoices,
+                    &expenses,
+                    Some(OpeningLines { label: "AN".to_string(), lines }),
+                )
+            }).unwrap();
             prop_assert!(ledger.entries.iter().all(LedgerEntry::is_balanced));
             let balance = ledger.trial_balance();
             prop_assert_eq!(balance.total_debit, balance.total_credit);
@@ -2727,11 +3225,11 @@ mod tests {
     #[test]
     fn an_associate_paid_tax_credits_the_shareholder_account_not_the_bank() {
         let p = profile(None, None);
-        let mut cfe = expense(20_400, 0, date(2026, TimeMonth::January, 15));
+        let mut cfe = expense(18_000, 0, date(2026, TimeMonth::January, 15));
         cfe.category = ExpenseCategory::Taxes;
         cfe.vat_rate = VatRate::Zero;
         cfe.paid_by = ExpensePaidBy::Associate;
-        cfe.label = "CFE 2025".into();
+        cfe.label = "Taxe locale".into();
         let opening = OpeningBalance {
             opens_on: date(2026, TimeMonth::January, 1),
             source: None,
@@ -2741,13 +3239,17 @@ mod tests {
             ],
             tax_losses: Money::ZERO,
         };
-        let ledger = Ledger::build(facts(
-            &p,
-            FiscalYear::calendar(2026),
-            &[],
-            &[cfe.clone()],
-            Some(OpeningLines::from_opening_balance(&opening)),
-        ))
+        let posted = vec![posted_payment(&cfe, None)];
+        let ledger = Ledger::build(LedgerFacts {
+            posted: &posted,
+            ..facts(
+                &p,
+                FiscalYear::calendar(2026),
+                &[],
+                &[cfe.clone()],
+                Some(OpeningLines::from_opening_balance(&opening)),
+            )
+        })
         .unwrap();
 
         let purchases: Vec<&LedgerEntry> = ledger
@@ -2774,98 +3276,88 @@ mod tests {
                 .find(|r| r.account.number == n)
                 .map(|r| r.balance)
         };
-        assert_eq!(of("635000"), Some(Money::from_cents(20_400)));
-        assert_eq!(of("455000"), Some(Money::from_cents(-20_400)));
+        assert_eq!(of("635000"), Some(Money::from_cents(18_000)));
+        assert_eq!(of("455000"), Some(Money::from_cents(-18_000)));
         assert_eq!(of("512000"), Some(Money::from_cents(100_000)));
         let sheet = ledger.balance_sheet();
         assert_eq!(
             sheet.shareholder_current_accounts,
-            Money::from_cents(20_400)
+            Money::from_cents(18_000)
         );
     }
 
-    // --- Rapprochement bancaire des dépenses (lot 33). ---
-
+    /// Honoraires de 960,00 € TTC (TVA déductible 160,00 €, charge 800,00 €) engagés
+    /// le 28 décembre 2026 et débités le 4 janvier 2027. Rien au 31 décembre 2026 :
+    /// pas de 401. Une seule écriture `BQ` en 2027.
     #[test]
-    fn a_reconciled_expense_is_charged_at_its_date_and_paid_at_the_statement_date() {
-        // Honoraires de 960 € TTC engagés le 28 décembre 2026, débités le 4 janvier 2027 : la
-        // charge (622600 + 445660 contre 401) est dans 2026, le décaissement (401 contre 512)
-        // dans 2027 ; au 31 décembre 2026, 401 créditeur est une dette fournisseur (case 166)
-        // et la banque n'a pas encore bougé.
+    fn a_bank_payment_is_booked_on_the_statement_date_without_a_supplier() {
         let p = profile(None, None);
         let mut fees = expense(96_000, 16_000, date(2026, TimeMonth::December, 28));
         fees.category = ExpenseCategory::Fees;
-        let mut unreconciled = expense(6_000, 0, date(2026, TimeMonth::June, 1));
-        unreconciled.label = "Fournitures".to_string();
-        let expenses = vec![fees.clone(), unreconciled];
-        let debits = vec![debit_for(&fees, date(2027, TimeMonth::January, 4))];
+        let unpaid = expense(6_000, 0, date(2026, TimeMonth::June, 1));
+        let posted = vec![
+            expense_payment_entry(
+                &fees,
+                ExpensePayment::Bank {
+                    on: date(2027, TimeMonth::January, 4),
+                },
+                None,
+            )
+            .expect("paiement non nul"),
+        ];
 
         let y2026 = Ledger::build(LedgerFacts {
-            bank_transactions: &debits,
-            ..facts(&p, FiscalYear::calendar(2026), &[], &expenses, None)
+            posted: &posted,
+            ..facts(
+                &p,
+                FiscalYear::calendar(2026),
+                &[],
+                &[fees.clone(), unpaid],
+                None,
+            )
         })
         .unwrap();
-        let purchases: Vec<&LedgerEntry> = y2026
-            .entries
-            .iter()
-            .filter(|e| e.journal == Journal::Purchases)
-            .collect();
-        assert_eq!(purchases.len(), 2);
-        let charged = purchases
-            .iter()
-            .find(|e| e.label == "Honoraires")
-            .expect("la charge des honoraires est dans 2026");
-        assert_eq!(charged.lines[0].account, accounts::FEES);
-        assert_eq!(charged.lines[0].amount, Money::from_cents(80_000));
-        assert_eq!(charged.lines[2].account, accounts::SUPPLIERS);
-        assert_eq!(charged.lines[2].amount, Money::from_cents(-96_000));
-        let direct = purchases.iter().find(|e| e.label != "Honoraires").unwrap();
-        assert_eq!(
-            direct.lines[1].account,
-            accounts::BANK,
-            "une dépense non rapprochée reste réputée payée à sa date"
-        );
         assert!(
-            y2026.entries.iter().all(|e| e.journal != Journal::Bank),
-            "aucun décaissement en 2026 : le relevé le date de 2027"
+            y2026
+                .entries
+                .iter()
+                .all(|e| !e.piece_ref.starts_with("DEP-")),
+            "ni la facture de décembre ni la facture non payée n'entrent en 2026"
         );
-        let sheet = y2026.balance_sheet();
         assert_eq!(
-            sheet.liability(LiabilityRubric::Suppliers),
-            Money::from_cents(96_000)
+            y2026.balance_sheet().liability(LiabilityRubric::Suppliers),
+            Money::ZERO
         );
-        assert_eq!(sheet.asset_net(AssetRubric::Cash), Money::ZERO);
-        assert_eq!(
-            sheet.liability(LiabilityRubric::Borrowings),
-            Money::from_cents(6_000),
-            "seule la dépense non rapprochée a touché la banque (créditrice → concours)"
-        );
-        assert_eq!(sheet.total_assets_net, sheet.total_liabilities);
 
         let y2027 = Ledger::build(LedgerFacts {
-            bank_transactions: &debits,
-            ..facts(&p, FiscalYear::calendar(2027), &[], &expenses, None)
+            posted: &posted,
+            ..facts(&p, FiscalYear::calendar(2027), &[], &[fees.clone()], None)
         })
         .unwrap();
+        let payments: Vec<_> = y2027
+            .entries
+            .iter()
+            .filter(|e| e.piece_ref.starts_with("DEP-"))
+            .collect();
+        assert_eq!(payments.len(), 1);
+        let paid = payments[0];
+        assert_eq!(paid.journal, Journal::Bank);
+        assert_eq!(paid.date, date(2027, TimeMonth::January, 4));
+        assert_eq!(paid.piece_ref, format!("DEP-{}", fees.id));
+        assert!(paid.is_balanced());
+        assert_eq!(paid.lines[0].account, accounts::FEES);
+        assert_eq!(paid.lines[0].amount, Money::from_cents(80_000));
+        assert_eq!(paid.lines[1].account, accounts::VAT_DEDUCTIBLE);
+        assert_eq!(paid.lines[1].amount, Money::from_cents(16_000));
+        assert_eq!(paid.lines[2].account, accounts::BANK);
+        assert_eq!(paid.lines[2].amount, Money::from_cents(-96_000));
         assert!(
             y2027
                 .entries
                 .iter()
-                .all(|e| e.journal != Journal::Purchases),
-            "la charge n'est pas dans 2027"
+                .flat_map(|e| e.lines.iter())
+                .all(|l| l.account.number != "401000")
         );
-        let paid = y2027
-            .entries
-            .iter()
-            .find(|e| e.journal == Journal::Bank)
-            .expect("le décaissement est dans 2027");
-        assert_eq!(paid.date, date(2027, TimeMonth::January, 4));
-        assert_eq!(paid.piece_ref, charged.piece_ref);
-        assert_eq!(paid.lines[0].account, accounts::SUPPLIERS);
-        assert_eq!(paid.lines[0].amount, Money::from_cents(96_000));
-        assert_eq!(paid.lines[1].account, accounts::BANK);
-        assert!(paid.label.contains("CB FOURNISSEUR"));
-        assert!(y2027.entries.iter().all(LedgerEntry::is_balanced));
     }
 
     #[test]
@@ -3093,43 +3585,41 @@ mod tests {
         assert!(ledger.balance_sheet().is_balanced());
     }
 
-    /// Chaque dépense a sa propre pièce (UUID complet), la même pour la charge et son
-    /// décaissement ; le justificatif est nommé dans le libellé, pas dans la pièce.
+    /// Seule la dépense payée a une pièce. Le justificatif est nommé dans le libellé.
     #[test]
-    fn expense_pieces_are_unique_and_the_receipt_is_named_in_the_label() {
+    fn only_the_paid_expense_has_a_piece_and_the_receipt_is_named() {
         let p = profile(None, None);
         let exercise = FiscalYear::calendar(2026);
         let mut with_receipt = expense(12_000, 2_000, date(2026, TimeMonth::March, 1));
         with_receipt.receipt_filename = Some("facture-ovh.pdf".to_string());
-        let expenses = vec![
-            with_receipt.clone(),
+        let unpaid = [
             expense(12_000, 2_000, date(2026, TimeMonth::March, 1)),
             expense(12_000, 2_000, date(2026, TimeMonth::March, 1)),
         ];
-        let debit = debit_for(&with_receipt, date(2026, TimeMonth::March, 4));
+        let posted = vec![
+            expense_payment_entry(
+                &with_receipt,
+                ExpensePayment::Bank {
+                    on: date(2026, TimeMonth::March, 4),
+                },
+                None,
+            )
+            .expect("paiement non nul"),
+        ];
         let ledger = Ledger::build(LedgerFacts {
-            bank_transactions: std::slice::from_ref(&debit),
-            ..facts(&p, exercise, &[], &expenses, None)
+            posted: &posted,
+            ..facts(&p, exercise, &[], &unpaid, None)
         })
         .unwrap();
-        let pieces: std::collections::BTreeSet<&str> = ledger
+        let pieces: Vec<_> = ledger
             .entries
             .iter()
             .filter(|e| e.piece_ref.starts_with("DEP-"))
-            .map(|e| e.piece_ref.as_str())
             .collect();
-        assert_eq!(
-            pieces.len(),
-            3,
-            "une pièce par dépense, partagée charge/décaissement"
-        );
-        assert!(pieces.contains(format!("DEP-{}", with_receipt.id).as_str()));
-        let charge = ledger
-            .entries
-            .iter()
-            .find(|e| e.journal == Journal::Purchases && e.label.contains("facture-ovh.pdf"))
-            .expect("le justificatif est nommé dans le libellé");
-        assert_eq!(charge.piece_ref, format!("DEP-{}", with_receipt.id));
+        assert_eq!(pieces.len(), 1);
+        assert_eq!(pieces[0].piece_ref, format!("DEP-{}", with_receipt.id));
+        assert_eq!(pieces[0].journal, Journal::Bank);
+        assert!(pieces[0].label.contains("facture-ovh.pdf"));
     }
 
     /// Lot 42 : un ordinateur immobilisé entre en 2183, pas en charge ; la dotation 681/28x
@@ -3171,9 +3661,14 @@ mod tests {
             tax_losses: Money::ZERO,
         };
         let assets = [asset];
-        let expenses = [laptop];
+        let expenses = [laptop.clone()];
+        let posted = vec![posted_payment(
+            &laptop,
+            Some(("218300", "Ordinateur portable")),
+        )];
         let ledger = Ledger::build(LedgerFacts {
             assets: &assets,
+            posted: &posted,
             ..facts(
                 &p,
                 exercise,
@@ -3187,8 +3682,9 @@ mod tests {
         let purchase = ledger
             .entries
             .iter()
-            .find(|e| e.journal == Journal::Purchases)
+            .find(|e| e.piece_ref.starts_with("DEP-"))
             .expect("entrée à l'actif");
+        assert_eq!(purchase.journal, Journal::Bank);
         assert_eq!(purchase.lines[0].account.number.as_ref(), "218300");
         assert_eq!(purchase.lines[0].amount, Money::from_cents(120_000));
         let amo = ledger
@@ -3263,14 +3759,14 @@ mod tests {
         }
     }
 
-    fn bakari_write_off(invoice_id: InvoiceId, written_off_on: Date) -> InvoiceWriteOff {
+    fn sample_write_off(invoice_id: InvoiceId, written_off_on: Date) -> InvoiceWriteOff {
         InvoiceWriteOff {
             id: WriteOffId::new(),
             invoice_id,
             written_off_on,
-            ht: Money::from_cents(350_667),
-            vat: Money::from_cents(70_133),
-            ttc: Money::from_cents(420_800),
+            ht: Money::from_cents(100_000),
+            vat: Money::from_cents(20_000),
+            ttc: Money::from_cents(120_000),
             recovers_vat: false,
             retracted_on: None,
         }
@@ -3278,23 +3774,25 @@ mod tests {
 
     #[test]
     fn write_off_posts_654_and_does_not_reverse_706() {
-        // HT 3 506,67 €, TVA 701,33 €, TTC 4 208,00 € — chiffres Bakari posés à la main.
+        // HT, TVA et TTC écrits à la main. La perte ne renverse pas le 706.
         let p = profile(None, None);
         let exercise = FiscalYear::calendar(2026);
         let client_id = ClientId::new();
-        let clients = [named_client(client_id, "Bakari")];
+        let clients = [named_client(client_id, "Hélios")];
         let invoices = vec![invoice(
             client_id,
-            350_667,
+            100_000,
             date(2026, TimeMonth::August, 15),
         )];
-        let write_offs = [bakari_write_off(
+        let write_offs = [sample_write_off(
             invoices[0].id,
             date(2026, TimeMonth::September, 17),
         )];
+        let posted = posted_sales(&invoices);
         let ledger = Ledger::build(LedgerFacts {
             write_offs: &write_offs,
             clients: &clients,
+            posted: &posted,
             ..facts(&p, exercise, &invoices, &[], None)
         })
         .unwrap();
@@ -3307,7 +3805,7 @@ mod tests {
             .filter(|l| l.account == accounts::SERVICES)
             .collect();
         assert_eq!(sales_706.len(), 1);
-        assert_eq!(sales_706[0].amount, Money::from_cents(-350_667));
+        assert_eq!(sales_706[0].amount, Money::from_cents(-100_000));
 
         let loss = ledger
             .entries
@@ -3318,14 +3816,14 @@ mod tests {
         assert_eq!(loss.date, date(2026, TimeMonth::September, 17));
         assert_eq!(
             loss.label,
-            format!("Perte sur créance {} — Bakari", invoices[0].number)
+            format!("Perte sur créance {} — Hélios", invoices[0].number)
         );
         assert_eq!(loss.lines[0].account, accounts::BAD_DEBT);
-        assert_eq!(loss.lines[0].amount, Money::from_cents(350_667));
+        assert_eq!(loss.lines[0].amount, Money::from_cents(100_000));
         assert_eq!(loss.lines[1].account, accounts::VAT_COLLECTED);
-        assert_eq!(loss.lines[1].amount, Money::from_cents(70_133));
+        assert_eq!(loss.lines[1].amount, Money::from_cents(20_000));
         assert_eq!(loss.lines[2].account, accounts::CLIENTS);
-        assert_eq!(loss.lines[2].amount, Money::from_cents(-420_800));
+        assert_eq!(loss.lines[2].amount, Money::from_cents(-120_000));
         assert!(loss.lines[2].aux.is_some());
         assert!(loss.is_balanced());
 
@@ -3353,11 +3851,11 @@ mod tests {
         let p = profile(None, None);
         let exercise = FiscalYear::calendar(2026);
         let client_id = ClientId::new();
-        let clients = [named_client(client_id, "Bakari")];
-        let mut imported = invoice(client_id, 350_667, date(2024, TimeMonth::September, 30));
+        let clients = [named_client(client_id, "Hélios")];
+        let mut imported = invoice(client_id, 100_000, date(2024, TimeMonth::September, 30));
         imported.origin = InvoiceOrigin::Imported;
-        imported.number = "FAC-2024-0042".to_string();
-        let write_offs = [bakari_write_off(
+        imported.number = "FAC-2024-0008".to_string();
+        let write_offs = [sample_write_off(
             imported.id,
             date(2026, TimeMonth::September, 17),
         )];
@@ -3384,13 +3882,13 @@ mod tests {
         let loss = ledger
             .entries
             .iter()
-            .find(|e| e.piece_ref == "OD-654-FAC-2024-0042")
+            .find(|e| e.piece_ref == "OD-654-FAC-2024-0008")
             .expect("OD 654 dans 2026");
         assert_eq!(loss.journal, Journal::Misc);
         assert_eq!(loss.date, date(2026, TimeMonth::September, 17));
         assert_eq!(loss.lines[0].account, accounts::BAD_DEBT);
-        assert_eq!(loss.lines[0].amount, Money::from_cents(350_667));
-        assert_eq!(loss.label, "Perte sur créance FAC-2024-0042 — Bakari");
+        assert_eq!(loss.lines[0].amount, Money::from_cents(100_000));
+        assert_eq!(loss.label, "Perte sur créance FAC-2024-0008 — Hélios");
     }
 
     proptest! {

@@ -402,7 +402,7 @@ fn reprised_debts_paid_from_the_statement_are_settled_not_expensed() {
     );
     let expense_pieces: std::collections::BTreeSet<&str> = rows
         .iter()
-        .filter(|r| r[8].starts_with("DEP-") && r[0] == "AC")
+        .filter(|r| r[8].starts_with("DEP-") && r[0] == "BQ")
         .map(|r| r[8])
         .collect();
     assert_eq!(expense_pieces.len(), 15, "une pièce distincte par dépense");

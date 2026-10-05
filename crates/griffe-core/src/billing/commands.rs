@@ -79,6 +79,7 @@ impl Command for EmitInvoice {
             credited_invoice_id: None,
         };
         row::insert_invoice(conn, &invoice)?;
+        crate::journal::sync_sale(conn, id, crate::journal::SyncGuard::RefuseClosedYear)?;
         Ok(EmittedInvoice { id, number })
     }
 }
@@ -174,6 +175,7 @@ impl Command for ImportIssuedInvoice {
             credited_invoice_id: self.credited_invoice_id,
         };
         row::insert_invoice(conn, &invoice)?;
+        crate::journal::sync_sale(conn, id, crate::journal::SyncGuard::RefuseClosedYear)?;
         Ok(EmittedInvoice { id, number })
     }
 }
@@ -252,6 +254,7 @@ impl Command for IssueCreditNote {
             credited_invoice_id: Some(self.invoice_id),
         };
         row::insert_invoice(conn, &credit_note)?;
+        crate::journal::sync_sale(conn, id, crate::journal::SyncGuard::RefuseClosedYear)?;
         Ok(EmittedInvoice { id, number })
     }
 }
@@ -403,11 +406,16 @@ impl Command for RecordPayment {
             voided_at: None,
         };
         row::insert_payment(conn, &payment)?;
+        crate::journal::sync_collection(
+            conn,
+            payment.id,
+            crate::journal::SyncGuard::RefuseClosedYear,
+        )?;
         Ok(payment.id)
     }
 }
 
-/// Annule un encaissement saisi à tort — une contre-écriture, jamais une suppression : le
+/// Annule un encaissement saisi à tort — une extourne, jamais une suppression : le
 /// paiement reste dans l'historique (et dans le journal d'audit chaîné) mais sort de tous les
 /// calculs (statut payé, balance âgée, prévisionnel). S'il était issu d'un rapprochement
 /// bancaire, la transaction est libérée dans le même geste : la laisser « rapprochée » vers une
@@ -417,9 +425,9 @@ impl Command for RecordPayment {
 /// `command_json` du journal d'audit — c'est là que vit la trace d'une correction comptable,
 /// pas dans la ligne corrigée.
 ///
-/// Aucune garde d'exercice clos, contrairement aux dépenses : la TVA comme l'IS sont calculés
-/// sur les débits (factures émises), jamais sur les encaissements — annuler un paiement n'a
-/// aucun effet fiscal (voir `accounting::vat_due_for_period`).
+/// L'extourne est datée de l'encaissement. Si cette date tombe dans un exercice clos,
+/// l'annulation est refusée : la TVA de la prestation est exigible à l'encaissement
+/// (CGI art. 269, 2, c), et réécrire cet exercice changerait le livre figé.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VoidPayment {
     pub payment_id: PaymentId,
@@ -450,6 +458,11 @@ impl Command for VoidPayment {
         if let Some(transaction_id) = payment.bank_transaction_id {
             row::clear_transaction_match(conn, transaction_id)?;
         }
+        crate::journal::sync_collection(
+            conn,
+            self.payment_id,
+            crate::journal::SyncGuard::RefuseClosedYear,
+        )?;
         Ok(())
     }
 }
@@ -526,6 +539,11 @@ impl Command for ReconcileTransaction {
         };
         row::insert_payment(conn, &payment)?;
         row::mark_transaction_matched(conn, self.transaction_id, self.invoice_id)?;
+        crate::journal::sync_collection(
+            conn,
+            payment.id,
+            crate::journal::SyncGuard::RefuseClosedYear,
+        )?;
         Ok(payment.id)
     }
 }
@@ -578,7 +596,22 @@ impl Command for UnreconcileTransaction {
             }
             None => None,
         };
+        let expense_id = tx.matched_expense_id;
         row::clear_transaction_match(conn, self.transaction_id)?;
+        if let Some(expense_id) = expense_id {
+            crate::journal::sync_expense_payment(
+                conn,
+                expense_id,
+                crate::journal::SyncGuard::RefuseClosedYear,
+            )?;
+        }
+        if let Some(payment_id) = voided {
+            crate::journal::sync_collection(
+                conn,
+                payment_id,
+                crate::journal::SyncGuard::RefuseClosedYear,
+            )?;
+        }
         Ok(voided)
     }
 }

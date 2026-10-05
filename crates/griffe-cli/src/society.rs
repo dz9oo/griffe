@@ -8,12 +8,13 @@ use griffe_core::fiscal::{FiscalDeadlineKind, VatFilingScheme};
 use griffe_core::society::{
     AmountBasis, AmountStory, BeatKind, BeatWhen, BoxCoverage, BoxRole, ClosingStory,
     CurrentAccount, CurrentAccountBalance, DeleteVatCarryIn, DepositPlace, DividendClosed,
-    DividendDoor, Duty, DutyBriefing, DutyFiling, Expect, FormBox, IdentityCard, MarkDutyFiled,
-    PayYourself, RecordVatCarryIn, RecordVatReversal, RequestVatRefund, RetractDutyFiled,
-    RetractVatRefund, RetractVatReversal, SocietyHome, StatementMove, StatementReading,
-    UnknownReason, VatCarryInRecord, VatPosition, VatRefundRecord, VatRefundStatus,
-    VatReversalRecord, WaiverReason, closing_story, current_account, duty_briefing, pay_yourself,
-    society_duties, society_home, society_identity, statement_moves, vat_carry_in,
+    DividendDoor, Duty, DutyBriefing, DutyFiling, Expect, FormBox, IdentityCard, LiquidateCa3,
+    MarkDutyFiled, PayYourself, PostedPayroll, PostedVatLiquidation, RecordPayroll,
+    RecordVatCarryIn, RecordVatReversal, RequestVatRefund, RetractDutyFiled, RetractVatRefund,
+    RetractVatReversal, SocietyHome, StatementMove, StatementReading, UnknownReason,
+    VatCarryInRecord, VatPosition, VatRefundRecord, VatRefundStatus, VatReversalRecord,
+    WaiverReason, closing_story, current_account, duty_briefing, pay_yourself, society_duties,
+    society_home, society_identity, statement_moves, vat_carry_in,
 };
 use griffe_core::store::Store;
 use time::Date;
@@ -573,6 +574,28 @@ pub enum SocietyCommand {
     /// Rendre une TVA trop déduite (case 15), ou l'annuler.
     #[command(subcommand)]
     VatReversal(VatReversalCommand),
+    /// Écrire la TVA du mois.
+    Liquidate {
+        /// Période `AAAA-MM`.
+        period: String,
+        #[arg(long, value_parser = parse_date)]
+        today: Option<Date>,
+    },
+    /// Écrire une paie déjà chiffrée (brut, retenue, cotisations patronales).
+    Payroll {
+        /// Jour de la paie, `AAAA-MM-JJ`.
+        #[arg(long, value_parser = parse_date)]
+        on: Date,
+        /// Brut, en euros.
+        #[arg(long, value_parser = parse_money)]
+        gross: Money,
+        /// Retenue salariale, en euros.
+        #[arg(long, value_parser = parse_money)]
+        withholding: Money,
+        /// Cotisations patronales, en euros.
+        #[arg(long, value_parser = parse_money)]
+        employer: Money,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -738,6 +761,52 @@ pub fn run(
         SocietyCommand::VatCredit(cmd) => run_vat_credit(cmd, store, ctx, json),
         SocietyCommand::VatRefund(cmd) => run_vat_refund(cmd, store, ctx, json),
         SocietyCommand::VatReversal(cmd) => run_vat_reversal(cmd, store, ctx, json),
+        SocietyCommand::Liquidate { period, today } => {
+            let today = today.unwrap_or_else(today_local);
+            let briefing = duty_briefing(
+                store.connection(),
+                FiscalDeadlineKind::Ca3,
+                today,
+                Some(&period),
+            )?;
+            let outcome = Executor::new(store).execute(
+                &LiquidateCa3 {
+                    period_key: briefing.period_key,
+                    on: today,
+                },
+                ctx,
+            )?;
+            Ok(format_outcome_as(&outcome, json, |posted| {
+                if posted.written {
+                    format!("TVA du mois écrite ({})", posted.piece_ref)
+                } else {
+                    format!("TVA du mois inchangée ({})", posted.piece_ref)
+                }
+            }))
+        }
+        SocietyCommand::Payroll {
+            on,
+            gross,
+            withholding,
+            employer,
+        } => {
+            let outcome = Executor::new(store).execute(
+                &RecordPayroll {
+                    on,
+                    gross,
+                    employee_withholding: withholding,
+                    employer_contributions: employer,
+                },
+                ctx,
+            )?;
+            Ok(format_outcome_as(&outcome, json, |posted| {
+                if posted.written {
+                    format!("paie écrite ({})", posted.period_key)
+                } else {
+                    format!("paie inchangée ({})", posted.period_key)
+                }
+            }))
+        }
     }
 }
 
@@ -761,6 +830,37 @@ impl HumanRender for VatRefundRecord {
             ("période", self.period_key.clone()),
             ("versement", self.amount.to_string()),
             ("demandé le", format_date(self.requested_on)),
+        ])
+    }
+}
+
+impl HumanRender for PostedPayroll {
+    fn render_human(&self) -> String {
+        let state = if self.written {
+            "écrite"
+        } else {
+            "inchangée"
+        };
+        key_values(&[
+            ("période", self.period_key.clone()),
+            ("au", format_date(self.on)),
+            ("paie", state.into()),
+        ])
+    }
+}
+
+impl HumanRender for PostedVatLiquidation {
+    fn render_human(&self) -> String {
+        let state = if self.written {
+            "écrite"
+        } else {
+            "inchangée"
+        };
+        key_values(&[
+            ("période", self.period_key.clone()),
+            ("pièce", self.piece_ref.clone()),
+            ("au", format_date(self.on)),
+            ("TVA du mois", state.into()),
         ])
     }
 }

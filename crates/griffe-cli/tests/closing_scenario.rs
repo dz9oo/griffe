@@ -31,6 +31,9 @@
 //! | Frais de tenue de compte         | 96,00  | 0,00           | 96,00       | 627000 |
 //! | **Total**                        | 960,00 | 144,00         | **816,00**  |        |
 //!
+//! La charge est datée du relevé, pas de la facture. Le logiciel facturé le
+//! 10/02 et payé le 12/02 est en 651 et 512 au 12/02. Pas de compte 401.
+//!
 //! Résultat avant IS = 0 − 816 = **−816,00** ; IS nul ; résultat net −816,00 ; déficit fiscal
 //! reportable **816,00** ; report à nouveau après affectation = 2 400 − 816 = **1 584,00** ;
 //! dotation minimale à la réserve légale nulle (pas de bénéfice).
@@ -61,7 +64,8 @@
 //! Bilan au 30 septembre 2027 (à-nouveaux dérivés de la clôture 2026) : actif = banque
 //! 2 440 + 9 600 − 840 − 96 = 11 104,00 + clients 4 800,00 + TVA déductible 144 + 140 = 284,00
 //! = **16 188,00** ; passif = capital 1 000 + report à nouveau 1 584 + résultat 9 646 + TVA
-//! collectée 2 400 + IS dû 1 558 = **16 188,00**.
+//! collectée 1 600 (facture encaissée) + TVA en attente d'exigibilité 800 (facture non
+//! encaissée) + IS dû 1 558 = **16 188,00**.
 
 use std::path::Path;
 
@@ -573,8 +577,16 @@ fn a_preexisting_sasu_closes_two_exercises_alone_from_the_cli() {
     assert_eq!(liasse_case(&liasse, "2065", "C1"), Some(-81_600));
     // Lot 41 : 218 (prestations, ici aucune), 306 (IS, nul), 2033-F depuis le profil, et un PV
     // nominatif qui porte l'associée unique, le 223 quater et le registre des décisions.
-    assert_eq!(liasse_case(&liasse, "2033-B", "218"), Some(0));
-    assert_eq!(liasse_case(&liasse, "2033-B", "306"), Some(0));
+    assert_eq!(
+        liasse_case(&liasse, "2033-B", "218"),
+        None,
+        "pas de prestation au livre : la case 218 est absente"
+    );
+    assert_eq!(
+        liasse_case(&liasse, "2033-B", "306"),
+        None,
+        "pas d'impôt au livre : la case 306 est absente"
+    );
     assert_eq!(liasse_case(&liasse, "2065", "IS"), None);
     assert_eq!(liasse["capital"]["form"], "2033-F");
     assert_eq!(liasse["capital"]["shares_held_by_individuals"], 100);
@@ -605,8 +617,12 @@ fn a_preexisting_sasu_closes_two_exercises_alone_from_the_cli() {
         "{fec}"
     );
     assert!(
-        fec.contains("|20260212|512000|") && fec.contains("|20260210|651000|"),
-        "le logiciel doit être engagé le 10/02 et décaissé le 12/02 :\n{fec}"
+        fec.contains("|20260212|651000|") && fec.contains("|20260212|512000|"),
+        "le logiciel est constaté au relevé du 12/02 :\n{fec}"
+    );
+    assert!(
+        !fec.contains("|20260210|651000|"),
+        "la facture du 10/02 n'est pas une écriture :\n{fec}"
     );
     assert!(!fec.contains("695000"), "aucun IS sur un déficit :\n{fec}");
 
@@ -825,7 +841,8 @@ fn a_preexisting_sasu_closes_two_exercises_alone_from_the_cli() {
     assert_eq!(account_balance(&sheet, "512000"), 1_110_400);
     assert_eq!(account_balance(&sheet, "411000"), 480_000);
     assert_eq!(account_balance(&sheet, "445660"), 28_400);
-    assert_eq!(account_balance(&sheet, "445710"), -240_000);
+    assert_eq!(account_balance(&sheet, "445710"), -160_000);
+    assert_eq!(account_balance(&sheet, "445881"), -80_000);
     assert_eq!(account_balance(&sheet, "444000"), -155_800);
     assert_eq!(account_balance(&sheet, "706000"), -1_200_000);
     assert_eq!(account_balance(&sheet, "101000"), -100_000);
@@ -864,7 +881,22 @@ fn a_preexisting_sasu_closes_two_exercises_alone_from_the_cli() {
     assert_eq!(liasse_case(&liasse, "2065", "C1"), Some(1_038_800));
     assert_eq!(liasse_case(&liasse, "2033-B", "218"), Some(1_200_000));
     assert_eq!(liasse_case(&liasse, "2033-B", "306"), Some(155_800));
-    assert_eq!(liasse_case(&liasse, "2065", "distributions"), Some(300_000));
+    assert_eq!(
+        liasse_case(&liasse, "2065", "distributions"),
+        None,
+        "distributions n'est pas une case du 2065"
+    );
+    if let Some(text) = pdf_text(&db.with_file_name("cloture-2027").join("appropriation.pdf")) {
+        let squeezed: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            squeezed.contains("Distribution de dividendes"),
+            "les dividendes restent sur l'affectation : {squeezed}"
+        );
+        assert!(
+            squeezed.contains("3 000,00"),
+            "3 000,00 € décidés à l'affectation : {squeezed}"
+        );
+    }
     assert_eq!(liasse_case(&liasse, "2033-B", "360"), Some(81_600));
     assert_eq!(liasse_case(&liasse, "2033-D", "982"), Some(81_600));
     assert_eq!(liasse_case(&liasse, "2033-D", "983"), Some(81_600));

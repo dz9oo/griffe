@@ -43,8 +43,8 @@ pub fn render_balance_sheet(
     let disclaimer_v = b.bind(DISCLAIMER);
     let scope_v = b.bind(
         "Bilan dérivé des faits enregistrés (bilan d'ouverture, factures et avoirs, \
-         encaissements, dépenses) et des opérations de clôture estimées (rémunération du \
-         dirigeant réputée due, impôt sur les sociétés). Présentation du tableau 2033-A-SD. \
+         encaissements, dépenses) et de l'impôt sur les sociétés estimé à la clôture. \
+         Un brut mensuel déclaré au profil n'est pas une dette. Présentation du tableau 2033-A-SD. \
          Sans amortissement de l'exercice, provision ni régularisation ; la TVA n'est pas \
          liquidée ; les dépenses sont réputées payées à leur date. À faire relire par \
          l'expert-comptable avant tout dépôt.",

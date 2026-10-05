@@ -51,6 +51,14 @@ impl HumanRender for griffe_core::expenses::ExpenseDetail {
                 paid_by_label(&self.expense, self.bank_transaction.is_some()),
             ),
             (
+                "prestation",
+                if e.reverse_charge {
+                    "intracommunautaire autoliquidée".to_string()
+                } else {
+                    "domestique".to_string()
+                },
+            ),
+            (
                 "relevé",
                 self.bank_transaction.as_ref().map_or_else(
                     || "non rapprochée".to_string(),
@@ -107,6 +115,11 @@ pub struct RecordArgs {
     /// cette somme, la banque ne bouge pas). Incompatible avec `--transaction`.
     #[arg(long, value_enum, default_value_t = PaidByArg::Company, conflicts_with = "transaction")]
     paid_by: PaidByArg,
+    /// Prestation intracommunautaire autoliquidée. Le montant payé est la charge.
+    /// La TVA française au taux choisi est à la fois due et déductible.
+    /// `--vat-deductible` n'est pas utilisé.
+    #[arg(long)]
+    reverse_charge: bool,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -204,6 +217,13 @@ pub struct EditArgs {
     /// Qui a payé : `company` ou `me` (compte perso). Inchangé si omis.
     #[arg(long, value_enum)]
     paid_by: Option<PaidByArg>,
+    /// Prestation intracommunautaire autoliquidée. Inchangé si omis.
+    /// Le montant payé devient la charge. `--vat-deductible` n'est pas utilisé.
+    #[arg(long, conflicts_with = "domestic")]
+    reverse_charge: bool,
+    /// Revenir à un paiement domestique. Inchangé si omis.
+    #[arg(long, conflicts_with = "reverse_charge")]
+    domestic: bool,
 }
 
 /// Lit `receipt` et l'archive **chiffré** dans `<coffre>.receipts/` (lot 39 —
@@ -286,6 +306,7 @@ pub fn run(
                 bank_transaction_id: args.transaction,
                 supplier: args.supplier,
                 paid_by: args.paid_by.to_domain(),
+                reverse_charge: args.reverse_charge,
             };
             let outcome = Executor::new(store).execute(&command, ctx)?;
             if let (griffe_core::app::Outcome::Applied(id), Some((filename, hash))) =
@@ -360,6 +381,13 @@ pub fn run(
                     args.supplier.or(current.supplier)
                 },
                 paid_by: args.paid_by.map_or(current.paid_by, PaidByArg::to_domain),
+                reverse_charge: if args.reverse_charge {
+                    true
+                } else if args.domestic {
+                    false
+                } else {
+                    current.reverse_charge
+                },
             };
             let outcome = Executor::new(store).execute(&command, ctx)?;
             if new_receipt && let Some((filename, hash)) = captured_receipt {

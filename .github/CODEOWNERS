@@ -6,6 +6,7 @@
 /crates/griffe-core/src/fiscal.rs        @dz9oo
 /crates/griffe-core/src/fiscal_year.rs   @dz9oo
 /crates/griffe-core/src/ledger.rs        @dz9oo
+/crates/griffe-core/src/journal.rs       @dz9oo
 /crates/griffe-core/src/fec/             @dz9oo
 /crates/griffe-core/src/closing.rs       @dz9oo
 /crates/griffe-core/src/opening_balance.rs @dz9oo

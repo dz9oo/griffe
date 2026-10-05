@@ -144,12 +144,11 @@ pub struct SetProfileArgs {
     /// `franchise`.
     #[arg(long, value_parser = parse_vat_regime)]
     vat_regime: Option<VatRegime>,
-    /// Rémunération mensuelle brute du président (assimilé salarié). Absent = non rémunéré.
+    /// Rémunération mensuelle brute déclarée. Elle ne poste aucune paie.
     #[arg(long, value_parser = parse_money)]
     director_gross: Option<Money>,
-    /// Ratio (charges patronales + salariales) / brut du dirigeant, en pourcentage (ex. `45`),
-    /// pour estimer les cotisations : le coût employeur vaut brut × (1 + ratio), la DSN affiche
-    /// brut × ratio.
+    /// Ratio charges/brut, en pourcentage (ex. `45`). Il ne remplit pas le calendrier :
+    /// une échéance suit une paie déjà écrite.
     #[arg(long, value_parser = parse_charge_ratio_bps)]
     director_charge_ratio: Option<u32>,
     /// Nom du président (signataire du PV et des comptes).

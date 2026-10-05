@@ -245,7 +245,7 @@ mod tests {
                     .execute(
                         &RecordVatCarryIn {
                             after_period: "2026-08".into(),
-                            credit: Money::from_cents(32_400),
+                            credit: Money::from_cents(40_000),
                             source: Some("CA3 août, espace impôts".into()),
                         },
                         &human(),
@@ -256,7 +256,7 @@ mod tests {
         );
         let rec = vat_carry_in(store.connection()).unwrap().unwrap();
         assert_eq!(rec.after_period, "2026-08");
-        assert_eq!(rec.credit, Money::from_cents(32_400));
+        assert_eq!(rec.credit, Money::from_cents(40_000));
         assert_eq!(rec.source.as_deref(), Some("CA3 août, espace impôts"));
         assert_eq!(rec.revision, 1);
     }
@@ -269,7 +269,7 @@ mod tests {
                 .execute(
                     &RecordVatCarryIn {
                         after_period: "2026-08".into(),
-                        credit: Money::from_cents(32_400),
+                        credit: Money::from_cents(40_000),
                         source: None,
                     },
                     &human(),
@@ -296,7 +296,7 @@ mod tests {
             .execute(
                 &RecordVatCarryIn {
                     after_period: "août".into(),
-                    credit: Money::from_cents(32_400),
+                    credit: Money::from_cents(40_000),
                     source: None,
                 },
                 &human(),
@@ -325,7 +325,7 @@ mod tests {
                 .execute(
                     &RecordVatCarryIn {
                         after_period: "2026-08".into(),
-                        credit: Money::from_cents(32_400),
+                        credit: Money::from_cents(40_000),
                         source: None,
                     },
                     &human(),
@@ -350,7 +350,7 @@ mod tests {
         assert!(delete.to_string().contains("figé"), "{delete}");
         let rec = vat_carry_in(store.connection()).unwrap().unwrap();
         assert_eq!(rec.after_period, "2026-08");
-        assert_eq!(rec.credit, Money::from_cents(32_400));
+        assert_eq!(rec.credit, Money::from_cents(40_000));
         assert_eq!(rec.revision, 1);
     }
 
@@ -361,7 +361,7 @@ mod tests {
             .execute(
                 &RecordVatCarryIn {
                     after_period: "2026-08".into(),
-                    credit: Money::from_cents(32_400),
+                    credit: Money::from_cents(40_000),
                     source: None,
                 },
                 &agent(),

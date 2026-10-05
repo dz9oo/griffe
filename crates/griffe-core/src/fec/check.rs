@@ -908,6 +908,8 @@ mod tests {
                 paid_by: crate::domain::ExpensePaidBy::Company,
                 created_at: OffsetDateTime::UNIX_EPOCH,
                 revision: 1,
+
+                reverse_charge: false,
             }],
             None,
         )

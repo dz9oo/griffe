@@ -23,8 +23,9 @@ use griffe_core::opening_balance::{
 use griffe_core::papers::PurgePaper;
 use griffe_core::prospection::{DeleteInteraction, DeleteOpportunity};
 use griffe_core::society::{
-    DeleteVatCarryIn, MarkCatchUpFiled, MarkDutyFiled, RecordVatCarryIn, RecordVatReversal,
-    RequestVatRefund, RetractDutyFiled, RetractVatRefund, RetractVatReversal, UpdateVatCarryIn,
+    DeleteVatCarryIn, LiquidateCa3, MarkCatchUpFiled, MarkDutyFiled, RecordPayroll,
+    RecordVatCarryIn, RecordVatReversal, RequestVatRefund, RetractDutyFiled, RetractVatRefund,
+    RetractVatReversal, UpdateVatCarryIn,
 };
 use griffe_core::store::Store;
 
@@ -283,6 +284,12 @@ pub fn confirm(store: &mut Store, id: PendingActionId, json: bool) -> Result<Str
         Ok(format_outcome(&outcome, json))
     } else if action.command_name == RetractVatReversal::NAME {
         let outcome = Executor::new(store).confirm::<RetractVatReversal>(id)?;
+        Ok(format_outcome(&outcome, json))
+    } else if action.command_name == LiquidateCa3::NAME {
+        let outcome = Executor::new(store).confirm::<LiquidateCa3>(id)?;
+        Ok(format_outcome(&outcome, json))
+    } else if action.command_name == RecordPayroll::NAME {
+        let outcome = Executor::new(store).confirm::<RecordPayroll>(id)?;
         Ok(format_outcome(&outcome, json))
     } else if action.command_name == PurgePaper::NAME {
         let outcome = Executor::new(store).confirm::<PurgePaper>(id)?;

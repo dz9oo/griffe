@@ -3,10 +3,14 @@
 //! compris avec des données hostiles au balisage Typst (guillemets, `#`, crochets) dans le nom
 //! de la société.
 
+use griffe_core::accounting::round_to_euro;
 use griffe_core::company::CompanyProfile;
 use griffe_core::domain::{Address, FiscalYear, FiscalYearId, Money, Siren};
 use griffe_core::fiscal_year::FiscalYearRecord;
-use griffe_core::ledger::{Ledger, LedgerFacts, LiabilityRubric, OpeningLines};
+use griffe_core::ledger::{
+    Account, Journal, Ledger, LedgerEntry, LedgerFacts, LedgerLine, LiabilityRubric, OpeningLines,
+    accounts,
+};
 use griffe_docs::{
     liasse_export, render_appropriation_decision, render_approval_minutes, render_balance_sheet,
     render_efi_notice, render_inventory, render_synthesis,
@@ -118,16 +122,54 @@ fn liasse_export_serializes_with_the_expected_cases() {
 
     assert!(export.approved);
     assert_eq!(export.siren, "552100554");
-    let is_entry = export
+    // Sans livre, le snapshot ne remplit plus les cases du compte de résultat.
+    assert!(
+        export.entries.iter().all(|e| e.form != "2033-B"
+            || !matches!(
+                e.case,
+                "218" | "242" | "244" | "250" | "252" | "254" | "306" | "310" | "230"
+            )),
+        "le chiffre d'affaires, les charges et l'impôt du snapshot ne sont pas des cases"
+    );
+    assert!(
+        export.discrepancies.is_empty(),
+        "sans livre, aucun écart à lister"
+    );
+    // C1 reste le résultat fiscal du snapshot : 5 375,00 €.
+    let c1 = export
         .entries
         .iter()
-        .find(|e| e.form == "2033-B" && e.case == "306")
+        .find(|e| e.form == "2065" && e.case == "C1")
         .unwrap();
-    assert_eq!(is_entry.amount_cents, 80_625);
+    // 5 375,00 € de résultat fiscal : les centimes restent, l'euro recopié est 5 375.
+    assert_eq!(c1.amount_cents, 537_500);
+    assert_eq!(c1.amount_euros, 5_375);
+    assert!(
+        export.entries.iter().all(|e| e.case != "distributions"),
+        "distributions n'est pas une case"
+    );
+    assert_sasu_nil_forms(&export);
+    assert!(export.note.contains("On recopie, rien"));
+    assert!(export.note.contains("télétransmis"));
+    assert!(export.note.contains("les euros"));
+    assert!(export.note.contains("centimes du livre"));
+    assert!(export.note.contains("néant"));
 
     let json = serde_json::to_string_pretty(&export).unwrap();
     assert!(json.contains("2033-B"));
-    assert!(json.contains("EDI-TDFC"));
+    assert!(json.contains("rien n'est télétransmis") || json.contains("rien n’est télétransmis"));
+    assert!(json.contains("2033-E"));
+    assert!(json.contains("2033-G"));
+    assert!(json.contains("néant"));
+    assert!(json.contains("amount_euros"));
+    assert!(json.contains("discrepancies"));
+    assert_eq!(
+        serde_json::to_value(export.mentions).unwrap(),
+        serde_json::json!([
+            {"form": "2033-E", "text": "néant"},
+            {"form": "2033-G", "text": "néant"}
+        ])
+    );
 }
 
 /// Un grand livre minimal : bilan d'ouverture (capital contre banque) et rien d'autre — le
@@ -141,6 +183,7 @@ fn ledger(profile: &CompanyProfile) -> Ledger {
         clients: &[],
         payments: &[],
         expenses: &[],
+        posted: &[],
         assets: &[],
         bank_transactions: &[],
         opening: Some(OpeningLines::from_opening_balance(
@@ -255,28 +298,68 @@ fn the_liasse_uses_the_verified_2033b_lines_and_describes_the_capital() {
     };
     assert_eq!(
         case("2033-B", "218"),
-        Some(617_500),
-        "production vendue de services"
+        None,
+        "sans livre, le chiffre d'affaires du snapshot ne remplit pas la case 218"
     );
     assert_eq!(
         case("2033-B", "210"),
         None,
         "210 est la vente de marchandises"
     );
-    assert_eq!(case("2033-B", "250"), Some(3_600_000), "salaires bruts");
-    assert_eq!(case("2033-B", "252"), Some(720_000), "charges sociales");
-    assert_eq!(case("2033-B", "254"), Some(0), "pas de dotation sur ce jeu");
-    assert_eq!(case("2033-B", "306"), Some(80_625), "IS");
+    assert_eq!(
+        case("2033-B", "250"),
+        None,
+        "sans 641, le brut du profil n'est pas un salaire"
+    );
+    assert_eq!(
+        case("2033-B", "252"),
+        None,
+        "sans 645, les cotisations du profil ne sont pas une case"
+    );
+    assert_eq!(
+        case("2033-B", "254"),
+        None,
+        "une dotation à zéro est absente"
+    );
+    assert_eq!(
+        case("2033-B", "306"),
+        None,
+        "sans 695, l'impôt du snapshot n'est pas la case 306"
+    );
     assert_eq!(
         case("2033-B", "310"),
-        Some(456_875),
-        "résultat comptable après IS"
+        None,
+        "sans livre, le résultat du snapshot n'est pas la case 310"
     );
     assert_eq!(case("2065", "IS"), None, "plus de pseudo-case");
     assert_eq!(case("2065", "NET"), None, "plus de pseudo-case");
-    // Résultat fiscal = 5 375 € + 150 € réintégrés.
+    // Résultat fiscal = 5 375 € + 150 € réintégrés. Ce n'est pas un compte du livre.
+    // Les centimes du snapshot restent ; l'euro recopié est 5 525.
+    let c1 = export
+        .entries
+        .iter()
+        .find(|e| e.form == "2065" && e.case == "C1")
+        .unwrap();
+    assert_eq!(c1.amount_cents, 552_500);
+    assert_eq!(c1.amount_euros, 5_525);
     assert_eq!(case("2065", "C1"), Some(552_500));
-    assert_eq!(case("2065", "distributions"), Some(100_000));
+    assert_eq!(
+        case("2065", "distributions"),
+        None,
+        "distributions n'est pas une case du 2065"
+    );
+    let decision = render_appropriation_decision(&named, &year).unwrap();
+    if let Some(text) = pdf_text(&decision, "appropriation-dividends") {
+        let squeezed: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            squeezed.contains("Distribution de dividendes"),
+            "les dividendes restent sur l'affectation : {squeezed}"
+        );
+        assert!(
+            squeezed.contains("1 000,00"),
+            "1 000,00 € de dividendes sur l'affectation : {squeezed}"
+        );
+    }
 
     let capital = export
         .capital
@@ -294,25 +377,326 @@ fn the_liasse_uses_the_verified_2033b_lines_and_describes_the_capital() {
         Some("4 allée des Tilleuls, 69003 Lyon")
     );
 
-    // Sans associé nommé : pas de 2033-F, et tout le coût du dirigeant en 250.
+    // Sans associé nommé : pas de 2033-F. Le coût du dirigeant ne devient pas la case 250.
     let anonymous = profile("Argon Digital");
     let export = liasse_export(&anonymous, &year, None);
     assert!(export.capital.is_none());
-    let c250 = export
-        .entries
-        .iter()
-        .find(|e| e.form == "2033-B" && e.case == "250")
-        .unwrap();
-    assert_eq!(c250.amount_cents, 4_320_000);
-    let c252 = export
-        .entries
-        .iter()
-        .find(|e| e.form == "2033-B" && e.case == "252")
-        .unwrap();
-    assert_eq!(
-        c252.amount_cents, 0,
-        "présente à zéro comme les autres cases fixes"
+    assert!(
+        export
+            .entries
+            .iter()
+            .all(|e| e.case != "250" && e.case != "252"),
+        "nommer ou non l'associé ne poste pas un 641"
     );
+}
+
+fn cents_line(account: Account, cents: i64) -> LedgerLine {
+    LedgerLine {
+        account,
+        aux: None,
+        amount: Money::from_cents(cents),
+        line_label: None,
+    }
+}
+
+fn book(lines: Vec<LedgerLine>) -> Ledger {
+    let on = date(2026, Month::June, 30);
+    Ledger {
+        exercise: FiscalYear::calendar(2026),
+        entries: if lines.is_empty() {
+            Vec::new()
+        } else {
+            vec![LedgerEntry {
+                journal: Journal::Misc,
+                number: 1,
+                date: on,
+                piece_ref: "OD-TEST".to_string(),
+                piece_date: on,
+                label: "Écriture de test".to_string(),
+                lines,
+            }]
+        },
+    }
+}
+
+fn case_amount(export: &griffe_docs::LiasseExport, form: &str, case_id: &str) -> Option<i64> {
+    export
+        .entries
+        .iter()
+        .find(|e| e.form == form && e.case == case_id)
+        .map(|e| e.amount_cents)
+}
+
+fn case_entry<'a>(
+    export: &'a griffe_docs::LiasseExport,
+    form: &str,
+    case_id: &str,
+) -> Option<&'a griffe_docs::LiasseEntry> {
+    export
+        .entries
+        .iter()
+        .find(|e| e.form == form && e.case == case_id)
+}
+
+/// 2033-E et 2033-G, toujours néant : pas de case chiffrée, même si un 641 existe.
+fn assert_sasu_nil_forms(export: &griffe_docs::LiasseExport) {
+    assert_eq!(export.mentions[0].form, "2033-E");
+    assert_eq!(export.mentions[0].text, "néant");
+    assert_eq!(export.mentions[1].form, "2033-G");
+    assert_eq!(export.mentions[1].text, "néant");
+    assert!(
+        export
+            .entries
+            .iter()
+            .all(|e| e.form != "2033-E" && e.form != "2033-G"),
+        "néant n'est pas une case d'effectif, de valeur ajoutée ou de filiale"
+    );
+}
+
+#[test]
+fn a_profile_gross_does_not_fill_salaries_when_the_book_has_none() {
+    let mut named = named_profile();
+    named.director_monthly_gross = Some(Money::from_cents(100_000));
+    // Snapshot : 800,00 € de chiffre d'affaires, 12 000,00 € de coût dirigeant.
+    // Le livre n'a ni 706, ni 641, ni 645.
+    let year = FiscalYearRecord {
+        revenue_ht: Money::from_cents(80_000),
+        director_remuneration: Money::from_cents(1_200_000),
+        ..record(true)
+    };
+    let export = liasse_export(&named, &year, Some(&ledger(&named)));
+    assert_eq!(case_amount(&export, "2033-B", "218"), None);
+    assert_eq!(case_amount(&export, "2033-B", "250"), None);
+    assert_eq!(case_amount(&export, "2033-B", "252"), None);
+    assert_eq!(case_amount(&export, "2033-B", "210"), None);
+}
+
+#[test]
+fn a_credit_of_706_is_case_218_and_the_case_is_absent_without_it() {
+    let profile = profile("Argon Digital");
+    let year = record(true);
+    let with_revenue = book(vec![
+        cents_line(accounts::SERVICES, -100_000),
+        cents_line(accounts::BANK, 100_000),
+    ]);
+    let export = liasse_export(&profile, &year, Some(&with_revenue));
+    assert_eq!(case_amount(&export, "2033-B", "218"), Some(100_000));
+    assert_eq!(case_amount(&export, "2033-B", "210"), None);
+
+    let without = book(vec![]);
+    let export = liasse_export(&profile, &year, Some(&without));
+    assert_eq!(case_amount(&export, "2033-B", "218"), None);
+}
+
+#[test]
+fn the_case_keeps_the_book_and_the_snapshot_gap_stays_in_the_list() {
+    let profile = profile("Argon Digital");
+    // Snapshot 500,00 € de chiffre d'affaires. Livre 100,00 € au 706.
+    let year = FiscalYearRecord {
+        revenue_ht: Money::from_cents(50_000),
+        expenses: Money::ZERO,
+        director_remuneration: Money::ZERO,
+        depreciation: Money::ZERO,
+        result_before_tax: Money::from_cents(50_000),
+        corporate_tax: Money::ZERO,
+        net_result: Money::from_cents(50_000),
+        legal_reserve: Money::ZERO,
+        dividends: Money::ZERO,
+        retained_earnings: Money::from_cents(50_000),
+        non_deductible_expenses: Money::ZERO,
+        ..record(false)
+    };
+    let ledger = book(vec![
+        cents_line(accounts::SERVICES, -10_000),
+        cents_line(accounts::BANK, 10_000),
+    ]);
+    let export = liasse_export(&profile, &year, Some(&ledger));
+    assert_eq!(case_amount(&export, "2033-B", "218"), Some(10_000));
+    let gap = export
+        .discrepancies
+        .iter()
+        .find(|gap| gap.subject == "chiffre d'affaires")
+        .expect("l'écart de chiffre d'affaires est dans la liste");
+    assert_eq!(gap.snapshot_cents, 50_000);
+    assert_eq!(gap.ledger_cents, 10_000);
+    let gap_json = serde_json::to_value(gap).unwrap();
+    assert!(gap_json.get("amount_euros").is_none());
+    assert_eq!(gap_json["snapshot_cents"], 50_000);
+    assert_eq!(gap_json["ledger_cents"], 10_000);
+    assert!(
+        export
+            .entries
+            .iter()
+            .all(|e| e.amount_cents != 50_000 || e.case == "C1"),
+        "l'écart n'est pas recopié dans la case de production"
+    );
+
+    let notice = render_efi_notice(&export).unwrap();
+    assert_is_pdf(&notice, "notice EFI avec écart");
+    if let Some(text) = pdf_text(&notice, "efi-gap") {
+        let squeezed: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            squeezed.contains("chiffre d'affaires"),
+            "la notice qui liste les cases montre l'écart : {squeezed}"
+        );
+        assert!(squeezed.contains("500,00"), "{squeezed}");
+        assert!(squeezed.contains("100,00"), "{squeezed}");
+    }
+}
+
+#[test]
+fn income_statement_cases_read_the_book_accounts() {
+    let profile = profile("Argon Digital");
+    // Le snapshot dit autre chose. Les cases suivent le livre.
+    // 706 crédit 1 000,00 ; 758 crédit 3,26 ; 622600 débit 200,00 ; 635 débit 50,00 ;
+    // 641 débit 300,00 ; 645 débit 80,00 ; 681 débit 40,00 ; 695 débit 30,00.
+    // Produits 1 003,26 − charges 700,00 = résultat 303,26.
+    let year = FiscalYearRecord {
+        revenue_ht: Money::from_cents(1),
+        expenses: Money::from_cents(999_999),
+        director_remuneration: Money::from_cents(1),
+        depreciation: Money::from_cents(1),
+        result_before_tax: Money::from_cents(1),
+        corporate_tax: Money::from_cents(1),
+        net_result: Money::from_cents(1),
+        ..record(false)
+    };
+    let ledger = book(vec![
+        cents_line(accounts::SERVICES, -100_000),
+        cents_line(accounts::SUNDRY_INCOME, -326),
+        cents_line(accounts::FEES, 20_000),
+        cents_line(accounts::TAXES, 5_000),
+        cents_line(accounts::DIRECTOR_PAY, 30_000),
+        cents_line(accounts::SOCIAL_CHARGES, 8_000),
+        cents_line(accounts::DEPRECIATION, 4_000),
+        cents_line(accounts::CORPORATE_TAX, 3_000),
+        cents_line(accounts::BANK, 30_326),
+    ]);
+    let export = liasse_export(&profile, &year, Some(&ledger));
+    assert_eq!(case_amount(&export, "2033-B", "218"), Some(100_000));
+    assert_eq!(case_amount(&export, "2033-B", "230"), Some(326));
+    assert_eq!(case_amount(&export, "2033-B", "242"), Some(20_000));
+    assert_eq!(case_amount(&export, "2033-B", "244"), Some(5_000));
+    assert_eq!(case_amount(&export, "2033-B", "250"), Some(30_000));
+    // Un 641 au livre ne remplit pas le 2033-E : pas d'effectif, pas de CVAE.
+    assert_sasu_nil_forms(&export);
+    assert_eq!(case_amount(&export, "2033-B", "252"), Some(8_000));
+    assert_eq!(case_amount(&export, "2033-B", "254"), Some(4_000));
+    assert_eq!(case_amount(&export, "2033-B", "306"), Some(3_000));
+    assert_eq!(case_amount(&export, "2033-B", "310"), Some(30_326));
+    assert_eq!(case_amount(&export, "2033-B", "210"), None);
+}
+
+#[test]
+fn a_zero_taxable_result_omits_case_c1() {
+    let profile = profile("Argon Digital");
+    let year = FiscalYearRecord {
+        revenue_ht: Money::ZERO,
+        expenses: Money::ZERO,
+        director_remuneration: Money::ZERO,
+        depreciation: Money::ZERO,
+        result_before_tax: Money::ZERO,
+        corporate_tax: Money::ZERO,
+        net_result: Money::ZERO,
+        legal_reserve: Money::ZERO,
+        dividends: Money::ZERO,
+        retained_earnings: Money::ZERO,
+        non_deductible_expenses: Money::ZERO,
+        ..record(false)
+    };
+    let export = liasse_export(&profile, &year, None);
+    assert_eq!(case_amount(&export, "2065", "C1"), None);
+}
+
+/// 250 centimes de 758. `round_to_euro` (art. 1657 CGI) vaut 300 centimes,
+/// soit 3 €. La case garde `amount_cents` 250 et porte `amount_euros` 3.
+/// Pas de 706 : la case 218 est absente. Un brut au profil ne crée pas
+/// les cases 250 ni 252.
+#[test]
+fn sundry_income_of_250_cents_copies_three_euros_on_case_230() {
+    assert_eq!(
+        round_to_euro(Money::from_cents(250)),
+        Money::from_cents(300),
+        "l'euro arrondi est 3"
+    );
+
+    let mut named = named_profile();
+    named.director_monthly_gross = Some(Money::from_cents(200_000));
+    let year = FiscalYearRecord {
+        revenue_ht: Money::from_cents(50_000),
+        director_remuneration: Money::from_cents(2_400_000),
+        ..record(true)
+    };
+    let ledger = book(vec![
+        cents_line(accounts::SUNDRY_INCOME, -250),
+        cents_line(accounts::BANK, 250),
+    ]);
+    let export = liasse_export(&named, &year, Some(&ledger));
+    assert_eq!(case_amount(&export, "2033-B", "218"), None);
+    assert_eq!(case_amount(&export, "2033-B", "250"), None);
+    assert_eq!(case_amount(&export, "2033-B", "252"), None);
+    let case_230 = case_entry(&export, "2033-B", "230").expect("case 230");
+    assert_eq!(case_230.amount_cents, 250);
+    assert_eq!(case_230.amount_euros, 3);
+    assert!(
+        export.entries.iter().all(|e| e.case != "210"),
+        "pas de vente de marchandises"
+    );
+    assert_sasu_nil_forms(&export);
+
+    let json = serde_json::to_value(&export).unwrap();
+    let copied = json["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["form"] == "2033-B" && e["case"] == "230")
+        .unwrap();
+    assert_eq!(copied["amount_cents"], 250);
+    assert_eq!(copied["amount_euros"], 3);
+
+    let notice = render_efi_notice(&export).unwrap();
+    assert_is_pdf(&notice, "notice EFI case 230");
+    if let Some(text) = pdf_text(&notice, "efi-230") {
+        let squeezed: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            squeezed.contains("saisir 3 € en case 230 du 2033-B"),
+            "la notice montre l'euro à recopier : {squeezed}"
+        );
+        assert!(squeezed.contains("2033-E"), "{squeezed}");
+        assert!(squeezed.contains("2033-G"), "{squeezed}");
+        assert!(squeezed.contains("néant"), "{squeezed}");
+        assert!(
+            squeezed.contains("2,50"),
+            "l'écart avec le livre reste en centimes : {squeezed}"
+        );
+    }
+}
+
+/// 49 centimes de 758 : l'euro recopié est 0, la case 230 est omise.
+/// 50 centimes : la case reste, `amount_cents` 50, `amount_euros` 1
+/// (art. 1657 CGI, 0,50 € compté pour 1).
+#[test]
+fn forty_nine_cents_of_758_omit_case_230_and_fifty_cents_copy_one_euro() {
+    assert_eq!(round_to_euro(Money::from_cents(49)), Money::from_cents(0));
+    assert_eq!(round_to_euro(Money::from_cents(50)), Money::from_cents(100));
+
+    let profile = profile("Argon Digital");
+    let year = record(false);
+    let below = book(vec![
+        cents_line(accounts::SUNDRY_INCOME, -49),
+        cents_line(accounts::BANK, 49),
+    ]);
+    let export = liasse_export(&profile, &year, Some(&below));
+    assert_eq!(case_entry(&export, "2033-B", "230"), None);
+
+    let half = book(vec![
+        cents_line(accounts::SUNDRY_INCOME, -50),
+        cents_line(accounts::BANK, 50),
+    ]);
+    let export = liasse_export(&profile, &year, Some(&half));
+    let case_230 = case_entry(&export, "2033-B", "230").expect("50 centimes donnent la case 230");
+    assert_eq!(case_230.amount_cents, 50);
+    assert_eq!(case_230.amount_euros, 1);
 }
 
 #[test]

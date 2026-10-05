@@ -753,6 +753,7 @@ fn duty_markup(b: &DutyBriefing, today: Date, vat_form: Option<&VatCreditForm>) 
                         }
                     }
                     (vat_reversal_fr(b, &href))
+                    (vat_liquidation_fr(b, &href))
                     (vat_refund_fr(b, &href))
                 }
             }
@@ -865,6 +866,25 @@ fn duty_markup(b: &DutyBriefing, today: Date, vat_form: Option<&VatCreditForm>) 
                     "Revenir"
                 }
             }
+        }
+    }
+}
+
+fn vat_liquidation_fr(b: &DutyBriefing, href: &str) -> Markup {
+    if b.kind != FiscalDeadlineKind::Ca3
+        || b.coverage != BoxCoverage::Complete
+        || b.filed_on.is_some()
+        || !b.vat_month_elapsed
+    {
+        return html! {};
+    }
+    let post = format!("{href}/vat-liquidation");
+    html! {
+        @if b.vat_liquidated {
+            p class="prose" { "La TVA du mois est écrite." }
+        }
+        form hx-post=(post) hx-target="#content" {
+            button class="quiet" type="submit" { "Écrire la TVA du mois" }
         }
     }
 }
@@ -1091,7 +1111,7 @@ fn duty_why(kind: FiscalDeadlineKind) -> &'static str {
             "La société retient le prélèvement et le verse le mois suivant la mise en paiement."
         }
         FiscalDeadlineKind::Dsn => {
-            "Si le président est rémunéré, l'expert-paie dépose chaque mois. On n'est pas un logiciel de paie."
+            "L'échéance suit une paie déjà écrite. L'expert-paie dépose. On recopie, rien n'est télétransmis."
         }
         FiscalDeadlineKind::ApprovalMeeting => "Le registre des décisions, chez toi.",
     }

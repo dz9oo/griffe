@@ -1,10 +1,11 @@
 //! Immobilisations (lot 42) : persistance et commandes autour de [`crate::domain::FixedAsset`].
 //!
 //! Une immobilisation est un fait durable dont les **dotations sont dérivées** à chaque lecture
-//! ([`FixedAsset::depreciation_for`]), jamais stockées — comme le grand livre. Le résultat
-//! ([`crate::accounting::compute_result_with`]) compte la dotation de l'exercice et **retire**
-//! de ses charges la dépense immobilisée ; le grand livre ([`crate::ledger`]) passe cette
-//! dépense en 2xx au lieu du compte de charge et écrit la dotation `681 / 28x` au dernier jour.
+//! ([`FixedAsset::depreciation_for`]), jamais stockées. Le grand livre ne les écrit que si
+//! l'actif est déjà dans les écritures : paiement conservé en 2xx, ou reprise du bilan
+//! d'ouverture. Une dépense immobilisée mais non payée n'entre pas, et n'est pas amortie
+//! au livre. Le résultat de clôture lit ce même livre : sans écriture vivante, ni la
+//! charge ni la dotation n'entrent dans le snapshot.
 //!
 //! Deux origines : une **dépense immobilisée** (`expense_id`, équipement au-delà de 500 € HT —
 //! BOI-BIC-CHG-20-30-10 § 20 ; la base amortissable est alors *exactement* le net de la dépense,
@@ -101,10 +102,15 @@ fn closed_year_containing(conn: &Connection, date: Date) -> Result<Option<String
 }
 
 /// Le net d'une dépense — ce qu'elle coûte hors TVA récupérée, la base amortissable si on
-/// l'immobilise.
+/// l'immobilise. Une prestation intracommunautaire autoliquidée a pour base le
+/// montant payé entier : la TVA française n'est pas contenue dans ce montant.
 #[must_use]
 pub fn expense_net(expense: &Expense) -> Money {
-    expense.amount - expense.vat_deductible
+    if expense.reverse_charge {
+        expense.amount
+    } else {
+        expense.amount - expense.vat_deductible
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -200,14 +206,9 @@ impl Command for AddFixedAsset {
                 }
                 .into());
             }
-            // La charge remplacée est datée de la dépense : elle doit être libre aussi.
-            if let Some(period) = closed_year_containing(conn, expense.incurred_on)? {
-                return Err(FixedAssetsError::FiscalYearClosed {
-                    from: format_date(expense.incurred_on),
-                    period,
-                }
-                .into());
-            }
+            // La charge, s'il y en a une, est datée du paiement conservé. `sync` refuse
+            // d'extourner un paiement tombé dans un exercice clos. Une facture non payée
+            // n'a encore aucune écriture : l'immobiliser ne touche pas un résultat figé.
         }
         conn.execute(
             "INSERT INTO fixed_assets
@@ -227,6 +228,13 @@ impl Command for AddFixedAsset {
                 asset.created_at.format(&Rfc3339)?,
             ],
         )?;
+        if let Some(expense_id) = asset.expense_id {
+            crate::journal::sync_expense_payment(
+                conn,
+                expense_id,
+                crate::journal::SyncGuard::RefuseClosedYear,
+            )?;
+        }
         Ok(asset.id)
     }
 }
@@ -267,10 +275,18 @@ impl Command for DeleteFixedAsset {
             .into());
         }
         require_asset_revision(conn, self.id, self.revision)?;
+        let expense_id = asset.expense_id;
         conn.execute(
             "DELETE FROM fixed_assets WHERE id = ?1 AND revision = ?2",
             params![self.id.to_string(), self.revision],
         )?;
+        if let Some(expense_id) = expense_id {
+            crate::journal::sync_expense_payment(
+                conn,
+                expense_id,
+                crate::journal::SyncGuard::RefuseClosedYear,
+            )?;
+        }
         Ok(())
     }
 }
@@ -468,10 +484,15 @@ pub fn asset_json(asset: &FixedAsset, period: FiscalYear) -> serde_json::Value {
 mod tests {
     use super::*;
     use crate::app::{Actor, ExecutionContext, Executor, Outcome};
+    use crate::billing::{ImportBankTransactions, ParsedTransaction, list_bank_transactions};
     use crate::company::SetCompanyProfile;
-    use crate::domain::{Address, FiscalYearEnd, Siren, VatRate, VatRegime};
-    use crate::expenses::{DeleteExpense, RecordExpense, UpdateExpense};
+    use crate::domain::{
+        Address, ExpenseCategory, ExpenseId, ExpensePaidBy, FiscalYear, FiscalYearEnd, Siren,
+        VatRate, VatRegime,
+    };
+    use crate::expenses::{DeleteExpense, ReconcileExpense, RecordExpense, UpdateExpense};
     use crate::fiscal_year::CloseFiscalYear;
+    use crate::ledger::{accounts, build_ledger};
     use crate::opening_balance::RecordOpeningBalance;
     use crate::store::Store;
     use crate::store::testing::test_store;
@@ -530,6 +551,8 @@ mod tests {
             bank_transaction_id: None,
             supplier: None,
             paid_by: crate::domain::ExpensePaidBy::Company,
+
+            reverse_charge: false,
         };
         match Executor::new(store).execute(&cmd, &human()).unwrap() {
             Outcome::Applied(id) => id,
@@ -618,6 +641,8 @@ mod tests {
             supplier: None,
             paid_by: crate::domain::ExpensePaidBy::Company,
             revision: current.revision,
+
+            reverse_charge: false,
         };
         let err = Executor::new(&mut store)
             .execute(&update, &human())
@@ -714,6 +739,17 @@ mod tests {
         let mut store = test_store("frozen");
         set_profile(&mut store);
         let expense_id = record_laptop(&mut store);
+        // Sans paiement vivant, le 2183 n'est pas écrit et la dotation dérivée vaut zéro.
+        let tx = import_debit(&mut store, date(2026, Month::March, 20), -144_000);
+        Executor::new(&mut store)
+            .execute(
+                &ReconcileExpense {
+                    transaction_id: tx,
+                    expense_id,
+                },
+                &human(),
+            )
+            .unwrap();
         let id = add_from_expense(&mut store, expense_id, 120_000).unwrap();
         let close = CloseFiscalYear {
             starts_on: date(2025, Month::October, 1),
@@ -759,5 +795,330 @@ mod tests {
             .execute(&late, &human())
             .unwrap_err();
         assert!(err.to_string().contains("déjà clôturé"), "{err}");
+    }
+
+    fn import_debit(
+        store: &mut Store,
+        on: Date,
+        amount_cents: i64,
+    ) -> crate::domain::BankTransactionId {
+        Executor::new(store)
+            .execute(
+                &ImportBankTransactions {
+                    transactions: vec![ParsedTransaction {
+                        occurred_on: on,
+                        amount_cents,
+                        description: format!("CB {amount_cents}"),
+                        fitid: None,
+                    }],
+                },
+                &human(),
+            )
+            .unwrap();
+        list_bank_transactions(store.connection())
+            .unwrap()
+            .into_iter()
+            .find(|tx| tx.occurred_on == on && tx.amount_cents == amount_cents)
+            .unwrap()
+            .id
+    }
+
+    fn exercise() -> FiscalYear {
+        FiscalYear::new(
+            date(2025, Month::October, 1),
+            date(2026, Month::September, 30),
+        )
+    }
+
+    fn close_exercise(store: &mut Store) {
+        Executor::new(store)
+            .execute(
+                &CloseFiscalYear {
+                    starts_on: date(2025, Month::October, 1),
+                    ends_on: date(2026, Month::September, 30),
+                    legal_reserve: Money::ZERO,
+                    dividends: Money::ZERO,
+                    carry_back: false,
+                    today: None,
+                    non_deductible_expenses: Money::ZERO,
+                },
+                &human(),
+            )
+            .unwrap();
+    }
+
+    /// 1 440,00 € TTC, TVA déductible 240,00 €, net 1 200,00 €. Payé le 20 mars :
+    /// la charge est en 6063. Immobilisée, le débit vivant passe en 2183, la TVA
+    /// et la banque ne bougent pas. Supprimée, la charge revient. La dotation de
+    /// 217,78 € est celle du prorata 15 mars → 30 septembre sur 36 mois, déjà
+    /// posée par le test du grand livre.
+    #[test]
+    fn a_bank_payment_moves_to_the_asset_account_and_back() {
+        let mut store = test_store("asset-payment");
+        set_profile(&mut store);
+        let expense_id = record_laptop(&mut store);
+        let tx = import_debit(&mut store, date(2026, Month::March, 20), -144_000);
+        Executor::new(&mut store)
+            .execute(
+                &ReconcileExpense {
+                    transaction_id: tx,
+                    expense_id,
+                },
+                &human(),
+            )
+            .unwrap();
+
+        let before = build_ledger(store.connection(), exercise()).unwrap();
+        let charge = before
+            .entries
+            .iter()
+            .find(|entry| entry.piece_ref == format!("DEP-{expense_id}"))
+            .unwrap();
+        assert_eq!(charge.date, date(2026, Month::March, 20));
+        assert_eq!(charge.lines[0].account, accounts::SMALL_EQUIPMENT);
+        assert_eq!(charge.lines[0].amount, Money::from_cents(120_000));
+        assert!(
+            before
+                .entries
+                .iter()
+                .all(|entry| !entry.piece_ref.starts_with("OD-AMO-"))
+        );
+
+        let asset_id = add_from_expense(&mut store, expense_id, 120_000).unwrap();
+        assert_eq!(
+            live_lines(&store, expense_id),
+            vec![
+                ("218300".to_string(), 120_000),
+                ("445660".to_string(), 24_000),
+                ("512000".to_string(), -144_000),
+            ]
+        );
+        let ledger = build_ledger(store.connection(), exercise()).unwrap();
+        let amo = ledger
+            .entries
+            .iter()
+            .find(|entry| entry.piece_ref.starts_with("OD-AMO-"))
+            .expect("dotation une fois l'actif écrit");
+        assert_eq!(amo.lines[0].amount, Money::from_cents(21_778));
+        let balance = ledger.trial_balance();
+        let of = |number: &str| {
+            balance
+                .rows
+                .iter()
+                .find(|row| row.account.number == number)
+                .map_or(Money::ZERO, |row| row.balance)
+        };
+        assert_eq!(of("218300"), Money::from_cents(120_000));
+        assert_eq!(of("606300"), Money::ZERO);
+
+        let asset = fixed_asset_by_id(store.connection(), asset_id)
+            .unwrap()
+            .unwrap();
+        Executor::new(&mut store)
+            .execute(
+                &DeleteFixedAsset {
+                    id: asset_id,
+                    revision: asset.revision,
+                },
+                &human(),
+            )
+            .unwrap();
+        let after = build_ledger(store.connection(), exercise()).unwrap();
+        assert_eq!(
+            live_lines(&store, expense_id),
+            vec![
+                ("606300".to_string(), 120_000),
+                ("445660".to_string(), 24_000),
+                ("512000".to_string(), -144_000),
+            ]
+        );
+        assert!(
+            after
+                .entries
+                .iter()
+                .all(|entry| !entry.piece_ref.starts_with("OD-AMO-"))
+        );
+        assert_eq!(
+            after
+                .trial_balance()
+                .rows
+                .iter()
+                .find(|row| row.account.number == "218300")
+                .map_or(Money::ZERO, |row| row.balance),
+            Money::ZERO
+        );
+    }
+
+    /// Facture non payée : ni 2xx, ni dotation. Le livre n'amortit pas un actif
+    /// qui n'y est pas entré.
+    #[test]
+    fn an_unpaid_immobilized_expense_is_absent_from_the_ledger() {
+        let mut store = test_store("asset-unpaid");
+        set_profile(&mut store);
+        let expense_id = record_laptop(&mut store);
+        add_from_expense(&mut store, expense_id, 120_000).unwrap();
+        let ledger = build_ledger(store.connection(), exercise()).unwrap();
+        assert!(
+            ledger.entries.iter().all(|entry| {
+                !entry.piece_ref.starts_with("DEP-") && !entry.piece_ref.starts_with("OD-AMO-")
+            }),
+            "{:?}",
+            ledger.entries
+        );
+    }
+
+    /// Facture du 20 septembre, exercice clos le 30, relevé du 5 octobre.
+    /// La charge n'est pas dans l'exercice clos. L'immobilisation de l'exercice
+    /// suivant est acceptée : elle ne réécrit pas le résultat figé.
+    #[test]
+    fn a_payment_after_the_closed_year_can_be_immobilized() {
+        let mut store = test_store("asset-next-year");
+        set_profile(&mut store);
+        let expense_id = record_equipment(&mut store, date(2026, Month::September, 20));
+        close_exercise(&mut store);
+        let tx = import_debit(&mut store, date(2026, Month::October, 5), -144_000);
+        Executor::new(&mut store)
+            .execute(
+                &ReconcileExpense {
+                    transaction_id: tx,
+                    expense_id,
+                },
+                &human(),
+            )
+            .unwrap();
+        let cmd = AddFixedAsset {
+            label: "Ordinateur portable".to_string(),
+            account: account("218300"),
+            acquired_on: date(2026, Month::October, 5),
+            base: Money::from_cents(120_000),
+            duration_months: 36,
+            prior_depreciation: Money::ZERO,
+            expense_id: Some(expense_id),
+        };
+        Executor::new(&mut store).execute(&cmd, &human()).unwrap();
+
+        let closed = build_ledger(store.connection(), exercise()).unwrap();
+        assert!(
+            closed
+                .entries
+                .iter()
+                .all(|entry| !entry.piece_ref.starts_with("DEP-"))
+        );
+        let next = build_ledger(
+            store.connection(),
+            FiscalYear::new(
+                date(2026, Month::October, 1),
+                date(2027, Month::September, 30),
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            live_lines(&store, expense_id),
+            vec![
+                ("218300".to_string(), 120_000),
+                ("445660".to_string(), 24_000),
+                ("512000".to_string(), -144_000),
+            ]
+        );
+        let payment = next
+            .entries
+            .iter()
+            .find(|entry| {
+                entry.piece_ref == format!("DEP-{expense_id}")
+                    && entry.lines[0].account.number == "218300"
+            })
+            .unwrap();
+        assert_eq!(payment.date, date(2026, Month::October, 5));
+    }
+
+    /// Le paiement est déjà dans l'exercice clos. L'immobiliser extournerait
+    /// cette charge : refusé, le 6063 reste.
+    #[test]
+    fn immobilizing_a_payment_booked_in_a_closed_year_is_refused() {
+        let mut store = test_store("asset-frozen-payment");
+        set_profile(&mut store);
+        let expense_id = record_laptop(&mut store);
+        let tx = import_debit(&mut store, date(2026, Month::March, 20), -144_000);
+        Executor::new(&mut store)
+            .execute(
+                &ReconcileExpense {
+                    transaction_id: tx,
+                    expense_id,
+                },
+                &human(),
+            )
+            .unwrap();
+        close_exercise(&mut store);
+        let cmd = AddFixedAsset {
+            label: "Ordinateur portable".to_string(),
+            account: account("218300"),
+            acquired_on: date(2026, Month::October, 5),
+            base: Money::from_cents(120_000),
+            duration_months: 36,
+            prior_depreciation: Money::ZERO,
+            expense_id: Some(expense_id),
+        };
+        let err = Executor::new(&mut store)
+            .execute(&cmd, &human())
+            .unwrap_err();
+        assert!(err.to_string().contains("clôturé"), "{err}");
+        assert!(
+            fixed_assets_of(&store, expense_id).is_none(),
+            "l'immobilisation n'est pas enregistrée"
+        );
+        let ledger = build_ledger(store.connection(), exercise()).unwrap();
+        let payment = ledger
+            .entries
+            .iter()
+            .find(|entry| entry.piece_ref == format!("DEP-{expense_id}"))
+            .unwrap();
+        assert_eq!(payment.lines[0].account, accounts::SMALL_EQUIPMENT);
+    }
+
+    fn record_equipment(store: &mut Store, on: Date) -> ExpenseId {
+        let cmd = RecordExpense {
+            label: "Ordinateur portable".to_string(),
+            category: ExpenseCategory::Equipment,
+            amount: Money::from_cents(144_000),
+            vat_rate: VatRate::Standard,
+            vat_deductible: Money::from_cents(24_000),
+            incurred_on: on,
+            receipt_hash: None,
+            receipt_filename: None,
+            bank_transaction_id: None,
+            supplier: None,
+            paid_by: ExpensePaidBy::Company,
+
+            reverse_charge: false,
+        };
+        match Executor::new(store).execute(&cmd, &human()).unwrap() {
+            Outcome::Applied(id) => id,
+            other => panic!("attendu Applied, obtenu {other:?}"),
+        }
+    }
+
+    fn fixed_assets_of(store: &Store, expense_id: ExpenseId) -> Option<FixedAsset> {
+        asset_for_expense(store.connection(), expense_id).unwrap()
+    }
+
+    fn live_lines(store: &Store, expense_id: ExpenseId) -> Vec<(String, i64)> {
+        store
+            .connection()
+            .prepare(
+                "SELECT l.account, l.amount_cents FROM journal_lines l
+                   JOIN journal_entries e ON e.id = l.entry_id
+                  WHERE e.source_kind = 'expense_payment'
+                    AND e.source_id = ?1
+                    AND e.reversed_at IS NULL
+                    AND e.reversal_of IS NULL
+                  ORDER BY l.position",
+            )
+            .unwrap()
+            .query_map([expense_id.to_string()], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
     }
 }

@@ -11,9 +11,9 @@
 //! que ce régime existe — il est supprimé pour les exercices ouverts à compter du 1er janvier
 //! 2027, au-delà desquels il bascule en CA3 trimestrielle (lot 27, voir
 //! [`SIMPLIFIED_REGIME_REPEAL`]) ; les échéances de la liasse, du dépôt des comptes et de l'AG
-//! sont des règles générales approchées. Les montants (TVA à reverser, IS, cotisations DSN) sont
-//! calculés à partir des données saisies et restent indicatifs : ils ne remplacent ni la
-//! télédéclaration sur impots.gouv.fr, ni le travail de l'expert-comptable.
+//! sont des règles générales approchées. Les montants (TVA à reverser, IS, cotisations d'une
+//! paie déjà écrite) sont lus sur les données saisies et restent indicatifs : ils ne remplacent
+//! ni la télédéclaration sur impots.gouv.fr, ni le travail de l'expert-comptable.
 //!
 //! Deux niveaux d'API :
 //! - [`upcoming_deadlines`]/[`deadlines_due_within`] : **pures**, dates seules (année civile),
@@ -25,7 +25,7 @@ use rusqlite::Connection;
 use std::fmt::Write as _;
 use time::Date;
 
-use crate::accounting::{compute_result, vat_due_for_period};
+use crate::accounting::vat_due_for_period;
 use crate::app::AppError;
 use crate::company::{CompanyProfile, company_profile};
 use crate::domain::{
@@ -59,7 +59,8 @@ pub enum FiscalDeadlineKind {
     ApprovalMeeting,
     /// Dépôt des comptes annuels au greffe.
     AccountsFiling,
-    /// Déclaration sociale nominative mensuelle (président rémunéré uniquement).
+    /// Déclaration sociale mensuelle. Elle n'apparaît que pour une paie déjà écrite.
+    /// Le montant est le crédit `431` de cette paie. Le 15 du mois suivant est indicatif.
     Dsn,
     /// Déclaration des honoraires (DAS2, art. 240 CGI) : cumul par bénéficiaire et par année
     /// civile au-delà de 2 400 € (lot 41).
@@ -1163,11 +1164,8 @@ pub fn fiscal_calendar(conn: &Connection, today: Date) -> Result<Vec<FiscalDeadl
     if let Some((periodicity, earliest_period)) = ca3 {
         let filing = next_ca3_filing_from(today, periodicity, day, earliest_period);
         if filing.due_on <= horizon {
-            let vat = vat_due_for_period(
-                conn,
-                filing.period_start.first_day(),
-                filing.period_end.last_day(),
-            )?;
+            let period_key = ca3_period_key(filing.period_start);
+            let amount = crate::society::ca3_signed_due(conn, today, &period_key)?;
             let mut note = ca3_note(&filing, periodicity, rule, vat_regime.is_none());
             if vat_regime == Some(VatRegime::RealSimplified) {
                 note.push_str(" ; ");
@@ -1176,9 +1174,9 @@ pub fn fiscal_calendar(conn: &Connection, today: Date) -> Result<Vec<FiscalDeadl
             deadlines.push(FiscalDeadline {
                 kind: FiscalDeadlineKind::Ca3,
                 due_on: filing.due_on,
-                amount: Some(vat.due),
+                amount,
                 note: Some(note),
-                period_key: ca3_period_key(filing.period_start),
+                period_key,
             });
         }
     }
@@ -1188,19 +1186,12 @@ pub fn fiscal_calendar(conn: &Connection, today: Date) -> Result<Vec<FiscalDeadl
     // Lot 40 : si l'exercice précédent n'est pas suivi ici (il précède le bilan d'ouverture),
     // sa base d'acomptes est celle reprise au bilan — ou inconnue, et on le dit.
     let reprise = opening_balance(conn)?.filter(|o| previous.start() < o.balance.opens_on);
-    let previous_result = match &reprise {
-        Some(_) => None,
-        None => profile
-            .as_ref()
-            .map(|p| compute_result(conn, previous, p))
-            .transpose()?,
-    };
     let reference_unknown = reprise
         .as_ref()
         .is_some_and(|o| o.prior_corporate_tax.is_none());
     let previous_is = match &reprise {
         Some(o) => o.prior_corporate_tax,
-        None => previous_result.map(|r| r.corporate_tax),
+        None => crate::fiscal_year::reference_corporate_tax(conn, previous, profile.as_ref())?,
     };
 
     let solde_due = is_solde_due_on(fye, previous.end());
@@ -1282,37 +1273,26 @@ pub fn fiscal_calendar(conn: &Connection, today: Date) -> Result<Vec<FiscalDeadl
         deadlines.push(bare(FiscalDeadlineKind::AccountsFiling, filing_due));
     }
 
-    // --- DSN mensuelle : uniquement si le président est rémunéré ; montant = coût employeur du
-    // mois (brut + cotisations patronales estimées). ---
-    let director = profile
-        .as_ref()
-        .and_then(|p| p.director_monthly_gross.map(|g| (p, g)));
-    if let Some((profile, gross)) = director {
-        // Lot 41 : le montant de la DSN est ce que la société *verse aux organismes*, les
-        // cotisations estimées (coût − brut), pas le coût total incluant le salaire.
-        let employer = profile
-            .director_charge_ratio_bps
-            .map_or(Money::ZERO, |bps| gross.apply_rate_bps(bps));
-        let monthly_cost = employer;
-        // La DSN d'un mois se dépose le 5 ou le 15 du mois suivant ; on retient le 15 (indicatif)
-        // du mois courant si à venir, sinon du mois suivant.
-        let this_month = Month::new(today.year(), u8::from(today.month())).unwrap();
-        let candidate = nth_of_month(this_month, 15);
-        let dsn_due = if today <= candidate {
-            candidate
-        } else {
-            nth_of_month(this_month.succ(), 15)
-        };
+    // Déclaration sociale : seulement une paie déjà écrite. Le montant est le
+    // crédit 431 de cette pièce, pas un ratio du profil. Le 15 du mois suivant
+    // est indicatif. On recopie, rien n'est télétransmis.
+    for payroll in crate::journal::booked_payrolls(conn)? {
+        let month = Month::new(payroll.on.year(), u8::from(payroll.on.month()))
+            .expect("une date de paie a un mois entre 1 et 12");
+        let due_on = nth_of_month(month.succ(), 15);
+        if due_on < today || due_on > horizon {
+            continue;
+        }
         deadlines.push(FiscalDeadline {
             kind: FiscalDeadlineKind::Dsn,
-            due_on: dsn_due,
-            amount: Some(monthly_cost),
+            due_on,
+            amount: Some(payroll.social),
             note: Some(
-                "cotisations sociales mensuelles du dirigeant (estimation : charges patronales et \
-                 salariales selon le ratio du profil, hors salaire net)"
+                "cotisations du compte 431 de la paie saisie, le 15 du mois suivant (indicatif). \
+                 On recopie, rien n'est télétransmis."
                     .to_string(),
             ),
-            period_key: date_period_key(dsn_due),
+            period_key: date_period_key(due_on),
         });
     }
 
@@ -1605,10 +1585,12 @@ mod tests {
 
     // --- Intégration : le calendrier chiffre le solde d'IS de l'exercice clos. ---
 
-    use crate::app::{Actor, ExecutionContext, Executor};
-    use crate::billing::EmitInvoice;
+    use crate::app::{Actor, ExecutionContext, Executor, Outcome};
+    use crate::billing::{EmitInvoice, RecordPayment};
     use crate::company::SetCompanyProfile;
-    use crate::domain::{Address, ClientId, FiscalYearEnd, InvoiceLine, Siren, VatRate, VatRegime};
+    use crate::domain::{
+        Address, ClientId, FiscalYearEnd, InvoiceLine, PaymentMethod, Siren, VatRate, VatRegime,
+    };
     use crate::store::Store;
     use crate::store::testing::test_store;
 
@@ -1672,6 +1654,43 @@ mod tests {
             .unwrap();
     }
 
+    /// Émet une ligne de quantité 1 et encaisse le TTC le jour d'émission.
+    /// La TVA 20 % devient exigible ce mois-là.
+    fn collect(store: &mut Store, client_id: ClientId, ht_cents: i64, issued_on: Date) {
+        let human = ExecutionContext::new(Actor::Human, false);
+        let Outcome::Applied(emitted) = Executor::new(store)
+            .execute(
+                &EmitInvoice {
+                    client_id,
+                    mission_id: None,
+                    lines: vec![InvoiceLine {
+                        description: "Prestation".to_string(),
+                        quantity: 1.0,
+                        unit_price: Money::from_cents(ht_cents),
+                        vat_rate: VatRate::Standard,
+                    }],
+                    issued_on,
+                    payment_terms_days: 30,
+                },
+                &human,
+            )
+            .unwrap()
+        else {
+            panic!("expected Applied")
+        };
+        Executor::new(store)
+            .execute(
+                &RecordPayment {
+                    invoice_id: emitted.id,
+                    amount: Money::from_cents(ht_cents + ht_cents / 5),
+                    received_on: issued_on,
+                    method: PaymentMethod::BankTransfer,
+                },
+                &human,
+            )
+            .unwrap();
+    }
+
     #[test]
     fn the_calendar_prices_the_is_balance_of_the_closed_exercise() {
         let (mut store, client_id) = fresh_store("calendar");
@@ -1727,7 +1746,7 @@ mod tests {
         Executor::new(&mut store)
             .execute(&profile, &ExecutionContext::new(Actor::Human, false))
             .unwrap();
-        // Juin : hors trimestre déclaré. Juillet et août : dans le T3 → 2 × 200 € de TVA.
+        // Juin reste non encaissé. Juillet et août encaissés : 2 × 200 € dans le T3.
         emit(
             &mut store,
             client_id,
@@ -1735,18 +1754,16 @@ mod tests {
             1.0,
             date(2026, TimeMonth::June, 30),
         );
-        emit(
+        collect(
             &mut store,
             client_id,
             100_000,
-            1.0,
             date(2026, TimeMonth::July, 15),
         );
-        emit(
+        collect(
             &mut store,
             client_id,
             100_000,
-            1.0,
             date(2026, TimeMonth::August, 15),
         );
 
@@ -1965,20 +1982,18 @@ mod tests {
         Executor::new(&mut store)
             .execute(&profile, &ExecutionContext::new(Actor::Human, false))
             .unwrap();
-        // 2025 : 20 000 € HT → 4 000 € de TVA, base des acomptes 2026.
-        emit(
+        // 2025 encaissé : 20 000 € HT → 4 000 € de TVA, base des acomptes 2026.
+        collect(
             &mut store,
             client_id,
             2_000_000,
-            1.0,
             date(2025, TimeMonth::March, 1),
         );
-        // 2026 : 5 000 € HT → 1 000 € de TVA, régularisée par la CA12 de mai 2027.
-        emit(
+        // 2026 encaissé : 5 000 € HT → 1 000 € de TVA, régularisée par la CA12 de mai 2027.
+        collect(
             &mut store,
             client_id,
             500_000,
-            1.0,
             date(2026, TimeMonth::February, 1),
         );
 
@@ -2034,19 +2049,17 @@ mod tests {
         Executor::new(&mut store)
             .execute(&profile, &ExecutionContext::new(Actor::Human, false))
             .unwrap();
-        // 2025 : 500 € HT → 100 € de TVA, sous le seuil de 1 000 €.
-        emit(
+        // 2025 encaissé : 500 € HT → 100 € de TVA, sous le seuil de 1 000 €.
+        collect(
             &mut store,
             client_id,
             50_000,
-            1.0,
             date(2025, TimeMonth::March, 1),
         );
-        emit(
+        collect(
             &mut store,
             client_id,
             500_000,
-            1.0,
             date(2026, TimeMonth::February, 1),
         );
         let calendar =
@@ -2078,12 +2091,11 @@ mod tests {
         Executor::new(&mut store)
             .execute(&profile, &ExecutionContext::new(Actor::Human, false))
             .unwrap();
-        // Exercice clos 2025-07 → 2026-06 : 10 000 € HT → 2 000 € de TVA.
-        emit(
+        // Exercice clos 2025-07 → 2026-06, encaissé : 10 000 € HT → 2 000 € de TVA.
+        collect(
             &mut store,
             client_id,
             1_000_000,
-            1.0,
             date(2026, TimeMonth::January, 15),
         );
 
@@ -2167,6 +2179,8 @@ mod tests {
                     supplier: supplier.map(str::to_string),
                     bank_transaction_id: None,
                     paid_by: crate::domain::ExpensePaidBy::Company,
+
+                    reverse_charge: false,
                 },
                 &ExecutionContext::new(Actor::Human, false),
             )

@@ -93,5 +93,13 @@ pub fn migrations() -> Migrations<'static> {
             .down(include_str!("migrations/0037_prospect_series_down.sql")),
         M::up(include_str!("migrations/0038_prospect_genres_up.sql"))
             .down(include_str!("migrations/0038_prospect_genres_down.sql")),
+        M::up(include_str!("migrations/0039_journal_entries_up.sql"))
+            .down(include_str!("migrations/0039_journal_entries_down.sql")),
+        M::up(include_str!("migrations/0040_journal_line_aux_up.sql"))
+            .down(include_str!("migrations/0040_journal_line_aux_down.sql")),
+        M::up(include_str!("migrations/0041_journal_line_label_up.sql"))
+            .down(include_str!("migrations/0041_journal_line_label_down.sql")),
+        M::up(include_str!("migrations/0042_reverse_charge_up.sql"))
+            .down(include_str!("migrations/0042_reverse_charge_down.sql")),
     ])
 }

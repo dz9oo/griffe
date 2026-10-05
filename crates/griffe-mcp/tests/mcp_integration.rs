@@ -2255,6 +2255,8 @@ async fn setup_status_and_receipt_attachment_over_mcp() {
                 supplier: None,
                 bank_transaction_id: None,
                 paid_by: griffe_core::domain::ExpensePaidBy::Company,
+
+                reverse_charge: false,
             },
             &ExecutionContext::new(Actor::Human, false),
         )
@@ -2671,7 +2673,7 @@ async fn requesting_a_vat_refund_over_mcp_needs_a_human_before_case_26_appears()
         .execute(
             &RecordVatCarryIn {
                 after_period: "2026-08".into(),
-                credit: Money::from_cents(32_400),
+                credit: Money::from_cents(40_000),
                 source: Some("CA3 août".into()),
             },
             &human,
@@ -2685,7 +2687,7 @@ async fn requesting_a_vat_refund_over_mcp_needs_a_human_before_case_26_appears()
             "society.request_vat_refund",
             json!({
                 "period": "2026-12",
-                "amount_cents": 32_400,
+                "amount_cents": 40_000,
                 "today": "2026-12-08",
             }),
         )
@@ -2738,7 +2740,7 @@ async fn requesting_a_vat_refund_over_mcp_needs_a_human_before_case_26_appears()
         .iter()
         .find(|b| b["case"] == "26")
         .expect("case 26 après confirmation");
-    assert_eq!(case26["amount"], 32400);
+    assert_eq!(case26["amount"], 40000);
 
     client.cancel().await.unwrap();
 }
@@ -2784,7 +2786,7 @@ async fn recording_a_vat_reversal_over_mcp_needs_a_human_before_case_15_appears(
         .execute(
             &RecordVatCarryIn {
                 after_period: "2026-08".into(),
-                credit: Money::from_cents(32_400),
+                credit: Money::from_cents(40_000),
                 source: Some("CA3 août".into()),
             },
             &human,
@@ -2798,7 +2800,7 @@ async fn recording_a_vat_reversal_over_mcp_needs_a_human_before_case_15_appears(
             "society.record_vat_reversal",
             json!({
                 "period": "2026-09",
-                "amount_cents": 500,
+                "amount_cents": 1_000,
                 "today": "2026-09-15",
             }),
         )
@@ -2847,9 +2849,9 @@ async fn recording_a_vat_reversal_over_mcp_needs_a_human_before_case_15_appears(
     );
     let boxes = after["boxes"].as_array().unwrap();
     let case15 = boxes.iter().find(|b| b["case"] == "15").expect("case 15");
-    assert_eq!(case15["amount"], 500);
+    assert_eq!(case15["amount"], 1_000);
     let case25 = boxes.iter().find(|b| b["case"] == "25").expect("case 25");
-    assert_eq!(case25["amount"], 31900);
+    assert_eq!(case25["amount"], 39000);
 
     client.cancel().await.unwrap();
 }

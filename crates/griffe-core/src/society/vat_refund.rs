@@ -368,13 +368,13 @@ mod tests {
         );
     }
 
-    fn seed_carry_324(store: &mut Store) {
+    fn seed_sample_credit(store: &mut Store) {
         applied(
             Executor::new(store)
                 .execute(
                     &RecordVatCarryIn {
                         after_period: "2026-08".into(),
-                        credit: Money::from_cents(32_400),
+                        credit: Money::from_cents(40_000),
                         source: Some("CA3 août".into()),
                     },
                     &human(),
@@ -425,12 +425,12 @@ mod tests {
     }
 
     #[test]
-    fn a_324_euro_credit_in_september_is_below_the_in_year_threshold() {
+    fn a_credit_under_the_in_year_refund_threshold() {
         let mut store = test_store("sept-below");
         set_monthly_profile(&mut store);
-        seed_carry_324(&mut store);
+        seed_sample_credit(&mut store);
         let on = date(2026, TimeMonth::September, 8);
-        let err = request(&mut store, "2026-09", 32_400, on).unwrap_err();
+        let err = request(&mut store, "2026-09", 40_000, on).unwrap_err();
         assert!(err.to_string().contains("760"), "{err}");
         assert!(
             vat_refund_for(store.connection(), "2026-09")
@@ -441,22 +441,22 @@ mod tests {
         let september = ca3(&store, on, "2026-09");
         assert_eq!(
             box_of(&september, "22").amount,
-            Some(Money::from_cents(32_400))
+            Some(Money::from_cents(40_000))
         );
         assert_eq!(
             box_of(&september, "25").amount,
-            Some(Money::from_cents(32_400))
+            Some(Money::from_cents(40_000))
         );
         assert_eq!(
             box_of(&september, "27").amount,
-            Some(Money::from_cents(32_400))
+            Some(Money::from_cents(40_000))
         );
         assert!(!has_case(&september, "26"), "{:?}", september.boxes);
         assert!(!has_case(&september, "28"), "{:?}", september.boxes);
         assert_eq!(
             september.vat_refund,
             Some(VatRefundStatus::BelowThreshold {
-                credit: Money::from_cents(32_400),
+                credit: Money::from_cents(40_000),
                 min: VAT_REFUND_IN_YEAR_THRESHOLD,
                 calendar_year_end: false,
             })
@@ -464,34 +464,34 @@ mod tests {
     }
 
     #[test]
-    fn the_same_324_euros_can_be_requested_on_december() {
+    fn the_same_credit_can_be_requested_on_december() {
         let mut store = test_store("dec-ok");
         set_monthly_profile(&mut store);
-        seed_carry_324(&mut store);
+        seed_sample_credit(&mut store);
         let on = date(2027, TimeMonth::January, 8);
-        let rec = applied(request(&mut store, "2026-12", 32_400, on).unwrap());
+        let rec = applied(request(&mut store, "2026-12", 40_000, on).unwrap());
         assert_eq!(rec.period_key, "2026-12");
-        assert_eq!(rec.amount, Money::from_cents(32_400));
+        assert_eq!(rec.amount, Money::from_cents(40_000));
 
         let december = ca3(&store, on, "2026-12");
         assert_eq!(
             box_of(&december, "22").amount,
-            Some(Money::from_cents(32_400))
+            Some(Money::from_cents(40_000))
         );
         assert_eq!(
             box_of(&december, "25").amount,
-            Some(Money::from_cents(32_400))
+            Some(Money::from_cents(40_000))
         );
         assert_eq!(
             box_of(&december, "26").amount,
-            Some(Money::from_cents(32_400))
+            Some(Money::from_cents(40_000))
         );
         assert!(!has_case(&december, "27"), "{:?}", december.boxes);
         assert!(!has_case(&december, "28"), "{:?}", december.boxes);
         assert_eq!(
             december.vat_refund,
             Some(VatRefundStatus::Requested {
-                amount: Money::from_cents(32_400),
+                amount: Money::from_cents(40_000),
                 remainder: Money::ZERO,
             })
         );
@@ -504,7 +504,7 @@ mod tests {
         );
         let carry = vat_carry_in(store.connection()).unwrap().unwrap();
         assert_eq!(carry.after_period, "2026-08");
-        assert_eq!(carry.credit, Money::from_cents(32_400));
+        assert_eq!(carry.credit, Money::from_cents(40_000));
     }
 
     #[test]
@@ -525,7 +525,9 @@ mod tests {
                         receipt_filename: None,
                         bank_transaction_id: None,
                         supplier: None,
-                        paid_by: crate::domain::ExpensePaidBy::Company,
+                        paid_by: crate::domain::ExpensePaidBy::Associate,
+
+                        reverse_charge: false,
                     },
                     &human(),
                 )
@@ -545,21 +547,24 @@ mod tests {
         assert!(!has_case(&march, "22"), "{:?}", march.boxes);
 
         let april = ca3(&store, date(2026, TimeMonth::May, 8), "2026-04");
-        assert_eq!(box_of(&april, "22").amount, Some(Money::from_cents(8_000)));
-        assert_eq!(box_of(&april, "25").amount, Some(Money::from_cents(8_000)));
-        assert_eq!(box_of(&april, "27").amount, Some(Money::from_cents(8_000)));
+        assert!(
+            !has_case(&april, "22"),
+            "le solde de mars n'est pas encore au 445670 : {:?}",
+            april.boxes
+        );
+        assert_eq!(box_of(&april, "28").amount, Some(Money::ZERO));
     }
 
     #[test]
     fn an_agent_only_deposits_a_pending_action() {
         let mut store = test_store("agent");
         set_monthly_profile(&mut store);
-        seed_carry_324(&mut store);
+        seed_sample_credit(&mut store);
         let outcome = Executor::new(&mut store)
             .execute(
                 &RequestVatRefund {
                     period_key: "2026-12".into(),
-                    amount: Money::from_cents(32_400),
+                    amount: Money::from_cents(40_000),
                     requested_on: date(2027, TimeMonth::January, 8),
                 },
                 &agent(),
@@ -580,9 +585,9 @@ mod tests {
     fn retracting_a_filing_does_not_drop_the_refund() {
         let mut store = test_store("retract-filing");
         set_monthly_profile(&mut store);
-        seed_carry_324(&mut store);
+        seed_sample_credit(&mut store);
         let on = date(2027, TimeMonth::January, 8);
-        applied(request(&mut store, "2026-12", 32_400, on).unwrap());
+        applied(request(&mut store, "2026-12", 40_000, on).unwrap());
         let briefing = ca3(&store, on, "2026-12");
         applied(
             Executor::new(&mut store)
@@ -621,7 +626,7 @@ mod tests {
         let still = vat_refund_for(store.connection(), "2026-12")
             .unwrap()
             .expect("le 26 survit au dépôt rétracté");
-        assert_eq!(still.amount, Money::from_cents(32_400));
+        assert_eq!(still.amount, Money::from_cents(40_000));
 
         applied(
             Executor::new(&mut store)
@@ -636,7 +641,7 @@ mod tests {
         let restored = ca3(&store, on, "2026-12");
         assert_eq!(
             box_of(&restored, "27").amount,
-            Some(Money::from_cents(32_400))
+            Some(Money::from_cents(40_000))
         );
         assert!(!has_case(&restored, "26"), "{:?}", restored.boxes);
     }
@@ -645,7 +650,7 @@ mod tests {
     fn a_refund_cannot_exceed_the_period_credit() {
         let mut store = test_store("exceeds");
         set_monthly_profile(&mut store);
-        seed_carry_324(&mut store);
+        seed_sample_credit(&mut store);
         let err = request(
             &mut store,
             "2026-12",
@@ -660,7 +665,7 @@ mod tests {
     fn a_zero_refund_is_refused() {
         let mut store = test_store("zero");
         set_monthly_profile(&mut store);
-        seed_carry_324(&mut store);
+        seed_sample_credit(&mut store);
         let err = request(&mut store, "2026-12", 0, date(2027, TimeMonth::January, 8)).unwrap_err();
         assert!(err.to_string().contains("positif"), "{err}");
     }
@@ -669,10 +674,10 @@ mod tests {
     fn a_second_request_on_the_same_period_is_refused() {
         let mut store = test_store("second");
         set_monthly_profile(&mut store);
-        seed_carry_324(&mut store);
+        seed_sample_credit(&mut store);
         let on = date(2027, TimeMonth::January, 8);
-        applied(request(&mut store, "2026-12", 32_400, on).unwrap());
-        let err = request(&mut store, "2026-12", 32_400, on).unwrap_err();
+        applied(request(&mut store, "2026-12", 40_000, on).unwrap());
+        let err = request(&mut store, "2026-12", 40_000, on).unwrap_err();
         assert!(err.to_string().contains("déjà"), "{err}");
     }
 
@@ -701,7 +706,7 @@ mod tests {
         let err = request(
             &mut store,
             "2026-09",
-            32_400,
+            40_000,
             date(2026, TimeMonth::October, 8),
         )
         .unwrap_err();
@@ -715,7 +720,7 @@ mod tests {
     fn a_filed_declaration_locks_the_refund() {
         let mut store = test_store("filed-lock");
         set_monthly_profile(&mut store);
-        seed_carry_324(&mut store);
+        seed_sample_credit(&mut store);
         let on = date(2027, TimeMonth::January, 8);
         let briefing = ca3(&store, on, "2026-12");
         applied(
@@ -731,7 +736,7 @@ mod tests {
                 )
                 .unwrap(),
         );
-        let err = request(&mut store, "2026-12", 32_400, on).unwrap_err();
+        let err = request(&mut store, "2026-12", 40_000, on).unwrap_err();
         assert!(err.to_string().contains("déposée"), "{err}");
     }
 }
