@@ -45,9 +45,18 @@ run:
 # Porte complète : clippy Tauri en dernier (WebKit seulement si le reste est vert).
 check: fmt-check lint unused test audit lint-desktop
 
+# Preuves d'empaquetage : signatures minisign, installeurs, gabarit pacman.
+packaging-check:
+    scripts/test-sign-install.sh
+    scripts/test-install-griffe.sh
+    scripts/test-install-griffe-native.sh
+    scripts/test-griffe-bin-packaging.sh
+
 # Landing `site/` : présence des assets, copy Griffe, aucun CDN / sigle fiscal / CLI.
 site-check:
     test -f site/index.html
+    test -f site/minisign.pub
+    cmp -s site/minisign.pub packaging/minisign.pub
     test -f site/lockup.svg
     test -f site/fonts/newsreader-latin-400-italic.woff2
     test -f site/og.png

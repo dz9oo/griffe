@@ -1,5 +1,6 @@
 # Maintainer: dz9oo
 # Gabarit : ne pas soumettre tant que sha256sums n'est pas celui d'une Release réelle.
+# Le tarball publié est signé : packaging/SIGNATURES.md. Ce gabarit ne vérifie pas encore le .minisig.
 pkgname=griffe-bin
 pkgver=0.3.6
 pkgrel=1

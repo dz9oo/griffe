@@ -3,8 +3,11 @@
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+# shellcheck source=test-minisign-fixture.sh
+. "$root/scripts/test-minisign-fixture.sh"
 installer="$root/scripts/install-griffe.sh"
 clone_icon="$root/crates/griffe-desktop/icons/icon.png"
+require_minisign
 
 fail() {
   echo "FAIL: $*" >&2
@@ -88,8 +91,17 @@ dir=$(mktemp -d)
 dir2=
 iso=
 dir3=
-trap 'rm -rf "$dir" "${dir2:-}" "${iso:-}" "${dir3:-}"' EXIT
+work=
+trap 'rm -rf "$dir" "${dir2:-}" "${iso:-}" "${dir3:-}" "${work:-}"' EXIT
 export HOME="$dir"
+
+keys=$dir/keys
+make_test_keypair "$keys"
+work=$dir/tree
+mkdir -p "$work/scripts" "$work/crates/griffe-desktop/icons"
+cp "$clone_icon" "$work/crates/griffe-desktop/icons/icon.png"
+rewrite_installer "$installer" "$work/scripts/install-griffe.sh" "$keys/pub"
+signed=$work/scripts/install-griffe.sh
 
 if "$installer" /no/such.AppImage 2>/dev/null; then
   echo "devait échouer" >&2
@@ -110,9 +122,10 @@ assert_no_install "mauvais suffixe"
 fake_app="$dir/Griffe_test.AppImage"
 printf 'pas un AppImage\n' >"$fake_app"
 chmod +x "$fake_app"
-out=$("$installer" "$fake_app")
+sign_artifact "$keys/sec" "$keys/pub" "$fake_app"
+out=$("$signed" "$fake_app")
 assert_three_paths "$out"
-out=$("$installer" "$fake_app")
+out=$("$signed" "$fake_app")
 assert_three_paths "$out"
 cmp -s "$HOME/.local/share/icons/hicolor/256x256/apps/io.github.dz9oo.griffe.png" "$clone_icon" \
   || fail "sans squashfs, l'icône doit venir du clone"
@@ -124,7 +137,8 @@ tiny="$dir2/tiny.png"
 write_tiny_png "$tiny"
 stub="$dir2/Griffe_stub.AppImage"
 write_extract_stub "$stub" "$tiny"
-out=$("$installer" "$stub")
+sign_artifact "$keys/sec" "$keys/pub" "$stub"
+out=$("$signed" "$stub")
 assert_three_paths "$out"
 cmp -s "$HOME/.local/share/icons/hicolor/256x256/apps/io.github.dz9oo.griffe.png" "$tiny" \
   || fail "l'icône extraite de l'AppImage doit primer sur le clone"
@@ -134,12 +148,12 @@ cmp -s "$HOME/.local/share/icons/hicolor/256x256/apps/io.github.dz9oo.griffe.png
 # --- script isolé du clone, sans png : échec et rollback ---
 iso=$(mktemp -d)
 mkdir -p "$iso/bin" "$iso/home"
-cp "$installer" "$iso/bin/install-griffe.sh"
-chmod +x "$iso/bin/install-griffe.sh"
+rewrite_installer "$installer" "$iso/bin/install-griffe.sh" "$keys/pub"
 export HOME="$iso/home"
 lonely="$iso/Griffe.AppImage"
 printf 'x' >"$lonely"
 chmod +x "$lonely"
+sign_artifact "$keys/sec" "$keys/pub" "$lonely"
 if "$iso/bin/install-griffe.sh" "$lonely" 2>/dev/null; then
   fail "sans png ni clone, l'install doit échouer"
 fi

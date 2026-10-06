@@ -43,6 +43,7 @@ jobs:
             just unused || status=1
             just test || status=1
             just audit || status=1
+            just packaging-check || status=1
             exit "$status"
           '
       - run: df -h

@@ -3,8 +3,11 @@
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+# shellcheck source=test-minisign-fixture.sh
+. "$root/scripts/test-minisign-fixture.sh"
 installer="$root/scripts/install-griffe-native.sh"
 clone_icon="$root/crates/griffe-desktop/icons/icon.png"
+require_minisign
 
 fail() {
   echo "FAIL: $*" >&2
@@ -99,6 +102,10 @@ dir2=
 dir3=
 trap 'rm -rf "$dir" "${dir2:-}" "${dir3:-}"' EXIT
 export HOME="$dir"
+keys=$dir/keys
+make_test_keypair "$keys"
+rewrite_installer "$installer" "$dir/install-signed.sh" "$keys/pub"
+signed=$dir/install-signed.sh
 
 # --- fichier absent ---
 if "$installer" /no/such.tar.xz 2>/dev/null; then
@@ -162,7 +169,8 @@ if webkit_present; then
   staged="$dir/griffe-0.3.2-x86_64-linux"
   make_payload_dir "$staged"
   tar -C "$(dirname "$staged")" -cJf "$dir/griffe-0.3.2-x86_64-linux.tar.xz" "$(basename "$staged")"
-  out=$("$installer" "$dir/griffe-0.3.2-x86_64-linux.tar.xz")
+  sign_artifact "$keys/sec" "$keys/pub" "$dir/griffe-0.3.2-x86_64-linux.tar.xz"
+  out=$("$signed" "$dir/griffe-0.3.2-x86_64-linux.tar.xz")
   assert_five_paths "$out"
 
   # rollback : icône absente

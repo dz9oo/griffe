@@ -1,7 +1,55 @@
 #!/bin/sh
 # Copie un ELF Griffe et Typst déjà fournis vers ~/.local et écrit le menu.
 # Aucun réseau, pas de sudo, ne touche pas ~/.local/share/griffe/.
+# Une archive est refusée si le .minisig voisin ne vérifie pas.
+# Un répertoire local (déjà déballé) n'a pas de signature.
 set -eu
+
+# Clé publique minisign, copie exacte des deux lignes de packaging/minisign.pub.
+# Un script copié seul vérifie avec ces lignes. Dans un clone, le fichier du
+# dépôt doit être identique.
+MINISIGN_PUB_COMMENT='untrusted comment: minisign public key BB297F887583C599'
+MINISIGN_PUB_KEY='RWSZxYN1iH8pu9EsvAA07kQZZ8hfSS0QI4Sk5kzpk7Iyw/aIPmoEYsrx'
+
+# --- verify-signed-file ---
+verify_signed_file() {
+  sig_file=$1
+  sig_path=$sig_file.minisig
+  if [ ! -f "$sig_path" ]; then
+    printf '%s\n' "signature absente : $sig_path" >&2
+    printf '%s\n' "rien n'est installé" >&2
+    exit 1
+  fi
+  if ! command -v minisign >/dev/null 2>&1; then
+    printf '%s\n' "minisign manquant : installe le paquet minisign, puis relance" >&2
+    exit 1
+  fi
+  sig_pub=$(mktemp)
+  printf '%s\n%s\n' "$MINISIGN_PUB_COMMENT" "$MINISIGN_PUB_KEY" >"$sig_pub"
+  sig_script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+  sig_repo=$sig_script_dir/../packaging/minisign.pub
+  if [ -f "$sig_repo" ]; then
+    if ! cmp -s "$sig_pub" "$sig_repo"; then
+      rm -f "$sig_pub"
+      printf '%s\n' "la clé packaging/minisign.pub et la clé embarquée dans le script divergent" >&2
+      exit 1
+    fi
+  fi
+  sig_err=$(mktemp)
+  if ! sig_comment=$(minisign -V -H -Q -m "$sig_file" -x "$sig_path" -p "$sig_pub" 2>"$sig_err"); then
+    printf '%s\n' "signature refusée pour $(basename "$sig_file")" >&2
+    cat "$sig_err" >&2
+    rm -f "$sig_pub" "$sig_err"
+    exit 1
+  fi
+  rm -f "$sig_pub" "$sig_err"
+  sig_base=$(basename "$sig_file")
+  if [ "$sig_comment" != "$sig_base" ]; then
+    printf '%s\n' "commentaire de confiance inattendu pour $sig_base" >&2
+    exit 1
+  fi
+}
+# --- verify-signed-file ---
 
 usage() {
   echo "usage: install-griffe-native.sh CHEMIN.tar.xz|CHEMIN.tar.gz|REPERTOIRE" >&2
@@ -56,6 +104,14 @@ esac
 if [ ! -d "$src" ] && [ ! -f "$src" ]; then
   echo "fichier introuvable: $src" >&2
   exit 1
+fi
+
+if [ ! -d "$src" ]; then
+  case "$src" in
+    *.tar.xz|*.tar.gz)
+      verify_signed_file "$src"
+      ;;
+  esac
 fi
 
 libdir="$HOME/.local/lib/griffe"
