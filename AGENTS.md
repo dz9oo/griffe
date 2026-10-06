@@ -6,7 +6,7 @@ fiscales indicatives, prévisionnel de trésorerie). Local-only, chiffré, sans
 serveur.
 
 Tu es un agent qui patch un logiciel d’argent et de conformité. Une règle
-fausse coûte plus cher qu’un test en trop. Lis aussi `docs/legal.md`,
+fausse coûte plus cher qu’un test en trop. Lis aussi `docs/legal.md`, `docs/livre.md`,
 `docs/testing.md`, `docs/design.md`, `CONTRIBUTING.md`.
 
 ## Thèse Studio
@@ -98,10 +98,13 @@ invariant d’argent, de conformité, ou de données.
 
 ## Fiscal
 
-Lire `docs/legal.md`. Tu ne « corriges » pas une règle de TVA, d’IS, de
+Lire `docs/legal.md` et `docs/livre.md`. Tu ne « corriges » pas une règle de TVA, d’IS, de
 liasse ou de FEC sur ta culture générale. Source primaire (BOFIP, CGI,
 C. com., notice Cerfa) + montant attendu posé à la main dans le test.
 CODEOWNERS (`* @dz9oo`, plus les chemins fiscaux) exige une revue humaine.
+`docs/livre.md` décrit le livre pour tout utilisateur. Aucun dossier réel
+n’y entre. La situation d’une société précise reste dans `notes-perso/`,
+hors git.
 
 ## UI Atelier
 

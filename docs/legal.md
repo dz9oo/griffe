@@ -12,6 +12,9 @@ On ne le recopie pas ici. Aucun dossier réel n’entre dans ce dépôt :
 pas de raison sociale, pas de SIREN, pas d’adresse, pas de pièce déposée,
 pas de montant repris d’un exercice réel.
 
+Le livre et les déclarations, tels que tout utilisateur les voit, sont
+dans [livre.md](./livre.md). Cette page ne reprend pas ce parcours.
+
 ## Doctrine
 
 1. **Disclaimer.** Griffe calcule et rappelle. Ce n’est pas un avis fiscal,

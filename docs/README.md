@@ -8,6 +8,7 @@ Guides pour un humain. Un agent LLM lit d’abord [`AGENTS.md`](../AGENTS.md).
 | [design.md](./design.md) | Atelier — tokens, français de la lettre, interdits |
 | [testing.md](./testing.md) | Doctrine de test |
 | [legal.md](./legal.md) | Politique fiscale contributeur |
+| [livre.md](./livre.md) | Le livre et les déclarations, pour tout utilisateur |
 
 Source d’orientation Atelier : [`atelier-design.md`](./atelier-design.md).
 Maquette : [`mockups/atelier-app.html`](./mockups/atelier-app.html).
