@@ -651,10 +651,11 @@ mod tests {
         let mut store = test_store("exceeds");
         set_monthly_profile(&mut store);
         seed_sample_credit(&mut store);
+        // Un centime au-dessus du crédit d'échantillon, 40 000.
         let err = request(
             &mut store,
             "2026-12",
-            32_401,
+            40_001,
             date(2027, TimeMonth::January, 8),
         )
         .unwrap_err();
