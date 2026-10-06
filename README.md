@@ -112,7 +112,7 @@ native (`~/.local/lib/griffe/`) existe, la retirer **avant** `pacman -U`
 ```bash
 rm -f ~/.local/bin/griffe-desktop \
   ~/.local/lib/griffe/griffe-desktop ~/.local/lib/griffe/typst
-sudo pacman -U ./griffe-bin-0.3.6-1-x86_64.pkg.tar.zst
+sudo pacman -U ./griffe-bin-0.3.7-1-x86_64.pkg.tar.zst
 ```
 
 Pour une Release qui publie le `.minisig`, la vérification précède `pacman -U` :

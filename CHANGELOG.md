@@ -2,6 +2,22 @@
 
 Ce qui change pour qui se sert de Griffe. Une section par version publiée.
 
+## 0.3.7
+
+- Les écritures restent dans le coffre. Une correction en ajoute une qui inverse la première. L'originale reste.
+- Une facture d'achat non payée n'entre pas. Le paiement par la banque écrit la charge au jour du relevé. Un paiement depuis un compte personnel l'écrit sur le compte de l'associé.
+- Une facture de prestation écrit la créance, le produit et la TVA en attente. L'encaissement déplace la créance vers la banque, et la part de TVA vers la TVA devenue exigible.
+- Un avoir non encaissé inverse la créance, le produit et la TVA en attente. Annuler un encaissement ramène cette TVA vers la TVA en attente.
+- Depuis la société, « Écrire la TVA du mois » pose l'écriture une seule fois, le dernier jour du mois. La lettre et les cases à recopier lisent la même chose. Un mois déjà déposé, un mois non terminé, ou un exercice clos, refuse ce geste.
+- Une prestation reçue d'un autre pays de l'Union européenne écrit, au paiement, la charge et une paire de TVA, due et déductible. Le mois solde cette paire au centime.
+- Une rémunération n'entre dans le livre que lorsqu'elle est saisie. Un montant seulement déclaré au profil n'écrit rien. La fenêtre n'a pas encore ce formulaire. Il n'y a pas de bulletin, pas de fichier de déclaration sociale, pas de prélèvement à la source.
+- La clôture lit le résultat sur les charges et les produits du livre. Une dépense non payée n'y entre pas. Une rémunération non saisie n'y entre pas. L'impôt sur les sociétés est écrit au moment de la clôture. Retirer la clôture inverse cette écriture d'impôt.
+- Les cases à recopier se lisent sur le livre. Le montant à recopier est à l'euro. Le montant du livre, au centime, reste à côté. Deux feuillets, celui de la valeur ajoutée et celui des filiales, portent la mention néant.
+- L'amortissement, la perte sur une créance que l'on n'attend plus, le report en arrière et les lignes d'affectation sont encore calculés à la lecture.
+- À l'ouverture, les paiements de dépenses et les factures de prestation déjà enregistrés sont repris dans le livre. L'écriture de TVA du mois attend le geste qui l'écrit.
+- Ouvrir un coffre déjà utilisé avec cette version le fait avancer. La version précédente ne peut plus l'ouvrir.
+- L'AppImage, l'archive et le paquet pacman portent une signature. On la vérifie avant d'installer.
+
 ## 0.3.6
 
 - Les phrases se choisissent sur une frise. On ouvre un moment, la lettre se lit à côté. L'écart se compte en jours. On monte, on descend, on ajoute, on retire un moment.
