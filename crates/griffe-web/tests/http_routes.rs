@@ -9348,3 +9348,118 @@ async fn the_expense_form_offers_reverse_charge_and_the_morning_letter_does_not(
     assert!(!letter.contains("445662"), "{letter}");
     assert!(!letter.contains("445200"), "{letter}");
 }
+
+#[tokio::test]
+async fn two_fiches_with_the_same_respondent_open_under_qui() {
+    let db_path = test_db_path("two-qui");
+    let mut store = Store::create(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    for (qui, piste) in [
+        ("Mairie de Hornaing", "site"),
+        ("Mairie de Somain", "accessibilité"),
+    ] {
+        Executor::new(&mut store)
+            .execute(
+                &CreateProspect {
+                    prospect_name: qui.into(),
+                    address: None,
+                    representative: Some("Frédéric DELANNOY".into()),
+                    email: Some("mairie@exemple.fr".into()),
+                    phone: None,
+                    name: piste.into(),
+                    amount: Money::ZERO,
+                    probability: Probability::new(0).unwrap(),
+                    next_action_at: time::macros::date!(2026 - 10 - 07),
+                    source: None,
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+    }
+    drop(store);
+
+    let state = AppState::new(db_path);
+    state
+        .unlock(&Passphrase::from(PASSPHRASE), false)
+        .await
+        .unwrap();
+    let state = state.with_today(time::macros::date!(2026 - 10 - 07));
+    let router = griffe_web::router(state);
+
+    let list = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(list.contains("Mairie de Hornaing"), "{list}");
+    assert!(list.contains("Mairie de Somain"), "{list}");
+    assert!(
+        list.contains("href=\"/affaires/Mairie%20de%20Hornaing\""),
+        "{list}"
+    );
+    assert!(
+        list.contains("href=\"/affaires/Mairie%20de%20Somain\""),
+        "{list}"
+    );
+    assert!(
+        !list.contains(">Frédéric DELANNOY<"),
+        "la liste nomme le Qui : {list}"
+    );
+
+    let found = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires?q=fr%C3%A9d%C3%A9ric")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(found.contains("Mairie de Hornaing"), "{found}");
+    assert!(found.contains("Mairie de Somain"), "{found}");
+
+    let hornaing = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Mairie%20de%20Hornaing")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(hornaing.contains("Mairie de Hornaing"), "{hornaing}");
+    assert!(hornaing.contains("Frédéric DELANNOY"), "{hornaing}");
+    assert!(!hornaing.contains("règle métier"), "{hornaing}");
+
+    let shared = body_text(
+        router
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Fr%C3%A9d%C3%A9ric%20DELANNOY")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(shared.contains("Plusieurs fiches"), "{shared}");
+    assert!(shared.contains("Mairie de Hornaing"), "{shared}");
+    assert!(shared.contains("Mairie de Somain"), "{shared}");
+    assert!(!shared.contains("règle métier"), "{shared}");
+}

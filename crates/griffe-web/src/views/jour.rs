@@ -299,7 +299,6 @@ fn geste_copy(
     match &g.source {
         GestureSource::Setup { step } => ("Configurer ma société".into(), step.text().to_string()),
         GestureSource::FollowUp {
-            contact_name,
             party,
             title,
             drafted,
@@ -308,7 +307,7 @@ fn geste_copy(
             follow_kind,
             ..
         } => {
-            let who = contact_name.as_deref().unwrap_or(party.as_str());
+            let who = party.as_str();
             let head = match g.verb {
                 GestureVerb::Remind => format!("Relancer {who}"),
                 _ => format!("Écrire à {who}"),
@@ -395,15 +394,10 @@ fn geste_actions(g: &DayGesture, today: Date) -> Markup {
         GestureSource::FollowUp {
             subject,
             drafted,
-            contact_name,
             party,
             ..
         } => {
-            let who = contact_name
-                .as_deref()
-                .filter(|n| !n.is_empty())
-                .unwrap_or(party.as_str());
-            let href = person_href(who);
+            let href = person_href(party);
             let write = format!("{href}/ecrire");
             let tomorrow = format_date(snooze_date(today, SnoozePreset::Tomorrow));
             let _ = subject;

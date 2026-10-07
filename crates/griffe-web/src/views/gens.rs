@@ -217,7 +217,12 @@ fn name_matches(row: &PersonRow, query: &str) -> bool {
         return true;
     }
     let needle = fold_name(query);
-    fold_name(&row.name).contains(&needle) || fold_name(&row.party).contains(&needle)
+    fold_name(&row.name).contains(&needle)
+        || fold_name(&row.party).contains(&needle)
+        || row
+            .contact_name
+            .as_deref()
+            .is_some_and(|contact| fold_name(contact).contains(&needle))
 }
 
 fn fold_name(value: &str) -> String {
@@ -432,8 +437,12 @@ fn subtitle(d: &PersonDossier, today: Date) -> String {
         return outgoing_subtitle(outgoing, today);
     }
     let mut parts = Vec::new();
-    if d.contact_name.as_ref().is_some_and(|c| c != &d.party) {
-        parts.push(d.party.clone());
+    if let Some(contact) = d
+        .contact_name
+        .as_ref()
+        .filter(|contact| fold_name(contact) != fold_name(&d.party))
+    {
+        parts.push(contact.clone());
     }
     if let Some(on) = d.since {
         parts.push(format!("depuis {}", month_year(on)));
@@ -1764,6 +1773,39 @@ pub fn new_genre_page(
                 (form::text("name", "Nom", name, None))
                 div class="row-actions" {
                     button class="seal" type="submit" { "Enregistrer" }
+                }
+            }
+        }
+    }
+}
+
+fn choice_label(label: &str, key: &PersonKey, choices: &[(PersonKey, String)]) -> String {
+    let same = choices.iter().filter(|(_, other)| other == label).count();
+    if same > 1 {
+        let short: String = key.as_ref_str().chars().take(8).collect();
+        format!("{label} · {short}")
+    } else {
+        label.to_string()
+    }
+}
+
+pub fn several(needle: &str, choices: &[(PersonKey, String)]) -> Markup {
+    html! {
+        div class="letter" data-view=(ViewId::Gens.slug()) {
+            a class="back" href="/affaires" hx-get="/affaires" hx-target="#content" hx-push-url="true" {
+                "← Les affaires"
+            }
+            div class="who" { (needle) }
+            p class="lede" { "Plusieurs fiches. Choisis laquelle." }
+            ul class="people" {
+                @for (key, label) in choices {
+                    @let href = person_href(&key.as_ref_str());
+                    @let shown = choice_label(label, key, choices);
+                    li {
+                        a href=(href) hx-get=(href) hx-target="#content" hx-push-url="true" {
+                            div class="nm" { (shown) }
+                        }
+                    }
                 }
             }
         }

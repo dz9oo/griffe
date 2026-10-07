@@ -32,6 +32,10 @@ pub enum ClientError {
 
     #[error("suppression impossible : {0}")]
     HasReferences(String),
+
+    /// Deux fiches ne portent pas le même « Qui » : la liste et le lien s'y retrouvent.
+    #[error("« {0} » est déjà une fiche")]
+    NameTaken(String),
 }
 
 impl From<ClientError> for AppError {
@@ -94,6 +98,7 @@ impl Command for UpdateClient {
 
     fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
         let new_revision = require_client_revision(conn, self.id, self.revision)?;
+        refuse_taken_name(conn, &self.name, Some(self.id))?;
         conn.execute(
             "UPDATE clients SET name = ?1, siren = ?2, vat_number = ?3, address_street = ?4,
                 address_postal_code = ?5, address_city = ?6, address_country = ?7, revision = ?8
@@ -288,11 +293,43 @@ fn insert_client(conn: &Connection, client: &Client) -> Result<(), AppError> {
     insert_client_as(conn, client, false)
 }
 
+/// « Qui » identifie la fiche. Un second enregistrement au même nom (casse et accents
+/// ignorés) est refusé : `CreateProspect` se rattache à la fiche déjà là, il n'en crée pas
+/// une autre.
+fn refuse_taken_name(
+    conn: &Connection,
+    name: &str,
+    except: Option<ClientId>,
+) -> Result<(), AppError> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Ok(());
+    }
+    match crate::reference::resolve_client_exact(conn, trimmed)? {
+        crate::reference::RefMatch::NotFound => Ok(()),
+        crate::reference::RefMatch::Unique(id) if except == Some(id) => Ok(()),
+        crate::reference::RefMatch::Unique(id) => {
+            let stored =
+                client_by_id(conn, id)?.map_or_else(|| trimmed.to_string(), |client| client.name);
+            Err(ClientError::NameTaken(stored).into())
+        }
+        crate::reference::RefMatch::Ambiguous(found) => {
+            let stored = found
+                .into_iter()
+                .map(|(_, label)| label)
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(ClientError::NameTaken(stored).into())
+        }
+    }
+}
+
 pub(crate) fn insert_client_as(
     conn: &Connection,
     client: &Client,
     is_prospect: bool,
 ) -> Result<(), AppError> {
+    refuse_taken_name(conn, &client.name, None)?;
     conn.execute(
         "INSERT INTO clients (id, name, siren, vat_number, address_street, address_postal_code, address_city, address_country, created_at, is_prospect)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
@@ -574,7 +611,7 @@ pub fn list_contacts(conn: &Connection, client_id: ClientId) -> Result<Vec<Conta
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{Actor, ExecutionContext, Executor, Outcome};
+    use crate::app::{Actor, AppError, ExecutionContext, Executor, Outcome};
     use crate::store::Store;
     use crate::store::testing::test_store;
 
@@ -608,6 +645,51 @@ mod tests {
         let listed = list_clients(store.connection()).unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, id);
+    }
+
+    #[test]
+    fn a_second_fiche_cannot_reuse_qui() {
+        let mut store = test_store("name-taken");
+        create(&mut store, "Mairie de Hornaing");
+
+        let err = Executor::new(&mut store)
+            .execute(
+                &CreateClient {
+                    name: "mairie de hornaing".into(),
+                    siren: None,
+                    vat_number: None,
+                    address: None,
+                },
+                &human_ctx(),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(err, AppError::Domain(ref msg) if msg.contains("Mairie de Hornaing")),
+            "{err}"
+        );
+        assert_eq!(list_clients(store.connection()).unwrap().len(), 1);
+
+        let id = create(&mut store, "Mairie de Somain");
+        let err = Executor::new(&mut store)
+            .execute(
+                &UpdateClient {
+                    id,
+                    revision: 1,
+                    name: "Mairie de Hornaing".into(),
+                    siren: None,
+                    vat_number: None,
+                    address: None,
+                },
+                &human_ctx(),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(err, AppError::Domain(ref msg) if msg.contains("déjà une fiche")),
+            "{err}"
+        );
+        let kept = client_by_id(store.connection(), id).unwrap().unwrap();
+        assert_eq!(kept.name, "Mairie de Somain");
+        assert_eq!(kept.revision, 1);
     }
 
     #[test]

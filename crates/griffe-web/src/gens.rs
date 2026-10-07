@@ -24,11 +24,12 @@ use griffe_core::follow_up::{
     SetDossierGenre, SnoozeFollowUp, follow_up_sender, phrases_for_genre, prospect_genres,
     prospect_phrases,
 };
-use griffe_core::people::{PersonKey, person};
+use griffe_core::people::{PersonKey, person, resolve_person};
 use griffe_core::prospection::{
     CreateOpportunity, CreateProspect, EstimationLineInput, LogInteraction, LoseOpportunity,
     ReopenOpportunity, SetEstimation, WinOpportunity, estimation_lines, opportunity_by_id,
 };
+use griffe_core::reference::RefMatch;
 use maud::{Markup, html};
 use serde::Deserialize;
 use time::{Duration, OffsetDateTime};
@@ -73,15 +74,21 @@ pub async fn show(
 ) -> Html<String> {
     let today = state.today();
     let content = state
-        .with_store(|store| {
-            gens::dossier_page(store, &reference, today).unwrap_or_else(|e| {
-                if e.to_string().contains("introuvable") {
-                    gens::not_found(&reference, today)
-                } else {
-                    html! { div class="empty-state" { (e.to_string()) } }
-                }
-            })
-        })
+        .with_store(
+            |store| match resolve_person(store.connection(), &reference) {
+                Ok(RefMatch::NotFound) => gens::not_found(&reference, today),
+                Ok(RefMatch::Ambiguous(choices)) => gens::several(&reference, &choices),
+                Ok(RefMatch::Unique(_)) => gens::dossier_page(store, &reference, today)
+                    .unwrap_or_else(|e| {
+                        if e.to_string().contains("introuvable") {
+                            gens::not_found(&reference, today)
+                        } else {
+                            html! { div class="empty-state" { (e.to_string()) } }
+                        }
+                    }),
+                Err(e) => html! { div class="empty-state" { (e.to_string()) } },
+            },
+        )
         .await
         .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
     page(&headers, content)
@@ -786,7 +793,7 @@ fn phrase_reading(
     };
     let prenom = given_name(
         dossier.contact_name.as_deref().unwrap_or(""),
-        dossier.name.as_str(),
+        dossier.party.as_str(),
     );
     let href = gens::person_href(&dossier.name);
     let (back_href, back_label) = if depuis == "lettre" {

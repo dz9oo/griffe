@@ -41,7 +41,7 @@ use crate::reference::{RefMatch, resolve_among, resolve_client};
 pub enum PeopleError {
     #[error("personne introuvable : {0}")]
     NotFound(String),
-    #[error("« {0} » désigne plusieurs personnes, précisez : {1}")]
+    #[error("« {0} » désigne plusieurs fiches, précisez : {1}")]
     Ambiguous(String, String),
 }
 
@@ -215,8 +215,12 @@ pub struct OutgoingChapter {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PersonRow {
     pub key: PersonKey,
+    /// « Qui ». Jamais « Qui répond » : deux fiches peuvent partager un interlocuteur.
     pub name: String,
     pub party: String,
+    /// « Qui répond », pour la recherche. La liste ne l'affiche pas.
+    #[serde(default)]
+    pub contact_name: Option<String>,
     pub chapter: PersonChapter,
     pub figure: Option<PersonFigure>,
     pub cues: Vec<PersonCue>,
@@ -506,8 +510,9 @@ pub fn resolve_person(conn: &Connection, needle: &str) -> Result<RefMatch<Person
         RefMatch::NotFound => {}
     }
 
+    let clients = list_clients(conn)?;
     let mut contact_candidates: Vec<(ClientId, String)> = Vec::new();
-    for client in list_clients(conn)? {
+    for client in &clients {
         for contact in list_contacts(conn, client.id)? {
             if !contact.name.is_empty() {
                 contact_candidates.push((client.id, contact.name));
@@ -519,7 +524,13 @@ pub fn resolve_person(conn: &Connection, needle: &str) -> Result<RefMatch<Person
         RefMatch::Ambiguous(c) => {
             return Ok(RefMatch::Ambiguous(
                 c.into_iter()
-                    .map(|(id, label)| (PersonKey::Client { id }, label))
+                    .map(|(id, fallback)| {
+                        let label = clients
+                            .iter()
+                            .find(|client| client.id == id)
+                            .map_or(fallback, |client| client.name.clone());
+                        (PersonKey::Client { id }, label)
+                    })
                     .collect(),
             ));
         }
@@ -831,10 +842,10 @@ impl Snapshot {
             .filter(|n| !n.is_empty())
     }
 
+    /// Le nom de la ligne est « Qui ». « Qui répond » reste sur la fiche et dans la recherche :
+    /// le même interlocuteur peut répondre pour plusieurs fiches.
     fn display_name(&self, id: ClientId) -> String {
-        self.contact_name(id)
-            .filter(|n| n != &self.name_of(id))
-            .unwrap_or_else(|| self.name_of(id))
+        self.name_of(id)
     }
 
     fn list(&self, today: Date) -> PeopleList {
@@ -934,6 +945,7 @@ impl Snapshot {
             key: PersonKey::Client { id: opp.client_id },
             name,
             party,
+            contact_name: self.contact_name(opp.client_id),
             chapter: PersonChapter::Stopped,
             figure,
             cues: vec![PersonCue::Lost {
@@ -1002,6 +1014,7 @@ impl Snapshot {
             key: PersonKey::Client { id: opp.client_id },
             name,
             party,
+            contact_name: self.contact_name(opp.client_id),
             chapter: PersonChapter::Conversation,
             figure,
             cues,
@@ -1059,6 +1072,7 @@ impl Snapshot {
             },
             name,
             party,
+            contact_name: self.contact_name(mission.client_id),
             chapter: PersonChapter::Mission,
             figure,
             cues,
@@ -1101,6 +1115,7 @@ impl Snapshot {
             },
             name: name.to_string(),
             party: name.to_string(),
+            contact_name: None,
             chapter: PersonChapter::Outgoing,
             figure,
             cues,
@@ -2217,9 +2232,10 @@ mod tests {
         let camille = list
             .conversations
             .iter()
-            .find(|r| r.name.contains("Camille"))
-            .expect("Camille");
+            .find(|r| r.name == "Atelier Nord")
+            .expect("Atelier Nord");
         assert_eq!(camille.party, "Atelier Nord");
+        assert_eq!(camille.contact_name.as_deref(), Some("Camille Rivière"));
         assert!(
             camille
                 .cues
@@ -2339,8 +2355,9 @@ mod tests {
             other => panic!("{other:?}"),
         }
         let dossier = person(store.connection(), "Camille Rivière", today()).unwrap();
-        assert_eq!(dossier.name, "Camille Rivière");
+        assert_eq!(dossier.name, "Atelier Nord");
         assert_eq!(dossier.party, "Atelier Nord");
+        assert_eq!(dossier.contact_name.as_deref(), Some("Camille Rivière"));
         assert!(dossier.not_yet_client);
         assert_eq!(dossier.chapter, PersonChapter::Conversation);
         assert!(dossier.current.quote.is_some(), "{:?}", dossier.current);
@@ -2386,6 +2403,57 @@ mod tests {
             "{:?}",
             dossier.history
         );
+    }
+
+    #[test]
+    fn the_same_respondent_keeps_two_fiches_under_qui() {
+        let mut store = test_store("two-mairies");
+        for (qui, piste) in [
+            ("Mairie de Hornaing", "site"),
+            ("Mairie de Somain", "accessibilité"),
+        ] {
+            applied(
+                Executor::new(&mut store)
+                    .execute(
+                        &CreateProspect {
+                            prospect_name: qui.into(),
+                            address: None,
+                            representative: Some("Frédéric DELANNOY".into()),
+                            email: Some("mairie@exemple.fr".into()),
+                            phone: None,
+                            name: piste.into(),
+                            amount: Money::ZERO,
+                            probability: Probability::new(0).unwrap(),
+                            next_action_at: today(),
+                            source: None,
+                        },
+                        &human(),
+                    )
+                    .unwrap(),
+            );
+        }
+
+        let list = people_list(store.connection(), today()).unwrap();
+        let names: Vec<&str> = list
+            .first_messages
+            .iter()
+            .map(|row| row.name.as_str())
+            .collect();
+        assert!(names.contains(&"Mairie de Hornaing"), "{names:?}");
+        assert!(names.contains(&"Mairie de Somain"), "{names:?}");
+        assert!(!names.contains(&"Frédéric DELANNOY"), "{names:?}");
+
+        let hornaing = person(store.connection(), "Mairie de Hornaing", today()).unwrap();
+        assert_eq!(hornaing.name, "Mairie de Hornaing");
+        assert_eq!(hornaing.contact_name.as_deref(), Some("Frédéric DELANNOY"));
+        let somain = person(store.connection(), "Mairie de Somain", today()).unwrap();
+        assert_eq!(somain.name, "Mairie de Somain");
+
+        let err = person(store.connection(), "Frédéric DELANNOY", today()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("Mairie de Hornaing"), "{msg}");
+        assert!(msg.contains("Mairie de Somain"), "{msg}");
+        assert!(msg.contains("plusieurs fiches"), "{msg}");
     }
 
     #[test]

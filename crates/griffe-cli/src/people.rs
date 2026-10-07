@@ -116,11 +116,18 @@ fn cue_fr(cue: &PersonCue) -> String {
 
 impl HumanRender for PersonDossier {
     fn render_human(&self) -> String {
-        let mut pairs = vec![
-            ("nom", self.name.clone()),
-            ("société", self.party.clone()),
-            ("chapitre", chapter_fr(self.chapter).into()),
-        ];
+        let mut pairs = vec![("nom", self.name.clone())];
+        if let Some(contact) = self
+            .contact_name
+            .as_ref()
+            .filter(|contact| *contact != &self.name)
+        {
+            pairs.push(("qui répond", contact.clone()));
+        }
+        if self.party != self.name {
+            pairs.push(("société", self.party.clone()));
+        }
+        pairs.push(("chapitre", chapter_fr(self.chapter).into()));
         if self.not_yet_client {
             pairs.push(("statut", "pas encore cliente".into()));
         }

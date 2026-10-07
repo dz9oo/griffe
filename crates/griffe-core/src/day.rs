@@ -233,7 +233,7 @@ fn receivables(conn: &Connection, today: Date) -> Result<Vec<Receivable>, AppErr
 // Gestes
 // ---------------------------------------------------------------------------------------------
 
-/// Un verbe typé : la fenêtre écrit « Écrire à Camille », pas le cœur.
+/// Un verbe typé. La fenêtre écrit « Écrire à » suivi du Qui.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GestureVerb {
