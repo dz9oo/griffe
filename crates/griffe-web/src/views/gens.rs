@@ -1328,13 +1328,31 @@ pub struct PhrasesView {
     pub status: Option<String>,
 }
 
+/// Valeur du bouton « un autre ». Ce n'est pas un nom de genre.
+pub const GENRE_OTHER: &str = "autre";
+
+/// Ce que la fiche a posté pour le genre, avant de décider du nom à enregistrer.
+#[derive(Debug, Clone, Default)]
+pub struct GenrePost {
+    pub checked: String,
+    pub other: String,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct GenreField {
     pub show: bool,
+    /// Nom attaché au dossier, pour le lien vers les phrases.
     pub name: String,
     pub known: Vec<String>,
     pub phrases: String,
     pub created: bool,
+    /// Le dossier a déjà un genre : le mot « aucun » est proposé.
+    pub attached: bool,
+    /// Mot coché quand la ligne « un autre » est fermée. Vide : « aucun », ou rien.
+    pub picked: String,
+    pub other_open: bool,
+    pub other: String,
+    pub naming: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1708,23 +1726,51 @@ fn genre_line_name(name: Option<&str>) -> String {
 }
 
 fn genre_line(genre: &GenreField) -> Markup {
+    let naming = genre.naming.is_some();
     html! {
-        div class="field genre-field" {
-            label for="genre" { "Genre" }
-            input id="genre" name="genre" type="text" value=(genre.name);
-            div class="genre-known" {
-                @for name in &genre.known {
-                    span { (name) }
+        @if genre.known.is_empty() {
+            div class="field" {
+                label for="genre_other" { "Genre" }
+                input id="genre_other" name="genre_other" type="text" value=(genre.other) aria-invalid[naming];
+                p class="field-help" { "Le premier nom servira aux phrases." }
+                @if let Some(msg) = &genre.naming {
+                    div class="field-error" { (msg) }
                 }
             }
-            @if genre.created {
-                p class="mast-note" { "Ce genre n'existe pas encore. La fiche le crée." }
-            }
-            @if !genre.phrases.is_empty() {
-                p {
-                    a href=(genre.phrases) hx-get=(genre.phrases) hx-target="#content" hx-push-url="true" {
-                        @if genre.created { "Écrire les phrases" } @else { (genre.name) }
+        } @else {
+            fieldset class="word-choice" {
+                legend { "Genre" }
+                div class="word-choice-row" {
+                    @if genre.attached {
+                        label {
+                            input type="radio" name="genre" value="" checked[genre.picked.is_empty() && !genre.other_open];
+                            "aucun"
+                        }
                     }
+                    @for name in &genre.known {
+                        label {
+                            input type="radio" name="genre" value=(name) checked[!genre.other_open && genre.picked == name.as_str()];
+                            (name)
+                        }
+                    }
+                    label {
+                        input class="word-other-toggle" type="radio" name="genre" value=(GENRE_OTHER) checked[genre.other_open];
+                        "un autre"
+                    }
+                }
+                input class="word-other" name="genre_other" type="text" value=(genre.other) aria-label="Nom du genre" aria-invalid[naming];
+            }
+            @if let Some(msg) = &genre.naming {
+                div class="field-error" { (msg) }
+            }
+        }
+        @if genre.created {
+            p class="mast-note" { "Ce genre n'existe pas encore. La fiche le crée." }
+        }
+        @if !genre.phrases.is_empty() {
+            p {
+                a href=(genre.phrases) hx-get=(genre.phrases) hx-target="#content" hx-push-url="true" {
+                    @if genre.created { "Écrire les phrases" } @else { (genre.name) }
                 }
             }
         }
@@ -1734,7 +1780,7 @@ fn genre_line(genre: &GenreField) -> Markup {
 pub fn genre_field(
     store: &Store,
     dossier: &PersonDossier,
-    posted_name: Option<&str>,
+    posted: Option<&GenrePost>,
     created: bool,
 ) -> Result<GenreField, AppError> {
     let known = prospect_genres(store.connection())?
@@ -1748,23 +1794,43 @@ pub fn genre_field(
         });
     };
     let current = prospect_genre_for(store.connection(), id)?;
-    let name = match posted_name {
-        Some(raw) => raw.trim().to_string(),
-        None => current
-            .as_ref()
-            .map(|genre| genre.name.clone())
-            .unwrap_or_default(),
-    };
+    let stored = current
+        .as_ref()
+        .map(|genre| genre.name.clone())
+        .unwrap_or_default();
     let phrases = current
         .as_ref()
         .map(|genre| phrases_href("fiche", &dossier.name, &genre.id))
         .unwrap_or_default();
+    let (picked, other_open, other, naming) = match posted {
+        None => (stored.clone(), false, String::new(), None),
+        Some(post) => {
+            let other = post.other.trim().to_string();
+            if !other.is_empty() {
+                (String::new(), true, other, None)
+            } else if post.checked.trim() == GENRE_OTHER {
+                (
+                    String::new(),
+                    true,
+                    String::new(),
+                    Some("Nomme le genre.".to_string()),
+                )
+            } else {
+                (post.checked.trim().to_string(), false, String::new(), None)
+            }
+        }
+    };
     Ok(GenreField {
         show: true,
-        name,
+        name: stored,
         known,
         phrases,
         created,
+        attached: current.is_some(),
+        picked,
+        other_open,
+        other,
+        naming,
     })
 }
 

@@ -1558,6 +1558,19 @@ fn blank(value: &str) -> Option<String> {
     }
 }
 
+/// La ligne « un autre » gagne lorsqu'elle a un texte. Sinon, le mot coché.
+/// `None` : « un autre » est coché et la ligne est vide — on ne retire pas le genre.
+fn applied_genre_name(checked: &str, other: &str) -> Option<String> {
+    let other = other.trim();
+    if !other.is_empty() {
+        return Some(other.to_string());
+    }
+    if checked.trim() == gens::GENRE_OTHER {
+        return None;
+    }
+    Some(checked.trim().to_string())
+}
+
 fn parse_address(street: &str, postal_code: &str, city: &str) -> Result<Option<Address>, String> {
     let street = street.trim();
     let postal_code = postal_code.trim();
@@ -1579,7 +1592,7 @@ fn parse_address(street: &str, postal_code: &str, city: &str) -> Result<Option<A
 async fn load_genre_field(
     state: &AppState,
     dossier: &griffe_core::people::PersonDossier,
-    posted: Option<&str>,
+    posted: Option<&gens::GenrePost>,
     created: bool,
 ) -> gens::GenreField {
     state
@@ -1688,6 +1701,8 @@ pub struct FicheForm {
     contact_revision: String,
     #[serde(default)]
     genre: String,
+    #[serde(default)]
+    genre_other: String,
 }
 
 pub async fn fiche_post(
@@ -1708,7 +1723,10 @@ pub async fn fiche_post(
         .into_response();
     };
     let who = form.who.trim().to_string();
-    let posted_genre_name = form.genre.clone();
+    let posted_genre = gens::GenrePost {
+        checked: form.genre.clone(),
+        other: form.genre_other.clone(),
+    };
     let address = match parse_address(&form.street, &form.postal_code, &form.city) {
         Ok(address) => address,
         Err(msg) => {
@@ -1724,7 +1742,7 @@ pub async fn fiche_post(
                 contact_id: form.contact_id,
                 contact_revision: form.contact_revision,
             };
-            let genre = load_genre_field(&state, &dossier, Some(&posted_genre_name), false).await;
+            let genre = load_genre_field(&state, &dossier, Some(&posted_genre), false).await;
             return page(
                 &headers,
                 gens::fiche_page(
@@ -1754,7 +1772,7 @@ pub async fn fiche_post(
             contact_id: form.contact_id,
             contact_revision: form.contact_revision,
         };
-        let genre = load_genre_field(&state, &dossier, Some(&posted_genre_name), false).await;
+        let genre = load_genre_field(&state, &dossier, Some(&posted_genre), false).await;
         return page(
             &headers,
             gens::fiche_page(
@@ -1774,6 +1792,36 @@ pub async fn fiche_post(
         return page(
             &headers,
             gens::dossier_markup(&dossier, today, Some("la fiche a changé, rechargez")),
+        )
+        .into_response();
+    };
+    let Some(posted_genre_name) = applied_genre_name(&posted_genre.checked, &posted_genre.other)
+    else {
+        let values = gens::FicheValues {
+            who,
+            street: form.street,
+            postal_code: form.postal_code,
+            city: form.city,
+            representative: form.representative,
+            email: form.email,
+            phone: form.phone,
+            client_revision,
+            contact_id: form.contact_id,
+            contact_revision: form.contact_revision,
+        };
+        let genre = load_genre_field(&state, &dossier, Some(&posted_genre), false).await;
+        return page(
+            &headers,
+            gens::fiche_page(
+                &dossier,
+                &values,
+                &gens::FicheErrors {
+                    who: None,
+                    address: None,
+                    banner: None,
+                },
+                &genre,
+            ),
         )
         .into_response();
     };
@@ -1855,7 +1903,7 @@ pub async fn fiche_post(
                 contact_id: form.contact_id,
                 contact_revision: form.contact_revision,
             };
-            let genre = load_genre_field(&state, &dossier, Some(&posted_genre_name), false).await;
+            let genre = load_genre_field(&state, &dossier, Some(&posted_genre), false).await;
             page(
                 &headers,
                 gens::fiche_page(

@@ -1290,15 +1290,73 @@ tr.row-clickable:hover td { background: var(--paper-2); }
 .phrase-line a { color: var(--ink-2); }
 .phrase-line .current { color: var(--ink); }
 .phrase-line span, .phrase-line a { min-width: 0; overflow-wrap: anywhere; }
-.genre-field .genre-known { display: none; }
-.genre-field:focus-within .genre-known {
+/* Mots cochés, un ou plusieurs : l'input est dans le label.
+   .word-other-toggle découvre la ligne. */
+.word-choice {
+  border: 0;
+  margin: 0 0 18px;
+  padding: 0;
+}
+.word-choice legend {
+  display: block;
+  width: 100%;
+  padding: 0;
+  margin-bottom: 4px;
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+.word-choice-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 14px;
-  margin-top: 6px;
+  align-items: baseline;
+  gap: 8px 16px;
+}
+.word-choice label {
+  position: relative;
   font-family: var(--sans);
-  font-size: 13px;
+  font-size: 16px;
   color: var(--ink-2);
+  cursor: pointer;
+}
+.word-choice input[type="radio"],
+.word-choice input[type="checkbox"] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.word-choice label:has(input:checked) {
+  color: var(--ink);
+  box-shadow: inset 0 -1px 0 var(--ink);
+}
+.word-choice label:has(input:focus-visible) {
+  box-shadow: inset 0 -1px 0 var(--ink);
+}
+.word-choice .word-other {
+  display: none;
+  width: 100%;
+  margin-top: 8px;
+  padding: 8px 0;
+  background: transparent;
+  border: 0;
+  box-shadow: inset 0 -1px 0 var(--ink);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 16px;
+  outline: none;
+}
+.word-choice:has(.word-other-toggle:checked) .word-other {
+  display: block;
+}
+.word-choice .word-other[aria-invalid="true"] {
+  box-shadow: inset 0 -1px 0 var(--seal);
 }
 .phrase-chronicle {
   font-family: var(--serif);

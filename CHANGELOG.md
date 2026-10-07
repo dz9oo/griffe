@@ -7,6 +7,7 @@ Ce qui change pour qui se sert de Griffe. Une section par version publiée.
 - La case des 12 h tient la fenêtre ouverte pendant ces 12 h. Rouvrir Griffe dans ce délai retrouve la passphrase. « Verrouiller » ferme tout de suite. La case vide laisse le quart d'heure d'inactivité.
 - Un numéro français s'affiche par paires, 03 27 44 44 44. Le saisir compact, avec des points, ou avec l'indicatif +33 ou 0033, donne la même forme. Un numéro d'un autre pays reste tel que saisi.
 - Sur le dossier, Reporter se déplie. On choisit 3 jours, 10 jours, ou un nombre de jours, de 1 à 366. Demain, sur le jour, ne change pas.
+- Sur la fiche, le genre se choisit en mots. « aucun » le retire. « un autre » ouvre une ligne pour le nommer. Sans genre encore, le premier nom sert aux phrases.
 
 ## 0.3.7
 

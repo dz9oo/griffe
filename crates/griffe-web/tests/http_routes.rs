@@ -8384,6 +8384,29 @@ async fn the_genre_changes_only_the_words() {
     .await;
     assert!(!nouvelle.contains("name=\"genre\""), "{nouvelle}");
 
+    let bare = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Camille/fiche")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        bare.contains("Le premier nom servira aux phrases."),
+        "{bare}"
+    );
+    assert!(bare.contains("name=\"genre_other\""), "{bare}");
+    assert!(!bare.contains("word-choice"), "{bare}");
+    assert!(!bare.contains("<select"), "{bare}");
+    assert!(!bare.contains("name=\"genre\" type=\"text\""), "{bare}");
+
     let services = create_genre(&router, "Services publics").await;
     let shops = create_genre(&router, "Commerces").await;
     let services_page = post_form(
@@ -8451,12 +8474,39 @@ async fn the_genre_changes_only_the_words() {
             .unwrap(),
     )
     .await;
-    assert!(camille_fiche.contains("name=\"genre\""), "{camille_fiche}");
+    assert!(
+        camille_fiche.contains("class=\"word-choice\""),
+        "{camille_fiche}"
+    );
+    assert!(
+        camille_fiche.contains("type=\"radio\" name=\"genre\""),
+        "{camille_fiche}"
+    );
     assert!(
         camille_fiche.contains("Services publics"),
         "{camille_fiche}"
     );
     assert!(camille_fiche.contains("Commerces"), "{camille_fiche}");
+    assert!(camille_fiche.contains(">un autre<"), "{camille_fiche}");
+    assert!(
+        camille_fiche.contains("word-other-toggle"),
+        "{camille_fiche}"
+    );
+    assert!(camille_fiche.contains("value=\"autre\""), "{camille_fiche}");
+    assert!(
+        camille_fiche.contains("name=\"genre_other\""),
+        "{camille_fiche}"
+    );
+    assert!(!camille_fiche.contains("aucun"), "{camille_fiche}");
+    assert!(
+        !camille_fiche.contains("name=\"genre\" type=\"text\""),
+        "{camille_fiche}"
+    );
+    assert!(!camille_fiche.contains("<select"), "{camille_fiche}");
+    assert!(
+        !camille_fiche.contains("Le premier nom servira aux phrases."),
+        "{camille_fiche}"
+    );
     for forbidden in [
         "template", "cadence", "step", "campagne", "workflow", "pipeline",
     ] {
@@ -8674,6 +8724,11 @@ async fn the_genre_changes_only_the_words() {
     )
     .await;
     let revision = hidden_value(&camille_fiche, "client_revision");
+    assert!(camille_fiche.contains(">aucun<"), "{camille_fiche}");
+    assert!(
+        camille_fiche.contains("value=\"Services publics\" checked"),
+        "{camille_fiche}"
+    );
     post_form(
         &router,
         "/affaires/Camille/envoye",
@@ -8728,9 +8783,13 @@ async fn the_genre_changes_only_the_words() {
     let created = post_form(
         &router,
         "/affaires/L%C3%A9o/fiche",
-        &format!("who=L%C3%A9o&client_revision={leo_revision}&email=leo@exemple.fr&genre=Ateliers"),
+        &format!(
+            "who=L%C3%A9o&client_revision={leo_revision}&email=leo@exemple.fr&genre_other=Ateliers"
+        ),
     )
     .await;
+    assert!(created.contains("Ateliers"), "{created}");
+    assert!(created.contains("value=\"Ateliers\" checked"), "{created}");
     assert!(
         created.contains("Ce genre n'existe pas encore. La fiche le crée."),
         "{created}"
@@ -8780,6 +8839,73 @@ async fn the_genre_changes_only_the_words() {
     assert!(identity.contains("genre="), "{identity}");
     assert!(identity.contains("selon qui ils sont"), "{identity}");
 
+    let nina_fiche = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Nina/fiche")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    let nina_revision = hidden_value(&nina_fiche, "client_revision");
+    assert!(nina_fiche.contains(">aucun<"), "{nina_fiche}");
+    let unnamed = post_form(
+        &router,
+        "/affaires/Nina/fiche",
+        &format!("who=Nina&client_revision={nina_revision}&email=nina@exemple.fr&genre=autre"),
+    )
+    .await;
+    assert!(unnamed.contains("Nomme le genre."), "{unnamed}");
+    assert!(unnamed.contains(">aucun<"), "{unnamed}");
+    let nina_kept = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Nina/ecrire")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        nina_kept.contains("Commerces · Premier message") || nina_kept.contains("Commerces · "),
+        "{nina_kept}"
+    );
+    assert!(nina_kept.contains("Brouillon figé"), "{nina_kept}");
+    let nina_revision = hidden_value(&unnamed, "client_revision");
+    post_form(
+        &router,
+        "/affaires/Nina/fiche",
+        &format!("who=Nina&client_revision={nina_revision}&email=nina@exemple.fr&genre="),
+    )
+    .await;
+    let nina_plain = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Nina/ecrire")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(nina_plain.contains("Pas encore de genre"), "{nina_plain}");
+    assert!(nina_plain.contains("Brouillon figé"), "{nina_plain}");
+
     let css = body_text(
         router
             .oneshot(
@@ -8800,6 +8926,21 @@ async fn the_genre_changes_only_the_words() {
     assert!(
         line.contains("display: flex") && line.contains("flex-wrap: wrap"),
         "la ligne genre · moment se replie : {line}"
+    );
+    let chosen = css
+        .split(".word-choice label:has(input:checked)")
+        .nth(1)
+        .and_then(|rest| rest.split('}').next())
+        .expect("règle du mot choisi");
+    assert!(
+        chosen.contains("color: var(--ink)")
+            && chosen.contains("box-shadow: inset 0 -1px 0 var(--ink)")
+            && !chosen.contains("background"),
+        "le mot choisi est encre, souligné, sans fond : {chosen}"
+    );
+    assert!(
+        css.contains(".word-choice:has(.word-other-toggle:checked) .word-other"),
+        "la ligne suit le mot « un autre »"
     );
 }
 
