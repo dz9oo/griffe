@@ -3,6 +3,7 @@
 use rusqlite_migration::{M, Migrations};
 
 #[must_use]
+#[allow(clippy::too_many_lines)] // le registre grandit d'une paire par migration
 pub fn migrations() -> Migrations<'static> {
     Migrations::new(vec![
         M::up(include_str!("migrations/0001_init_up.sql"))
@@ -103,5 +104,7 @@ pub fn migrations() -> Migrations<'static> {
             .down(include_str!("migrations/0042_reverse_charge_down.sql")),
         M::up(include_str!("migrations/0043_dossier_work_notes_up.sql"))
             .down(include_str!("migrations/0043_dossier_work_notes_down.sql")),
+        M::up(include_str!("migrations/0044_work_kinds_up.sql"))
+            .down(include_str!("migrations/0044_work_kinds_down.sql")),
     ])
 }

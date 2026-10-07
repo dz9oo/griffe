@@ -71,6 +71,8 @@ async fn french_rejections(response: axum::response::Response) -> axum::response
 fn people_routes() -> Router<AppState> {
     Router::new()
         .route("/", get(handlers::gens))
+        .route("/types", get(gens::types_get).post(gens::types_create))
+        .route("/types/{id}", post(gens::types_geste))
         .route("/nouvelle", get(gens::new_get).post(gens::new_post))
         .route("/phrases", get(gens::phrases_get).post(gens::phrases_post))
         .route(
@@ -100,6 +102,7 @@ fn people_routes() -> Router<AppState> {
             "/{reference}/travaux",
             get(gens::travaux_get).post(gens::travaux_post),
         )
+        .route("/{reference}/types", post(gens::dossier_types))
         .route("/{reference}/travaux/apercu", post(gens::travaux_preview))
         .route("/{reference}/reporter", post(gens::snooze))
         .route(

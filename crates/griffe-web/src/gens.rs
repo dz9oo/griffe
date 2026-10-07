@@ -31,6 +31,9 @@ use griffe_core::prospection::{
     ReopenOpportunity, SetEstimation, WinOpportunity, estimation_lines, opportunity_by_id,
 };
 use griffe_core::reference::RefMatch;
+use griffe_core::work_kinds::{
+    CreateWorkKind, DeleteWorkKind, RenameWorkKind, SetDossierWorkKinds, work_kinds,
+};
 use maud::{Markup, html};
 use serde::Deserialize;
 use time::{Duration, OffsetDateTime};
@@ -2998,5 +3001,257 @@ async fn load_travaux(
         None => TravauxLoad::Locked,
         Some(Err(error)) => TravauxLoad::Failed(error.to_string()),
         Some(Ok(note)) => TravauxLoad::Ready(note),
+    }
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct DossierTypesForm {
+    #[serde(default)]
+    kind: Vec<String>,
+    #[serde(default)]
+    kind_other_on: String,
+    #[serde(default)]
+    kind_other: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(crate) struct TypeNameForm {
+    #[serde(default)]
+    name: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(crate) struct TypeGesteForm {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    geste: String,
+}
+
+fn dossier_types_form(pairs: &[(String, String)]) -> DossierTypesForm {
+    let mut form = DossierTypesForm::default();
+    for (key, value) in pairs {
+        match key.as_str() {
+            "kind" => form.kind.push(value.clone()),
+            "kind_other_on" => form.kind_other_on.clone_from(value),
+            "kind_other" => form.kind_other.clone_from(value),
+            _ => {}
+        }
+    }
+    form
+}
+
+pub async fn dossier_types(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(reference): Path<String>,
+    Form(pairs): Form<Vec<(String, String)>>,
+) -> Response {
+    let form = dossier_types_form(&pairs);
+    let today = state.today();
+    let Some(loaded) = load_dossier(&state, &reference).await else {
+        return locked(&headers).into_response();
+    };
+    let dossier = match loaded {
+        Ok(dossier) => dossier,
+        Err(error) => {
+            let message = error.to_string();
+            if message.contains("introuvable") {
+                return page(&headers, gens::not_found(&reference, today)).into_response();
+            }
+            return page(&headers, html! { div class="empty-state" { (message) } }).into_response();
+        }
+    };
+    let PersonKey::Client { id } = dossier.key else {
+        return page(
+            &headers,
+            gens::dossier_markup(&dossier, today, Some("Les types tiennent sur une fiche.")),
+        )
+        .into_response();
+    };
+    let other = form.kind_other.trim().to_string();
+    let toggle_on = form.kind_other_on == "1";
+    // « un autre » coché et vide : la sélection postée reste, rien n'est écrit.
+    if toggle_on && other.is_empty() {
+        let posted = gens::KindFormState {
+            selected: form.kind,
+            other_open: true,
+            other: String::new(),
+            naming: true,
+        };
+        return page(
+            &headers,
+            gens::dossier_with_kinds(&dossier, today, None, &posted),
+        )
+        .into_response();
+    }
+    let mut names = form.kind;
+    if !other.is_empty() {
+        names.push(other.clone());
+    }
+    let posted = gens::KindFormState {
+        selected: names.clone(),
+        other_open: toggle_on,
+        other: other.clone(),
+        naming: false,
+    };
+    let cmd = SetDossierWorkKinds { client: id, names };
+    let result = state
+        .with_store_mut(|store| Executor::new(store).execute(&cmd, &AppState::human_ctx()))
+        .await;
+    match result {
+        None => locked(&headers).into_response(),
+        Some(Err(error)) => {
+            let message = error.to_string();
+            page(
+                &headers,
+                gens::dossier_with_kinds(&dossier, today, Some(&message), &posted),
+            )
+            .into_response()
+        }
+        Some(Ok(_)) => match load_dossier(&state, &dossier.name).await {
+            None => locked(&headers).into_response(),
+            Some(Err(error)) => page(
+                &headers,
+                html! { div class="empty-state" { (error.to_string()) } },
+            )
+            .into_response(),
+            Some(Ok(fresh)) => saved_page(&headers, gens::dossier_markup(&fresh, today, None)),
+        },
+    }
+}
+
+pub async fn types_get(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
+    match types_markup(&state, "", None, None).await {
+        None => locked(&headers),
+        Some(Err(error)) => page(
+            &headers,
+            html! { div class="empty-state" { (error.to_string()) } },
+        ),
+        Some(Ok(markup)) => page(&headers, markup),
+    }
+}
+
+pub async fn types_create(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(form): Form<TypeNameForm>,
+) -> Response {
+    let cmd = CreateWorkKind {
+        name: form.name.clone(),
+    };
+    let result = state
+        .with_store_mut(|store| Executor::new(store).execute(&cmd, &AppState::human_ctx()))
+        .await;
+    match result {
+        None => locked(&headers).into_response(),
+        Some(Err(error)) => {
+            let message = error.to_string();
+            types_response(&state, &headers, &form.name, Some(&message), None, false).await
+        }
+        Some(Ok(_)) => types_response(&state, &headers, "", None, None, true).await,
+    }
+}
+
+pub async fn types_geste(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Form(form): Form<TypeGesteForm>,
+) -> Response {
+    if form.geste == "retirer" {
+        let known = state
+            .with_store(|store| {
+                work_kinds(store.connection()).map(|kinds| kinds.iter().any(|kind| kind.id == id))
+            })
+            .await;
+        return match known {
+            None => locked(&headers).into_response(),
+            Some(Err(error)) => page(
+                &headers,
+                html! { div class="empty-state" { (error.to_string()) } },
+            )
+            .into_response(),
+            Some(Ok(true)) => types_response(&state, &headers, "", None, Some(&id), false).await,
+            Some(Ok(false)) => {
+                types_response(
+                    &state,
+                    &headers,
+                    "",
+                    Some("Ce type n'existe pas."),
+                    None,
+                    false,
+                )
+                .await
+            }
+        };
+    }
+    if form.geste == "confirmer" {
+        let cmd = DeleteWorkKind { id: id.clone() };
+        let result = state
+            .with_store_mut(|store| Executor::new(store).execute(&cmd, &AppState::human_ctx()))
+            .await;
+        return match result {
+            None => locked(&headers).into_response(),
+            Some(Err(error)) => {
+                let message = error.to_string();
+                types_response(&state, &headers, "", Some(&message), None, false).await
+            }
+            Some(Ok(_)) => types_response(&state, &headers, "", None, None, true).await,
+        };
+    }
+    let cmd = RenameWorkKind {
+        id,
+        name: form.name,
+    };
+    let result = state
+        .with_store_mut(|store| Executor::new(store).execute(&cmd, &AppState::human_ctx()))
+        .await;
+    match result {
+        None => locked(&headers).into_response(),
+        Some(Err(error)) => {
+            let message = error.to_string();
+            types_response(&state, &headers, "", Some(&message), None, false).await
+        }
+        Some(Ok(_)) => types_response(&state, &headers, "", None, None, true).await,
+    }
+}
+
+async fn types_markup(
+    state: &AppState,
+    draft: &str,
+    banner: Option<&str>,
+    confirming: Option<&str>,
+) -> Option<Result<Markup, AppError>> {
+    state
+        .with_store(|store| {
+            let kinds = work_kinds(store.connection())?;
+            Ok(gens::types_page(&kinds, draft, banner, confirming))
+        })
+        .await
+}
+
+async fn types_response(
+    state: &AppState,
+    headers: &HeaderMap,
+    draft: &str,
+    banner: Option<&str>,
+    confirming: Option<&str>,
+    saved: bool,
+) -> Response {
+    match types_markup(state, draft, banner, confirming).await {
+        None => locked(headers).into_response(),
+        Some(Err(error)) => page(
+            headers,
+            html! { div class="empty-state" { (error.to_string()) } },
+        )
+        .into_response(),
+        Some(Ok(markup)) => {
+            if saved {
+                saved_page(headers, markup)
+            } else {
+                page(headers, markup).into_response()
+            }
+        }
     }
 }

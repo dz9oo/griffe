@@ -1,4 +1,5 @@
-//! `griffe people` — liste, dossier, récit des travaux. `today` est un argument d'adaptateur.
+//! `griffe people` — liste, dossier, récit des travaux, types de travaux.
+//! `today` est un argument d'adaptateur.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -13,10 +14,16 @@ use griffe_core::people::{
     PersonCue, PersonDossier, PersonFigure, PersonKey, PersonRow, people_list, person,
 };
 use griffe_core::store::Store;
+use griffe_core::work_kinds::{
+    CreateWorkKind, DeleteWorkKind, RenameWorkKind, SetDossierWorkKinds, WorkKind, WorkKindDossier,
+    dossiers_of_work_kind, work_kinds,
+};
 use time::Date;
 
 use crate::error::CliError;
-use crate::output::{HumanRender, format_json, format_outcome_as, format_value, key_values};
+use crate::output::{
+    HumanRender, format_json, format_outcome, format_outcome_as, format_value, key_values,
+};
 use crate::parsers::parse_date;
 use crate::table;
 
@@ -133,6 +140,9 @@ impl HumanRender for PersonDossier {
             pairs.push(("société", self.party.clone()));
         }
         pairs.push(("chapitre", chapter_fr(self.chapter).into()));
+        if !self.work_kinds.is_empty() {
+            pairs.push(("types", self.work_kinds.join(" · ")));
+        }
         if self.not_yet_client {
             pairs.push(("statut", "pas encore cliente".into()));
         }
@@ -315,6 +325,47 @@ pub enum PeopleCommand {
         #[arg(long, value_parser = parse_date)]
         today: Option<Date>,
     },
+    /// Les types de travaux.
+    Types {
+        #[command(subcommand)]
+        action: TypesCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum TypesCommand {
+    /// Liste le catalogue.
+    List,
+    /// Crée un type.
+    Create {
+        #[arg(value_name = "NOM")]
+        name: String,
+    },
+    /// Renomme un type. Les dossiers gardent le lien.
+    Rename {
+        #[arg(value_name = "ID")]
+        id: String,
+        #[arg(value_name = "NOM")]
+        name: String,
+    },
+    /// Retire le type et tous ses liens.
+    Remove {
+        #[arg(value_name = "ID")]
+        id: String,
+    },
+    /// Pose les types d'une fiche. Les noms sont séparés par des virgules.
+    Set {
+        #[arg(value_name = "RÉF")]
+        reference: String,
+        /// Noms séparés par des virgules. Une chaîne vide retire les liens.
+        #[arg(value_name = "NOMS")]
+        names: String,
+    },
+    /// Liste les dossiers qui portent ce type.
+    Dossiers {
+        #[arg(value_name = "ID")]
+        id: String,
+    },
 }
 
 pub fn run(
@@ -366,6 +417,86 @@ pub fn run(
             )?;
             Ok(format_outcome_as(&outcome, json, |note| note.body.clone()))
         }
+        PeopleCommand::Types { action } => run_types(action, store, ctx, json),
+    }
+}
+
+fn run_types(
+    action: TypesCommand,
+    store: &mut Store,
+    ctx: &ExecutionContext,
+    json: bool,
+) -> Result<String, CliError> {
+    match action {
+        TypesCommand::List => {
+            let kinds = work_kinds(store.connection())?;
+            Ok(format_value(&kinds, json))
+        }
+        TypesCommand::Create { name } => {
+            let outcome = Executor::new(store).execute(&CreateWorkKind { name }, ctx)?;
+            Ok(format_outcome(&outcome, json))
+        }
+        TypesCommand::Rename { id, name } => {
+            let outcome = Executor::new(store).execute(&RenameWorkKind { id, name }, ctx)?;
+            Ok(format_outcome(&outcome, json))
+        }
+        TypesCommand::Remove { id } => {
+            let outcome = Executor::new(store).execute(&DeleteWorkKind { id }, ctx)?;
+            Ok(format_outcome(&outcome, json))
+        }
+        TypesCommand::Set { reference, names } => {
+            let client = crate::refs::resolve_client(store, &reference)?;
+            let outcome = Executor::new(store).execute(
+                &SetDossierWorkKinds {
+                    client,
+                    names: split_kind_names(&names),
+                },
+                ctx,
+            )?;
+            Ok(format_outcome(&outcome, json))
+        }
+        TypesCommand::Dossiers { id } => {
+            let rows = dossiers_of_work_kind(store.connection(), &id)?;
+            Ok(format_value(&rows, json))
+        }
+    }
+}
+
+fn split_kind_names(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
+impl HumanRender for WorkKind {
+    fn render_human(&self) -> String {
+        format!("{}  {}", self.id, self.name)
+    }
+}
+
+impl HumanRender for Vec<WorkKind> {
+    fn render_human(&self) -> String {
+        if self.is_empty() {
+            return "Aucun type.".into();
+        }
+        self.iter()
+            .map(HumanRender::render_human)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+impl HumanRender for Vec<WorkKindDossier> {
+    fn render_human(&self) -> String {
+        if self.is_empty() {
+            return "Aucun dossier.".into();
+        }
+        self.iter()
+            .map(|row| format!("{}  {}", row.client, row.name))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 

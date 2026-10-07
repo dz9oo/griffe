@@ -9,6 +9,7 @@ Ce qui change pour qui se sert de Griffe. Une section par version publiée.
 - Sur le dossier, Reporter se déplie. On choisit 3 jours, 10 jours, ou un nombre de jours, de 1 à 366. Demain, sur le jour, ne change pas.
 - Sur la fiche, le genre se choisit en mots. « aucun » le retire. « un autre » ouvre une ligne pour le nommer. Sans genre encore, le premier nom sert aux phrases.
 - Sur le dossier, Les travaux gardent un récit en markdown, à côté de l'estimation. L'aperçu suit la frappe sans enregistrer. Garder pose le texte dans le coffre.
+- Sur le dossier, les types de travaux se choisissent en mots. Les affaires se filtrent par type. La page Les types crée, renomme et retire.
 
 ## 0.3.7
 

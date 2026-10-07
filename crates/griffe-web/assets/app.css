@@ -705,6 +705,15 @@ details.snooze > summary::marker { content: ""; }
 }
 .people li:last-child a, .people li:last-child button { border-bottom: 1px solid var(--rule); }
 .people .nm { font-size: 20px; font-weight: 500; letter-spacing: -0.02em; }
+.people .kinds {
+  color: var(--ink-2);
+  font-size: 13px;
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 28rem;
+}
 .people .st { color: var(--ink-2); font-size: 14px; margin-top: 3px; }
 .people .amt { font-family: var(--serif); font-size: 18px; align-self: center; }
 .people a:hover .nm { color: var(--seal); }
@@ -1141,7 +1150,26 @@ tr.row-clickable:hover td { background: var(--paper-2); }
 .badge.blocked { background: var(--paper-2); color: var(--ink-2); }
 
 .co { margin: 8px 0 24px; color: var(--ink-2); font-size: 16px; }
-.letter-actions { margin: 8px 0 28px; }
+.letter-actions {
+  display: flex;
+  align-items: baseline;
+  gap: 18px;
+  flex-wrap: wrap;
+  margin: 8px 0 28px;
+}
+.letter-actions .aside {
+  color: var(--ink-2);
+  font-size: 14px;
+  text-decoration: none;
+}
+.letter-actions .aside:hover { color: var(--ink); }
+.kind-line { padding: 12px 0; border-top: 1px solid var(--rule); }
+.kind-word {
+  font-family: var(--sans);
+  font-size: 16px;
+  color: var(--ink);
+  margin: 0 0 6px;
+}
 .back {
   display: inline-block;
   font-size: 13px;
@@ -1354,6 +1382,10 @@ tr.row-clickable:hover td { background: var(--paper-2); }
 }
 .word-choice:has(.word-other-toggle:checked) .word-other {
   display: block;
+}
+.word-choice a {
+  color: inherit;
+  text-decoration: none;
 }
 .word-choice .word-other[aria-invalid="true"] {
   box-shadow: inset 0 -1px 0 var(--seal);

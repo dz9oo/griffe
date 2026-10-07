@@ -229,6 +229,9 @@ pub struct PersonRow {
     pub due_on: Option<Date>,
     pub client_id: Option<ClientId>,
     pub opportunity_id: Option<OpportunityId>,
+    /// Types de travaux, pour l'aperçu. Vide chez un fournisseur.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub work_kinds: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -413,6 +416,12 @@ pub struct PersonDossier {
     /// Travaux notés sur l'estimation. Vide tant que l'historique n'est pas chargé.
     #[serde(default)]
     pub work: Vec<WorkLine>,
+    /// Types posés sur le dossier.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub work_kinds: Vec<String>,
+    /// Catalogue, pour le formulaire du dossier. Absent du JSON.
+    #[serde(skip)]
+    pub work_kind_catalog: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -718,6 +727,25 @@ struct Snapshot {
     prospect_ids: HashSet<ClientId>,
     touches: HashMap<OpportunityId, Touch>,
     stopped: Vec<Opportunity>,
+    work_kinds: HashMap<ClientId, Vec<String>>,
+    work_kind_catalog: Vec<String>,
+}
+
+struct KindIndex {
+    by_client: HashMap<ClientId, Vec<String>>,
+    catalog: Vec<String>,
+}
+
+fn load_kind_index(conn: &Connection) -> Result<KindIndex, AppError> {
+    let mut by_client: HashMap<ClientId, Vec<String>> = HashMap::new();
+    for (client, name) in crate::work_kinds::attached_kind_names(conn)? {
+        by_client.entry(client).or_default().push(name);
+    }
+    let catalog = crate::work_kinds::work_kinds(conn)?
+        .into_iter()
+        .map(|kind| kind.name)
+        .collect();
+    Ok(KindIndex { by_client, catalog })
 }
 
 /// Échanges déjà notés sur une opportunité. Les notes internes ne comptent pas.
@@ -806,6 +834,9 @@ impl Snapshot {
             }
             touches.insert(opp.id, touch);
         }
+        let kinds = load_kind_index(conn)?;
+        let work_kinds = kinds.by_client;
+        let work_kind_catalog = kinds.catalog;
         Ok(Self {
             clients,
             contacts,
@@ -824,7 +855,13 @@ impl Snapshot {
             prospect_ids,
             touches,
             stopped,
+            work_kinds,
+            work_kind_catalog,
         })
+    }
+
+    fn kinds_of(&self, id: ClientId) -> Vec<String> {
+        self.work_kinds.get(&id).cloned().unwrap_or_default()
     }
 
     fn name_of(&self, id: ClientId) -> String {
@@ -954,6 +991,7 @@ impl Snapshot {
             due_on: None,
             client_id: Some(opp.client_id),
             opportunity_id: Some(opp.id),
+            work_kinds: self.kinds_of(opp.client_id),
         }
     }
 
@@ -1021,6 +1059,7 @@ impl Snapshot {
             due_on,
             client_id: Some(opp.client_id),
             opportunity_id: Some(opp.id),
+            work_kinds: self.kinds_of(opp.client_id),
         }
     }
 
@@ -1079,6 +1118,7 @@ impl Snapshot {
             due_on: None,
             client_id: Some(mission.client_id),
             opportunity_id: mission.opportunity_id,
+            work_kinds: self.kinds_of(mission.client_id),
         }
     }
 
@@ -1122,6 +1162,7 @@ impl Snapshot {
             due_on: None,
             client_id: None,
             opportunity_id: None,
+            work_kinds: Vec::new(),
         }
     }
 
@@ -1370,6 +1411,8 @@ impl Snapshot {
             outgoing: None,
             loss_reason: stopped_opp.and_then(|o| o.loss_reason.clone()),
             work: Vec::new(),
+            work_kinds: self.kinds_of(id),
+            work_kind_catalog: self.work_kind_catalog.clone(),
         })
     }
 
@@ -1421,6 +1464,8 @@ impl Snapshot {
             outgoing: Some(facts),
             loss_reason: None,
             work: Vec::new(),
+            work_kinds: Vec::new(),
+            work_kind_catalog: Vec::new(),
         })
     }
 

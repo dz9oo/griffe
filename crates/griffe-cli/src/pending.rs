@@ -28,6 +28,7 @@ use griffe_core::society::{
     RetractVatReversal, UpdateVatCarryIn,
 };
 use griffe_core::store::Store;
+use griffe_core::work_kinds::DeleteWorkKind;
 
 use crate::error::CliError;
 use crate::output::{format_json, format_outcome};
@@ -293,6 +294,9 @@ pub fn confirm(store: &mut Store, id: PendingActionId, json: bool) -> Result<Str
         Ok(format_outcome(&outcome, json))
     } else if action.command_name == PurgePaper::NAME {
         let outcome = Executor::new(store).confirm::<PurgePaper>(id)?;
+        Ok(format_outcome(&outcome, json))
+    } else if action.command_name == DeleteWorkKind::NAME {
+        let outcome = Executor::new(store).confirm::<DeleteWorkKind>(id)?;
         Ok(format_outcome(&outcome, json))
     } else {
         Err(CliError::UnknownConfirmableCommand(action.command_name))

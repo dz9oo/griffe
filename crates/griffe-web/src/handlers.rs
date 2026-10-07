@@ -109,6 +109,8 @@ pub async fn dashboard(State(state): State<AppState>, headers: HeaderMap) -> Htm
 pub struct AffairesQuery {
     #[serde(default)]
     q: String,
+    #[serde(default, rename = "type")]
+    kind: String,
 }
 
 pub async fn gens(
@@ -117,8 +119,9 @@ pub async fn gens(
     Query(form): Query<AffairesQuery>,
 ) -> Html<String> {
     let q = form.q;
+    let kind = form.kind;
     letter(&state, headers, ViewId::Gens, move |store, today| {
-        views::gens::render_search(store, today, &q)
+        views::gens::render_search(store, today, &q, &kind)
     })
     .await
 }

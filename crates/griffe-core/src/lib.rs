@@ -34,3 +34,4 @@ pub mod setup;
 pub mod society;
 pub mod store;
 pub mod vault;
+pub mod work_kinds;

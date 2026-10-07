@@ -1,9 +1,12 @@
 //! Les affaires : une liste, un dossier. Les faits viennent de `griffe_core::people` ; cette vue
 //! rédige le français.
 
+use std::collections::HashSet;
+
 use griffe_core::app::AppError;
 use griffe_core::domain::{
-    ExpensePaidBy, FollowUpSubject, InteractionKind, display_phone, format_date, format_date_fr,
+    ClientId, ExpensePaidBy, FollowUpSubject, InteractionKind, display_phone, format_date,
+    format_date_fr,
 };
 use griffe_core::dossier_work::DossierWork;
 use griffe_core::follow_up::{
@@ -15,6 +18,7 @@ use griffe_core::people::{
     PersonCue, PersonDossier, PersonFigure, PersonKey, PersonRow, people_list, person,
 };
 use griffe_core::store::Store;
+use griffe_core::work_kinds::{WorkKind, dossiers_of_work_kind, work_kinds};
 use maud::{Markup, PreEscaped, html};
 use time::Date;
 
@@ -41,16 +45,55 @@ pub fn person_href(name: &str) -> String {
 }
 
 pub fn render(store: &Store, today: Date) -> Result<Markup, AppError> {
-    render_search(store, today, "")
+    render_search(store, today, "", "")
 }
 
-pub fn render_search(store: &Store, today: Date, query: &str) -> Result<Markup, AppError> {
+pub fn render_search(
+    store: &Store,
+    today: Date,
+    query: &str,
+    type_id: &str,
+) -> Result<Markup, AppError> {
     let list = people_list(store.connection(), today)?;
-    Ok(list_markup(&list, today, None, query.trim()))
+    let catalog = work_kinds(store.connection())?;
+    let type_id = type_id.trim();
+    let allowed = if type_id.is_empty() {
+        None
+    } else if catalog.iter().any(|kind| kind.id == type_id) {
+        let ids = dossiers_of_work_kind(store.connection(), type_id)?
+            .into_iter()
+            .map(|dossier| dossier.client)
+            .collect();
+        Some(ids)
+    } else {
+        Some(HashSet::new())
+    };
+    Ok(list_markup(
+        &list,
+        today,
+        None,
+        query.trim(),
+        &catalog,
+        type_id,
+        allowed.as_ref(),
+    ))
 }
 
-pub fn list_markup(list: &PeopleList, today: Date, flash: Option<&str>, query: &str) -> Markup {
+pub fn list_markup(
+    list: &PeopleList,
+    today: Date,
+    flash: Option<&str>,
+    query: &str,
+    catalog: &[WorkKind],
+    type_id: &str,
+    allowed: Option<&HashSet<ClientId>>,
+) -> Markup {
     let empty = list.is_empty();
+    let conversations = rows_kept(&list.conversations, allowed);
+    let messages = rows_kept(&list.first_messages, allowed);
+    let contacts = rows_kept(&list.first_contacts, allowed);
+    let missions = rows_kept(&list.missions, allowed);
+    let filtering = allowed.is_some();
     html! {
         div class="letter" data-view=(ViewId::Gens.slug()) {
             div class="date" { "Les affaires · " (letter_date(today)) }
@@ -69,11 +112,66 @@ pub fn list_markup(list: &PeopleList, today: Date, flash: Option<&str>, query: &
                   hx-get="/affaires/nouvelle" hx-target="#content" hx-push-url="true" {
                     "Nouvelle conversation"
                 }
+                a class="aside" href="/affaires/types"
+                  hx-get="/affaires/types" hx-target="#content" hx-push-url="true" {
+                    "Les types"
+                }
             }
-            (conversation_chapter(list, query))
-            (chapter("En mission", &list.missions, "Aucune mission en cours."))
+            (kind_row(catalog, query, type_id))
+            (conversation_chapter(&conversations, &messages, &contacts, query, type_id, filtering))
+            (chapter(
+                "En mission",
+                &missions,
+                if filtering { "Aucune mission de ce type." } else { "Aucune mission en cours." },
+            ))
             (outgoing_chapter(&list.outgoing))
             (stopped_chapter(&list.stopped))
+        }
+    }
+}
+
+fn rows_kept<'a>(rows: &'a [PersonRow], allowed: Option<&HashSet<ClientId>>) -> Vec<&'a PersonRow> {
+    rows.iter()
+        .filter(|row| match allowed {
+            None => true,
+            Some(ids) => row.client_id.is_some_and(|id| ids.contains(&id)),
+        })
+        .collect()
+}
+
+fn affaires_href(query: &str, type_id: &str) -> String {
+    let mut parts = Vec::new();
+    if !query.is_empty() {
+        parts.push(format!("q={}", path_encode(query)));
+    }
+    if !type_id.is_empty() {
+        parts.push(format!("type={}", path_encode(type_id)));
+    }
+    if parts.is_empty() {
+        "/affaires".to_string()
+    } else {
+        format!("/affaires?{}", parts.join("&"))
+    }
+}
+
+fn kind_row(catalog: &[WorkKind], query: &str, active: &str) -> Markup {
+    if catalog.is_empty() {
+        return html! {};
+    }
+    html! {
+        div class="word-choice" {
+            div class="word-choice-row" {
+                @for kind in catalog {
+                    @let on = kind.id == active;
+                    @let href = affaires_href(query, if on { "" } else { kind.id.as_str() });
+                    label {
+                        input type="checkbox" checked[on] disabled tabindex="-1" aria-hidden="true";
+                        a href=(href) hx-get=(href) hx-target="#content" hx-push-url="true" {
+                            (kind.name)
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -148,41 +246,58 @@ fn sole_open(list: &PeopleList) -> Option<&PersonRow> {
         .or(list.first_contacts.first())
 }
 
-fn conversation_chapter(list: &PeopleList, query: &str) -> Markup {
-    let pile = !list.first_messages.is_empty() || !list.first_contacts.is_empty();
+fn conversation_chapter(
+    conversations: &[&PersonRow],
+    messages: &[&PersonRow],
+    contacts: &[&PersonRow],
+    query: &str,
+    type_id: &str,
+    filtering: bool,
+) -> Markup {
+    let pile = !messages.is_empty() || !contacts.is_empty();
+    let empty = if filtering {
+        "Aucune conversation de ce type."
+    } else {
+        "Aucune conversation ouverte."
+    };
     html! {
         p class="section-label" { "En conversation" }
-        @if list.conversations.is_empty() && !pile {
-            p class="empty-state" { "Aucune conversation ouverte." }
-        } @else if !list.conversations.is_empty() {
-            ul class="people" {
-                @for row in &list.conversations {
-                    li { (row_link(row)) }
-                }
-            }
+        @if conversations.is_empty() && !pile {
+            p class="empty-state" { (empty) }
+        } @else if !conversations.is_empty() {
+            (people_items(conversations))
         }
-        (pile_chapter(
-            &list.first_messages,
-            query,
-            "premier message",
-            "premiers messages",
-            "q-messages",
-        ))
-        (pile_chapter(
-            &list.first_contacts,
-            query,
-            "premier contact",
-            "premiers contacts",
-            "q-contacts",
-        ))
+        (pile_chapter(messages, query, type_id, "premier message", "premiers messages", "q-messages"))
+        (pile_chapter(contacts, query, type_id, "premier contact", "premiers contacts", "q-contacts"))
     }
 }
 
-fn pile_chapter(rows: &[PersonRow], query: &str, one: &str, many: &str, field_id: &str) -> Markup {
+fn people_items(rows: &[&PersonRow]) -> Markup {
+    html! {
+        ul class="people" {
+            @for row in rows {
+                li { (row_link(row)) }
+            }
+        }
+    }
+}
+
+fn pile_chapter(
+    rows: &[&PersonRow],
+    query: &str,
+    type_id: &str,
+    one: &str,
+    many: &str,
+    field_id: &str,
+) -> Markup {
     if rows.is_empty() {
         return html! {};
     }
-    let shown: Vec<&PersonRow> = rows.iter().filter(|row| name_matches(row, query)).collect();
+    let shown: Vec<&PersonRow> = rows
+        .iter()
+        .copied()
+        .filter(|row| name_matches(row, query))
+        .collect();
     let title = if rows.len() == 1 {
         format!("1 {one}")
     } else {
@@ -198,15 +313,14 @@ fn pile_chapter(rows: &[PersonRow], query: &str, one: &str, many: &str, field_id
                 hx-get="/affaires" hx-target="#content" hx-push-url="true" {
                 input id=(field_id) type="search" name="q" value=(query)
                     placeholder="Un nom" aria-label="Un nom";
+                @if !type_id.is_empty() {
+                    input type="hidden" name="type" value=(type_id);
+                }
             }
             @if shown.is_empty() {
                 p class="empty-state" { "Aucun nom." }
             } @else {
-                ul class="people" {
-                    @for row in shown {
-                        li { (row_link(row)) }
-                    }
-                }
+                (people_items(&shown))
             }
         }
     }
@@ -243,17 +357,13 @@ fn fold_name(value: &str) -> String {
         .collect()
 }
 
-fn chapter(label: &str, rows: &[PersonRow], empty: &str) -> Markup {
+fn chapter(label: &str, rows: &[&PersonRow], empty: &str) -> Markup {
     html! {
         p class="section-label" { (label) }
         @if rows.is_empty() {
             p class="empty-state" { (empty) }
         } @else {
-            ul class="people" {
-                @for row in rows {
-                    li { (row_link(row)) }
-                }
-            }
+            (people_items(rows))
         }
     }
 }
@@ -264,6 +374,9 @@ fn row_link(row: &PersonRow) -> Markup {
         a href=(href) hx-get=(href) hx-target="#content" hx-push-url="true" {
             div {
                 div class="nm" { (row.name) }
+                @if !row.work_kinds.is_empty() {
+                    p class="kinds" { (row.work_kinds.join(" · ")) }
+                }
                 div class="st" { (cues_fr(&row.cues)) }
             }
             @if let Some(fig) = &row.figure {
@@ -339,7 +452,72 @@ pub fn dossier_page(store: &Store, needle: &str, today: Date) -> Result<Markup, 
     Ok(dossier_markup(&dossier, today, None))
 }
 
+/// Saisie des types sur le dossier. `naming` affiche « Nomme le type. » sans écrire.
+pub struct KindFormState {
+    pub selected: Vec<String>,
+    pub other_open: bool,
+    pub other: String,
+    pub naming: bool,
+}
+
 pub fn dossier_markup(dossier: &PersonDossier, today: Date, flash: Option<&str>) -> Markup {
+    dossier_body(dossier, today, flash, None)
+}
+
+pub fn dossier_with_kinds(
+    dossier: &PersonDossier,
+    today: Date,
+    flash: Option<&str>,
+    kinds: &KindFormState,
+) -> Markup {
+    dossier_body(dossier, today, flash, Some(kinds))
+}
+
+fn kinds_form(dossier: &PersonDossier, href: &str, posted: Option<&KindFormState>) -> Markup {
+    let selected = posted.map_or(dossier.work_kinds.as_slice(), |state| {
+        state.selected.as_slice()
+    });
+    let other_open = posted.is_some_and(|state| state.other_open);
+    let other = posted.map_or("", |state| state.other.as_str());
+    let naming = posted.is_some_and(|state| state.naming);
+    let action = format!("{href}/types");
+    html! {
+        form hx-post=(action) hx-target="#content" {
+            fieldset class="word-choice" {
+                legend { "Types" }
+                div class="word-choice-row" {
+                    @for name in &dossier.work_kind_catalog {
+                        label {
+                            input type="checkbox" name="kind" value=(name)
+                                checked[selected.iter().any(|item| item == name)];
+                            (name)
+                        }
+                    }
+                    label {
+                        input class="word-other-toggle" type="checkbox" name="kind_other_on" value="1"
+                            checked[other_open];
+                        "un autre"
+                    }
+                }
+                input class="word-other" name="kind_other" type="text" value=(other)
+                    aria-label="Nom du type" aria-invalid[naming];
+            }
+            @if naming {
+                div class="field-error" { "Nomme le type." }
+            }
+            div class="row-actions" {
+                button class="seal" type="submit" { "Enregistrer" }
+            }
+        }
+    }
+}
+
+fn dossier_body(
+    dossier: &PersonDossier,
+    today: Date,
+    flash: Option<&str>,
+    posted: Option<&KindFormState>,
+) -> Markup {
     let href = person_href(&dossier.name);
     let client_fiche = matches!(dossier.key, PersonKey::Client { .. });
     let (daily, fate): (Vec<_>, Vec<_>) = dossier
@@ -356,6 +534,9 @@ pub fn dossier_markup(dossier: &PersonDossier, today: Date, flash: Option<&str>)
             }
             div class="who" { (dossier.name) }
             p class="co" { (subtitle(dossier, today)) }
+            @if client_fiche {
+                (kinds_form(dossier, &href, posted))
+            }
             @if let Some(msg) = flash {
                 p class="mast-note" role="status" { (msg) }
             }
@@ -1996,5 +2177,61 @@ pub fn load_card(
     match card_for(store.connection(), subject, today) {
         Ok(card) => Ok(Some(card)),
         Err(_) => Ok(None),
+    }
+}
+
+pub fn types_page(
+    kinds: &[WorkKind],
+    draft: &str,
+    banner: Option<&str>,
+    confirming: Option<&str>,
+) -> Markup {
+    html! {
+        div class="letter" data-view=(ViewId::Gens.slug()) {
+            a class="back" href="/affaires" hx-get="/affaires" hx-target="#content" hx-push-url="true" {
+                "← Les affaires"
+            }
+            h1 { "Les types." }
+            p class="lede" { "Un type dit le métier du dossier. Plusieurs peuvent tenir sur la même fiche." }
+            @if let Some(msg) = banner {
+                p class="mast-note" role="alert" { (msg) }
+            }
+            @for kind in kinds {
+                div class="kind-line" {
+                    @if confirming == Some(kind.id.as_str()) {
+                        form hx-post=(format!("/affaires/types/{}", kind.id)) hx-target="#content" {
+                            p class="kind-word" { (kind.name) }
+                            div class="row-actions" {
+                                button class="btn danger" type="submit" name="geste" value="confirmer" {
+                                    "Oui, le retirer"
+                                }
+                                a class="quiet" href="/affaires/types"
+                                  hx-get="/affaires/types" hx-target="#content" hx-push-url="true" {
+                                    "Garder"
+                                }
+                            }
+                        }
+                    } @else {
+                        form hx-post=(format!("/affaires/types/{}", kind.id)) hx-target="#content" {
+                            p class="kind-word" { (kind.name) }
+                            div class="field" {
+                                label for=(format!("rename-{}", kind.id)) { "Nouveau nom" }
+                                input id=(format!("rename-{}", kind.id)) name="name" type="text" value=(kind.name);
+                            }
+                            div class="row-actions" {
+                                button class="quiet" type="submit" name="geste" value="renommer" { "Renommer" }
+                                button class="quiet" type="submit" name="geste" value="retirer" { "Retirer" }
+                            }
+                        }
+                    }
+                }
+            }
+            form hx-post="/affaires/types" hx-target="#content" {
+                (form::text("name", "Un type", draft, None))
+                div class="row-actions" {
+                    button class="seal" type="submit" { "Enregistrer" }
+                }
+            }
+        }
     }
 }

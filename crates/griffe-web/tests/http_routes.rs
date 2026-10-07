@@ -8,13 +8,17 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use griffe_core::app::{Actor, ExecutionContext, Executor};
+use griffe_core::app::{Actor, ExecutionContext, Executor, Outcome};
 use griffe_core::clients::{CreateClient, CreateContact, list_clients};
-use griffe_core::domain::{ClientId, MissionId, Money, OpportunityId, Probability};
+use griffe_core::domain::{
+    ClientId, FollowUpSubject, MissionId, Money, OpportunityId, Probability,
+};
 use griffe_core::expenses::RecordExpense;
-use griffe_core::follow_up::SetFollowUpSender;
+use griffe_core::follow_up::{SetDossierGenre, SetFollowUpSender, prospect_genre_for};
 use griffe_core::missions::CreateMission;
-use griffe_core::prospection::{CreateOpportunity, CreateProspect, list_opportunities};
+use griffe_core::prospection::{
+    CreateOpportunity, CreateProspect, WinOpportunity, list_opportunities,
+};
 use griffe_core::store::{Passphrase, Store};
 use griffe_web::AppState;
 use http_body_util::BodyExt;
@@ -10164,4 +10168,438 @@ async fn travaux_page_previews_without_saving_and_keeps_the_rendered_note() {
         estimation.contains("Ce que chaque ligne vaut."),
         "{estimation}"
     );
+}
+
+fn kind_forms(html: &str) -> Vec<(String, String)> {
+    let marker = "hx-post=\"/affaires/types/";
+    let word = "class=\"kind-word\">";
+    let mut rest = html;
+    let mut found = Vec::new();
+    while let Some(at) = rest.find(marker) {
+        let after = &rest[at + marker.len()..];
+        let end = after.find('"').unwrap_or(0);
+        let id = after[..end].to_string();
+        let name = after
+            .find(word)
+            .map(|pos| {
+                let start = pos + word.len();
+                let stop = after[start..].find('<').unwrap_or(0);
+                after[start..start + stop].trim().to_string()
+            })
+            .unwrap_or_default();
+        found.push((id, name));
+        rest = &after[end..];
+    }
+    found
+}
+
+async fn posted(
+    router: &axum::Router,
+    uri: &str,
+    fields: &[(&str, &str)],
+) -> axum::response::Response {
+    router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from(form_encode(fields)))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn work_kinds_filter_the_affaires_and_leave_on_the_second_gesture() {
+    let db_path = test_db_path("types");
+    let mut store = Store::create(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    let quai = match Executor::new(&mut store)
+        .execute(
+            &CreateProspect {
+                prospect_name: "Atelier Quai".into(),
+                address: None,
+                representative: None,
+                email: None,
+                phone: None,
+                name: "Affaire du quai".into(),
+                amount: Money::from_cents(120_000),
+                probability: Probability::new(40).unwrap(),
+                next_action_at: time::macros::date!(2026 - 10 - 07),
+                source: None,
+            },
+            &human_ctx(),
+        )
+        .unwrap()
+    {
+        Outcome::Applied(id) => id,
+        other => panic!("création attendue, obtenu {other:?}"),
+    };
+    let port = match Executor::new(&mut store)
+        .execute(
+            &CreateProspect {
+                prospect_name: "Atelier Port".into(),
+                address: None,
+                representative: None,
+                email: None,
+                phone: None,
+                name: "Affaire du port".into(),
+                amount: Money::from_cents(80_000),
+                probability: Probability::new(40).unwrap(),
+                next_action_at: time::macros::date!(2026 - 10 - 07),
+                source: None,
+            },
+            &human_ctx(),
+        )
+        .unwrap()
+    {
+        Outcome::Applied(id) => id,
+        other => panic!("création attendue, obtenu {other:?}"),
+    };
+    Executor::new(&mut store)
+        .execute(
+            &SetDossierGenre {
+                subject: FollowUpSubject::Opportunity(quai),
+                name: "Mairie".into(),
+            },
+            &human_ctx(),
+        )
+        .unwrap();
+    Executor::new(&mut store)
+        .execute(
+            &WinOpportunity {
+                opportunity_id: port,
+                started_on: time::macros::date!(2026 - 10 - 07),
+            },
+            &human_ctx(),
+        )
+        .unwrap();
+    Executor::new(&mut store)
+        .execute(
+            &RecordExpense {
+                label: "Ramette".into(),
+                category: griffe_core::domain::ExpenseCategory::Software,
+                amount: Money::from_cents(2_000),
+                vat_rate: griffe_core::domain::VatRate::Zero,
+                vat_deductible: Money::ZERO,
+                incurred_on: time::macros::date!(2026 - 10 - 01),
+                receipt_hash: None,
+                receipt_filename: None,
+                bank_transaction_id: None,
+                supplier: Some("Papeterie du Nord".into()),
+                paid_by: griffe_core::domain::ExpensePaidBy::Company,
+                reverse_charge: false,
+            },
+            &human_ctx(),
+        )
+        .unwrap();
+    drop(store);
+
+    let state = AppState::new(db_path.clone());
+    state
+        .unlock(&Passphrase::from(PASSPHRASE), false)
+        .await
+        .unwrap();
+    let state = state.with_today(time::macros::date!(2026 - 10 - 07));
+    let router = griffe_web::router(state);
+    let quai_uri = "/affaires/Atelier%20Quai";
+    let port_uri = "/affaires/Atelier%20Port";
+
+    let naming = posted(
+        &router,
+        &format!("{quai_uri}/types"),
+        &[("kind_other_on", "1"), ("kind_other", "")],
+    )
+    .await;
+    assert_eq!(naming.status(), StatusCode::OK);
+    assert!(naming.headers().get("HX-Trigger").is_none());
+    let naming_body = body_text(naming).await;
+    assert!(naming_body.contains("Nomme le type."), "{naming_body}");
+    assert!(!naming_body.contains("hx-on"), "{naming_body}");
+
+    let created = posted(
+        &router,
+        &format!("{quai_uri}/types"),
+        &[("kind_other_on", "1"), ("kind_other", "site web")],
+    )
+    .await;
+    assert_eq!(
+        created
+            .headers()
+            .get("HX-Trigger")
+            .and_then(|value| value.to_str().ok()),
+        Some("griffe:saved")
+    );
+    let created_body = body_text(created).await;
+    assert!(
+        created_body.contains("value=\"site web\""),
+        "{created_body}"
+    );
+
+    let catalog = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/types")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(catalog.contains("Les types."), "{catalog}");
+    let forms = kind_forms(&catalog);
+    let site_id = forms
+        .iter()
+        .find(|(_, name)| name == "site web")
+        .map(|(id, _)| id.clone())
+        .unwrap_or_else(|| panic!("site web absent du catalogue : {catalog}"));
+
+    let filtered = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/affaires?type={site_id}"))
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(filtered.contains("Atelier Quai"), "{filtered}");
+    assert!(filtered.contains("Papeterie du Nord"), "{filtered}");
+    assert!(
+        filtered.contains("Aucune mission de ce type."),
+        "{filtered}"
+    );
+    assert!(!filtered.contains("Atelier Port"), "{filtered}");
+    assert!(filtered.contains("Les types"), "{filtered}");
+    assert!(
+        filtered.contains("<p class=\"kinds\">site web</p>"),
+        "{filtered}"
+    );
+
+    let both = posted(
+        &router,
+        &format!("{port_uri}/types"),
+        &[
+            ("kind", "site web"),
+            ("kind_other_on", "1"),
+            ("kind_other", "backend"),
+        ],
+    )
+    .await;
+    assert_eq!(
+        both.headers()
+            .get("HX-Trigger")
+            .and_then(|value| value.to_str().ok()),
+        Some("griffe:saved")
+    );
+    let both_body = body_text(both).await;
+    assert!(both_body.contains("value=\"site web\""), "{both_body}");
+    assert!(both_body.contains("value=\"backend\""), "{both_body}");
+
+    let site_page = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/affaires?type={site_id}&q=Port"))
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(site_page.contains("Atelier Quai"), "{site_page}");
+    assert!(site_page.contains("Atelier Port"), "{site_page}");
+    assert!(
+        site_page.contains("href=\"/affaires?q=Port\""),
+        "{site_page}"
+    );
+    assert!(
+        site_page.contains("q=Port&amp;type=") || site_page.contains("q=Port&type="),
+        "{site_page}"
+    );
+
+    let catalog = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/types")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    let forms = kind_forms(&catalog);
+    let backend_id = forms
+        .iter()
+        .find(|(_, name)| name == "backend")
+        .map(|(id, _)| id.clone())
+        .unwrap_or_else(|| panic!("backend absent : {catalog}"));
+    let backend_page = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/affaires?type={backend_id}"))
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        backend_page.contains("Aucune conversation de ce type."),
+        "{backend_page}"
+    );
+    assert!(backend_page.contains("Atelier Port"), "{backend_page}");
+    assert!(
+        !backend_page.contains("href=\"/affaires/Atelier%20Quai\""),
+        "{backend_page}"
+    );
+
+    let renamed = posted(
+        &router,
+        &format!("/affaires/types/{site_id}"),
+        &[("name", "site"), ("geste", "renommer")],
+    )
+    .await;
+    assert_eq!(
+        renamed
+            .headers()
+            .get("HX-Trigger")
+            .and_then(|value| value.to_str().ok()),
+        Some("griffe:saved")
+    );
+    let renamed_body = body_text(renamed).await;
+    assert!(renamed_body.contains("value=\"site\""), "{renamed_body}");
+    assert!(!renamed_body.contains("site web"), "{renamed_body}");
+
+    let followed = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(quai_uri)
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(followed.contains("value=\"site\""), "{followed}");
+    assert!(!followed.contains("site web"), "{followed}");
+
+    let asking = posted(
+        &router,
+        &format!("/affaires/types/{site_id}"),
+        &[("name", "site"), ("geste", "retirer")],
+    )
+    .await;
+    assert!(asking.headers().get("HX-Trigger").is_none());
+    let asking_body = body_text(asking).await;
+    assert!(asking_body.contains("Oui, le retirer"), "{asking_body}");
+    let still = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/affaires?type={site_id}"))
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(still.contains("Atelier Quai"), "{still}");
+    assert!(still.contains("Atelier Port"), "{still}");
+
+    let removed = posted(
+        &router,
+        &format!("/affaires/types/{site_id}"),
+        &[("geste", "confirmer")],
+    )
+    .await;
+    assert_eq!(removed.status(), StatusCode::OK);
+    assert_eq!(
+        removed
+            .headers()
+            .get("HX-Trigger")
+            .and_then(|value| value.to_str().ok()),
+        Some("griffe:saved")
+    );
+    let removed_body = body_text(removed).await;
+    assert!(!removed_body.contains("value=\"site\""), "{removed_body}");
+    assert!(removed_body.contains("value=\"backend\""), "{removed_body}");
+
+    let after = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/affaires?type={site_id}"))
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(after.contains("Aucune conversation de ce type."), "{after}");
+    assert!(after.contains("Aucune mission de ce type."), "{after}");
+    assert!(after.contains("Papeterie du Nord"), "{after}");
+    assert!(
+        !after.contains("href=\"/affaires/Atelier%20Quai\""),
+        "{after}"
+    );
+    assert!(
+        !after.contains("href=\"/affaires/Atelier%20Port\""),
+        "{after}"
+    );
+
+    let port_page = body_text(
+        router
+            .oneshot(
+                Request::builder()
+                    .uri(port_uri)
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(port_page.contains("value=\"backend\""), "{port_page}");
+    assert!(!port_page.contains("value=\"site\""), "{port_page}");
+
+    let check = Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    let genre = prospect_genre_for(check.connection(), quai)
+        .unwrap()
+        .unwrap();
+    assert_eq!(genre.name, "Mairie");
 }
