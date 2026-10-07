@@ -2,6 +2,10 @@
 
 Ce qui change pour qui se sert de Griffe. Une section par version publiée.
 
+## 0.3.8
+
+- La case des 12 h tient la fenêtre ouverte pendant ces 12 h. Rouvrir Griffe dans ce délai retrouve la passphrase. « Verrouiller » ferme tout de suite. La case vide laisse le quart d'heure d'inactivité.
+
 ## 0.3.7
 
 - Les écritures restent dans le coffre. Une correction en ajoute une qui inverse la première. L'originale reste.

@@ -1,6 +1,7 @@
 //! Tests HTTP directs sur le `Router`, via `tower::ServiceExt::oneshot` — rapides, sans
 //! navigateur. Base SQLCipher réelle et temporaire à chaque test, pas de mock. Le trousseau OS
-//! réel n'est jamais touché : tous les coffres sont ouverts avec `remember = false`.
+//! réel n'est jamais touché : tous les coffres sont ouverts avec `remember = false`. Une
+//! suspension d'inactivité se pose avec `AppState::suspend_idle_for`, sans `remember`.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -3482,6 +3483,95 @@ async fn a_real_navigation_keeps_an_idle_session_alive() {
         StatusCode::OK,
         "200ms + 200ms < 400ms depuis la dernière vraie navigation : la session doit être encore active"
     );
+}
+
+#[tokio::test]
+async fn a_short_suspension_holds_past_the_idle_timeout_then_lets_audit_polling_lock() {
+    let db_path = test_db_path("idle-suspended");
+    Store::create(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    let state = AppState::with_idle_timeout(db_path, Duration::from_millis(200));
+    state
+        .unlock(&Passphrase::from(PASSPHRASE), false)
+        .await
+        .unwrap();
+    state.suspend_idle_for(Duration::from_millis(1_000)).await;
+    let router = griffe_web::router(state);
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let held = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/audit/recent")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(held.status(), StatusCode::OK);
+    let held_body = body_text(held).await;
+    assert!(
+        held_body.contains("aucune activité pour l'instant"),
+        "au-delà du délai d'inactivité, la suspension tient encore : {held_body}"
+    );
+
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    let closed = router
+        .oneshot(
+            Request::builder()
+                .uri("/audit/recent")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(closed.status(), StatusCode::OK);
+    let closed_body = body_text(closed).await;
+    assert!(
+        closed_body.contains("Coffre verrouillé"),
+        "une fois la suspension passée, le sondage d'audit referme la fenêtre abandonnée : \
+         {closed_body}"
+    );
+}
+
+#[tokio::test]
+async fn locking_closes_at_once_while_the_idle_suspension_is_live() {
+    let db_path = test_db_path("lock-while-suspended");
+    Store::create(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    let state = AppState::with_idle_timeout(db_path, Duration::from_secs(60));
+    state
+        .unlock(&Passphrase::from(PASSPHRASE), false)
+        .await
+        .unwrap();
+    state.suspend_idle_for(Duration::from_secs(60)).await;
+    let router = griffe_web::router(state);
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/lock")
+                .header("HX-Request", "true")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(response.headers().get("HX-Redirect").unwrap(), "/unlock");
+
+    let after = router
+        .oneshot(
+            Request::builder()
+                .uri("/view/dashboard")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = body_text(after).await;
+    assert!(body.contains("Coffre verrouillé"), "{body}");
 }
 
 #[tokio::test]
@@ -9087,12 +9177,31 @@ async fn a_stopped_conversation_is_visible_and_the_stop_gesture_looks_final() {
 }
 
 #[tokio::test]
-async fn the_remember_checkbox_promises_the_next_launch_only() {
-    let db_path = test_db_path("remember-label");
-    Store::create(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
-    let router = griffe_web::router(AppState::new(db_path));
-    let page = body_text(
-        router
+async fn the_remember_checkbox_keeps_the_window_open_for_twelve_hours() {
+    let label = "Pendant 12 h, ne pas redemander la passphrase, et laisser la fenêtre ouverte.";
+    let previous = "Au prochain lancement, ne pas redemander la passphrase pendant 12 h.";
+
+    let setup_path = test_db_path("remember-setup-label");
+    let setup = body_text(
+        griffe_web::router(AppState::new(setup_path))
+            .oneshot(
+                Request::builder()
+                    .uri("/setup")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(setup.contains("Créer le coffre"), "{setup}");
+    assert!(setup.contains(label), "{setup}");
+    assert!(!setup.contains(previous), "{setup}");
+
+    let unlock_path = test_db_path("remember-unlock-label");
+    Store::create(&unlock_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    let unlock = body_text(
+        griffe_web::router(AppState::new(unlock_path))
             .oneshot(
                 Request::builder()
                     .uri("/unlock")
@@ -9103,11 +9212,9 @@ async fn the_remember_checkbox_promises_the_next_launch_only() {
             .unwrap(),
     )
     .await;
-    assert!(
-        page.contains("Au prochain lancement, ne pas redemander la passphrase pendant 12 h."),
-        "{page}"
-    );
-    assert!(!page.contains("rester déverrouillé"), "{page}");
+    assert!(unlock.contains("Coffre verrouillé"), "{unlock}");
+    assert!(unlock.contains(label), "{unlock}");
+    assert!(!unlock.contains(previous), "{unlock}");
 }
 
 fn page_has(body: &str, needle: &str) -> bool {
