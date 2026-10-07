@@ -3,8 +3,7 @@
 
 use griffe_core::app::AppError;
 use griffe_core::domain::{
-    ExpensePaidBy, FollowUpSubject, InteractionKind, SnoozePreset, display_phone, format_date,
-    format_date_fr, snooze_date,
+    ExpensePaidBy, FollowUpSubject, InteractionKind, display_phone, format_date, format_date_fr,
 };
 use griffe_core::follow_up::{
     FollowUpCard, card_for, follow_up_sender, prospect_genre_for, prospect_genres,
@@ -357,12 +356,12 @@ pub fn dossier_markup(dossier: &PersonDossier, today: Date, flash: Option<&str>)
             @if !daily.is_empty() {
                 div class="row-actions" {
                     @for action in &daily {
-                        (action_button(action, &href, today))
+                        (action_button(action, &href))
                     }
                 }
             }
             @for action in &fate {
-                (action_button(action, &href, today))
+                (action_button(action, &href))
             }
             @if let Some(body) = current_paragraph(&dossier.current, dossier) {
                 div class="block" {
@@ -915,7 +914,35 @@ fn history_body(event: &HistoryEvent) -> Markup {
     }
 }
 
-fn action_button(action: &PersonAction, dossier_href: &str, today: Date) -> Markup {
+fn snooze_preset(action: &str, days: u16, label: &str) -> Markup {
+    html! {
+        form method="post" action=(action) hx-post=(action) hx-target="#content" {
+            input type="hidden" name="days" value=(days);
+            button class="quiet" type="submit" { (label) }
+        }
+    }
+}
+
+fn snooze_control(dossier_href: &str) -> Markup {
+    let action = format!("{dossier_href}/reporter");
+    html! {
+        details class="snooze" {
+            summary class="quiet" { "Reporter" }
+            div class="snooze-line" {
+                (snooze_preset(&action, 3, "3 jours"))
+                (snooze_preset(&action, 10, "10 jours"))
+                form class="snooze-count" method="post" action=(action)
+                  hx-post=(action) hx-target="#content" {
+                    input name="days" type="text" inputmode="numeric" autocomplete="off"
+                      aria-label="Nombre de jours";
+                    button type="submit" { "jours" }
+                }
+            }
+        }
+    }
+}
+
+fn action_button(action: &PersonAction, dossier_href: &str) -> Markup {
     match action {
         PersonAction::Write { subject } => {
             let (label, class) = match subject {
@@ -954,16 +981,7 @@ fn action_button(action: &PersonAction, dossier_href: &str, today: Date) -> Mark
                 "Noter une rencontre"
             }
         },
-        PersonAction::Snooze { .. } => {
-            let until =
-                format_date(snooze_date(today, SnoozePreset::Tomorrow) + time::Duration::days(2));
-            html! {
-                form hx-post=(format!("{dossier_href}/reporter")) hx-target="#content" {
-                    input type="hidden" name="until" value=(until);
-                    button class="quiet" type="submit" { "Reporter de trois jours" }
-                }
-            }
-        }
+        PersonAction::Snooze { .. } => snooze_control(dossier_href),
         PersonAction::FileStatement => html! {
             a class="seal" href=(ViewId::Depenses.path())
               hx-get=(ViewId::Depenses.path()) hx-target="#content" hx-push-url="true" {

@@ -6,7 +6,7 @@ use clap::Subcommand;
 use griffe_core::app::{ExecutionContext, Executor};
 use griffe_core::domain::{
     FollowUpSubject, SnoozePreset, chronicle, format_date, phrase_from_editor, phrase_to_editor,
-    snooze_date,
+    snooze_date, snooze_in_days,
 };
 use griffe_core::follow_up::{
     ArrangeProspectPhrases, CardStatus, CreateProspectGenre, DropProspectGenre, FollowUpCard,
@@ -177,6 +177,9 @@ pub enum FollowUpCommand {
         reference: String,
         #[arg(long, value_parser = parse_date)]
         until: Option<Date>,
+        /// Nombre de jours, de 1 à 366.
+        #[arg(long, conflicts_with_all = ["until", "tomorrow", "next_week", "monday"])]
+        days: Option<i64>,
         #[arg(long)]
         tomorrow: bool,
         #[arg(long)]
@@ -789,13 +792,16 @@ pub fn run(
         FollowUpCommand::Snooze {
             reference,
             until,
+            days,
             tomorrow,
             next_week,
             monday,
             today,
         } => {
             let today = today_or(today);
-            let until = if let Some(d) = until {
+            let until = if let Some(n) = days {
+                snooze_in_days(today, n).map_err(|err| CliError::Domain(err.to_string()))?
+            } else if let Some(d) = until {
                 d
             } else if tomorrow {
                 snooze_date(today, SnoozePreset::Tomorrow)
@@ -805,7 +811,8 @@ pub fn run(
                 snooze_date(today, SnoozePreset::NextMonday)
             } else {
                 return Err(CliError::Domain(
-                    "précisez --until AAAA-MM-JJ, --tomorrow, --next-week ou --monday".into(),
+                    "précisez --until AAAA-MM-JJ, --days N, --tomorrow, --next-week ou --monday"
+                        .into(),
                 ));
             };
             let subject = resolve_subject(store, &reference)?;

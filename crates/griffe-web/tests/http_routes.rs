@@ -9570,3 +9570,218 @@ async fn two_fiches_with_the_same_respondent_open_under_qui() {
     assert!(shared.contains("Mairie de Somain"), "{shared}");
     assert!(!shared.contains("règle métier"), "{shared}");
 }
+
+#[tokio::test]
+async fn reporter_unfolds_into_three_days_ten_days_or_a_count() {
+    let db_path = test_db_path("reporter-deplie");
+    let mut store = Store::create(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    Executor::new(&mut store)
+        .execute(
+            &CreateProspect {
+                prospect_name: "Atelier Sèvre".into(),
+                address: None,
+                representative: None,
+                email: None,
+                phone: None,
+                name: "site de la cave".into(),
+                amount: Money::from_cents(120_000),
+                probability: Probability::new(40).unwrap(),
+                next_action_at: time::macros::date!(2026 - 09 - 05),
+                source: None,
+            },
+            &human_ctx(),
+        )
+        .unwrap();
+    drop(store);
+
+    let state = AppState::new(db_path);
+    state
+        .unlock(&Passphrase::from(PASSPHRASE), false)
+        .await
+        .unwrap();
+    let state = state.with_today(time::macros::date!(2026 - 09 - 05));
+    let router = griffe_web::router(state);
+    let dossier_uri = "/affaires/Atelier%20S%C3%A8vre";
+
+    let jour = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/jour")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(jour.contains(">Demain<"), "{jour}");
+    assert!(
+        jour.contains("name=\"until\" value=\"2026-09-06\""),
+        "Demain poste le lendemain : {jour}"
+    );
+    assert!(!jour.contains("class=\"snooze\""), "{jour}");
+    assert!(!jour.contains("Reporter de trois jours"), "{jour}");
+
+    let dossier = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(dossier_uri)
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(dossier.contains("<details class=\"snooze\">"), "{dossier}");
+    assert!(dossier.contains(">Reporter<"), "{dossier}");
+    assert!(dossier.contains("name=\"days\" value=\"3\""), "{dossier}");
+    assert!(dossier.contains(">3 jours<"), "{dossier}");
+    assert!(dossier.contains("name=\"days\" value=\"10\""), "{dossier}");
+    assert!(dossier.contains(">10 jours<"), "{dossier}");
+    assert!(dossier.contains("inputmode=\"numeric\""), "{dossier}");
+    assert!(dossier.contains(">jours<"), "{dossier}");
+    assert!(!dossier.contains("Reporter de trois jours"), "{dossier}");
+    assert!(!dossier.contains("<select"), "{dossier}");
+    assert!(!dossier.contains("<script"), "{dossier}");
+    assert!(!dossier.contains("hx-on"), "{dossier}");
+    assert!(!dossier.contains(">Demain<"), "{dossier}");
+
+    let sentence = "Le report se compte de 1 à 366 jours.";
+    for body in ["days=0", "days=367", "days=abc", "days=-1"] {
+        let refused = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("{dossier_uri}/reporter"))
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .header("HX-Request", "true")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), StatusCode::OK, "{body}");
+        assert!(refused.headers().get("HX-Trigger").is_none(), "{body}");
+        let page = body_text(refused).await;
+        assert!(page.contains(sentence), "{body} : {page}");
+    }
+
+    let ten = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("{dossier_uri}/reporter"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from("days=10"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ten.status(), StatusCode::OK);
+    assert_eq!(ten.headers().get("HX-Trigger").unwrap(), "griffe:saved");
+    let ten_page = body_text(ten).await;
+    assert!(ten_page.contains("Atelier Sèvre"), "{ten_page}");
+    assert!(
+        ten_page.contains("<details class=\"snooze\">"),
+        "{ten_page}"
+    );
+
+    let listed = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        listed.contains("15 septembre 2026"),
+        "dix jours après le 5 septembre : {listed}"
+    );
+
+    let three = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("{dossier_uri}/reporter"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from("days=3"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(three.headers().get("HX-Trigger").unwrap(), "griffe:saved");
+    let _ = body_text(three).await;
+    let after_three = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        after_three.contains("8 septembre 2026"),
+        "trois jours après le 5 septembre : {after_three}"
+    );
+
+    let tomorrow = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("{dossier_uri}/reporter"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from("until=2026-09-06"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        tomorrow.headers().get("HX-Trigger").unwrap(),
+        "griffe:saved"
+    );
+    let _ = body_text(tomorrow).await;
+    let after_until = body_text(
+        router
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        after_until.contains("6 septembre 2026"),
+        "until reste le chemin de Demain : {after_until}"
+    );
+}

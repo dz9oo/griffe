@@ -1018,6 +1018,77 @@ async fn reading_the_missions_resource_returns_the_active_missions() {
 }
 
 #[tokio::test]
+async fn follow_up_snooze_days_counts_from_one_to_366() {
+    let db_path = test_db_path("snooze-days");
+    let store = Store::create(&db_path, &Passphrase::from("s3cret")).unwrap();
+    let client = spawn_client(store).await;
+
+    call(
+        &client,
+        "clients.create",
+        json!({"name": "Cave Ligérienne"}),
+    )
+    .await;
+    call(
+        &client,
+        "prospect.create",
+        json!({
+            "client": "Cave Ligérienne",
+            "name": "visite de chai",
+            "amount_cents": 120_000,
+            "probability_percent": 40,
+            "next_action": "2026-09-04",
+        }),
+    )
+    .await;
+
+    let sentence = "Le report se compte de 1 à 366 jours.";
+    for days in [0, 367] {
+        let refused = call(
+            &client,
+            "follow_up.snooze",
+            json!({"reference": "visite de chai", "days": days, "today": "2026-09-04"}),
+        )
+        .await;
+        assert_eq!(refused.is_error, Some(true), "{}", tool_text(&refused));
+        assert!(
+            tool_text(&refused).contains(sentence),
+            "{}",
+            tool_text(&refused)
+        );
+    }
+
+    let ten = call(
+        &client,
+        "follow_up.snooze",
+        json!({"reference": "visite de chai", "days": 10, "today": "2026-09-04"}),
+    )
+    .await;
+    assert_eq!(ten.is_error, Some(false), "{}", tool_text(&ten));
+    assert_eq!(json_of(&ten)["result"]["due_on"], "2026-09-14");
+
+    let year = call(
+        &client,
+        "follow_up.snooze",
+        json!({"reference": "visite de chai", "days": 366, "today": "2026-09-04"}),
+    )
+    .await;
+    assert_eq!(year.is_error, Some(false), "{}", tool_text(&year));
+    assert_eq!(json_of(&year)["result"]["due_on"], "2027-09-05");
+
+    let tomorrow = call(
+        &client,
+        "follow_up.snooze",
+        json!({"reference": "visite de chai", "preset": "tomorrow", "today": "2026-09-04"}),
+    )
+    .await;
+    assert_eq!(tomorrow.is_error, Some(false), "{}", tool_text(&tomorrow));
+    assert_eq!(json_of(&tomorrow)["result"]["due_on"], "2026-09-05");
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
 async fn reading_an_opportunity_by_name_returns_its_interactions_and_references() {
     let db_path = test_db_path("opportunity-resource");
     let store = Store::create(&db_path, &Passphrase::from("s3cret")).unwrap();

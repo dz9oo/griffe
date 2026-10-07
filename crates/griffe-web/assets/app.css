@@ -530,6 +530,50 @@ ol.papers .unfold .deposit { margin-top: 0; }
 }
 
 .row-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; align-items: center; }
+details.snooze { width: max-content; max-width: 100%; }
+details.snooze > summary { list-style: none; }
+details.snooze > summary::-webkit-details-marker { display: none; }
+details.snooze > summary::marker { content: ""; }
+.snooze-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-top: 8px;
+  background: transparent;
+  box-shadow: none;
+  list-style: none;
+}
+.snooze-line form { margin: 0; }
+.snooze-count {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.snooze-count input {
+  width: 4.5ch;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--ink);
+  border-radius: 0;
+  box-shadow: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+  padding: 2px 0;
+  text-align: right;
+}
+.snooze-count input:focus { outline: none; }
+.snooze-count button {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  font-size: 14px;
+  color: var(--ink);
+  cursor: pointer;
+}
 .duty-bar {
   display: flex;
   flex-wrap: wrap;

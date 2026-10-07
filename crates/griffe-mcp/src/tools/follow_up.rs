@@ -3,7 +3,7 @@
 use griffe_core::app::Executor;
 use griffe_core::clock::today_local;
 use griffe_core::domain::phrase_from_editor;
-use griffe_core::domain::{FollowUpSubject, SnoozePreset, parse_date, snooze_date};
+use griffe_core::domain::{FollowUpSubject, SnoozePreset, parse_date, snooze_date, snooze_in_days};
 use griffe_core::follow_up::{
     ArrangeProspectPhrases, CreateProspectGenre, DropProspectGenre, GenreWordDraft, KeepGenreWords,
     MarkFollowUpSent, MomentDraft, PhraseRewrite, PrepareFollowUp, RetractLastFollowUp,
@@ -144,9 +144,12 @@ pub(crate) struct SenderArgs {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct SnoozeArgs {
     reference: String,
-    /// `AAAA-MM-JJ`. Ignoré si `preset` est fourni (`tomorrow`, `next_week`, `monday`).
+    /// `AAAA-MM-JJ`. Ignoré si `preset` ou `days` est fourni.
     until: Option<String>,
+    /// `tomorrow`, `next_week` ou `monday`. L'emporte sur `days` et `until`.
     preset: Option<String>,
+    /// Nombre de jours, de 1 à 366. Ignoré si `preset` est fourni.
+    days: Option<i64>,
     today: Option<String>,
     #[serde(default)]
     dry_run: bool,
@@ -720,13 +723,20 @@ impl FreeflowServer {
                 other => return err_text(format!("preset inconnu : {other}")),
             };
             snooze_date(today, p)
+        } else if let Some(n) = args.days {
+            match snooze_in_days(today, n) {
+                Ok(date) => date,
+                Err(err) => return err_text(err.to_string()),
+            }
         } else if let Some(s) = args.until {
             match parse_date(&s) {
                 Ok(d) => d,
                 Err(e) => return err_text(e.to_string()),
             }
         } else {
-            return err_text("précisez until ou preset (tomorrow, next_week, monday)");
+            return err_text(
+                "précisez until, days (1 à 366) ou preset (tomorrow, next_week, monday)",
+            );
         };
         let mut store = self.store.lock().await;
         let subject = match resolve_subject(&store, &args.reference) {

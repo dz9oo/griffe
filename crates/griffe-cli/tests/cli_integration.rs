@@ -755,6 +755,135 @@ fn follow_up_queue_lists_a_due_opportunity_and_drafts_without_sending() {
 }
 
 #[test]
+fn follow_up_snooze_counts_days_from_one_to_366() {
+    let db = temp_db("snooze-days");
+    provision(&db);
+    unlocked(&db)
+        .args(["client", "create", "--name", "Atelier Sèvre"])
+        .assert()
+        .success();
+    unlocked(&db)
+        .args([
+            "prospect",
+            "create",
+            "--client",
+            "Atelier Sèvre",
+            "--name",
+            "site de la cave",
+            "--amount",
+            "1200",
+            "--probability",
+            "40",
+            "--next-action",
+            "2026-09-04",
+        ])
+        .assert()
+        .success();
+
+    let sentence = "Le report se compte de 1 à 366 jours.";
+    for days in ["0", "367"] {
+        unlocked(&db)
+            .args([
+                "follow-up",
+                "snooze",
+                "site de la cave",
+                "--days",
+                days,
+                "--today",
+                "2026-09-04",
+            ])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains(sentence));
+    }
+    let unchanged = unlocked(&db)
+        .args([
+            "--json",
+            "follow-up",
+            "show",
+            "site de la cave",
+            "--today",
+            "2026-09-04",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(json_result(&unchanged)["due_on"], "2026-09-04");
+
+    unlocked(&db)
+        .args([
+            "follow-up",
+            "snooze",
+            "site de la cave",
+            "--days",
+            "10",
+            "--today",
+            "2026-09-04",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("reporté au 2026-09-14"));
+    let ten = unlocked(&db)
+        .args([
+            "--json",
+            "follow-up",
+            "show",
+            "site de la cave",
+            "--today",
+            "2026-09-04",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(json_result(&ten)["due_on"], "2026-09-14");
+
+    unlocked(&db)
+        .args([
+            "follow-up",
+            "snooze",
+            "site de la cave",
+            "--days",
+            "366",
+            "--today",
+            "2026-09-04",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("reporté au 2027-09-05"));
+    unlocked(&db)
+        .args([
+            "follow-up",
+            "snooze",
+            "site de la cave",
+            "--tomorrow",
+            "--today",
+            "2026-09-04",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("reporté au 2026-09-05"));
+    let tomorrow = unlocked(&db)
+        .args([
+            "--json",
+            "follow-up",
+            "show",
+            "site de la cave",
+            "--today",
+            "2026-09-04",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(json_result(&tomorrow)["due_on"], "2026-09-05");
+}
+
+#[test]
 fn follow_up_phrases_lists_the_seed_and_a_rewrite_is_what_the_next_letter_uses() {
     let db = temp_db("phrases");
     provision(&db);

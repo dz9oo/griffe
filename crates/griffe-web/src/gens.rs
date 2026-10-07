@@ -14,8 +14,8 @@ use griffe_core::clients::{
 use griffe_core::company::company_profile;
 use griffe_core::domain::{
     Address, ExpenseId, FollowUpSubject, InteractionKind, InvoiceId, InvoiceLine, MissionId, Money,
-    Probability, TemplateContext, VatRate, WriteOffId, chronicle, format_date, given_name,
-    parse_date, phrase_from_editor, phrase_to_editor, render_template,
+    Probability, SnoozeDaysError, TemplateContext, VatRate, WriteOffId, chronicle, format_date,
+    given_name, parse_date, phrase_from_editor, phrase_to_editor, render_template, snooze_in_days,
 };
 use griffe_core::expenses::{AttachReceipt, expense_by_id};
 use griffe_core::follow_up::{
@@ -57,6 +57,14 @@ fn locked(headers: &HeaderMap) -> Html<String> {
         headers,
         html! { div class="empty-state" { "coffre verrouillé — rechargez la page" } },
     )
+}
+
+fn saved_page(headers: &HeaderMap, content: Markup) -> Response {
+    let mut response = page(headers, content).into_response();
+    response
+        .headers_mut()
+        .insert("HX-Trigger", HeaderValue::from_static("griffe:saved"));
+    response
 }
 
 fn with_push(headers: &HeaderMap, url: &str, content: Markup) -> Response {
@@ -2160,6 +2168,23 @@ pub async fn estimate_post(
 pub struct SnoozeForm {
     #[serde(default)]
     until: String,
+    #[serde(default)]
+    days: String,
+}
+
+fn posted_snooze_until(today: time::Date, days: &str, until: &str) -> Result<time::Date, String> {
+    let days = days.trim();
+    if !days.is_empty() {
+        let n = days
+            .parse::<i64>()
+            .map_err(|_| SnoozeDaysError.to_string())?;
+        return snooze_in_days(today, n).map_err(|err| err.to_string());
+    }
+    let until = until.trim();
+    if until.is_empty() {
+        return Err(SnoozeDaysError.to_string());
+    }
+    parse_date(until).map_err(|err| err.to_string())
 }
 
 pub async fn snooze(
@@ -2167,15 +2192,21 @@ pub async fn snooze(
     headers: HeaderMap,
     Path(reference): Path<String>,
     Form(form): Form<SnoozeForm>,
-) -> Html<String> {
+) -> Response {
     let today = state.today();
     let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
-        return page(&headers, gens::not_found(&reference, today));
+        return page(&headers, gens::not_found(&reference, today)).into_response();
     };
     let Some(subject) = dossier.follow_up_subject else {
-        return page(&headers, gens::dossier_markup(&dossier, today, None));
+        return page(&headers, gens::dossier_markup(&dossier, today, None)).into_response();
     };
-    let until = parse_date(&form.until).unwrap_or(today + Duration::days(3));
+    let until = match posted_snooze_until(today, &form.days, &form.until) {
+        Ok(date) => date,
+        Err(msg) => {
+            return page(&headers, gens::dossier_markup(&dossier, today, Some(&msg)))
+                .into_response();
+        }
+    };
     let result = state
         .with_store_mut(|store| {
             Executor::new(store).execute(
@@ -2189,11 +2220,12 @@ pub async fn snooze(
         })
         .await;
     match result {
-        None => locked(&headers),
+        None => locked(&headers).into_response(),
         Some(Err(e)) => page(
             &headers,
             gens::dossier_markup(&dossier, today, Some(&e.to_string())),
-        ),
+        )
+        .into_response(),
         Some(Ok(_)) => {
             let content = state
                 .with_store(|store| {
@@ -2203,7 +2235,7 @@ pub async fn snooze(
                 })
                 .await
                 .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
-            page(&headers, content)
+            saved_page(&headers, content)
         }
     }
 }

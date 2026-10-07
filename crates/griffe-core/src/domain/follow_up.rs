@@ -746,6 +746,23 @@ pub fn snooze_date(today: Date, preset: SnoozePreset) -> Date {
     }
 }
 
+/// `days` hors de 1 à 366 inclus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error("Le report se compte de 1 à 366 jours.")]
+pub struct SnoozeDaysError;
+
+/// Reporte `today` de `days` jours.
+///
+/// # Errors
+///
+/// [`SnoozeDaysError`] si `days` est hors de 1 à 366 inclus.
+pub fn snooze_in_days(today: Date, days: i64) -> Result<Date, SnoozeDaysError> {
+    if !(1..=366).contains(&days) {
+        return Err(SnoozeDaysError);
+    }
+    Ok(today.saturating_add(Duration::days(days)))
+}
+
 /// Un brouillon RFC 5322, prêt à écrire sur disque. Pas encore un envoi.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EmlDraft {
@@ -1153,6 +1170,40 @@ mod tests {
             snooze_date(monday, SnoozePreset::NextMonday),
             date(2026, Month::September, 14)
         );
+    }
+
+    #[test]
+    fn snooze_in_days_counts_from_today_and_refuses_outside_one_to_366() {
+        // Dates écrites à la main. 2026 et 2027 ne sont pas bissextiles ; 2028 l'est.
+        let today = date(2026, Month::September, 4);
+        let counted = [
+            (1_i64, date(2026, Month::September, 5)),
+            (3, date(2026, Month::September, 7)),
+            (10, date(2026, Month::September, 14)),
+            (365, date(2027, Month::September, 4)),
+            (366, date(2027, Month::September, 5)),
+        ];
+        for (days, expected) in counted {
+            assert_eq!(snooze_in_days(today, days), Ok(expected), "{days}");
+        }
+        assert_eq!(
+            snooze_in_days(date(2026, Month::December, 30), 3),
+            Ok(date(2027, Month::January, 2))
+        );
+        assert_eq!(
+            snooze_in_days(date(2027, Month::February, 27), 3),
+            Ok(date(2027, Month::March, 2))
+        );
+        assert_eq!(
+            snooze_in_days(date(2028, Month::February, 27), 3),
+            Ok(date(2028, Month::March, 1))
+        );
+
+        let sentence = "Le report se compte de 1 à 366 jours.";
+        for days in [0, -1, 367, i64::MIN, i64::MAX] {
+            assert_eq!(snooze_in_days(today, days), Err(SnoozeDaysError), "{days}");
+            assert_eq!(SnoozeDaysError.to_string(), sentence);
+        }
     }
 
     #[test]
