@@ -16,7 +16,9 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
 use crate::app::{AppError, Command};
-use crate::domain::{Address, Client, ClientId, Contact, ContactId, Siren, VatNumber};
+use crate::domain::{
+    Address, Client, ClientId, Contact, ContactId, Siren, VatNumber, display_phone,
+};
 
 fn conv_err(e: impl std::error::Error + Send + Sync + 'static) -> rusqlite::Error {
     rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
@@ -493,7 +495,7 @@ impl Command for CreateContact {
             client_id: self.client_id,
             name: self.name.clone(),
             email: self.email.clone(),
-            phone: self.phone.clone(),
+            phone: stored_phone(self.phone.as_deref()),
             role: self.role.clone(),
             revision: 1,
         };
@@ -524,7 +526,7 @@ impl Command for UpdateContact {
             params![
                 self.name,
                 self.email,
-                self.phone,
+                stored_phone(self.phone.as_deref()),
                 self.role,
                 new_revision,
                 self.id.to_string(),
@@ -576,15 +578,20 @@ pub(crate) fn insert_contact(conn: &Connection, contact: &Contact) -> Result<(),
     Ok(())
 }
 
+fn stored_phone(phone: Option<&str>) -> Option<String> {
+    phone.map(display_phone).filter(|value| !value.is_empty())
+}
+
 fn row_to_contact(row: &Row) -> rusqlite::Result<Contact> {
     let id: String = row.get("id")?;
     let client_id: String = row.get("client_id")?;
+    let phone: Option<String> = row.get("phone")?;
     Ok(Contact {
         id: id.parse().map_err(conv_err)?,
         client_id: client_id.parse().map_err(conv_err)?,
         name: row.get("name")?,
         email: row.get("email")?,
-        phone: row.get("phone")?,
+        phone: stored_phone(phone.as_deref()),
         role: row.get("role")?,
         revision: row.get("revision")?,
     })
@@ -934,5 +941,109 @@ mod tests {
             )
             .unwrap_err();
         assert!(matches!(err, AppError::Domain(msg) if msg.contains("introuvable")));
+    }
+
+    fn phone_column(store: &Store, id: ContactId) -> Option<String> {
+        store
+            .connection()
+            .query_row(
+                "SELECT phone FROM contacts WHERE id = ?1",
+                [id.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn a_french_phone_is_stored_in_pairs_and_another_country_stays_as_typed() {
+        let mut store = test_store("phone-stored-pairs");
+        let client_id = create(&mut store, "Atelier du Nord");
+        let Outcome::Applied(id) = Executor::new(&mut store)
+            .execute(
+                &CreateContact {
+                    client_id,
+                    name: "Camille".into(),
+                    email: None,
+                    phone: Some("0327444444".into()),
+                    role: None,
+                },
+                &human_ctx(),
+            )
+            .unwrap()
+        else {
+            panic!("expected Applied")
+        };
+        assert_eq!(phone_column(&store, id).as_deref(), Some("03 27 44 44 44"));
+
+        Executor::new(&mut store)
+            .execute(
+                &UpdateContact {
+                    id,
+                    revision: 1,
+                    name: "Camille".into(),
+                    email: None,
+                    phone: Some("+33327444444".into()),
+                    role: None,
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+        assert_eq!(phone_column(&store, id).as_deref(), Some("03 27 44 44 44"));
+
+        Executor::new(&mut store)
+            .execute(
+                &UpdateContact {
+                    id,
+                    revision: 2,
+                    name: "Camille".into(),
+                    email: None,
+                    phone: Some("  +1 415 555 0100  ".into()),
+                    role: None,
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+        assert_eq!(phone_column(&store, id).as_deref(), Some("+1 415 555 0100"));
+
+        Executor::new(&mut store)
+            .execute(
+                &UpdateContact {
+                    id,
+                    revision: 3,
+                    name: "Camille".into(),
+                    email: None,
+                    phone: Some("03 27 44 44 44 poste 12".into()),
+                    role: None,
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+        assert_eq!(
+            phone_column(&store, id).as_deref(),
+            Some("03 27 44 44 44 poste 12")
+        );
+    }
+
+    #[test]
+    fn a_compact_phone_already_in_the_vault_displays_in_pairs_without_a_rewrite() {
+        let mut store = test_store("phone-legacy-display");
+        let client_id = create(&mut store, "Atelier du Nord");
+        let contact = Contact {
+            id: ContactId::new(),
+            client_id,
+            name: "Camille".into(),
+            email: None,
+            phone: Some("0327444444".into()),
+            role: None,
+            revision: 1,
+        };
+        insert_contact(store.connection(), &contact).unwrap();
+
+        assert_eq!(
+            phone_column(&store, contact.id).as_deref(),
+            Some("0327444444")
+        );
+        let listed = list_contacts(store.connection(), client_id).unwrap();
+        assert_eq!(listed[0].phone.as_deref(), Some("03 27 44 44 44"));
     }
 }

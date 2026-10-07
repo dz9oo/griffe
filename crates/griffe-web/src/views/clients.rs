@@ -5,7 +5,7 @@
 
 use griffe_core::app::AppError;
 use griffe_core::clients::{ClientFilter, client_references, list_clients_with, list_contacts};
-use griffe_core::domain::{Client, ClientId, Contact};
+use griffe_core::domain::{Client, ClientId, Contact, display_phone};
 use griffe_core::store::Store;
 use maud::{Markup, html};
 
@@ -271,7 +271,7 @@ fn contact_form(
                 (form::text("name", "Nom", &values.name, errors.name.as_deref()))
                 (form::text("role", "Rôle (optionnel)", &values.role, None))
                 (form::text("email", "Email (optionnel)", &values.email, None))
-                (form::text("phone", "Téléphone (optionnel)", &values.phone, None))
+                (form::text("phone", "Téléphone (optionnel)", &display_phone(&values.phone), None))
                 (form::actions(if revision.is_some() { "Enregistrer" } else { "Ajouter" }))
             }
         }
@@ -384,4 +384,51 @@ pub fn load_detail(
     let contacts = list_contacts(store.connection(), id)?;
     let refs = client_references(store.connection(), id)?;
     Ok(Some((client, contacts, refs)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use time::OffsetDateTime;
+
+    fn sample_client() -> Client {
+        Client {
+            id: ClientId::new(),
+            name: "Atelier du Nord".into(),
+            siren: None,
+            vat_number: None,
+            address: None,
+            created_at: OffsetDateTime::now_utc(),
+            revision: 1,
+            archived_at: None,
+        }
+    }
+
+    #[test]
+    fn the_contact_form_shows_a_french_phone_in_pairs() {
+        let html = new_contact_panel(
+            &sample_client(),
+            &ContactFormValues {
+                phone: "0327444444".into(),
+                ..ContactFormValues::default()
+            },
+            &ContactFormErrors::default(),
+        )
+        .into_string();
+        assert!(html.contains("value=\"03 27 44 44 44\""), "{html}");
+    }
+
+    #[test]
+    fn the_contact_form_keeps_a_foreign_phone_as_typed() {
+        let html = new_contact_panel(
+            &sample_client(),
+            &ContactFormValues {
+                phone: "+1 415 555 0100".into(),
+                ..ContactFormValues::default()
+            },
+            &ContactFormErrors::default(),
+        )
+        .into_string();
+        assert!(html.contains("value=\"+1 415 555 0100\""), "{html}");
+    }
 }

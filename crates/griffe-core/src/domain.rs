@@ -15,6 +15,7 @@ mod opportunity;
 mod paper;
 mod payment;
 mod period;
+mod phone;
 mod quote;
 pub mod serde_date;
 mod settlement;
@@ -70,6 +71,7 @@ pub use period::{
     FiscalYear, FiscalYearEnd, FiscalYearEndError, Month, MonthError, UnknownVatRegime, VatRegime,
     format_date, parse_date,
 };
+pub use phone::display_phone;
 pub use quote::{
     Discount, LineKind, Quote, QuoteLine, QuoteLineParseError, QuoteStatus, UnknownQuoteStatus,
 };

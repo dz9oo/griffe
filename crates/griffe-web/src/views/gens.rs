@@ -3,8 +3,8 @@
 
 use griffe_core::app::AppError;
 use griffe_core::domain::{
-    ExpensePaidBy, FollowUpSubject, InteractionKind, SnoozePreset, format_date, format_date_fr,
-    snooze_date,
+    ExpensePaidBy, FollowUpSubject, InteractionKind, SnoozePreset, display_phone, format_date,
+    format_date_fr, snooze_date,
 };
 use griffe_core::follow_up::{
     FollowUpCard, card_for, follow_up_sender, prospect_genre_for, prospect_genres,
@@ -1205,7 +1205,7 @@ pub fn fiche_page(
                 (form::text("city", "Ville", &values.city, None))
                 (form::text("representative", "Qui répond", &values.representative, None))
                 (form::text("email", "Courriel", &values.email, None))
-                (form::text("phone", "Téléphone", &values.phone, None))
+                (form::text("phone", "Téléphone", &display_phone(&values.phone), None))
                 @if genre.show {
                     (genre_line(genre))
                 }
