@@ -97,7 +97,7 @@ mod tests {
         let client_id = match Executor::new(store)
             .execute(
                 &CreateClient {
-                    name: "Acme".into(),
+                    name: format!("Acme {}", ClientId::new()),
                     siren: None,
                     vat_number: None,
                     address: None,
@@ -478,7 +478,7 @@ mod tests {
     fn marking_sent_copies_the_last_draft_as_the_carbon_copy() {
         let mut store = test_store("carbon");
         let today = date(2026, Month::September, 5);
-        let (_, subject) = seed_opportunity(&mut store, today);
+        let (client_id, subject) = seed_opportunity(&mut store, today);
         set_sender(&mut store);
         let body = "Camille,\n\nC'est le double.\n";
         Executor::new(&mut store)
@@ -510,7 +510,7 @@ mod tests {
             .unwrap();
         assert_eq!(sent.rendered_body.as_deref(), Some(body));
         assert_eq!(sent.rendered_subject.as_deref(), Some("Refonte"));
-        let dossier = person(store.connection(), "Acme", today).unwrap();
+        let dossier = person(store.connection(), &client_id.to_string(), today).unwrap();
         assert!(
             dossier.history.iter().any(|h| matches!(
                 &h.kind,
@@ -563,7 +563,7 @@ mod tests {
     fn retracting_a_send_hides_the_carbon_copy() {
         let mut store = test_store("retract-letter");
         let today = date(2026, Month::September, 5);
-        let (_, subject) = seed_opportunity(&mut store, today);
+        let (client_id, subject) = seed_opportunity(&mut store, today);
         set_sender(&mut store);
         Executor::new(&mut store)
             .execute(
@@ -595,7 +595,7 @@ mod tests {
         Executor::new(&mut store)
             .execute(&RetractLastFollowUp { subject, today }, &human())
             .unwrap();
-        let dossier = person(store.connection(), "Acme", today).unwrap();
+        let dossier = person(store.connection(), &client_id.to_string(), today).unwrap();
         assert!(
             !dossier
                 .history
