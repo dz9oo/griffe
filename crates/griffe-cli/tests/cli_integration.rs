@@ -1590,6 +1590,87 @@ fn society_pay_on_an_empty_vault_closes_the_dividend() {
 }
 
 #[test]
+fn people_travaux_prints_and_saves_markdown_on_a_disposable_vault() {
+    let db = temp_db("people-travaux");
+    provision(&db);
+    create_client(&db, "Atelier du recit");
+
+    let empty = unlocked(&db)
+        .args(["people", "travaux", "Atelier du recit"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert!(
+        String::from_utf8(empty).unwrap().trim().is_empty(),
+        "un récit absent s'imprime vide"
+    );
+
+    let file = db.parent().unwrap().join("recit.md");
+    std::fs::write(&file, "# Le chantier\n\nUne ligne.\n").unwrap();
+    let saved = unlocked(&db)
+        .args([
+            "people",
+            "travaux",
+            "Atelier du recit",
+            "--file",
+            file.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let saved = String::from_utf8(saved).unwrap();
+    assert!(saved.contains("Le chantier"), "{saved}");
+
+    let again = unlocked(&db)
+        .args(["people", "travaux", "Atelier du recit"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(
+        String::from_utf8(again).unwrap().trim_end(),
+        "# Le chantier\n\nUne ligne."
+    );
+
+    let value = json_result(
+        &unlocked(&db)
+            .args(["--json", "people", "travaux", "Atelier du recit"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert_eq!(value["revision"], 1);
+    assert_eq!(value["body"], "# Le chantier\n\nUne ligne.\n");
+
+    std::fs::write(&file, "Suite.\n").unwrap();
+    unlocked(&db)
+        .args([
+            "people",
+            "travaux",
+            "Atelier du recit",
+            "--file",
+            file.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let revised = unlocked(&db)
+        .args(["people", "travaux", "Atelier du recit"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(String::from_utf8(revised).unwrap().trim_end(), "Suite.");
+}
+
+#[test]
 fn people_list_json_on_an_empty_vault_has_three_empty_chapters() {
     let db = temp_db("people-list");
     provision(&db);

@@ -17,6 +17,7 @@ use griffe_core::domain::{
     Probability, SnoozeDaysError, TemplateContext, VatRate, WriteOffId, chronicle, format_date,
     given_name, parse_date, phrase_from_editor, phrase_to_editor, render_template, snooze_in_days,
 };
+use griffe_core::dossier_work::{DossierWork, SaveDossierWork, dossier_work};
 use griffe_core::expenses::{AttachReceipt, expense_by_id};
 use griffe_core::follow_up::{
     ArrangeProspectPhrases, CreateProspectGenre, DropProspectGenre, KeepGenreWords,
@@ -2832,5 +2833,170 @@ async fn dossier_flash(
                 .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
             page(headers, content).into_response()
         }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TravauxForm {
+    #[serde(default)]
+    body: String,
+    #[serde(default)]
+    revision: String,
+}
+
+pub async fn travaux_get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(reference): Path<String>,
+) -> Html<String> {
+    let today = state.today();
+    let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
+        return page(&headers, gens::not_found(&reference, today));
+    };
+    match load_travaux(&state, &dossier).await {
+        TravauxLoad::Locked => locked(&headers),
+        TravauxLoad::NotAFiche => page(
+            &headers,
+            gens::dossier_markup(&dossier, today, Some("Les travaux tiennent sur une fiche.")),
+        ),
+        TravauxLoad::Failed(msg) => {
+            page(&headers, gens::dossier_markup(&dossier, today, Some(&msg)))
+        }
+        TravauxLoad::Ready(note) => page(&headers, gens::travaux_page(&dossier, &note, None)),
+    }
+}
+
+pub async fn travaux_preview(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(reference): Path<String>,
+    Form(form): Form<TravauxForm>,
+) -> Html<String> {
+    let today = state.today();
+    let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
+        return page(&headers, gens::not_found(&reference, today));
+    };
+    if !matches!(dossier.key, PersonKey::Client { .. }) {
+        return page(
+            &headers,
+            gens::dossier_markup(&dossier, today, Some("Les travaux tiennent sur une fiche.")),
+        );
+    }
+    // L'aperçu ne passe pas par la commande : rien n'est écrit, pas de griffe:saved.
+    page(&headers, gens::travaux_fragment(&form.body))
+}
+
+pub async fn travaux_post(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(reference): Path<String>,
+    Form(form): Form<TravauxForm>,
+) -> Response {
+    let today = state.today();
+    let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
+        return page(&headers, gens::not_found(&reference, today)).into_response();
+    };
+    let PersonKey::Client { id } = dossier.key else {
+        return page(
+            &headers,
+            gens::dossier_markup(&dossier, today, Some("Les travaux tiennent sur une fiche.")),
+        )
+        .into_response();
+    };
+    let Some(revision) = form.revision.parse::<i64>().ok() else {
+        return match load_travaux(&state, &dossier).await {
+            TravauxLoad::Ready(note) => page(
+                &headers,
+                gens::travaux_page(&dossier, &note, Some("Rechargez la page.")),
+            )
+            .into_response(),
+            TravauxLoad::Locked => locked(&headers).into_response(),
+            TravauxLoad::NotAFiche | TravauxLoad::Failed(_) => page(
+                &headers,
+                gens::dossier_markup(&dossier, today, Some("Rechargez la page.")),
+            )
+            .into_response(),
+        };
+    };
+    let cmd = SaveDossierWork {
+        client: id,
+        body: form.body.clone(),
+        revision,
+    };
+    let result = state
+        .with_store_mut(|store| Executor::new(store).execute(&cmd, &AppState::human_ctx()))
+        .await;
+    match result {
+        None => locked(&headers).into_response(),
+        Some(Err(error)) => match load_travaux(&state, &dossier).await {
+            TravauxLoad::Ready(stored) if matches!(error, AppError::Conflict { .. }) => page(
+                &headers,
+                gens::travaux_page(
+                    &dossier,
+                    &stored,
+                    Some("Ce récit a changé. Voici celui du coffre."),
+                ),
+            )
+            .into_response(),
+            TravauxLoad::Ready(stored) => {
+                let message = error.to_string();
+                let shown = DossierWork {
+                    body: form.body,
+                    revision: stored.revision,
+                };
+                page(
+                    &headers,
+                    gens::travaux_page(&dossier, &shown, Some(&message)),
+                )
+                .into_response()
+            }
+            TravauxLoad::Locked => locked(&headers).into_response(),
+            TravauxLoad::NotAFiche => page(
+                &headers,
+                gens::dossier_markup(&dossier, today, Some("Les travaux tiennent sur une fiche.")),
+            )
+            .into_response(),
+            TravauxLoad::Failed(msg) => {
+                page(&headers, gens::dossier_markup(&dossier, today, Some(&msg))).into_response()
+            }
+        },
+        Some(Ok(_)) => match load_travaux(&state, &dossier).await {
+            TravauxLoad::Ready(note) => {
+                saved_page(&headers, gens::travaux_page(&dossier, &note, None))
+            }
+            TravauxLoad::Locked => locked(&headers).into_response(),
+            TravauxLoad::NotAFiche => page(
+                &headers,
+                gens::dossier_markup(&dossier, today, Some("Les travaux tiennent sur une fiche.")),
+            )
+            .into_response(),
+            TravauxLoad::Failed(msg) => {
+                page(&headers, gens::dossier_markup(&dossier, today, Some(&msg))).into_response()
+            }
+        },
+    }
+}
+
+enum TravauxLoad {
+    Locked,
+    NotAFiche,
+    Failed(String),
+    Ready(DossierWork),
+}
+
+async fn load_travaux(
+    state: &AppState,
+    dossier: &griffe_core::people::PersonDossier,
+) -> TravauxLoad {
+    let PersonKey::Client { id } = dossier.key else {
+        return TravauxLoad::NotAFiche;
+    };
+    match state
+        .with_store(|store| dossier_work(store.connection(), id))
+        .await
+    {
+        None => TravauxLoad::Locked,
+        Some(Err(error)) => TravauxLoad::Failed(error.to_string()),
+        Some(Ok(note)) => TravauxLoad::Ready(note),
     }
 }

@@ -209,6 +209,14 @@ pub(crate) fn list_templates() -> ListResourceTemplatesResult {
                  histoire — même vue que people.show.",
             )
             .with_mime_type("application/json"),
+        ResourceTemplate::new(
+            format!("{PEOPLE_DETAIL_PREFIX}{{reference}}/travaux"),
+            "person-work",
+        )
+        .with_description(
+            "Récit des travaux d'une fiche : markdown et révision — même vue que dossier_work.",
+        )
+        .with_mime_type("application/json"),
         ResourceTemplate::new(format!("{SOCIETY_DUTY_PREFIX}{{kind}}"), "society-duty")
             .with_description(
                 "Lettre d'une démarche hors de l'app (`is_acompte`, `ca3`, …) — même vue que \
@@ -429,9 +437,19 @@ pub(crate) fn read(store: &Store, uri: &str) -> Result<ReadResourceResult, McpEr
             .map_err(|e| McpError::resource_not_found(e.to_string(), None))?;
         return json_contents(uri, list);
     }
-    if let Some(reference) = uri.strip_prefix(PEOPLE_DETAIL_PREFIX) {
+    if let Some(rest) = uri.strip_prefix(PEOPLE_DETAIL_PREFIX) {
+        if let Some(reference) = rest.strip_suffix("/travaux") {
+            if reference.is_empty() {
+                return Err(McpError::resource_not_found("fiche manquante", None));
+            }
+            let id = crate::support::resolve_client(store, reference)
+                .map_err(|e| McpError::resource_not_found(e, None))?;
+            let note = griffe_core::dossier_work::dossier_work(store.connection(), id)
+                .map_err(|e| McpError::resource_not_found(e.to_string(), None))?;
+            return json_contents(uri, note);
+        }
         let today = griffe_core::clock::today_local();
-        let dossier = griffe_core::people::person(store.connection(), reference, today)
+        let dossier = griffe_core::people::person(store.connection(), rest, today)
             .map_err(|e| McpError::resource_not_found(e.to_string(), None))?;
         return json_contents(uri, dossier);
     }

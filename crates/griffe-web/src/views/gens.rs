@@ -5,6 +5,7 @@ use griffe_core::app::AppError;
 use griffe_core::domain::{
     ExpensePaidBy, FollowUpSubject, InteractionKind, display_phone, format_date, format_date_fr,
 };
+use griffe_core::dossier_work::DossierWork;
 use griffe_core::follow_up::{
     FollowUpCard, card_for, follow_up_sender, prospect_genre_for, prospect_genres,
 };
@@ -14,10 +15,11 @@ use griffe_core::people::{
     PersonCue, PersonDossier, PersonFigure, PersonKey, PersonRow, people_list, person,
 };
 use griffe_core::store::Store;
-use maud::{Markup, html};
+use maud::{Markup, PreEscaped, html};
 use time::Date;
 
 use crate::layout::ViewId;
+use crate::markdown::render_work_markdown;
 use crate::views::copy::letter_date;
 use crate::views::form;
 
@@ -339,10 +341,14 @@ pub fn dossier_page(store: &Store, needle: &str, today: Date) -> Result<Markup, 
 
 pub fn dossier_markup(dossier: &PersonDossier, today: Date, flash: Option<&str>) -> Markup {
     let href = person_href(&dossier.name);
+    let client_fiche = matches!(dossier.key, PersonKey::Client { .. });
     let (daily, fate): (Vec<_>, Vec<_>) = dossier
         .actions
         .iter()
         .partition(|action| !matches!(action, PersonAction::Stop { .. }));
+    let has_snooze = daily
+        .iter()
+        .any(|action| matches!(action, PersonAction::Snooze { .. }));
     html! {
         div class="letter" data-view=(ViewId::Gens.slug()) data-person=(dossier.name) {
             a class="back" href="/affaires" hx-get="/affaires" hx-target="#content" hx-push-url="true" {
@@ -353,10 +359,16 @@ pub fn dossier_markup(dossier: &PersonDossier, today: Date, flash: Option<&str>)
             @if let Some(msg) = flash {
                 p class="mast-note" role="status" { (msg) }
             }
-            @if !daily.is_empty() {
+            @if client_fiche || !daily.is_empty() {
                 div class="row-actions" {
                     @for action in &daily {
+                        @if client_fiche && matches!(action, PersonAction::Snooze { .. }) {
+                            (travaux_link(&href))
+                        }
                         (action_button(action, &href))
+                    }
+                    @if client_fiche && !has_snooze {
+                        (travaux_link(&href))
                     }
                 }
             }
@@ -942,6 +954,16 @@ fn snooze_control(dossier_href: &str) -> Markup {
     }
 }
 
+fn travaux_link(dossier_href: &str) -> Markup {
+    let href = format!("{dossier_href}/travaux");
+    html! {
+        a class="quiet" href=(href)
+          hx-get=(href) hx-target="#content" hx-push-url="true" {
+            "Les travaux"
+        }
+    }
+}
+
 fn action_button(action: &PersonAction, dossier_href: &str) -> Markup {
     match action {
         PersonAction::Write { subject } => {
@@ -1260,7 +1282,7 @@ pub fn estimate_page(
             }
             h1 { "L'estimation." }
             p class="lede" {
-                "Les travaux, et ce que chacun vaut. Le total reste dans le coffre. Le devis, tu le rédiges ailleurs."
+                "Ce que chaque ligne vaut. Le devis, tu le rédiges ailleurs."
             }
             @if let Some(msg) = &errors.banner {
                 p class="mast-note" role="alert" { (msg) }
@@ -1280,6 +1302,54 @@ pub fn estimate_page(
                 div class="row-actions" {
                     button class="quiet" type="submit" name="add" value="1" { "Ajouter une ligne" }
                     button class="seal" type="submit" { "Noter l'estimation" }
+                }
+            }
+        }
+    }
+}
+
+/// Fragment rendu du récit, cible de l'aperçu. Une page vide dit « Rien d'écrit. »
+pub fn travaux_fragment(body: &str) -> Markup {
+    if body.is_empty() {
+        html! { p class="work-empty" { "Rien d'écrit." } }
+    } else {
+        html! { (PreEscaped(render_work_markdown(body))) }
+    }
+}
+
+pub fn travaux_page(dossier: &PersonDossier, note: &DossierWork, error: Option<&str>) -> Markup {
+    let href = person_href(&dossier.name);
+    let action = format!("{href}/travaux");
+    let preview = format!("{href}/travaux/apercu");
+    html! {
+        div class="letter spread" data-view=(ViewId::Gens.slug()) {
+            a class="back" href=(href) hx-get=(href) hx-target="#content" hx-push-url="true" {
+                "← " (dossier.name)
+            }
+            h1 { "Les travaux." }
+            p class="lede" {
+                "Où on en est. L'estimation, à côté, dit ce que chaque ligne vaut."
+            }
+            @if let Some(msg) = error {
+                p class="mast-note" role="alert" { (msg) }
+            }
+            div id="travaux-rendu" class="work-prose" {
+                (travaux_fragment(&note.body))
+            }
+            form hx-post=(action) hx-target="#content" hx-push-url="true" {
+                input type="hidden" name="revision" value=(note.revision);
+                div class="field" {
+                    label for="body" { "Le récit" }
+                    textarea id="body" name="body" rows="14"
+                      hx-post=(preview)
+                      hx-trigger="keyup changed delay:400ms"
+                      hx-target="#travaux-rendu"
+                      hx-swap="innerHTML" {
+                        (note.body)
+                    }
+                }
+                div class="row-actions" {
+                    button class="seal" type="submit" { "Garder" }
                 }
             }
         }

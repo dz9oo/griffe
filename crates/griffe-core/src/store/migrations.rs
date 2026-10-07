@@ -101,5 +101,7 @@ pub fn migrations() -> Migrations<'static> {
             .down(include_str!("migrations/0041_journal_line_label_down.sql")),
         M::up(include_str!("migrations/0042_reverse_charge_up.sql"))
             .down(include_str!("migrations/0042_reverse_charge_down.sql")),
+        M::up(include_str!("migrations/0043_dossier_work_notes_up.sql"))
+            .down(include_str!("migrations/0043_dossier_work_notes_down.sql")),
     ])
 }

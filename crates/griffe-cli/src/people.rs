@@ -1,17 +1,22 @@
-//! `freeflow people` — liste et dossier. Lectures pures, `today` d'adaptateur.
+//! `griffe people` — liste, dossier, récit des travaux. `today` est un argument d'adaptateur.
+
+use std::io::Read;
+use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
+use griffe_core::app::{ExecutionContext, Executor};
 use griffe_core::clock::today_local;
 use griffe_core::domain::format_date;
+use griffe_core::dossier_work::{SaveDossierWork, dossier_work};
 use griffe_core::people::{
     HistoryKind, OutgoingCadence, PaperKind, PaperStatus, PeopleList, PersonAction, PersonChapter,
-    PersonCue, PersonDossier, PersonFigure, PersonRow, people_list, person,
+    PersonCue, PersonDossier, PersonFigure, PersonKey, PersonRow, people_list, person,
 };
 use griffe_core::store::Store;
 use time::Date;
 
 use crate::error::CliError;
-use crate::output::{HumanRender, format_value, key_values};
+use crate::output::{HumanRender, format_json, format_outcome_as, format_value, key_values};
 use crate::parsers::parse_date;
 use crate::table;
 
@@ -300,9 +305,24 @@ pub enum PeopleCommand {
         #[arg(long, value_parser = parse_date)]
         today: Option<Date>,
     },
+    /// Récit markdown d'une fiche. Sans `--file`, imprime le texte.
+    Travaux {
+        #[arg(value_name = "RÉF")]
+        reference: String,
+        /// Enregistre ce fichier à la place du récit. `-` lit l'entrée standard.
+        #[arg(long, value_name = "CHEMIN")]
+        file: Option<PathBuf>,
+        #[arg(long, value_parser = parse_date)]
+        today: Option<Date>,
+    },
 }
 
-pub fn run(cmd: PeopleCommand, store: &Store, json: bool) -> Result<String, CliError> {
+pub fn run(
+    cmd: PeopleCommand,
+    store: &mut Store,
+    ctx: &ExecutionContext,
+    json: bool,
+) -> Result<String, CliError> {
     match cmd {
         PeopleCommand::List { today } => {
             let today = today.unwrap_or_else(today_local);
@@ -314,5 +334,50 @@ pub fn run(cmd: PeopleCommand, store: &Store, json: bool) -> Result<String, CliE
             let dossier = person(store.connection(), &reference, today)?;
             Ok(format_value(&dossier, json))
         }
+        PeopleCommand::Travaux {
+            reference,
+            file,
+            today,
+        } => {
+            let today = today.unwrap_or_else(today_local);
+            let dossier = person(store.connection(), &reference, today)?;
+            let PersonKey::Client { id } = dossier.key else {
+                return Err(CliError::Domain(
+                    "les travaux tiennent sur une fiche".into(),
+                ));
+            };
+            let Some(path) = file else {
+                let note = dossier_work(store.connection(), id)?;
+                return if json {
+                    Ok(format_json(&note))
+                } else {
+                    Ok(note.body)
+                };
+            };
+            let body = read_work_file(&path)?;
+            let revision = dossier_work(store.connection(), id)?.revision;
+            let outcome = Executor::new(store).execute(
+                &SaveDossierWork {
+                    client: id,
+                    body,
+                    revision,
+                },
+                ctx,
+            )?;
+            Ok(format_outcome_as(&outcome, json, |note| note.body.clone()))
+        }
     }
+}
+
+fn read_work_file(path: &Path) -> Result<String, CliError> {
+    if path == Path::new("-") {
+        let mut body = String::new();
+        std::io::stdin().read_to_string(&mut body).map_err(|e| {
+            CliError::Unexpected(format!("lecture de l'entrée standard impossible : {e}"))
+        })?;
+        return Ok(body);
+    }
+    std::fs::read_to_string(path).map_err(|e| {
+        CliError::Unexpected(format!("lecture de {} impossible : {e}", path.display()))
+    })
 }

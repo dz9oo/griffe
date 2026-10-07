@@ -155,6 +155,7 @@ expression: "json!({\n    \"tool_names\": names, \"invoice_emit_input_schema\":\
     "payment.void",
     "pending.list",
     "people.list",
+    "people.save_work",
     "people.show",
     "prospect.advance",
     "prospect.archive",

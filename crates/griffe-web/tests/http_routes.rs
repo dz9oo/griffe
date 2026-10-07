@@ -9926,3 +9926,242 @@ async fn reporter_unfolds_into_three_days_ten_days_or_a_count() {
         "until reste le chemin de Demain : {after_until}"
     );
 }
+
+fn form_encode(pairs: &[(&str, &str)]) -> String {
+    pairs
+        .iter()
+        .map(|(key, value)| format!("{}={}", form_escape(key), form_escape(value)))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+fn form_escape(value: &str) -> String {
+    let mut out = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' => {
+                out.push(char::from(byte));
+            }
+            b' ' => out.push('+'),
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
+#[tokio::test]
+async fn travaux_page_previews_without_saving_and_keeps_the_rendered_note() {
+    let db = test_db_path("travaux");
+    let mut store = Store::create(&db, &Passphrase::from(PASSPHRASE)).unwrap();
+    let client_id = match Executor::new(&mut store)
+        .execute(
+            &CreateClient {
+                name: "Atelier du recit".into(),
+                siren: None,
+                vat_number: None,
+                address: None,
+            },
+            &human_ctx(),
+        )
+        .unwrap()
+    {
+        griffe_core::app::Outcome::Applied(id) => id,
+        other => panic!("création attendue, obtenu {other:?}"),
+    };
+    Executor::new(&mut store)
+        .execute(
+            &CreateOpportunity {
+                client_id,
+                name: "Chantier du recit".into(),
+                amount: Money::from_cents(150_000),
+                probability: Probability::new(40).unwrap(),
+                next_action_at: time::Date::from_calendar_date(2026, time::Month::October, 8)
+                    .unwrap(),
+                source: None,
+            },
+            &human_ctx(),
+        )
+        .unwrap();
+    drop(store);
+
+    let state = AppState::new(db.clone());
+    state
+        .unlock(&Passphrase::from(PASSPHRASE), false)
+        .await
+        .unwrap();
+    let router = griffe_web::router(state);
+    let dossier_uri = "/affaires/Atelier%20du%20recit";
+
+    let dossier = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(dossier_uri)
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    let travaux_at = dossier.find("Les travaux").expect("le bouton Les travaux");
+    let reporter_at = dossier.find("Reporter").expect("Reporter");
+    assert!(
+        travaux_at < reporter_at,
+        "Les travaux se place juste avant Reporter : {dossier}"
+    );
+    assert!(dossier.contains("/travaux"), "{dossier}");
+
+    let empty = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("{dossier_uri}/travaux"))
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(empty.contains("Les travaux."), "{empty}");
+    assert!(empty.contains("Rien d'écrit."), "{empty}");
+    assert!(empty.contains("Où on en est."), "{empty}");
+    assert!(empty.contains("keyup changed delay:400ms"), "{empty}");
+    assert!(empty.contains("/travaux/apercu"), "{empty}");
+
+    let source = "# Le chantier\n\nUne *ligne*.\n\n- un\n\n> dit\n\n`code`\n\n[voir](https://exemple.fr/page)\n\n![plan](https://exemple.fr/plan.png)\n\n<script>alert(1)</script>\n";
+    let preview = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("{dossier_uri}/travaux/apercu"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from(form_encode(&[("body", source)])))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(preview.headers().get("HX-Trigger").is_none());
+    let preview_body = body_text(preview).await;
+    assert!(
+        preview_body.contains("<h1>Le chantier</h1>"),
+        "{preview_body}"
+    );
+    assert!(preview_body.contains("<em>ligne</em>"), "{preview_body}");
+    assert!(preview_body.contains("<li>un</li>"), "{preview_body}");
+    assert!(preview_body.contains("<blockquote>"), "{preview_body}");
+    assert!(preview_body.contains("<code>code</code>"), "{preview_body}");
+    assert!(
+        preview_body.contains("voir (https://exemple.fr/page)"),
+        "{preview_body}"
+    );
+    assert!(!preview_body.contains("<a"), "{preview_body}");
+    assert!(!preview_body.contains("<img"), "{preview_body}");
+    assert!(!preview_body.contains("plan.png"), "{preview_body}");
+    assert!(
+        !preview_body.to_ascii_lowercase().contains("<script"),
+        "{preview_body}"
+    );
+    assert!(preview_body.contains("&lt;script&gt;"), "{preview_body}");
+
+    let still_empty = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("{dossier_uri}/travaux"))
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(still_empty.contains("Rien d'écrit."), "{still_empty}");
+    assert!(
+        !still_empty.contains("Le chantier"),
+        "l'aperçu n'écrit pas : {still_empty}"
+    );
+
+    let saved = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("{dossier_uri}/travaux"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from(form_encode(&[
+                    ("body", source),
+                    ("revision", "0"),
+                ])))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        saved
+            .headers()
+            .get("HX-Trigger")
+            .and_then(|v| v.to_str().ok()),
+        Some("griffe:saved")
+    );
+    let saved_body = body_text(saved).await;
+    assert!(saved_body.contains("<h1>Le chantier</h1>"), "{saved_body}");
+    assert!(
+        !saved_body.to_ascii_lowercase().contains("<script"),
+        "{saved_body}"
+    );
+    assert!(saved_body.contains("&lt;script&gt;"), "{saved_body}");
+
+    let stale = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("{dossier_uri}/travaux"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from(form_encode(&[
+                    ("body", "Un texte périmé.\n"),
+                    ("revision", "0"),
+                ])))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(stale.headers().get("HX-Trigger").is_none());
+    let stale_body = body_text(stale).await;
+    assert!(
+        stale_body.contains("Ce récit a changé. Voici celui du coffre."),
+        "{stale_body}"
+    );
+    assert!(stale_body.contains("Le chantier"), "{stale_body}");
+    assert!(!stale_body.contains("Un texte périmé"), "{stale_body}");
+
+    let estimation = body_text(
+        router
+            .oneshot(
+                Request::builder()
+                    .uri(format!("{dossier_uri}/estimation"))
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        estimation.contains("Ce que chaque ligne vaut."),
+        "{estimation}"
+    );
+}

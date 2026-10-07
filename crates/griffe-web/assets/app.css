@@ -1563,6 +1563,42 @@ tr.row-clickable:hover td { background: var(--paper-2); }
   text-underline-offset: 3px;
 }
 .letter.spread .field textarea { min-height: clamp(16rem, 50vh, 40rem); }
+.letter .work-prose {
+  font-family: var(--serif);
+  font-size: 17px;
+  line-height: 1.5;
+  margin: 0 0 28px;
+}
+.letter .work-prose h1,
+.letter .work-prose h2,
+.letter .work-prose h3 {
+  font-family: var(--serif);
+  font-weight: 400;
+  font-size: 22px;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  margin: 1.2em 0 0.4em;
+}
+.letter .work-prose p { margin: 0 0 0.8em; }
+.letter .work-prose ul,
+.letter .work-prose ol { margin: 0 0 0.8em; padding-left: 1.2em; }
+.letter .work-prose blockquote {
+  margin: 0 0 0.8em;
+  padding-left: 1em;
+  border-left: 1px solid var(--rule);
+  color: var(--ink-2);
+}
+.letter .work-prose code,
+.letter .work-prose pre {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+.letter .work-prose pre { white-space: pre-wrap; margin: 0 0 0.8em; }
+.letter .work-empty {
+  font-family: var(--serif);
+  color: var(--ink-2);
+  margin: 0 0 28px;
+}
 
 .letter-fold {
   min-width: 0;

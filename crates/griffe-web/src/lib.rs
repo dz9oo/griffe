@@ -14,6 +14,7 @@ mod facturation;
 mod gens;
 mod handlers;
 mod layout;
+mod markdown;
 mod missions;
 mod papiers;
 mod premiers_pas;
@@ -95,6 +96,11 @@ fn people_routes() -> Router<AppState> {
             "/{reference}/estimation",
             get(gens::estimate_get).post(gens::estimate_post),
         )
+        .route(
+            "/{reference}/travaux",
+            get(gens::travaux_get).post(gens::travaux_post),
+        )
+        .route("/{reference}/travaux/apercu", post(gens::travaux_preview))
         .route("/{reference}/reporter", post(gens::snooze))
         .route(
             "/{reference}/arreter",

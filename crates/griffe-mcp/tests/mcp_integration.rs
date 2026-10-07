@@ -191,6 +191,7 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "day.month",
         "people.list",
         "people.show",
+        "people.save_work",
         "society.show",
         "society.pay",
         "society.duties",
@@ -1652,6 +1653,90 @@ async fn the_day_mast_tool_returns_typed_facts() {
     assert_eq!(gestes.is_error, Some(false));
     let rows = json_of(&gestes);
     assert!(rows.as_array().unwrap()[0]["verb"] == "setup", "{rows}");
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn people_save_work_roundtrips_through_the_resource_and_refuses_a_stale_revision() {
+    let store =
+        Store::create(&test_db_path("people-travaux"), &Passphrase::from("s3cret")).unwrap();
+    let client = spawn_client(store).await;
+    call(
+        &client,
+        "clients.create",
+        json!({"name": "Atelier du recit"}),
+    )
+    .await;
+
+    let read = client
+        .read_resource(ReadResourceRequestParams::new(
+            "griffe://people/Atelier du recit/travaux",
+        ))
+        .await
+        .unwrap();
+    let text = match &read.contents[0] {
+        rmcp::model::ResourceContents::TextResourceContents { text, .. } => text.clone(),
+        other => panic!("expected text contents, got {other:?}"),
+    };
+    let note: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(note["body"], "");
+    assert_eq!(note["revision"], 0);
+
+    let saved = call(
+        &client,
+        "people.save_work",
+        json!({
+            "reference": "Atelier du recit",
+            "body": "# Le chantier\n",
+            "revision": 0
+        }),
+    )
+    .await;
+    assert_eq!(saved.is_error, Some(false), "{}", tool_text(&saved));
+    let saved = json_of(&saved);
+    assert_eq!(saved["status"], "applied");
+    assert_eq!(saved["result"]["revision"], 1);
+
+    let dry = call(
+        &client,
+        "people.save_work",
+        json!({
+            "reference": "Atelier du recit",
+            "body": "pas écrit\n",
+            "revision": 1,
+            "dry_run": true
+        }),
+    )
+    .await;
+    assert_eq!(dry.is_error, Some(false));
+    assert_eq!(json_of(&dry)["status"], "dry_run");
+
+    let stale = call(
+        &client,
+        "people.save_work",
+        json!({
+            "reference": "Atelier du recit",
+            "body": "périmé\n",
+            "revision": 0
+        }),
+    )
+    .await;
+    assert_eq!(stale.is_error, Some(true), "{}", tool_text(&stale));
+
+    let read = client
+        .read_resource(ReadResourceRequestParams::new(
+            "griffe://people/Atelier du recit/travaux",
+        ))
+        .await
+        .unwrap();
+    let text = match &read.contents[0] {
+        rmcp::model::ResourceContents::TextResourceContents { text, .. } => text.clone(),
+        other => panic!("expected text contents, got {other:?}"),
+    };
+    let note: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(note["body"], "# Le chantier\n");
+    assert_eq!(note["revision"], 1);
 
     client.cancel().await.unwrap();
 }
