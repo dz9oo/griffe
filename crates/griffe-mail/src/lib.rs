@@ -47,6 +47,23 @@ impl OutboundMail for LettreMail {
     }
 }
 
+/// Ouvre la liaison, la chiffre et authentifie. N'envoie pas de lettre.
+///
+/// # Errors
+///
+/// Le port ne correspond pas au chiffrement, ou le serveur a refusé.
+pub fn probe(endpoint: &SmtpEndpoint, secret: &MailSecret) -> Result<(), MailSubmitError> {
+    if endpoint.host.is_empty() || endpoint.port != endpoint.tls.port() {
+        return Err(MailSubmitError::Tls);
+    }
+    let transport = open_transport(endpoint, secret)?;
+    match transport.test_connection() {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(MailSubmitError::Timeout),
+        Err(error) => Err(classify_lettre(&error, secret.expose())),
+    }
+}
+
 /// Soumet le lot puis oublie le secret. Aucune lettre n'est retentée ici.
 #[must_use]
 pub fn submit_batch(batch: SubmissionBatch) -> Vec<DeliveryOutcome> {
@@ -174,7 +191,7 @@ fn shorten(text: &str, secret: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{LettreMail, classify_text, compose, open_transport};
+    use super::{LettreMail, classify_text, compose, open_transport, probe};
     use griffe_core::mail::{MailSecret, MailSubmitError, OutboundMessage, SmtpEndpoint, TlsMode};
 
     fn endpoint(port: u16, tls: TlsMode) -> SmtpEndpoint {
@@ -184,6 +201,14 @@ mod tests {
             tls,
             username: "ada@studio.test".into(),
         }
+    }
+
+    #[test]
+    fn probe_refuses_a_mismatched_port_without_the_password() {
+        let secret = MailSecret::new("secret-value").unwrap();
+        let error = probe(&endpoint(465, TlsMode::StartTls), &secret).unwrap_err();
+        assert_eq!(error, MailSubmitError::Tls);
+        assert!(!format!("{error:?}").contains("secret-value"));
     }
 
     #[test]

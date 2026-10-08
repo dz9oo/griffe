@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use time::{Date, Duration, OffsetDateTime};
 
 use super::error::MailError;
-use super::model::{ICLOUD_HOST, MailPreset, TlsMode, UNDO_SECS};
+use super::model::{ICLOUD_HOST, MailPreset, PROBE_OK_SENTENCE, TlsMode, UNDO_SECS};
 use super::secret::MailSecret;
 use super::store::{self, NewLetter};
 use crate::app::{AppError, Command};
@@ -122,6 +122,40 @@ impl Command for ClearMailSecret {
 
     fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
         store::clear_secret(conn, &now_stamp()?)
+    }
+}
+
+/// Verdict d'une liaison déjà tentée par l'adaptateur. N'ouvre aucune socket.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecordMailProbe {
+    pub ok: bool,
+    pub detail: String,
+}
+
+impl Command for RecordMailProbe {
+    type Output = ();
+    const NAME: &'static str = "mail.record_probe";
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        let detail = checked_detail(self.ok, &self.detail);
+        store::record_probe(conn, self.ok, &detail, &now_stamp()?)
+    }
+}
+
+fn checked_detail(ok: bool, raw: &str) -> String {
+    let text: String = raw
+        .chars()
+        .filter(|ch| !ch.is_control())
+        .take(160)
+        .collect();
+    let text = text.trim();
+    if !text.is_empty() {
+        return text.to_string();
+    }
+    if ok {
+        PROBE_OK_SENTENCE.to_string()
+    } else {
+        "Le serveur n'a pas répondu.".to_string()
     }
 }
 

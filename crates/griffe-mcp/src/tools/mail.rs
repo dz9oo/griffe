@@ -72,6 +72,8 @@ impl FreeflowServer {
                 "auto_send": account.auto_send,
                 "ready": account.ready,
                 "signature": account.signature,
+                "probe_ok": account.probe.as_ref().map(|probe| probe.ok),
+                "probe_detail": account.probe.as_ref().map(|probe| probe.detail.clone()),
             })),
             Err(error) => err_text(error.to_string()),
         }

@@ -1,4 +1,5 @@
-//! Chapitre Le courrier : enregistrer le compte, le secret, l'essai. Pas de SMTP ici.
+//! Chapitre Le courrier : enregistrer le compte, le secret, l'essai.
+//! La liaison SMTP est tentée ici, hors du coffre, par la sonde de la fenêtre.
 
 use axum::Form;
 use axum::extract::State;
@@ -6,14 +7,16 @@ use axum::http::{HeaderMap, HeaderValue};
 use axum::response::{Html, IntoResponse, Response};
 use griffe_core::app::{AppError, Executor};
 use griffe_core::mail::{
-    ArmOutbound, CancelOutbound, ClearMailSecret, MailSecret, ResolveUncertain, RetryOutbound,
-    SaveMailAccount, SaveMailSecret, SaveMailSignature, SetAutomaticSend, UNDO_SECS,
+    ArmOutbound, CancelOutbound, ClearMailSecret, MailPreset, MailSecret, PROBE_OK_SENTENCE,
+    RecordMailProbe, ResolveUncertain, RetryOutbound, SaveMailAccount, SaveMailSecret,
+    SaveMailSignature, SetAutomaticSend, UNDO_SECS, french_submit_error, probe_material,
 };
 use maud::Markup;
 use serde::Deserialize;
 
 use crate::layout::ViewId;
 use crate::state::AppState;
+use crate::views::gens::depart_poll_fragment;
 use crate::views::societe::{CourrierForm, courrier_page};
 
 pub async fn show(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
@@ -34,6 +37,8 @@ pub struct AccountForm {
     username: String,
     #[serde(default)]
     preset: String,
+    #[serde(default)]
+    secret: String,
 }
 
 pub async fn save(
@@ -41,6 +46,7 @@ pub async fn save(
     headers: HeaderMap,
     Form(form): Form<AccountForm>,
 ) -> Response {
+    let typed_secret = !form.secret.trim().is_empty();
     let posted = posted_from(&form);
     let preset = if form.preset == "icloud" {
         "icloud"
@@ -59,7 +65,10 @@ pub async fn save(
             courrier_markup(
                 &state,
                 Some(&CourrierForm {
-                    error: Some("Le port est 587 ou 465.".into()),
+                    error: Some(with_secret_note(
+                        "Le port est 587 ou 465.".into(),
+                        typed_secret,
+                    )),
                     ..posted
                 }),
             )
@@ -85,24 +94,107 @@ pub async fn save(
             courrier_markup(
                 &state,
                 Some(&CourrierForm {
-                    error: Some(french(&error)),
+                    error: Some(with_secret_note(french(&error), typed_secret)),
                     ..posted_from_command(&command)
                 }),
             )
             .await,
         ),
-        Some(Ok(_)) => saved(
-            &headers,
-            courrier_markup(
-                &state,
-                Some(&CourrierForm {
-                    notice: Some("Le serveur est enregistré.".into()),
-                    ..CourrierForm::blank()
-                }),
+        Some(Ok(_)) => {
+            if typed_secret {
+                match keep_secret(&state, form.secret).await {
+                    SecretSave::Locked => return locked(&headers),
+                    SecretSave::Refused(message) => {
+                        return saved(
+                            &headers,
+                            courrier_markup(
+                                &state,
+                                Some(&CourrierForm {
+                                    error: Some(with_secret_note(message, true)),
+                                    ..CourrierForm::blank()
+                                }),
+                            )
+                            .await,
+                        );
+                    }
+                    SecretSave::Kept => {}
+                }
+            }
+            remember_probe(&state).await;
+            saved(
+                &headers,
+                courrier_markup(
+                    &state,
+                    Some(&CourrierForm {
+                        notice: Some("Le serveur est enregistré.".into()),
+                        ..CourrierForm::blank()
+                    }),
+                )
+                .await,
             )
-            .await,
-        ),
+        }
     }
+}
+
+enum SecretSave {
+    Kept,
+    Locked,
+    Refused(String),
+}
+
+async fn keep_secret(state: &AppState, raw: String) -> SecretSave {
+    let secret = match MailSecret::new(raw) {
+        Ok(secret) => secret,
+        Err(error) => return SecretSave::Refused(error.to_string()),
+    };
+    let result = state
+        .with_store_mut(|store| {
+            Executor::new(store).execute(&SaveMailSecret { secret }, &AppState::human_ctx())
+        })
+        .await;
+    match result {
+        None => SecretSave::Locked,
+        Some(Err(error)) => SecretSave::Refused(french(&error)),
+        Some(Ok(_)) => SecretSave::Kept,
+    }
+}
+
+fn with_secret_note(message: String, typed: bool) -> String {
+    if typed {
+        format!("{message} Le mot de passe n'est pas réaffiché. Saisissez-le de nouveau.")
+    } else {
+        message
+    }
+}
+
+/// Hors du verrou du coffre. Sans sonde installée, la page le dit et rien ne sort.
+async fn remember_probe(state: &AppState) {
+    let prepared = state
+        .with_store(|store| -> Result<_, AppError> {
+            let icloud =
+                griffe_core::mail::profile(store.connection())?.preset == MailPreset::Icloud;
+            let material = probe_material(store.connection())?;
+            Ok((icloud, material))
+        })
+        .await;
+    let Some(Ok((icloud, Some(material)))) = prepared else {
+        return;
+    };
+    let Some(probe) = state.mail_probe() else {
+        return;
+    };
+    let joined =
+        tokio::task::spawn_blocking(move || probe(material.endpoint, material.secret)).await;
+    let (ok, detail) = match joined {
+        Ok(Ok(())) => (true, PROBE_OK_SENTENCE.to_string()),
+        Ok(Err(error)) => (false, french_submit_error(&error, icloud)),
+        Err(_) => (false, "Le serveur n'a pas répondu.".to_string()),
+    };
+    let _ = state
+        .with_store_mut(|store| {
+            Executor::new(store).execute(&RecordMailProbe { ok, detail }, &AppState::human_ctx())
+        })
+        .await;
 }
 
 #[derive(Debug, Deserialize)]
@@ -163,17 +255,20 @@ pub async fn save_secret(
             )
             .await,
         ),
-        Some(Ok(_)) => saved(
-            &headers,
-            courrier_markup(
-                &state,
-                Some(&CourrierForm {
-                    notice: Some("Le mot de passe est dans le coffre.".into()),
-                    ..CourrierForm::blank()
-                }),
+        Some(Ok(_)) => {
+            remember_probe(&state).await;
+            saved(
+                &headers,
+                courrier_markup(
+                    &state,
+                    Some(&CourrierForm {
+                        notice: Some("Le mot de passe est dans le coffre.".into()),
+                        ..CourrierForm::blank()
+                    }),
+                )
+                .await,
             )
-            .await,
-        ),
+        }
     }
 }
 
@@ -343,7 +438,8 @@ pub async fn send_trial(
 }
 
 pub async fn trial_status(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    fragment(&headers, depart_for(&state, None).await, false)
+    let (markup, polling) = depart_status(&state, None).await;
+    status_fragment(&headers, markup, polling)
 }
 
 #[derive(Debug, Deserialize)]
@@ -477,11 +573,31 @@ async fn depart_for(state: &AppState, note: Option<&str>) -> Markup {
                 view.as_ref(),
                 note,
                 "Envoyer l'essai",
-                "Le serveur a pris la lettre.",
             )
         })
         .await
         .unwrap_or_else(|| maud::html! { div id="depart" { "coffre verrouillé" } })
+}
+
+async fn depart_status(state: &AppState, note: Option<&str>) -> (Markup, bool) {
+    state
+        .with_store(|store| {
+            let view = griffe_core::mail::outbound_for_anchor(
+                store.connection(),
+                "essai",
+                time::OffsetDateTime::now_utc(),
+            )
+            .ok()
+            .flatten();
+            depart_poll_fragment("/societe/courrier", view.as_ref(), note, "Envoyer l'essai")
+        })
+        .await
+        .unwrap_or_else(|| {
+            (
+                maud::html! { div id="depart" { "coffre verrouillé" } },
+                false,
+            )
+        })
 }
 
 fn fragment(headers: &HeaderMap, content: Markup, trigger: bool) -> Response {
@@ -490,6 +606,22 @@ fn fragment(headers: &HeaderMap, content: Markup, trigger: bool) -> Response {
         response
             .headers_mut()
             .insert("HX-Trigger", HeaderValue::from_static("griffe:saved"));
+    }
+    response
+}
+
+/// Le sondage ne doit pas être rejoué depuis le cache de WebKit. Quand le minuteur
+/// s'arrête, le bloc entier remplace celui qui interrogeait.
+fn status_fragment(headers: &HeaderMap, content: Markup, polling: bool) -> Response {
+    let mut response = fragment(headers, content, false);
+    response.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        HeaderValue::from_static("no-store, no-cache, must-revalidate"),
+    );
+    if !polling {
+        response
+            .headers_mut()
+            .insert("HX-Reswap", HeaderValue::from_static("outerHTML"));
     }
     response
 }

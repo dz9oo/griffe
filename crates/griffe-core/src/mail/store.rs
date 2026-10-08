@@ -7,8 +7,8 @@ use uuid::Uuid;
 
 use super::error::MailError;
 use super::model::{
-    HOURLY_CAP, MailPreset, MailProfile, OutboundMessage, OutboundStatus, OutboundView,
-    ReadyLetter, SmtpEndpoint, SubmissionBatch, TlsMode,
+    HOURLY_CAP, MailPreset, MailProbeStatus, MailProfile, OutboundMessage, OutboundStatus,
+    OutboundView, ProbeMaterial, ReadyLetter, SmtpEndpoint, SubmissionBatch, TlsMode,
 };
 use super::secret::MailSecret;
 use crate::app::AppError;
@@ -19,7 +19,8 @@ pub(super) fn profile(conn: &Connection) -> Result<MailProfile, AppError> {
     let row = conn
         .query_row(
             "SELECT from_name, from_address, smtp_host, smtp_port, smtp_tls, smtp_username,
-                    secret IS NOT NULL AND length(secret) > 0, preset, auto_send, signature
+                    secret IS NOT NULL AND length(secret) > 0, preset, auto_send, signature,
+                    probe_ok, probe_detail
              FROM mail_account WHERE id = 1",
             [],
             |row| {
@@ -34,12 +35,26 @@ pub(super) fn profile(conn: &Connection) -> Result<MailProfile, AppError> {
                     row.get::<_, String>(7)?,
                     row.get::<_, i64>(8)?,
                     row.get::<_, Option<String>>(9)?,
+                    row.get::<_, Option<i64>>(10)?,
+                    row.get::<_, Option<String>>(11)?,
                 ))
             },
         )
         .optional()?;
-    let Some((name, from, host, port, tls, username, has_secret, preset, auto_send, signature)) =
-        row
+    let Some((
+        name,
+        from,
+        host,
+        port,
+        tls,
+        username,
+        has_secret,
+        preset,
+        auto_send,
+        signature,
+        probe_ok,
+        probe_detail,
+    )) = row
     else {
         return Ok(MailProfile::default());
     };
@@ -61,6 +76,19 @@ pub(super) fn profile(conn: &Connection) -> Result<MailProfile, AppError> {
         auto_send: auto_send == 1,
         ready,
         signature: signature.unwrap_or_default(),
+        probe: probe_status(probe_ok, probe_detail),
+    })
+}
+
+fn probe_status(ok: Option<i64>, detail: Option<String>) -> Option<MailProbeStatus> {
+    let ok = match ok {
+        Some(1) => true,
+        Some(0) => false,
+        _ => return None,
+    };
+    Some(MailProbeStatus {
+        ok,
+        detail: detail.unwrap_or_default(),
     })
 }
 
@@ -108,6 +136,9 @@ pub(super) fn save_account(
             smtp_tls = excluded.smtp_tls,
             smtp_username = excluded.smtp_username,
             preset = excluded.preset,
+            probe_ok = NULL,
+            probe_detail = NULL,
+            probe_at = NULL,
             updated_at = excluded.updated_at",
         params![
             from_name,
@@ -125,7 +156,9 @@ pub(super) fn save_account(
 
 pub(super) fn save_secret(conn: &Connection, secret: &str, now: &str) -> Result<(), AppError> {
     let updated = conn.execute(
-        "UPDATE mail_account SET secret = ?1, updated_at = ?2 WHERE id = 1",
+        "UPDATE mail_account
+         SET secret = ?1, updated_at = ?2, probe_ok = NULL, probe_detail = NULL, probe_at = NULL
+         WHERE id = 1",
         params![secret, now],
     )?;
     if updated == 0 {
@@ -136,7 +169,9 @@ pub(super) fn save_secret(conn: &Connection, secret: &str, now: &str) -> Result<
 
 pub(super) fn clear_secret(conn: &Connection, now: &str) -> Result<(), AppError> {
     conn.execute(
-        "UPDATE mail_account SET secret = NULL, updated_at = ?1 WHERE id = 1",
+        "UPDATE mail_account
+         SET secret = NULL, updated_at = ?1, probe_ok = NULL, probe_detail = NULL, probe_at = NULL
+         WHERE id = 1",
         [now],
     )?;
     Ok(())
@@ -155,6 +190,43 @@ pub(super) fn set_auto(conn: &Connection, enabled: bool, now: &str) -> Result<()
         )?;
     }
     Ok(())
+}
+
+pub(super) fn record_probe(
+    conn: &Connection,
+    ok: bool,
+    detail: &str,
+    now: &str,
+) -> Result<(), AppError> {
+    let updated = conn.execute(
+        "UPDATE mail_account
+         SET probe_ok = ?1, probe_detail = ?2, probe_at = ?3, updated_at = ?3
+         WHERE id = 1",
+        params![i64::from(ok), detail, now],
+    )?;
+    if updated == 0 {
+        return Err(MailError::Incomplete.into());
+    }
+    Ok(())
+}
+
+pub(super) fn probe_material(conn: &Connection) -> Result<Option<ProbeMaterial>, AppError> {
+    let current = profile(conn)?;
+    if !current.ready {
+        return Ok(None);
+    }
+    let Some(secret) = load_secret(conn)? else {
+        return Ok(None);
+    };
+    Ok(Some(ProbeMaterial {
+        endpoint: SmtpEndpoint {
+            host: current.host,
+            port: current.port,
+            tls: current.tls,
+            username: current.username,
+        },
+        secret,
+    }))
 }
 
 pub(super) fn load_secret(conn: &Connection) -> Result<Option<MailSecret>, AppError> {

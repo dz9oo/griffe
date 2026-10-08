@@ -97,6 +97,7 @@ fn error_response(status: http::StatusCode, message: String) -> http::Response<V
 fn main() {
     let db_path = resolve_db_path();
     let state = AppState::new(db_path);
+    state.set_mail_probe(|endpoint, secret| griffe_mail::probe(&endpoint, &secret));
 
     tauri::async_runtime::block_on(state.try_open_cached());
     spawn_mail_clock(state.clone());

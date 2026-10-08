@@ -14,9 +14,9 @@ path = "src/main.rs"
 
 [dependencies]
 axum = "0.8.9"
-griffe-core = { version = "0.3.8", path = "../griffe-core" }
-griffe-mail = { version = "0.3.8", path = "../griffe-mail" }
-griffe-web = { version = "0.3.8", path = "../griffe-web" }
+griffe-core = { version = "0.3.9", path = "../griffe-core" }
+griffe-mail = { version = "0.3.9", path = "../griffe-mail" }
+griffe-web = { version = "0.3.9", path = "../griffe-web" }
 http = "1.5.0"
 http-body-util = "0.1.5"
 tauri = { version = "2.11.5", features = [] }
