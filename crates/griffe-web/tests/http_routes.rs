@@ -40,6 +40,22 @@ fn human_ctx() -> ExecutionContext {
     ExecutionContext::new(Actor::Human, false)
 }
 
+/// La formule est dans un `<template>` que l'aperçu lit. Ce mot n'est pas affiché.
+fn without_formula_holder(page: &str) -> String {
+    let mut out = String::with_capacity(page.len());
+    let mut rest = page;
+    while let Some(start) = rest.find("<template") {
+        out.push_str(&rest[..start]);
+        let Some(close) = rest[start..].find("</template>") else {
+            out.push_str(&rest[start..]);
+            return out;
+        };
+        rest = &rest[start + close + "</template>".len()..];
+    }
+    out.push_str(rest);
+    out
+}
+
 async fn body_text(response: axum::response::Response) -> String {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     String::from_utf8(bytes.to_vec()).unwrap()
@@ -7878,9 +7894,10 @@ async fn phrases_are_a_letter_and_the_next_unopened_mail_uses_them() {
     );
     assert!(page.contains("Enregistrer les phrases"), "{page}");
     assert!(!page.contains("{{"), "{page}");
+    let shown = without_formula_holder(&page);
     for forbidden in ["template", "cadence", "campagne", "workflow", "pipeline"] {
         assert!(
-            !page.contains(forbidden),
+            !shown.contains(forbidden),
             "{forbidden} dans la lettre : {page}"
         );
     }
@@ -8143,11 +8160,12 @@ async fn engaged_conversations_finish_their_series_and_a_new_one_takes_three_mom
     assert!(phrases.contains("value=\"7\""), "{phrases}");
     assert!(phrases.contains("value=\"14\""), "{phrases}");
     assert!(!phrases.contains("step="), "{phrases}");
+    let shown = without_formula_holder(&phrases);
     for forbidden in [
         "template", "cadence", "step", "campagne", "workflow", "pipeline",
     ] {
         assert!(
-            !phrases.contains(forbidden),
+            !shown.contains(forbidden),
             "{forbidden} dans la lettre : {phrases}"
         );
     }
@@ -8451,13 +8469,11 @@ async fn the_genre_changes_only_the_words() {
         services_page.contains("Les conversations déjà engagées finissent leur série."),
         "{services_page}"
     );
+    let shown = without_formula_holder(&services_page);
     for forbidden in [
         "template", "cadence", "step", "campagne", "workflow", "pipeline",
     ] {
-        assert!(
-            !services_page.contains(forbidden),
-            "{forbidden} : {services_page}"
-        );
+        assert!(!shown.contains(forbidden), "{forbidden} : {services_page}");
     }
     post_form(
         &router,
