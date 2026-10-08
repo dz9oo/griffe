@@ -19,7 +19,7 @@ pub(super) fn profile(conn: &Connection) -> Result<MailProfile, AppError> {
     let row = conn
         .query_row(
             "SELECT from_name, from_address, smtp_host, smtp_port, smtp_tls, smtp_username,
-                    secret IS NOT NULL AND length(secret) > 0, preset, auto_send
+                    secret IS NOT NULL AND length(secret) > 0, preset, auto_send, signature
              FROM mail_account WHERE id = 1",
             [],
             |row| {
@@ -33,11 +33,14 @@ pub(super) fn profile(conn: &Connection) -> Result<MailProfile, AppError> {
                     row.get::<_, bool>(6)?,
                     row.get::<_, String>(7)?,
                     row.get::<_, i64>(8)?,
+                    row.get::<_, Option<String>>(9)?,
                 ))
             },
         )
         .optional()?;
-    let Some((name, from, host, port, tls, username, has_secret, preset, auto_send)) = row else {
+    let Some((name, from, host, port, tls, username, has_secret, preset, auto_send, signature)) =
+        row
+    else {
         return Ok(MailProfile::default());
     };
     let tls = TlsMode::parse(&tls).unwrap_or(TlsMode::StartTls);
@@ -57,7 +60,27 @@ pub(super) fn profile(conn: &Connection) -> Result<MailProfile, AppError> {
         preset: MailPreset::parse(&preset),
         auto_send: auto_send == 1,
         ready,
+        signature: signature.unwrap_or_default(),
     })
+}
+
+pub(super) fn save_signature(
+    conn: &Connection,
+    signature: Option<&str>,
+    now: &str,
+) -> Result<(), AppError> {
+    let updated = conn.execute(
+        "UPDATE mail_account SET signature = ?1, updated_at = ?2 WHERE id = 1",
+        params![signature, now],
+    )?;
+    if updated == 0 {
+        conn.execute(
+            "INSERT INTO mail_account (id, smtp_tls, preset, auto_send, signature, updated_at)
+             VALUES (1, 'starttls', 'custom', 0, ?1, ?2)",
+            params![signature, now],
+        )?;
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)] // insertion SQL mécanique, pas une API publique.

@@ -1576,6 +1576,8 @@ pub struct PhrasesView {
     pub montant: String,
     pub moi: String,
     pub societe: String,
+    /// Formule déjà résolue, pour l'aperçu à côté de la frise.
+    pub signature: String,
     pub banner: Option<String>,
     pub status: Option<String>,
 }
@@ -1723,6 +1725,7 @@ pub fn phrases_page(view: &PhrasesView) -> Markup {
                           data-montant=(view.montant)
                           data-moi=(view.moi)
                           data-societe=(view.societe) {
+                        template class="signature-source" { (view.signature) }
                         p class="phrase-caption" { (view.read_caption) }
                         p class="phrase-sheet-subject" { (sheet_subject) }
                         pre class="phrase-sheet-body" { (sheet_body) }
@@ -1746,6 +1749,7 @@ const PHRASE_TOKENS: &[(&str, &str)] = &[
     ("<montant>", "<montant>"),
     ("<moi>", "<moi>"),
     ("<société>", "<société>"),
+    ("<signature>", "<signature>"),
 ];
 
 fn phrase_line(id: &str, label: &str, value: &str, letter: bool) -> Markup {
@@ -1792,7 +1796,13 @@ fn query_href(path: &str, depuis: &str, pour: &str, genre: &str, source: &str) -
 
 /// Le créneau d'envoi, remplaçable tout seul. Le bouton vit dans le formulaire de la lettre.
 #[must_use]
-pub fn depart_markup(href: &str, view: Option<&OutboundView>, note: Option<&str>) -> Markup {
+pub fn depart_markup(
+    href: &str,
+    view: Option<&OutboundView>,
+    note: Option<&str>,
+    send_label: &str,
+    sent_line: &str,
+) -> Markup {
     let send = format!("{href}/envoyer");
     let poll = format!("{href}/envoi");
     let polling = view.is_some_and(depart_polls);
@@ -1820,8 +1830,8 @@ pub fn depart_markup(href: &str, view: Option<&OutboundView>, note: Option<&str>
                     p class="depart-line" { "Elle est en route." }
                 }
                 Some(OutboundStatus::Sent) => {
-                    p class="depart-line" { "Elle est partie." }
-                    (envoyer_button(&send))
+                    p class="depart-line" { (sent_line) }
+                    (envoyer_button(&send, send_label))
                 }
                 Some(OutboundStatus::Failed) => {
                     p class="depart-line" {
@@ -1837,7 +1847,7 @@ pub fn depart_markup(href: &str, view: Option<&OutboundView>, note: Option<&str>
                     (post_button(&format!("{href}/envoi/reessayer"), "quiet", "retry", Some("1"), "Réessayer"))
                 }
                 Some(OutboundStatus::Cancelled) | None => {
-                    (envoyer_button(&send))
+                    (envoyer_button(&send, send_label))
                 }
             }
         }
@@ -1848,7 +1858,7 @@ fn depart_polls(view: &OutboundView) -> bool {
     matches!(view.status, OutboundStatus::Armed | OutboundStatus::Sending)
 }
 
-fn envoyer_button(action: &str) -> Markup {
+fn envoyer_button(action: &str, label: &str) -> Markup {
     html! {
         button class="seal" type="submit"
                formaction=(action)
@@ -1856,7 +1866,7 @@ fn envoyer_button(action: &str) -> Markup {
                hx-post=(action)
                hx-target="#depart"
                hx-swap="outerHTML" {
-            "Envoyer"
+            (label)
         }
     }
 }
@@ -2041,7 +2051,7 @@ pub fn letter_page(
                     }
                     div class="row-actions" {
                         @if can_send {
-                            (depart_markup(&href, depart.as_ref(), None))
+                            (depart_markup(&href, depart.as_ref(), None, "Envoyer", "Elle est partie."))
                         } @else if mail.ready {
                             p class="depart-line" { "Il manque l'adresse de la personne." }
                         }

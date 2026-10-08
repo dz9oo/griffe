@@ -465,7 +465,7 @@ fn genre_back(store: &griffe_core::store::Store, query: &NewGenreQuery) -> (Stri
     (href, label)
 }
 
-const NEW_MOMENT_BODY: &str = "Bonjour {{prenom}},\n\n{{sujet}}\n\nBien à vous,\n{{moi}}\n";
+const NEW_MOMENT_BODY: &str = griffe_core::domain::NEW_MOMENT_BODY;
 
 /// `order` absent : l'ordre du coffre. `ecart_` absent ou vide : l'écart déjà noté.
 /// Un enregistrement sans ces champs ne change donc pas la structure.
@@ -686,6 +686,7 @@ fn phrases_markup(
         montant: reading.ctx.montant,
         moi: reading.ctx.moi,
         societe: reading.ctx.societe,
+        signature: reading.signature,
         banner,
         status,
     })
@@ -770,6 +771,8 @@ fn neighbor_after_drop(
 struct PhraseReading {
     caption: String,
     ctx: TemplateContext,
+    /// Formule déjà résolue, pour l'aperçu.
+    signature: String,
     back_href: String,
     back_label: String,
     action: String,
@@ -782,17 +785,22 @@ fn phrase_reading(
     genre: &str,
 ) -> PhraseReading {
     let (moi, societe) = speaker(store);
+    let raw_signature = griffe_core::mail::profile(store.connection())
+        .map(|account| account.signature)
+        .unwrap_or_default();
     let pour = query.pour.trim();
     let depuis = query.depuis.trim();
     let action = gens::phrases_href(depuis, pour, genre);
     let example = PhraseReading {
         caption: "Exemple, pour voir.".to_string(),
+        signature: griffe_core::domain::resolve_signature(&raw_signature, &moi, &societe),
         ctx: TemplateContext {
             prenom: "Camille".into(),
             sujet: "la refonte".into(),
             montant: "4 500 €".into(),
             moi: moi.clone(),
             societe: societe.clone(),
+            signature: raw_signature.clone(),
             ..TemplateContext::default()
         },
         back_href: "/societe/identite".to_string(),
@@ -824,6 +832,7 @@ fn phrase_reading(
     };
     PhraseReading {
         caption,
+        signature: griffe_core::domain::resolve_signature(&raw_signature, &moi, &societe),
         ctx: TemplateContext {
             prenom,
             sujet: dossier
@@ -838,6 +847,7 @@ fn phrase_reading(
                 .unwrap_or_else(|| "—".to_string()),
             moi,
             societe,
+            signature: raw_signature,
             ..TemplateContext::default()
         },
         back_href,
@@ -1482,7 +1492,7 @@ async fn depart_for(state: &AppState, name: &str, note: Option<&str>) -> Markup 
             )
             .ok()
             .flatten();
-            gens::depart_markup(&href, view.as_ref(), note)
+            gens::depart_markup(&href, view.as_ref(), note, "Envoyer", "Elle est partie.")
         })
         .await
         .unwrap_or_else(|| html! { div id="depart" { "coffre verrouillé" } })

@@ -125,6 +125,39 @@ impl Command for ClearMailSecret {
     }
 }
 
+const SIGNATURE_MAX: usize = 2_000;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SaveMailSignature {
+    pub signature: String,
+}
+
+impl Command for SaveMailSignature {
+    type Output = ();
+    const NAME: &'static str = "mail.save_signature";
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        let text = checked_signature(&self.signature)?;
+        let stored = if text.is_empty() {
+            None
+        } else {
+            Some(text.as_str())
+        };
+        store::save_signature(conn, stored, &now_stamp()?)
+    }
+}
+
+fn checked_signature(raw: &str) -> Result<String, AppError> {
+    let text = raw.replace('\r', "").trim().to_string();
+    if text.contains("{{signature}}") || text.contains("<signature>") {
+        return Err(MailError::SignatureToken.into());
+    }
+    if text.chars().count() > SIGNATURE_MAX {
+        return Err(MailError::SignatureLength.into());
+    }
+    Ok(text)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SetAutomaticSend {
     pub enabled: bool,

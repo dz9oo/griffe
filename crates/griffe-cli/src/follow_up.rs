@@ -213,8 +213,8 @@ pub enum FollowUpCommand {
         label: String,
         #[arg(long)]
         subject: String,
-        /// Corps. Les balises `<prénom>`, `<sujet>`, `<montant>`, `<moi>` et `<société>`
-        /// sont les jetons. Un mot ordinaire reste tel quel.
+        /// Corps. Les balises `<prénom>`, `<sujet>`, `<montant>`, `<moi>`, `<société>`
+        /// et `<signature>` sont les jetons. Un mot ordinaire reste tel quel.
         #[arg(long)]
         body: Option<String>,
         #[arg(long, conflicts_with = "body")]
@@ -337,7 +337,7 @@ pub enum MomentsCommand {
     },
 }
 
-const NEW_MOMENT_BODY: &str = "Bonjour {{prenom}},\n\n{{sujet}}\n\nBien à vous,\n{{moi}}\n";
+const NEW_MOMENT_BODY: &str = griffe_core::domain::NEW_MOMENT_BODY;
 
 /// Les tests posent `GRIFFE_NO_OPEN` : on écrit le fichier, on n'ouvre pas le visualiseur
 /// (`xdg-open` / `open` ouvriraient le navigateur ou le client mail).

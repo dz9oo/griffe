@@ -30,6 +30,12 @@ L’envoi du jour est éteint. L’activer poste, pendant que le coffre est
 ouvert, les lettres dont la date prévue est aujourd’hui. Une lettre de la
 veille reste à envoyer à la main. Griffe ne lit pas la boîte.
 
+La formule, écrite dans ce chapitre, remplace `<signature>` dans les
+lettres et dans les phrases ; vide, elle redevient Bien à vous, le nom,
+la société. Une lettre d’essai reprend le premier message, pour un prénom
+fictif, vers l’adresse choisie : le serveur qui l’accepte ne promet pas
+la boîte du destinataire.
+
 ## Les mots
 
 Un **exercice** est la période des comptes. Il peut suivre l’année

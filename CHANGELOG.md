@@ -4,7 +4,8 @@ Ce qui change pour qui se sert de Griffe. Une section par version publiée.
 
 ## 0.3.8
 
-- Le courrier, dans La société, règle le serveur qui poste les lettres. Le mot de passe reste dans le coffre. Un essai part vers l'adresse qui signe, avec cinq secondes pour fermer la fenêtre et le garder.
+- Le courrier, dans La société, règle le serveur qui poste les lettres. Le mot de passe reste dans le coffre.
+- La formule ferme les lettres et les phrases. On l'écrit dans Le courrier. Vide, la lettre se termine par Bien à vous, le nom, la société. Une lettre d'essai reprend le premier message, pour un prénom fictif, vers l'adresse choisie, avec cinq secondes pour la retenir. Le serveur qui l'accepte ne promet pas qu'elle arrive hors des indésirables.
 - Sur une lettre, Envoyer laisse cinq secondes. Le filet s'allonge, Annuler le retient. Passé ce délai, la lettre part. C'est parti classe toujours le double dans l'historique.
 - L'envoi du jour est éteint. L'activer poste, pendant que Griffe est ouvert, les lettres dont la date prévue est aujourd'hui. Une lettre de la veille reste un geste à la main.
 - Ouvrir un coffre déjà créé avance son schéma. La version précédente ne peut plus l'ouvrir.

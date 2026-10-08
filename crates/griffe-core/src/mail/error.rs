@@ -29,6 +29,12 @@ pub enum MailError {
 
     #[error("lettre introuvable")]
     Missing,
+
+    #[error("la formule dépasse 2 000 caractères")]
+    SignatureLength,
+
+    #[error("la formule contient <signature>")]
+    SignatureToken,
 }
 
 impl From<MailError> for AppError {

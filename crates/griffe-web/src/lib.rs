@@ -302,7 +302,24 @@ pub fn router(state: AppState) -> Router {
         .route("/societe/courrier/secret", post(courrier::save_secret))
         .route("/societe/courrier/retirer", post(courrier::clear_secret))
         .route("/societe/courrier/automatique", post(courrier::automatic))
-        .route("/societe/courrier/essai", post(courrier::trial))
+        .route(
+            "/societe/courrier/signature",
+            post(courrier::save_signature),
+        )
+        .route("/societe/courrier/envoyer", post(courrier::send_trial))
+        .route("/societe/courrier/envoi", get(courrier::trial_status))
+        .route(
+            "/societe/courrier/envoi/annuler",
+            post(courrier::trial_cancel),
+        )
+        .route(
+            "/societe/courrier/envoi/reessayer",
+            post(courrier::trial_retry),
+        )
+        .route(
+            "/societe/courrier/envoi/decision",
+            post(courrier::trial_decision),
+        )
         .route(
             "/societe/papiers",
             get(papiers::chapter)

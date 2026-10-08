@@ -158,28 +158,28 @@ pub const PROSPECT_CADENCE: [CadenceStep; 4] = [
         offset_days: 0,
         label: "Premier message",
         subject: "{{sujet}}",
-        body: "Bonjour {{prenom}},\n\nJe me permets de revenir vers vous au sujet de {{sujet}}.\n\nAuriez-vous un créneau cette semaine pour en parler ?\n\nBien à vous,\n{{moi}}\n{{societe}}\n",
+        body: "Bonjour {{prenom}},\n\nJe me permets de revenir vers vous au sujet de {{sujet}}.\n\nAuriez-vous un créneau cette semaine pour en parler ?\n\n{{signature}}\n",
     },
     CadenceStep {
         key: "bump",
         offset_days: 3,
         label: "Petit rappel",
         subject: "{{sujet}} — je me permets un rappel",
-        body: "Bonjour {{prenom}},\n\nJe me permets un court rappel au sujet de {{sujet}}.\n\nDites-moi simplement si le moment n'est pas le bon.\n\nBien à vous,\n{{moi}}\n",
+        body: "Bonjour {{prenom}},\n\nJe me permets un court rappel au sujet de {{sujet}}.\n\nDites-moi simplement si le moment n'est pas le bon.\n\n{{signature}}\n",
     },
     CadenceStep {
         key: "value",
         offset_days: 7,
         label: "Relance utile",
         subject: "{{sujet}}",
-        body: "Bonjour {{prenom}},\n\nJe reviens vers vous concernant {{sujet}} ({{montant}}).\n\nJe reste disponible pour un échange de quinze minutes, à votre convenance.\n\nBien à vous,\n{{moi}}\n{{societe}}\n",
+        body: "Bonjour {{prenom}},\n\nJe reviens vers vous concernant {{sujet}} ({{montant}}).\n\nJe reste disponible pour un échange de quinze minutes, à votre convenance.\n\n{{signature}}\n",
     },
     CadenceStep {
         key: "close",
         offset_days: 14,
         label: "Dernier mot",
         subject: "{{sujet}} — je clos le dossier de mon côté ?",
-        body: "Bonjour {{prenom}},\n\nJe n'ai pas eu de retour au sujet de {{sujet}}.\n\nSi le timing n'est pas le bon, dites-le-moi et je referme le dossier sans insister.\n\nBien à vous,\n{{moi}}\n",
+        body: "Bonjour {{prenom}},\n\nJe n'ai pas eu de retour au sujet de {{sujet}}.\n\nSi le timing n'est pas le bon, dites-le-moi et je referme le dossier sans insister.\n\n{{signature}}\n",
     },
 ];
 
@@ -190,28 +190,28 @@ pub const INVOICE_CADENCE: [CadenceStep; 4] = [
         offset_days: 0,
         label: "Échéance",
         subject: "Facture {{facture}} — échéance le {{echeance}}",
-        body: "Bonjour {{prenom}},\n\nLa facture {{facture}} ({{solde}}) arrive à échéance le {{echeance}}.\n\nMerci de me confirmer la mise en paiement, ou de me signaler si un document manque.\n\nBien à vous,\n{{moi}}\n{{societe}}\n",
+        body: "Bonjour {{prenom}},\n\nLa facture {{facture}} ({{solde}}) arrive à échéance le {{echeance}}.\n\nMerci de me confirmer la mise en paiement, ou de me signaler si un document manque.\n\n{{signature}}\n",
     },
     CadenceStep {
         key: "gentle",
         offset_days: 7,
         label: "Premier rappel",
         subject: "Facture {{facture}} — {{solde}} en attente",
-        body: "Bonjour {{prenom}},\n\nLa facture {{facture}} ({{solde}}), échue le {{echeance}}, ne m'est pas encore parvenue.\n\nPouvez-vous me confirmer la date de virement ?\n\nBien à vous,\n{{moi}}\n{{societe}}\n",
+        body: "Bonjour {{prenom}},\n\nLa facture {{facture}} ({{solde}}), échue le {{echeance}}, ne m'est pas encore parvenue.\n\nPouvez-vous me confirmer la date de virement ?\n\n{{signature}}\n",
     },
     CadenceStep {
         key: "firm",
         offset_days: 15,
         label: "Deuxième rappel",
         subject: "Relance — facture {{facture}} ({{solde}})",
-        body: "Bonjour {{prenom}},\n\nSauf erreur de ma part, la facture {{facture}} ({{solde}}) reste due depuis le {{echeance}} (J+{{retard}}).\n\nMerci de régulariser dès que possible, ou de me dire si un point bloque.\n\nBien à vous,\n{{moi}}\n{{societe}}\n",
+        body: "Bonjour {{prenom}},\n\nSauf erreur de ma part, la facture {{facture}} ({{solde}}) reste due depuis le {{echeance}} (J+{{retard}}).\n\nMerci de régulariser dès que possible, ou de me dire si un point bloque.\n\n{{signature}}\n",
     },
     CadenceStep {
         key: "last",
         offset_days: 30,
         label: "Dernière relance",
         subject: "Dernière relance — facture {{facture}}",
-        body: "Bonjour {{prenom}},\n\nLa facture {{facture}} ({{solde}}) est échue depuis le {{echeance}}.\n\nSans règlement ou échange de votre part, je considérerai ce dossier comme à traiter en priorité.\n\nBien à vous,\n{{moi}}\n{{societe}}\n",
+        body: "Bonjour {{prenom}},\n\nLa facture {{facture}} ({{solde}}) est échue depuis le {{echeance}}.\n\nSans règlement ou échange de votre part, je considérerai ce dossier comme à traiter en priorité.\n\n{{signature}}\n",
     },
 ];
 
@@ -384,6 +384,9 @@ pub fn derive_cursor_with(
     }
 }
 
+/// Corps d'un moment ajouté. La fin est `<signature>`.
+pub const NEW_MOMENT_BODY: &str = "Bonjour {{prenom}},\n\n{{sujet}}\n\n{{signature}}\n";
+
 /// Contexte de substitution des modèles — toutes les clés `{{…}}` connues.
 #[derive(Debug, Clone, Default)]
 pub struct TemplateContext {
@@ -398,6 +401,8 @@ pub struct TemplateContext {
     pub echeance: String,
     pub retard: String,
     pub solde: String,
+    /// Texte saisi dans Le courrier. Vide : la formule « Bien à vous ».
+    pub signature: String,
 }
 
 impl TemplateContext {
@@ -434,6 +439,7 @@ const EDITOR_WORDS: &[(&str, &str)] = &[
     ("{{montant}}", "<montant>"),
     ("{{moi}}", "<moi>"),
     ("{{societe}}", "<société>"),
+    ("{{signature}}", "<signature>"),
 ];
 
 const ARTICLES: &[&str] = &[
@@ -644,10 +650,32 @@ pub fn phrase_from_editor(edited: &str) -> String {
     out
 }
 
+/// Ce qui ferme la lettre. Un texte saisi reste tel quel. Vide, c'est
+/// « Bien à vous », puis le nom, puis la société, chacun s'il est là.
+#[must_use]
+pub fn resolve_signature(signature: &str, moi: &str, societe: &str) -> String {
+    let signature = signature.trim();
+    if !signature.is_empty() {
+        return signature.to_string();
+    }
+    let mut lines = vec!["Bien à vous,".to_string()];
+    let moi = moi.trim();
+    let societe = societe.trim();
+    if !moi.is_empty() {
+        lines.push(moi.to_string());
+    }
+    if !societe.is_empty() {
+        lines.push(societe.to_string());
+    }
+    lines.join("\n")
+}
+
 /// Remplace les `{{clés}}` connues. Une clé inconnue reste telle quelle.
 /// Sans prénom, « Bonjour , » et « Cher , » se referment.
+/// `<signature>` est remplacée en dernier : son texte n'est pas relu.
 #[must_use]
 pub fn render_template(template: &str, ctx: &TemplateContext) -> String {
+    let signature = resolve_signature(&ctx.signature, &ctx.moi, &ctx.societe);
     let text = template
         .replace("{{prenom}}", &ctx.prenom)
         .replace("{{contact}}", &ctx.contact)
@@ -659,7 +687,8 @@ pub fn render_template(template: &str, ctx: &TemplateContext) -> String {
         .replace("{{facture}}", &ctx.facture)
         .replace("{{echeance}}", &ctx.echeance)
         .replace("{{retard}}", &ctx.retard)
-        .replace("{{solde}}", &ctx.solde);
+        .replace("{{solde}}", &ctx.solde)
+        .replace("{{signature}}", &signature);
     if ctx.prenom.trim().is_empty() {
         collapse_empty_greeting(&text)
     } else {
@@ -1133,6 +1162,60 @@ mod tests {
             chronicle(&[("Premier message", 0), ("Suite", 1), ("Bien plus tard", 21)]),
             "Premier message le jour du dossier. Un jour après, suite. 21 jours après, bien plus tard."
         );
+    }
+
+    #[test]
+    fn a_written_signature_replaces_the_token_and_an_empty_one_keeps_the_formula() {
+        let stored = "Au revoir,\n{{signature}}\n";
+        let shown = phrase_to_editor(stored);
+        assert!(shown.contains("<signature>"));
+        assert!(!shown.contains("{{"));
+        assert_eq!(phrase_from_editor(&shown), stored);
+
+        let written = render_template(
+            stored,
+            &TemplateContext {
+                signature: "Nicolas\nAtelier".into(),
+                moi: "Autre".into(),
+                societe: "Autre société".into(),
+                ..TemplateContext::default()
+            },
+        );
+        assert_eq!(written, "Au revoir,\nNicolas\nAtelier\n");
+        assert!(!written.contains("Autre"));
+
+        let empty = render_template(
+            stored,
+            &TemplateContext {
+                moi: "Nicolas".into(),
+                societe: "Lumen".into(),
+                ..TemplateContext::default()
+            },
+        );
+        assert_eq!(empty, "Au revoir,\nBien à vous,\nNicolas\nLumen\n");
+        assert_eq!(
+            render_template("{{signature}}", &TemplateContext::default()),
+            "Bien à vous,"
+        );
+        assert_eq!(
+            render_template(
+                "{{signature}}",
+                &TemplateContext {
+                    moi: "Nicolas".into(),
+                    ..TemplateContext::default()
+                },
+            ),
+            "Bien à vous,\nNicolas"
+        );
+    }
+
+    #[test]
+    fn the_compiled_letters_close_with_the_signature_token() {
+        for step in PROSPECT_CADENCE.iter().chain(INVOICE_CADENCE.iter()) {
+            assert!(step.body.contains("{{signature}}\n"), "{}", step.key);
+            assert!(!step.body.contains("Bien à vous"), "{}", step.key);
+        }
+        assert!(NEW_MOMENT_BODY.contains("{{signature}}\n"));
     }
 
     #[test]

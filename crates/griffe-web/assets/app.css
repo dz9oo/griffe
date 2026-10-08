@@ -1599,6 +1599,13 @@ tr.row-clickable:hover td { background: var(--paper-2); }
   padding: 22px 24px 28px;
   min-width: 0;
 }
+.essai-sheet {
+  background: var(--paper-2);
+  border: 1px solid var(--rule);
+  padding: 22px 24px 28px;
+  min-width: 0;
+  margin: 8px 0 18px;
+}
 .phrase-sheet-subject {
   font-family: var(--serif);
   font-size: 22px;

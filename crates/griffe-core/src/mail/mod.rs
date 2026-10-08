@@ -9,7 +9,7 @@ mod store;
 
 pub use commands::{
     ArmOutbound, CancelOutbound, ClearMailSecret, ResolveUncertain, RetryOutbound, SaveMailAccount,
-    SaveMailSecret, SetAutomaticSend,
+    SaveMailSecret, SaveMailSignature, SetAutomaticSend,
 };
 pub use error::MailError;
 pub use model::{
@@ -44,6 +44,48 @@ pub fn outbound_for_anchor(
 use time::{Date, OffsetDateTime};
 
 use crate::app::{AppError, ExecutionContext, Executor};
+use crate::domain::{TemplateContext, render_template};
+
+/// Lettre d'essai : le premier message, pour un prénom fictif.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrialLetter {
+    pub subject: String,
+    pub body: String,
+}
+
+/// Le premier message vivant, précédé d'une ligne qui dit que c'est un essai.
+/// Le prénom est Camille. Aucune fiche n'est lue.
+///
+/// # Errors
+///
+/// Lecture impossible.
+pub fn trial_letter(conn: &rusqlite::Connection) -> Result<TrialLetter, AppError> {
+    let phrases = crate::follow_up::prospect_phrases(conn)?;
+    let (subject_template, body_template) = phrases.into_iter().next().map_or_else(
+        || ("{{sujet}}".to_string(), "{{signature}}\n".to_string()),
+        |phrase| (phrase.subject, phrase.body),
+    );
+    let account = profile(conn)?;
+    let (moi, societe) = crate::follow_up::letter_speaker(conn)?;
+    let ctx = TemplateContext {
+        prenom: "Camille".into(),
+        sujet: "cette lettre d'essai".into(),
+        moi,
+        societe,
+        signature: account.signature,
+        ..TemplateContext::default()
+    };
+    let rendered_subject = render_template(&subject_template, &ctx);
+    let rendered_subject = rendered_subject.trim();
+    let subject = if rendered_subject.is_empty() {
+        "Essai".to_string()
+    } else {
+        format!("Essai — {rendered_subject}")
+    };
+    let rendered = render_template(&body_template, &ctx);
+    let body = format!("Cette lettre est un essai. Elle n'attend pas de réponse.\n\n{rendered}");
+    Ok(TrialLetter { subject, body })
+}
 
 /// Prépare les lettres échues de cette session. Ne contacte aucun serveur.
 /// Un agent est refusé : poster est un geste de la fenêtre ou de la CLI humaine.
@@ -217,11 +259,13 @@ mod tests {
 
     use super::{
         ArmOutbound, ClearMailSecret, MailError, MailSubmitError, RecordingMail, SaveMailAccount,
-        SaveMailSecret, SetAutomaticSend, deliver_with, profile, record_deliveries, take_due,
+        SaveMailSecret, SaveMailSignature, SetAutomaticSend, deliver_with, profile,
+        record_deliveries, take_due, trial_letter,
     };
     use crate::app::{Actor, ExecutionContext, Executor, Outcome, recent_audit_entries};
     use crate::clients::{CreateClient, CreateContact};
     use crate::domain::{ClientId, FollowUpSubject, Money, Probability};
+    use crate::follow_up::SetFollowUpSender;
     use crate::mail::MailSecret;
     use crate::prospection::CreateOpportunity;
     use crate::store::testing::test_store;
@@ -342,6 +386,115 @@ mod tests {
         assert!(account.has_secret);
         assert!(account.ready);
         assert!(!format!("{account:?}").contains(secret));
+    }
+
+    #[test]
+    fn a_signature_is_kept_without_a_server_and_refuses_its_own_token() {
+        let mut store = test_store("signature-save");
+        let Outcome::Applied(()) = Executor::new(&mut store)
+            .execute(
+                &SaveMailSignature {
+                    signature: "Nicolas\r\nAtelier\n".into(),
+                },
+                &human(),
+            )
+            .unwrap()
+        else {
+            panic!("formule");
+        };
+        let account = profile(store.connection()).unwrap();
+        assert_eq!(account.signature, "Nicolas\nAtelier");
+        assert!(!account.ready);
+        let entries = recent_audit_entries(store.connection(), 0, 20).unwrap();
+        let saved = entries
+            .iter()
+            .find(|entry| entry.command_name == "mail.save_signature")
+            .unwrap();
+        assert!(saved.command_json.contains("Nicolas"));
+
+        let token = Executor::new(&mut store).execute(
+            &SaveMailSignature {
+                signature: "voir <signature>".into(),
+            },
+            &human(),
+        );
+        assert!(token.is_err());
+        let long = Executor::new(&mut store).execute(
+            &SaveMailSignature {
+                signature: "é".repeat(2_001),
+            },
+            &human(),
+        );
+        assert!(long.is_err());
+        assert_eq!(
+            profile(store.connection()).unwrap().signature,
+            "Nicolas\nAtelier"
+        );
+
+        let Outcome::Applied(()) = Executor::new(&mut store)
+            .execute(
+                &SaveMailSignature {
+                    signature: "  \n".into(),
+                },
+                &human(),
+            )
+            .unwrap()
+        else {
+            panic!("retrait");
+        };
+        assert!(profile(store.connection()).unwrap().signature.is_empty());
+    }
+
+    #[test]
+    fn the_trial_letter_is_the_first_phrase_for_camille() {
+        let mut store = test_store("trial-letter");
+        let _ = seed(
+            &mut store,
+            Date::from_calendar_date(2026, Month::September, 5).unwrap(),
+        );
+        let Outcome::Applied(()) = Executor::new(&mut store)
+            .execute(
+                &SaveMailSignature {
+                    signature: "Nicolas Collier\nAtelier Nord".into(),
+                },
+                &human(),
+            )
+            .unwrap()
+        else {
+            panic!("formule");
+        };
+        let letter = trial_letter(store.connection()).unwrap();
+        assert_eq!(letter.subject, "Essai — cette lettre d'essai");
+        assert!(letter.body.starts_with(
+            "Cette lettre est un essai. Elle n'attend pas de réponse.\n\nBonjour Camille,"
+        ));
+        assert!(letter.body.contains("cette lettre d'essai"));
+        assert!(letter.body.contains("Nicolas Collier\nAtelier Nord"));
+        assert!(!letter.body.contains("marie@"));
+        assert!(!letter.body.contains("Marie"));
+        assert!(!letter.body.contains("Refonte"));
+        assert!(!letter.body.contains("Bien à vous"));
+    }
+
+    #[test]
+    fn an_empty_signature_closes_the_trial_with_the_formula() {
+        let mut store = test_store("trial-formula");
+        let Outcome::Applied(()) = Executor::new(&mut store)
+            .execute(
+                &SetFollowUpSender {
+                    email: "nicolas@lumen.test".into(),
+                    name: Some("Nicolas".into()),
+                },
+                &human(),
+            )
+            .unwrap()
+        else {
+            panic!("expéditeur");
+        };
+        let letter = trial_letter(store.connection()).unwrap();
+        assert!(letter.body.contains("Bien à vous,\nNicolas"));
+        assert!(letter.body.contains("Bonjour Camille"));
+        assert!(!letter.body.contains("marie@"));
     }
 
     #[test]

@@ -255,7 +255,7 @@ impl FreeflowServer {
     }
 
     /// Les phrases de prospection, dans l'ordre. Le coffre garde `{{prenom}}`, `{{sujet}}`,
-    /// `{{montant}}`, `{{moi}}`, `{{societe}}`.
+    /// `{{montant}}`, `{{moi}}`, `{{societe}}`, `{{signature}}`.
     #[tool(
         name = "follow_up.phrases",
         annotations(read_only_hint = true, idempotent_hint = true)
@@ -812,7 +812,7 @@ impl FreeflowServer {
     }
 }
 
-const NEW_MOMENT_BODY: &str = "Bonjour {{prenom}},\n\n{{sujet}}\n\nBien à vous,\n{{moi}}\n";
+const NEW_MOMENT_BODY: &str = griffe_core::domain::NEW_MOMENT_BODY;
 
 fn living_drafts(store: &griffe_core::store::Store) -> Result<Vec<MomentDraft>, String> {
     prospect_phrases(store.connection())

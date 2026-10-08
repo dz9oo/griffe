@@ -19,7 +19,7 @@ pub use commands::{
 pub use error::FollowUpError;
 pub use queries::{
     CardStatus, FollowUpCard, HistoryItem, card_for, events_for, follow_up_board, follow_up_queue,
-    follow_up_sender, latest_prospect_genre, phrases_for_genre, prospect_genre_for,
+    follow_up_sender, latest_prospect_genre, letter_speaker, phrases_for_genre, prospect_genre_for,
     prospect_genres, prospect_phrases,
 };
 pub use row::{ProspectGenre, ProspectPhrase};
@@ -76,6 +76,21 @@ mod tests {
     };
     use crate::store::Store;
     use crate::store::testing::test_store;
+
+    fn reapply_signature_migration(conn: &rusqlite::Connection) {
+        let sql = include_str!("store/migrations/0046_mail_signature_up.sql");
+        for chunk in sql.split(';') {
+            let code = chunk
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty() && !line.starts_with("--"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            if code.starts_with("UPDATE") {
+                conn.execute_batch(&code).unwrap();
+            }
+        }
+    }
 
     fn date(year: i32, month: Month, day: u8) -> Date {
         Date::from_calendar_date(year, month, day).unwrap()
@@ -253,6 +268,84 @@ mod tests {
             assert_eq!(phrase.body, step.body);
             assert_eq!(phrase.revision, 1);
         }
+    }
+
+    #[test]
+    fn the_signature_migration_rewrites_only_the_stock_closing() {
+        let store = test_store("signature-migration");
+        let phrases = prospect_phrases(store.connection()).unwrap();
+        assert!(
+            phrases
+                .iter()
+                .all(|phrase| phrase.body.contains("{{signature}}"))
+        );
+        assert!(
+            phrases
+                .iter()
+                .all(|phrase| !phrase.body.contains("Bien à vous"))
+        );
+
+        let old_two = "Bonjour,\n\nBien à vous,\n{{moi}}\n";
+        let old_three = "Bonjour,\n\nBien à vous,\n{{moi}}\n{{societe}}\n";
+        let custom = "Bonjour,\n\nBien à vous,\n{{moi}}\nle studio\n";
+        let conn = store.connection();
+        conn.execute(
+            "UPDATE prospect_phrases SET body = ?1 WHERE id = 'bump'",
+            [old_two],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE prospect_phrases SET body = ?1 WHERE id = 'close'",
+            [custom],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO prospect_genres (id, name, touched_at)
+             VALUES ('g1', 'Ateliers', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO prospect_genre_words (genre_id, phrase_key, subject, body)
+             VALUES ('g1', 'hello', '{{sujet}}', ?1)",
+            [old_three],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO prospect_series (id, opportunity_id, cycle_key) VALUES ('s1', 'opp', '')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO prospect_series_steps (
+                series_id, position, phrase_key, label, offset_days, subject, body
+             ) VALUES ('s1', 0, 'hello', 'Premier message', 0, '{{sujet}}', ?1)",
+            [old_three],
+        )
+        .unwrap();
+
+        reapply_signature_migration(conn);
+        reapply_signature_migration(conn);
+
+        let body = |sql: &str| -> String { conn.query_row(sql, [], |row| row.get(0)).unwrap() };
+        assert_eq!(
+            body("SELECT body FROM prospect_phrases WHERE id = 'bump'"),
+            "Bonjour,\n\n{{signature}}\n"
+        );
+        assert_eq!(
+            body("SELECT body FROM prospect_phrases WHERE id = 'close'"),
+            custom
+        );
+        assert_eq!(
+            body("SELECT body FROM prospect_genre_words WHERE genre_id = 'g1'"),
+            "Bonjour,\n\n{{signature}}\n"
+        );
+        assert_eq!(
+            body("SELECT body FROM prospect_series_steps WHERE series_id = 's1'"),
+            old_three
+        );
+        let hello = body("SELECT body FROM prospect_phrases WHERE id = 'hello'");
+        assert_eq!(hello.matches("{{signature}}").count(), 1);
     }
 
     #[test]

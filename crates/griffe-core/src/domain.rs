@@ -39,11 +39,11 @@ pub use expense::{
 };
 pub use follow_up::{
     CadenceStep, EmlDraft, FollowUpCursor, FollowUpEvent, FollowUpFact, FollowUpKind,
-    FollowUpSubject, INVOICE_CADENCE, InvalidEmail, PROSPECT_CADENCE, PhraseStep, SnoozeDaysError,
-    SnoozePreset, TemplateContext, UnknownFollowUpFact, UnknownFollowUpKind, active_events,
-    chronicle, derive_cursor, derive_cursor_with, entered_cycle_key, format_date_fr, given_name,
-    parse_email, phrase_from_editor, phrase_to_editor, render_eml, render_template, snooze_date,
-    snooze_in_days,
+    FollowUpSubject, INVOICE_CADENCE, InvalidEmail, NEW_MOMENT_BODY, PROSPECT_CADENCE, PhraseStep,
+    SnoozeDaysError, SnoozePreset, TemplateContext, UnknownFollowUpFact, UnknownFollowUpKind,
+    active_events, chronicle, derive_cursor, derive_cursor_with, entered_cycle_key, format_date_fr,
+    given_name, parse_email, phrase_from_editor, phrase_to_editor, render_eml, render_template,
+    resolve_signature, snooze_date, snooze_in_days,
 };
 pub use ids::{
     BankTransactionId, ClientId, ContactId, DutyFilingId, ExpenseId, FiscalYearId, FixedAssetId,

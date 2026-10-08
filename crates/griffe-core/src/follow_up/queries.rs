@@ -7,7 +7,7 @@ use time::Date;
 use crate::app::AppError;
 use crate::billing::{aged_balance, invoice_by_id};
 use crate::clients::{client_by_id, list_contacts};
-use crate::company::{CompanyProfile, company_profile};
+use crate::company::company_profile;
 use crate::domain::{
     ClientId, FollowUpEvent, FollowUpKind, FollowUpSubject, Money, Opportunity, TemplateContext,
     derive_cursor_with, parse_email, render_template,
@@ -403,19 +403,8 @@ pub fn phrases_for_genre(
 
 impl LoadedSubject {
     pub(super) fn template_context(&self, conn: &Connection) -> Result<TemplateContext, AppError> {
-        let profile: Option<CompanyProfile> = company_profile(conn)?;
-        let settings = row::settings(conn)?;
-        let moi = settings
-            .sender_name
-            .clone()
-            .or_else(|| {
-                profile
-                    .as_ref()
-                    .and_then(|profile| profile.president_name.clone())
-            })
-            .or_else(|| profile.as_ref().map(|profile| profile.name.clone()))
-            .unwrap_or_default();
-        let societe = profile.map(|profile| profile.name).unwrap_or_default();
+        let (moi, societe) = letter_speaker(conn)?;
+        let signature = crate::mail::profile(conn).unwrap_or_default().signature;
         let (contact, _) = self
             .recipient
             .clone()
@@ -424,6 +413,7 @@ impl LoadedSubject {
             sujet: self.title.clone(),
             moi,
             societe,
+            signature,
             facture: self.invoice_number.clone().unwrap_or_default(),
             echeance: self
                 .invoice_due_on
@@ -443,6 +433,27 @@ impl LoadedSubject {
         }
         Ok(ctx)
     }
+}
+
+/// Nom et société tels qu'une lettre les écrit. Vides si l'identité ne les a pas.
+///
+/// # Errors
+///
+/// Lecture impossible.
+pub fn letter_speaker(conn: &Connection) -> Result<(String, String), AppError> {
+    let profile = company_profile(conn)?;
+    let settings = row::settings(conn)?;
+    let moi = settings
+        .sender_name
+        .or_else(|| {
+            profile
+                .as_ref()
+                .and_then(|profile| profile.president_name.clone())
+        })
+        .or_else(|| profile.as_ref().map(|profile| profile.name.clone()))
+        .unwrap_or_default();
+    let societe = profile.map(|profile| profile.name).unwrap_or_default();
+    Ok((moi, societe))
 }
 
 /// Identité d'envoi configurée, éventuellement absente.

@@ -8,8 +8,8 @@ use clap::{ArgGroup, Subcommand};
 use griffe_core::app::{ExecutionContext, Executor};
 use griffe_core::mail::{
     ArmOutbound, CancelOutbound, ClearMailSecret, MailSecret, SaveMailAccount, SaveMailSecret,
-    SetAutomaticSend, UNDO_SECS, french_submit_error, hourly_pause, profile, record_deliveries,
-    take_due,
+    SaveMailSignature, SetAutomaticSend, UNDO_SECS, french_submit_error, hourly_pause, profile,
+    record_deliveries, take_due, trial_letter,
 };
 use griffe_core::store::Store;
 use time::OffsetDateTime;
@@ -58,8 +58,18 @@ pub enum MailCommand {
         #[arg(long)]
         off: bool,
     },
-    /// Arme un essai vers l'adresse qui signe. `flush` le poste après cinq secondes.
-    Essai,
+    /// Montre la formule, ou la pose depuis l'entrée standard.
+    Signature {
+        /// Lit la formule sur l'entrée standard, retours à la ligne compris.
+        #[arg(long)]
+        set: bool,
+    },
+    /// Arme la lettre d'essai. `flush` la poste après cinq secondes.
+    Essai {
+        /// Destinataire. Sans lui, l'adresse qui signe.
+        #[arg(long)]
+        to: Option<String>,
+    },
     /// Arme une lettre. `flush` la poste.
     Envoyer {
         to: String,
@@ -128,7 +138,8 @@ pub fn run(
             };
             Ok(format_outcome_as(&outcome, json, |_| sentence.to_string()))
         }
-        MailCommand::Essai => essai(store, ctx, json),
+        MailCommand::Signature { set } => signature(store, ctx, json, set),
+        MailCommand::Essai { to } => essai(store, ctx, json, to),
         MailCommand::Envoyer {
             to,
             subject,
@@ -159,27 +170,14 @@ pub fn run(
 
 fn show(store: &Store, json: bool) -> Result<String, CliError> {
     let account = profile(store.connection())?;
-    if json {
-        return Ok(format_json(&serde_json::json!({
-            "from_name": account.from_name,
-            "from_address": account.from_address,
-            "host": account.host,
-            "port": account.port,
-            "tls": account.tls.as_str(),
-            "username": account.username,
-            "preset": account.preset.as_str(),
-            "has_secret": account.has_secret,
-            "auto_send": account.auto_send,
-            "ready": account.ready,
-        })));
-    }
-    Ok(key_values(&[
-        ("adresse", account.from_address),
-        ("nom", or_empty(account.from_name)),
-        ("serveur", account.host),
+    let value = account_json(&account);
+    let mut text = key_values(&[
+        ("adresse", account.from_address.clone()),
+        ("nom", or_empty(account.from_name.clone())),
+        ("serveur", account.host.clone()),
         ("port", account.port.to_string()),
         ("chiffrement", account.tls.as_str().to_string()),
-        ("identifiant", account.username),
+        ("identifiant", account.username.clone()),
         ("préréglage", account.preset.as_str().to_string()),
         (
             "mot de passe",
@@ -197,7 +195,14 @@ fn show(store: &Store, json: bool) -> Result<String, CliError> {
                 "éteint".to_string()
             },
         ),
-    ]))
+    ]);
+    if account.signature.is_empty() {
+        text.push_str("\nformule : vide");
+    } else {
+        text.push_str("\nformule :\n");
+        text.push_str(&account.signature);
+    }
+    Ok(format_json_or(json, &value, text))
 }
 
 struct SaveFields {
@@ -255,20 +260,56 @@ fn save(
     }))
 }
 
-fn essai(store: &mut Store, ctx: &ExecutionContext, json: bool) -> Result<String, CliError> {
+fn signature(
+    store: &mut Store,
+    ctx: &ExecutionContext,
+    json: bool,
+    set: bool,
+) -> Result<String, CliError> {
+    if !set {
+        let text = profile(store.connection())?.signature;
+        return Ok(format_json_or(
+            json,
+            &serde_json::json!({ "signature": text }),
+            if text.is_empty() {
+                "vide".to_string()
+            } else {
+                text
+            },
+        ));
+    }
+    let raw = read_signature()?;
+    let empty = raw.replace('\r', "");
+    let empty = empty.trim().is_empty();
+    let outcome = Executor::new(store).execute(&SaveMailSignature { signature: raw }, ctx)?;
+    let sentence = if empty {
+        "La lettre se ferme par Bien à vous, le nom, la société."
+    } else {
+        "La formule est enregistrée."
+    };
+    Ok(format_outcome_as(&outcome, json, |_| sentence.to_string()))
+}
+
+fn essai(
+    store: &mut Store,
+    ctx: &ExecutionContext,
+    json: bool,
+    to: Option<String>,
+) -> Result<String, CliError> {
     let account = profile(store.connection())?;
     if !account.ready {
         return Err(CliError::Domain(
             "Le courrier n'est pas encore branché.".into(),
         ));
     }
+    let letter = trial_letter(store.connection())?;
     let outcome = Executor::new(store).execute(
         &ArmOutbound {
             kind: "trial".into(),
             anchor: Some("essai".into()),
-            to_address: account.from_address,
-            subject: "Essai".into(),
-            body: "Ceci est un essai envoyé depuis Griffe.".into(),
+            to_address: to.unwrap_or(account.from_address),
+            subject: letter.subject,
+            body: letter.body,
             delay_secs: UNDO_SECS,
             session_token: Some("cli".into()),
             follow_subject: None,
@@ -281,6 +322,36 @@ fn essai(store: &mut Store, ctx: &ExecutionContext, json: bool) -> Result<String
     Ok(format_outcome_as(&outcome, json, |_| {
         "L'essai est armé. `griffe courrier flush` le poste après cinq secondes.".to_string()
     }))
+}
+
+fn account_json(account: &griffe_core::mail::MailProfile) -> serde_json::Value {
+    serde_json::json!({
+        "from_name": account.from_name,
+        "from_address": account.from_address,
+        "host": account.host,
+        "port": account.port,
+        "tls": account.tls.as_str(),
+        "username": account.username,
+        "preset": account.preset.as_str(),
+        "has_secret": account.has_secret,
+        "auto_send": account.auto_send,
+        "ready": account.ready,
+        "signature": account.signature,
+    })
+}
+
+fn format_json_or(json: bool, value: &serde_json::Value, text: String) -> String {
+    if json { format_json(value) } else { text }
+}
+
+fn read_signature() -> Result<String, CliError> {
+    if std::io::stderr().is_terminal() && std::io::stdin().is_terminal() {
+        eprintln!("Formule, puis Ctrl-D :");
+    }
+    let mut raw = String::new();
+    std::io::Read::read_to_string(&mut std::io::stdin(), &mut raw)
+        .map_err(|error| CliError::Domain(format!("lecture de la formule : {error}")))?;
+    Ok(raw)
 }
 
 struct LetterFields {

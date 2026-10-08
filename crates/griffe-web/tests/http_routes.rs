@@ -10674,6 +10674,13 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
     )
     .await;
     assert!(chapter.contains("Le courrier."), "{chapter}");
+    assert!(
+        chapter.contains("Une lettre d'essai") || chapter.contains("Une lettre d&#x27;essai"),
+        "{chapter}"
+    );
+    assert!(chapter.contains("Cette lettre est un essai"), "{chapter}");
+    assert!(chapter.contains("Le prénom est fictif"), "{chapter}");
+    assert!(!chapter.contains("Envoyer l'essai"), "{chapter}");
     assert!(chapter.contains("envoi du jour est"), "{chapter}");
     assert!(
         chapter.contains("Activer l'envoi du jour")
@@ -10681,6 +10688,28 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
         "{chapter}"
     );
     assert!(!chapter.contains("type=\"password\" value="), "{chapter}");
+
+    let formula = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/societe/courrier/signature")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from("signature=Atelier+Nord"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(formula.headers().get("HX-Trigger").unwrap(), "griffe:saved");
+    let formula_body = body_text(formula).await;
+    assert!(
+        formula_body.contains("La formule est enregistrée."),
+        "{formula_body}"
+    );
+    assert!(formula_body.contains("Atelier Nord"), "{formula_body}");
+    assert!(!formula_body.contains("Envoyer l'essai"), "{formula_body}");
 
     let saved = router
         .clone()
@@ -10725,10 +10754,94 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
     assert!(hidden_body.contains("dans le coffre"), "{hidden_body}");
     assert!(!hidden_body.contains(secret), "{hidden_body}");
     assert!(
-        hidden_body.contains("M'envoyer un essai")
-            || hidden_body.contains("M&#x27;envoyer un essai"),
+        hidden_body.contains("Envoyer l'essai") || hidden_body.contains("Envoyer l&#x27;essai"),
         "{hidden_body}"
     );
+    assert!(
+        hidden_body.contains("Cette lettre est un essai"),
+        "{hidden_body}"
+    );
+    assert!(hidden_body.contains("Atelier Nord"), "{hidden_body}");
+    assert!(hidden_body.contains("Bonjour Camille"), "{hidden_body}");
+
+    let refused = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/societe/courrier/envoyer")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from("to=pas-une-adresse"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(!refused.headers().contains_key("HX-Trigger"));
+    let refused_body = body_text(refused).await;
+    assert!(refused_body.contains("illisible"), "{refused_body}");
+    assert!(!refused_body.contains(secret), "{refused_body}");
+
+    let trial = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/societe/courrier/envoyer")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from("to=ada%40atelier.test"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(trial.headers().get("HX-Trigger").unwrap(), "griffe:saved");
+    let trial_body = body_text(trial).await;
+    assert!(trial_body.contains("Elle part."), "{trial_body}");
+    assert!(trial_body.contains("Annuler"), "{trial_body}");
+    assert!(!trial_body.contains(secret), "{trial_body}");
+    let trial_id = trial_body
+        .split("name=\"id\" value=\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .expect("identifiant de l'essai");
+
+    let trial_poll = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/societe/courrier/envoi")
+                .header("HX-Request", "true")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(!trial_poll.headers().contains_key("HX-Trigger"));
+    let trial_poll_body = body_text(trial_poll).await;
+    assert!(trial_poll_body.contains("Elle part."), "{trial_poll_body}");
+
+    let trial_kept = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/societe/courrier/envoi/annuler")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .header("HX-Request", "true")
+                    .body(Body::from(format!("id={trial_id}")))
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        trial_kept.contains("Envoyer l'essai") || trial_kept.contains("Envoyer l&#x27;essai"),
+        "{trial_kept}"
+    );
+    assert!(!trial_kept.contains("Elle part."), "{trial_kept}");
 
     let letter = body_text(
         router

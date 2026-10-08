@@ -190,6 +190,8 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "mail.show",
         "mail.arm",
         "mail.automatic",
+        "mail.save_signature",
+        "mail.trial",
         "day.mast",
         "day.gestures",
         "day.month",
@@ -309,6 +311,7 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "people.delete_work_kind",
         "mail.arm",
         "mail.automatic",
+        "mail.trial",
     ] {
         let ann = by_name(destructive).annotations.as_ref().unwrap();
         assert_eq!(ann.read_only_hint, Some(false));

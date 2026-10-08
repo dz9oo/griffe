@@ -126,6 +126,8 @@ pub struct MailProfile {
     pub preset: MailPreset,
     pub auto_send: bool,
     pub ready: bool,
+    /// Lignes qui ferment la lettre. Vides : la formule « Bien à vous ».
+    pub signature: String,
 }
 
 impl Default for MailProfile {
@@ -141,6 +143,7 @@ impl Default for MailProfile {
             preset: MailPreset::Custom,
             auto_send: false,
             ready: false,
+            signature: String::new(),
         }
     }
 }
