@@ -8,13 +8,14 @@ Ce qui change pour qui se sert de Griffe. Une section par version publiée.
 - La formule ferme les lettres et les phrases. On l'écrit dans Le courrier. Vide, la lettre se termine par Bien à vous, le nom, la société. Une lettre d'essai reprend le premier message, pour un prénom fictif, vers l'adresse choisie, avec cinq secondes pour la retenir. Le serveur qui l'accepte ne promet pas qu'elle arrive hors des indésirables.
 - Sur une lettre, Envoyer laisse cinq secondes. Le filet s'allonge, Annuler le retient. Passé ce délai, la lettre part. C'est parti classe toujours le double dans l'historique.
 - L'envoi du jour est éteint. L'activer poste, pendant que Griffe est ouvert, les lettres dont la date prévue est aujourd'hui. Une lettre de la veille reste un geste à la main.
-- Ouvrir un coffre déjà créé avance son schéma. La version précédente ne peut plus l'ouvrir.
-- La case des 12 h tient la fenêtre ouverte pendant ces 12 h. Rouvrir Griffe dans ce délai retrouve la passphrase. « Verrouiller » ferme tout de suite. La case vide laisse le quart d'heure d'inactivité.
+- Dans les affaires et sur le jour, la fiche porte le nom du Qui. Écrire à et Relancer suivent ce nom. Qui répond reste sur la fiche, et la recherche le trouve encore. Deux fiches du même interlocuteur restent deux noms. Quand un nom en désigne plusieurs, on choisit laquelle.
 - Un numéro français s'affiche par paires, 03 27 44 44 44. Le saisir compact, avec des points, ou avec l'indicatif +33 ou 0033, donne la même forme. Un numéro d'un autre pays reste tel que saisi.
+- La case des 12 h tient la fenêtre ouverte pendant ces 12 h. Rouvrir Griffe dans ce délai retrouve la passphrase. « Verrouiller » ferme tout de suite. La case vide laisse le quart d'heure d'inactivité.
 - Sur le dossier, Reporter se déplie. On choisit 3 jours, 10 jours, ou un nombre de jours, de 1 à 366. Demain, sur le jour, ne change pas.
 - Sur la fiche, le genre se choisit en mots. « aucun » le retire. « un autre » ouvre une ligne pour le nommer. Sans genre encore, le premier nom sert aux phrases.
 - Sur le dossier, Les travaux gardent un récit en markdown, à côté de l'estimation. L'aperçu suit la frappe sans enregistrer. Garder pose le texte dans le coffre.
-- Sur le dossier, les types de travaux se choisissent en mots. Les affaires se filtrent par type. La page Les types crée, renomme et retire.
+- Sur le dossier, les types de travaux se choisissent en mots. Les affaires se filtrent par type. La page Les types crée, renomme et retire. Retirer demande de confirmer.
+- Ouvrir un coffre déjà créé avance son schéma. La version précédente ne peut plus l'ouvrir.
 
 ## 0.3.7
 

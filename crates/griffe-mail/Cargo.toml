@@ -9,7 +9,7 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-griffe-core = { version = "0.3.7", path = "../griffe-core" }
+griffe-core = { version = "0.3.8", path = "../griffe-core" }
 lettre = { version = "0.11.23", default-features = false, features = [
     "builder",
     "smtp-transport",
