@@ -904,6 +904,33 @@ mod tests {
     }
 
     #[test]
+    fn creating_a_prospect_stores_a_french_phone_in_pairs() {
+        let mut store = empty_store("prospect-phone-pairs");
+        let mut cmd = new_prospect("Nova Dev");
+        cmd.representative = Some("Camille".into());
+        cmd.phone = Some("+33327444444".into());
+
+        let Outcome::Applied(opportunity_id) = Executor::new(&mut store)
+            .execute(&cmd, &human_ctx())
+            .unwrap()
+        else {
+            panic!("expected Applied")
+        };
+        let opportunity = row::opportunity_by_id(store.connection(), opportunity_id)
+            .unwrap()
+            .unwrap();
+        let stored: String = store
+            .connection()
+            .query_row(
+                "SELECT phone FROM contacts WHERE client_id = ?1",
+                [opportunity.client_id.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, "03 27 44 44 44");
+    }
+
+    #[test]
     fn creating_a_prospect_with_an_existing_exact_name_attaches_without_duplicating() {
         let mut store = empty_store("attach-existing");
         Executor::new(&mut store)

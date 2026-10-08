@@ -110,7 +110,7 @@ en inversant ces variables.
 ### Type
 
 Maquette : Newsreader (titres, chiffres du calendrier, italiques) + Source Sans 3 (UI).
-**Invariant produit : aucune connexion sortante.** Pas de Google Fonts dans la fenêtre.
+**Pas de webfont distante.** Pas de Google Fonts dans la fenêtre.
 
 À faire : vendoriser les woff2 (OFL) dans `crates/griffe-web/assets/fonts/`
 et les déclarer en `@font-face`. Replis : `Liberation Serif` / `Noto Serif` et

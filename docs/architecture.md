@@ -51,8 +51,10 @@ Zéro socket → zéro surface CSRF / DNS-rebinding depuis un autre process
 ou un onglet de navigateur. La fenêtre n’est pas un serveur local
 déguisé.
 
-Aucune connexion sortante. Les relances produisent un brouillon `.eml`
-ouvert dans le client mail. Pas de Google Fonts, pas de CDN.
+La fenêtre n'écoute toujours aucun port. La seule sortie est la soumission
+SMTP vers le serveur écrit dans Le courrier, pendant que le coffre est
+ouvert, en TLS. Les relances peuvent encore produire un brouillon `.eml`.
+Pas de Google Fonts, pas de CDN, pas de réception.
 
 ## WAL multi-process
 

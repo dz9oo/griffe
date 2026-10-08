@@ -27,15 +27,19 @@ Executor.
 Preuve : la console de la fenêtre appelle `griffe_cli::run_capturing` /
 `run_capturing_with_vault`. Pas d’interpréteur maison.
 
-## Pas de serveur, pas de socket, pas de connexion sortante
+## Pas de serveur, pas de socket
 
-Aucun port TCP. Tauri enregistre `griffe://` ; le handler exécute le
+Aucun port TCP en écoute. Tauri enregistre `griffe://` ; le handler exécute le
 `axum::Router` **en mémoire** (`tower::Service::oneshot`). GUI, CLI et MCP
 ouvrent le même fichier SQLCipher (WAL). Le rail d’audit de la GUI poll
 `PRAGMA data_version` (pas de SSE : le transport URI ne streame pas).
 
-Les relances produisent un `.eml` ouvert dans le client mail. Rien n’est
-envoyé. Pas de Google Fonts, pas de CDN.
+La seule connexion sortante est la soumission SMTP vers le serveur écrit dans
+Le courrier, coffre ouvert, liaison chiffrée (port 587 STARTTLS ou 465
+implicite). Le mot de passe reste dans le coffre (`MailSecret`), hors journal
+d’audit. `griffe-mail` est la seule crate qui connaît la bibliothèque
+d’envoi ; le cœur décide du moment et du texte. Les relances peuvent encore
+produire un `.eml`. Pas de CDN, pas de Google Fonts, pas de réception.
 
 ## Crates
 
@@ -46,6 +50,7 @@ crates/
     src/store/      SQLCipher, migrations, sauvegarde
     src/app/        Command/Query, Executor, audit, PendingAction
     src/*.rs        modules métier (Command + Query + tests sur vraie base)
+  griffe-mail/      SMTP (`lettre`) derrière `OutboundMail` — seule dépendance d'envoi
   griffe-cli/       clap → core, exposé en bibliothèque
   griffe-mcp/       rmcp stdio → core (outils = commandes, ressources = requêtes)
   griffe-web/       axum + Maud + htmx ; pas de JS de framework
@@ -64,11 +69,14 @@ crates/
   l’insertion (concurrence inter-process, pas seulement inter-thread).
 - **Audit chaîné.** `griffe audit verify-chain` détecte une altération SQL.
 - **`Command::apply` ne touche que `&Connection`.** Hash de justificatif,
-  copie de fichier, Typst : dans l’adaptateur, *avant* la Command.
-- **Pas de passphrase en clair** (disque, env, historique). Coffre v3 :
-  clé maître aléatoire, sidecar `.kdf`, Argon2id. Sources : TTY masqué,
-  `--passphrase-file`, `--passphrase-command`, `--passphrase-stdin`.
-  Types `Passphrase` / `VaultKey` zeroizants, pas de `Debug` utile.
+  copie de fichier, Typst, SMTP : dans l’adaptateur, *avant* ou *après* la
+  Command, jamais dedans.
+- **Pas de passphrase ni de mot de passe d'envoi en clair** (disque hors
+  coffre, env, historique, `Debug`). Coffre v3 : clé maître aléatoire,
+  sidecar `.kdf`, Argon2id. Sources : TTY masqué, `--passphrase-file`,
+  `--passphrase-command`, `--passphrase-stdin`. Le mot de passe SMTP se
+  demande de la même façon (`--secret-file` ou invite), jamais en argument.
+  Types `Passphrase` / `VaultKey` / `MailSecret` zeroizants.
 - **`griffe-core` est clippy pedantic.** Un `expect`/`panic!` porte `# Panics`.
 - **Sauvegarde auto** après ouverture du coffre (CLI `dispatch`), sauf
   `backup restore` qui s’exécute *avant* d’ouvrir le coffre cassé.
@@ -112,7 +120,8 @@ Lire `docs/design.md` et `docs/atelier-design.md`. Lettre du matin, trois
 pièces (Le jour / Les affaires / La société). Pas de dashboard à tuiles,
 pas de sigle (CA3, 3514, 2777) dans la lettre. Pas de `hx-on--*` (CSP
 `script-src 'self'`, htmx ferait `new Function`). Succès mutation :
-`200` vide + `HX-Trigger: griffe:saved` (pas `204`).
+`200` + `HX-Trigger: griffe:saved` (pas `204`). Le sondage d'une lettre
+en partance est un GET sans cet en-tête.
 
 ## Ce que tu ne fais pas
 

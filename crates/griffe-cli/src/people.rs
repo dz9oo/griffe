@@ -1,17 +1,29 @@
-//! `freeflow people` — liste et dossier. Lectures pures, `today` d'adaptateur.
+//! `griffe people` — liste, dossier, récit des travaux, types de travaux.
+//! `today` est un argument d'adaptateur.
+
+use std::io::Read;
+use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
+use griffe_core::app::{ExecutionContext, Executor};
 use griffe_core::clock::today_local;
 use griffe_core::domain::format_date;
+use griffe_core::dossier_work::{SaveDossierWork, dossier_work};
 use griffe_core::people::{
     HistoryKind, OutgoingCadence, PaperKind, PaperStatus, PeopleList, PersonAction, PersonChapter,
-    PersonCue, PersonDossier, PersonFigure, PersonRow, people_list, person,
+    PersonCue, PersonDossier, PersonFigure, PersonKey, PersonRow, people_list, person,
 };
 use griffe_core::store::Store;
+use griffe_core::work_kinds::{
+    CreateWorkKind, DeleteWorkKind, RenameWorkKind, SetDossierWorkKinds, WorkKind, WorkKindDossier,
+    dossiers_of_work_kind, work_kinds,
+};
 use time::Date;
 
 use crate::error::CliError;
-use crate::output::{HumanRender, format_value, key_values};
+use crate::output::{
+    HumanRender, format_json, format_outcome, format_outcome_as, format_value, key_values,
+};
 use crate::parsers::parse_date;
 use crate::table;
 
@@ -116,11 +128,21 @@ fn cue_fr(cue: &PersonCue) -> String {
 
 impl HumanRender for PersonDossier {
     fn render_human(&self) -> String {
-        let mut pairs = vec![
-            ("nom", self.name.clone()),
-            ("société", self.party.clone()),
-            ("chapitre", chapter_fr(self.chapter).into()),
-        ];
+        let mut pairs = vec![("nom", self.name.clone())];
+        if let Some(contact) = self
+            .contact_name
+            .as_ref()
+            .filter(|contact| *contact != &self.name)
+        {
+            pairs.push(("qui répond", contact.clone()));
+        }
+        if self.party != self.name {
+            pairs.push(("société", self.party.clone()));
+        }
+        pairs.push(("chapitre", chapter_fr(self.chapter).into()));
+        if !self.work_kinds.is_empty() {
+            pairs.push(("types", self.work_kinds.join(" · ")));
+        }
         if self.not_yet_client {
             pairs.push(("statut", "pas encore cliente".into()));
         }
@@ -293,9 +315,65 @@ pub enum PeopleCommand {
         #[arg(long, value_parser = parse_date)]
         today: Option<Date>,
     },
+    /// Récit markdown d'une fiche. Sans `--file`, imprime le texte.
+    Travaux {
+        #[arg(value_name = "RÉF")]
+        reference: String,
+        /// Enregistre ce fichier à la place du récit. `-` lit l'entrée standard.
+        #[arg(long, value_name = "CHEMIN")]
+        file: Option<PathBuf>,
+        #[arg(long, value_parser = parse_date)]
+        today: Option<Date>,
+    },
+    /// Les types de travaux.
+    Types {
+        #[command(subcommand)]
+        action: TypesCommand,
+    },
 }
 
-pub fn run(cmd: PeopleCommand, store: &Store, json: bool) -> Result<String, CliError> {
+#[derive(Debug, Subcommand)]
+pub enum TypesCommand {
+    /// Liste le catalogue.
+    List,
+    /// Crée un type.
+    Create {
+        #[arg(value_name = "NOM")]
+        name: String,
+    },
+    /// Renomme un type. Les dossiers gardent le lien.
+    Rename {
+        #[arg(value_name = "ID")]
+        id: String,
+        #[arg(value_name = "NOM")]
+        name: String,
+    },
+    /// Retire le type et tous ses liens.
+    Remove {
+        #[arg(value_name = "ID")]
+        id: String,
+    },
+    /// Pose les types d'une fiche. Les noms sont séparés par des virgules.
+    Set {
+        #[arg(value_name = "RÉF")]
+        reference: String,
+        /// Noms séparés par des virgules. Une chaîne vide retire les liens.
+        #[arg(value_name = "NOMS")]
+        names: String,
+    },
+    /// Liste les dossiers qui portent ce type.
+    Dossiers {
+        #[arg(value_name = "ID")]
+        id: String,
+    },
+}
+
+pub fn run(
+    cmd: PeopleCommand,
+    store: &mut Store,
+    ctx: &ExecutionContext,
+    json: bool,
+) -> Result<String, CliError> {
     match cmd {
         PeopleCommand::List { today } => {
             let today = today.unwrap_or_else(today_local);
@@ -307,5 +385,130 @@ pub fn run(cmd: PeopleCommand, store: &Store, json: bool) -> Result<String, CliE
             let dossier = person(store.connection(), &reference, today)?;
             Ok(format_value(&dossier, json))
         }
+        PeopleCommand::Travaux {
+            reference,
+            file,
+            today,
+        } => {
+            let today = today.unwrap_or_else(today_local);
+            let dossier = person(store.connection(), &reference, today)?;
+            let PersonKey::Client { id } = dossier.key else {
+                return Err(CliError::Domain(
+                    "les travaux tiennent sur une fiche".into(),
+                ));
+            };
+            let Some(path) = file else {
+                let note = dossier_work(store.connection(), id)?;
+                return if json {
+                    Ok(format_json(&note))
+                } else {
+                    Ok(note.body)
+                };
+            };
+            let body = read_work_file(&path)?;
+            let revision = dossier_work(store.connection(), id)?.revision;
+            let outcome = Executor::new(store).execute(
+                &SaveDossierWork {
+                    client: id,
+                    body,
+                    revision,
+                },
+                ctx,
+            )?;
+            Ok(format_outcome_as(&outcome, json, |note| note.body.clone()))
+        }
+        PeopleCommand::Types { action } => run_types(action, store, ctx, json),
     }
+}
+
+fn run_types(
+    action: TypesCommand,
+    store: &mut Store,
+    ctx: &ExecutionContext,
+    json: bool,
+) -> Result<String, CliError> {
+    match action {
+        TypesCommand::List => {
+            let kinds = work_kinds(store.connection())?;
+            Ok(format_value(&kinds, json))
+        }
+        TypesCommand::Create { name } => {
+            let outcome = Executor::new(store).execute(&CreateWorkKind { name }, ctx)?;
+            Ok(format_outcome(&outcome, json))
+        }
+        TypesCommand::Rename { id, name } => {
+            let outcome = Executor::new(store).execute(&RenameWorkKind { id, name }, ctx)?;
+            Ok(format_outcome(&outcome, json))
+        }
+        TypesCommand::Remove { id } => {
+            let outcome = Executor::new(store).execute(&DeleteWorkKind { id }, ctx)?;
+            Ok(format_outcome(&outcome, json))
+        }
+        TypesCommand::Set { reference, names } => {
+            let client = crate::refs::resolve_client(store, &reference)?;
+            let outcome = Executor::new(store).execute(
+                &SetDossierWorkKinds {
+                    client,
+                    names: split_kind_names(&names),
+                },
+                ctx,
+            )?;
+            Ok(format_outcome(&outcome, json))
+        }
+        TypesCommand::Dossiers { id } => {
+            let rows = dossiers_of_work_kind(store.connection(), &id)?;
+            Ok(format_value(&rows, json))
+        }
+    }
+}
+
+fn split_kind_names(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
+impl HumanRender for WorkKind {
+    fn render_human(&self) -> String {
+        format!("{}  {}", self.id, self.name)
+    }
+}
+
+impl HumanRender for Vec<WorkKind> {
+    fn render_human(&self) -> String {
+        if self.is_empty() {
+            return "Aucun type.".into();
+        }
+        self.iter()
+            .map(HumanRender::render_human)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+impl HumanRender for Vec<WorkKindDossier> {
+    fn render_human(&self) -> String {
+        if self.is_empty() {
+            return "Aucun dossier.".into();
+        }
+        self.iter()
+            .map(|row| format!("{}  {}", row.client, row.name))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+fn read_work_file(path: &Path) -> Result<String, CliError> {
+    if path == Path::new("-") {
+        let mut body = String::new();
+        std::io::stdin().read_to_string(&mut body).map_err(|e| {
+            CliError::Unexpected(format!("lecture de l'entrée standard impossible : {e}"))
+        })?;
+        return Ok(body);
+    }
+    std::fs::read_to_string(path).map_err(|e| {
+        CliError::Unexpected(format!("lecture de {} impossible : {e}", path.display()))
+    })
 }

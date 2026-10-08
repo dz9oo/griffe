@@ -189,11 +189,20 @@ function fillSheet(desk) {
   const body = panel.querySelector("textarea");
   const subjectOut = sheet.querySelector(".phrase-sheet-subject");
   const bodyOut = sheet.querySelector(".phrase-sheet-body");
-  if (subjectOut && subject) subjectOut.textContent = applyTags(subject.value, sheet.dataset);
-  if (bodyOut && body) bodyOut.textContent = applyTags(body.value, sheet.dataset);
+  if (subjectOut && subject) subjectOut.textContent = applyTags(subject.value, sheet);
+  if (bodyOut && body) bodyOut.textContent = applyTags(body.value, sheet);
 }
 
-function applyTags(text, data) {
+function signatureOf(sheet) {
+  const node = sheet.querySelector?.(".signature-source");
+  if (!node) return "";
+  // Le contenu d'un <template> n'est pas dans textContent : il vit dans .content.
+  if (node.content) return node.content.textContent || "";
+  return node.textContent || "";
+}
+
+function applyTags(text, sheet) {
+  const data = sheet.dataset || {};
   const tags = [
     ["<prénom>", data.prenom || ""],
     ["<contact>", data.contact || ""],
@@ -202,6 +211,7 @@ function applyTags(text, data) {
     ["<montant>", data.montant || ""],
     ["<moi>", data.moi || ""],
     ["<société>", data.societe || ""],
+    ["<signature>", signatureOf(sheet)],
   ];
   let out = text;
   tags.forEach(([tag, value]) => {

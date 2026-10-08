@@ -146,7 +146,13 @@ fn empty_state() -> Markup {
 pub fn sender_form(error: Option<&str>) -> Markup {
     html! {
         form class="follow-sender" hx-post="/relances/sender" hx-target="#content" hx-swap="innerHTML" {
-            p { "Avec quelle adresse écrivez-vous ? Le brouillon s'ouvrira dans votre client mail, jamais envoyé d'ici." }
+            p {
+                "Avec quelle adresse le brouillon s'ouvre-t-il dans votre client mail ? "
+                a href="/societe/courrier" hx-get="/societe/courrier" hx-target="#content" hx-push-url="true" {
+                    "Le courrier"
+                }
+                " règle le serveur, quand Griffe poste lui-même."
+            }
             (form::text("email", "Email", "", error))
             (form::text("name", "Nom signataire", "", None))
             button class="btn primary" type="submit" { "Enregistrer" }

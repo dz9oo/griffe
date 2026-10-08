@@ -8,12 +8,14 @@ mod brand;
 mod clients;
 mod cloture;
 mod console;
+mod courrier;
 mod depenses;
 mod devis;
 mod facturation;
 mod gens;
 mod handlers;
 mod layout;
+mod markdown;
 mod missions;
 mod papiers;
 mod premiers_pas;
@@ -70,6 +72,8 @@ async fn french_rejections(response: axum::response::Response) -> axum::response
 fn people_routes() -> Router<AppState> {
     Router::new()
         .route("/", get(handlers::gens))
+        .route("/types", get(gens::types_get).post(gens::types_create))
+        .route("/types/{id}", post(gens::types_geste))
         .route("/nouvelle", get(gens::new_get).post(gens::new_post))
         .route("/phrases", get(gens::phrases_get).post(gens::phrases_post))
         .route(
@@ -82,6 +86,11 @@ fn people_routes() -> Router<AppState> {
             get(gens::write_get).post(gens::write),
         )
         .route("/{reference}/envoye", post(gens::sent))
+        .route("/{reference}/envoyer", post(gens::send_letter))
+        .route("/{reference}/envoi", get(gens::send_status))
+        .route("/{reference}/envoi/annuler", post(gens::send_cancel))
+        .route("/{reference}/envoi/reessayer", post(gens::send_retry))
+        .route("/{reference}/envoi/decision", post(gens::send_decision))
         .route("/{reference}/mots", post(gens::keep_words))
         .route(
             "/{reference}/rencontre",
@@ -95,6 +104,12 @@ fn people_routes() -> Router<AppState> {
             "/{reference}/estimation",
             get(gens::estimate_get).post(gens::estimate_post),
         )
+        .route(
+            "/{reference}/travaux",
+            get(gens::travaux_get).post(gens::travaux_post),
+        )
+        .route("/{reference}/types", post(gens::dossier_types))
+        .route("/{reference}/travaux/apercu", post(gens::travaux_preview))
         .route("/{reference}/reporter", post(gens::snooze))
         .route(
             "/{reference}/arreter",
@@ -280,6 +295,31 @@ pub fn router(state: AppState) -> Router {
         .route("/societe/cloture", get(handlers::societe_closing))
         .route("/societe/releve", get(handlers::societe_statement))
         .route("/societe/identite", get(handlers::societe_identity))
+        .route(
+            "/societe/courrier",
+            get(courrier::show).post(courrier::save),
+        )
+        .route("/societe/courrier/secret", post(courrier::save_secret))
+        .route("/societe/courrier/retirer", post(courrier::clear_secret))
+        .route("/societe/courrier/automatique", post(courrier::automatic))
+        .route(
+            "/societe/courrier/signature",
+            post(courrier::save_signature),
+        )
+        .route("/societe/courrier/envoyer", post(courrier::send_trial))
+        .route("/societe/courrier/envoi", get(courrier::trial_status))
+        .route(
+            "/societe/courrier/envoi/annuler",
+            post(courrier::trial_cancel),
+        )
+        .route(
+            "/societe/courrier/envoi/reessayer",
+            post(courrier::trial_retry),
+        )
+        .route(
+            "/societe/courrier/envoi/decision",
+            post(courrier::trial_decision),
+        )
         .route(
             "/societe/papiers",
             get(papiers::chapter)

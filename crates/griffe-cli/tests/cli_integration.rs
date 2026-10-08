@@ -755,6 +755,135 @@ fn follow_up_queue_lists_a_due_opportunity_and_drafts_without_sending() {
 }
 
 #[test]
+fn follow_up_snooze_counts_days_from_one_to_366() {
+    let db = temp_db("snooze-days");
+    provision(&db);
+    unlocked(&db)
+        .args(["client", "create", "--name", "Atelier Sèvre"])
+        .assert()
+        .success();
+    unlocked(&db)
+        .args([
+            "prospect",
+            "create",
+            "--client",
+            "Atelier Sèvre",
+            "--name",
+            "site de la cave",
+            "--amount",
+            "1200",
+            "--probability",
+            "40",
+            "--next-action",
+            "2026-09-04",
+        ])
+        .assert()
+        .success();
+
+    let sentence = "Le report se compte de 1 à 366 jours.";
+    for days in ["0", "367"] {
+        unlocked(&db)
+            .args([
+                "follow-up",
+                "snooze",
+                "site de la cave",
+                "--days",
+                days,
+                "--today",
+                "2026-09-04",
+            ])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains(sentence));
+    }
+    let unchanged = unlocked(&db)
+        .args([
+            "--json",
+            "follow-up",
+            "show",
+            "site de la cave",
+            "--today",
+            "2026-09-04",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(json_result(&unchanged)["due_on"], "2026-09-04");
+
+    unlocked(&db)
+        .args([
+            "follow-up",
+            "snooze",
+            "site de la cave",
+            "--days",
+            "10",
+            "--today",
+            "2026-09-04",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("reporté au 2026-09-14"));
+    let ten = unlocked(&db)
+        .args([
+            "--json",
+            "follow-up",
+            "show",
+            "site de la cave",
+            "--today",
+            "2026-09-04",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(json_result(&ten)["due_on"], "2026-09-14");
+
+    unlocked(&db)
+        .args([
+            "follow-up",
+            "snooze",
+            "site de la cave",
+            "--days",
+            "366",
+            "--today",
+            "2026-09-04",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("reporté au 2027-09-05"));
+    unlocked(&db)
+        .args([
+            "follow-up",
+            "snooze",
+            "site de la cave",
+            "--tomorrow",
+            "--today",
+            "2026-09-04",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("reporté au 2026-09-05"));
+    let tomorrow = unlocked(&db)
+        .args([
+            "--json",
+            "follow-up",
+            "show",
+            "site de la cave",
+            "--today",
+            "2026-09-04",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(json_result(&tomorrow)["due_on"], "2026-09-05");
+}
+
+#[test]
 fn follow_up_phrases_lists_the_seed_and_a_rewrite_is_what_the_next_letter_uses() {
     let db = temp_db("phrases");
     provision(&db);
@@ -1458,6 +1587,87 @@ fn society_pay_on_an_empty_vault_closes_the_dividend() {
     assert_eq!(value["possible"], 0);
     assert_eq!(value["dividend"]["kind"], "closed");
     assert_eq!(value["dividend"]["reason"], "year_not_closed");
+}
+
+#[test]
+fn people_travaux_prints_and_saves_markdown_on_a_disposable_vault() {
+    let db = temp_db("people-travaux");
+    provision(&db);
+    create_client(&db, "Atelier du recit");
+
+    let empty = unlocked(&db)
+        .args(["people", "travaux", "Atelier du recit"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert!(
+        String::from_utf8(empty).unwrap().trim().is_empty(),
+        "un récit absent s'imprime vide"
+    );
+
+    let file = db.parent().unwrap().join("recit.md");
+    std::fs::write(&file, "# Le chantier\n\nUne ligne.\n").unwrap();
+    let saved = unlocked(&db)
+        .args([
+            "people",
+            "travaux",
+            "Atelier du recit",
+            "--file",
+            file.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let saved = String::from_utf8(saved).unwrap();
+    assert!(saved.contains("Le chantier"), "{saved}");
+
+    let again = unlocked(&db)
+        .args(["people", "travaux", "Atelier du recit"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(
+        String::from_utf8(again).unwrap().trim_end(),
+        "# Le chantier\n\nUne ligne."
+    );
+
+    let value = json_result(
+        &unlocked(&db)
+            .args(["--json", "people", "travaux", "Atelier du recit"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert_eq!(value["revision"], 1);
+    assert_eq!(value["body"], "# Le chantier\n\nUne ligne.\n");
+
+    std::fs::write(&file, "Suite.\n").unwrap();
+    unlocked(&db)
+        .args([
+            "people",
+            "travaux",
+            "Atelier du recit",
+            "--file",
+            file.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let revised = unlocked(&db)
+        .args(["people", "travaux", "Atelier du recit"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(String::from_utf8(revised).unwrap().trim_end(), "Suite.");
 }
 
 #[test]
@@ -4462,4 +4672,236 @@ fn papers_add_lists_and_shows_statutes_and_an_agent_cannot_purge_them() {
         .failure()
         .code(4)
         .stderr(predicate::str::contains("lecture"));
+}
+
+#[test]
+fn work_kinds_follow_a_fiche_through_rename_and_wait_for_confirmation() {
+    let db = temp_db("types");
+    provision(&db);
+    for (qui, affaire) in [
+        ("Atelier Quai", "Affaire du quai"),
+        ("Atelier Port", "Affaire du port"),
+    ] {
+        unlocked(&db)
+            .args([
+                "prospect",
+                "create",
+                "--prospect",
+                qui,
+                "--name",
+                affaire,
+                "--amount",
+                "1200",
+                "--probability",
+                "40",
+                "--next-action",
+                "2026-10-07",
+            ])
+            .assert()
+            .success();
+    }
+    unlocked(&db)
+        .args(["follow-up", "genre", "assign", "Affaire du quai", "Mairie"])
+        .assert()
+        .success();
+
+    let created = json_result(
+        &unlocked(&db)
+            .args(["--json", "people", "types", "create", "site web"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert_eq!(created["status"], "applied");
+    let id = created["result"]["id"].as_str().unwrap().to_string();
+    assert_eq!(created["result"]["name"], "site web");
+
+    let listed = json_result(
+        &unlocked(&db)
+            .args(["--json", "people", "types", "list"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert_eq!(listed.as_array().unwrap().len(), 1);
+    assert_eq!(listed[0]["name"], "site web");
+
+    unlocked(&db)
+        .args(["people", "types", "set", "Atelier Quai", "site web"])
+        .assert()
+        .success();
+    let dossiers = json_result(
+        &unlocked(&db)
+            .args(["--json", "people", "types", "dossiers", &id])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert_eq!(dossiers.as_array().unwrap().len(), 1);
+    assert_eq!(dossiers[0]["name"], "Atelier Quai");
+
+    unlocked(&db)
+        .args([
+            "people",
+            "types",
+            "set",
+            "Atelier Port",
+            "site web, backend",
+        ])
+        .assert()
+        .success();
+    let renamed = json_result(
+        &unlocked(&db)
+            .args(["--json", "people", "types", "rename", &id, "site"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert_eq!(renamed["result"]["name"], "site");
+    assert_eq!(renamed["result"]["id"], id);
+
+    let shown = json_result(
+        &unlocked(&db)
+            .args(["--json", "people", "show", "Atelier Quai"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert_eq!(shown["work_kinds"][0], "site");
+    let port = json_result(
+        &unlocked(&db)
+            .args(["--json", "people", "show", "Atelier Port"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    let port_kinds: Vec<&str> = port["work_kinds"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap())
+        .collect();
+    assert_eq!(port_kinds, ["backend", "site"]);
+
+    let pending = json_result(
+        &unlocked(&db)
+            .args([
+                "--json",
+                "--actor",
+                "agent:test-session",
+                "people",
+                "types",
+                "remove",
+                &id,
+            ])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert_eq!(pending["status"], "pending_confirmation");
+    let still = json_result(
+        &unlocked(&db)
+            .args(["--json", "people", "types", "list"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert!(
+        still
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|kind| kind["id"] == id && kind["name"] == "site"),
+        "{still}"
+    );
+
+    let confirmed = json_result(
+        &unlocked(&db)
+            .args([
+                "--json",
+                "confirm",
+                pending["pending_action_id"].as_str().unwrap(),
+            ])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert_eq!(confirmed["status"], "applied");
+    let left = json_result(
+        &unlocked(&db)
+            .args(["--json", "people", "types", "list"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    let left_names: Vec<&str> = left
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|kind| kind["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(left_names, ["backend"]);
+    assert!(left.as_array().unwrap().iter().all(|kind| kind["id"] != id));
+    let quai = json_result(
+        &unlocked(&db)
+            .args(["--json", "people", "show", "Atelier Quai"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert!(quai.get("work_kinds").is_none());
+    let port = json_result(
+        &unlocked(&db)
+            .args(["--json", "people", "show", "Atelier Port"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert_eq!(port["work_kinds"][0], "backend");
+
+    unlocked(&db)
+        .args(["people", "types", "dossiers", &id])
+        .assert()
+        .failure()
+        .code(4)
+        .stderr(predicate::str::contains("Ce type n'existe pas."));
+
+    let store = griffe_core::store::Store::open_with_passphrase(
+        &db,
+        &griffe_core::store::Passphrase::from("s3cret"),
+    )
+    .unwrap();
+    let affaire = griffe_core::prospection::list_opportunities(store.connection())
+        .unwrap()
+        .into_iter()
+        .find(|item| item.name == "Affaire du quai")
+        .unwrap();
+    let genre = griffe_core::follow_up::prospect_genre_for(store.connection(), affaire.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(genre.name, "Mairie");
 }

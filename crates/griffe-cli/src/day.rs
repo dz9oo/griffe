@@ -94,14 +94,8 @@ fn verb_fr(verb: GestureVerb) -> &'static str {
 fn gesture_detail(g: &DayGesture) -> String {
     match &g.source {
         GestureSource::Setup { step } => step.text().to_string(),
-        GestureSource::FollowUp {
-            contact_name,
-            party,
-            title,
-            ..
-        } => {
-            let who = contact_name.as_deref().unwrap_or(party.as_str());
-            format!("{who} — {title}")
+        GestureSource::FollowUp { party, title, .. } => {
+            format!("{party} — {title}")
         }
         GestureSource::BankStatement {
             unmatched,

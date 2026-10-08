@@ -1,19 +1,24 @@
 //! Tests HTTP directs sur le `Router`, via `tower::ServiceExt::oneshot` — rapides, sans
 //! navigateur. Base SQLCipher réelle et temporaire à chaque test, pas de mock. Le trousseau OS
-//! réel n'est jamais touché : tous les coffres sont ouverts avec `remember = false`.
+//! réel n'est jamais touché : tous les coffres sont ouverts avec `remember = false`. Une
+//! suspension d'inactivité se pose avec `AppState::suspend_idle_for`, sans `remember`.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use griffe_core::app::{Actor, ExecutionContext, Executor};
+use griffe_core::app::{Actor, ExecutionContext, Executor, Outcome};
 use griffe_core::clients::{CreateClient, CreateContact, list_clients};
-use griffe_core::domain::{ClientId, MissionId, Money, OpportunityId, Probability};
+use griffe_core::domain::{
+    ClientId, FollowUpSubject, MissionId, Money, OpportunityId, Probability,
+};
 use griffe_core::expenses::RecordExpense;
-use griffe_core::follow_up::SetFollowUpSender;
+use griffe_core::follow_up::{SetDossierGenre, SetFollowUpSender, prospect_genre_for};
 use griffe_core::missions::CreateMission;
-use griffe_core::prospection::{CreateOpportunity, CreateProspect, list_opportunities};
+use griffe_core::prospection::{
+    CreateOpportunity, CreateProspect, WinOpportunity, list_opportunities,
+};
 use griffe_core::store::{Passphrase, Store};
 use griffe_web::AppState;
 use http_body_util::BodyExt;
@@ -33,6 +38,22 @@ fn test_db_path(label: &str) -> PathBuf {
 
 fn human_ctx() -> ExecutionContext {
     ExecutionContext::new(Actor::Human, false)
+}
+
+/// La formule est dans un `<template>` que l'aperçu lit. Ce mot n'est pas affiché.
+fn without_formula_holder(page: &str) -> String {
+    let mut out = String::with_capacity(page.len());
+    let mut rest = page;
+    while let Some(start) = rest.find("<template") {
+        out.push_str(&rest[..start]);
+        let Some(close) = rest[start..].find("</template>") else {
+            out.push_str(&rest[start..]);
+            return out;
+        };
+        rest = &rest[start + close + "</template>".len()..];
+    }
+    out.push_str(rest);
+    out
 }
 
 async fn body_text(response: axum::response::Response) -> String {
@@ -1391,6 +1412,8 @@ async fn la_societe_shows_the_landscape_chapters_and_a_closed_dividend() {
     assert!(home.contains("/societe/payer"), "{home}");
     assert!(home.contains("Les papiers"), "{home}");
     assert!(home.contains("/societe/papiers"), "{home}");
+    assert!(home.contains("Le courrier"), "{home}");
+    assert!(home.contains("/societe/courrier"), "{home}");
     assert!(
         !home.contains("freeflow "),
         "pas de commande CLI dans la lettre : {home}"
@@ -3482,6 +3505,95 @@ async fn a_real_navigation_keeps_an_idle_session_alive() {
         StatusCode::OK,
         "200ms + 200ms < 400ms depuis la dernière vraie navigation : la session doit être encore active"
     );
+}
+
+#[tokio::test]
+async fn a_short_suspension_holds_past_the_idle_timeout_then_lets_audit_polling_lock() {
+    let db_path = test_db_path("idle-suspended");
+    Store::create(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    let state = AppState::with_idle_timeout(db_path, Duration::from_millis(200));
+    state
+        .unlock(&Passphrase::from(PASSPHRASE), false)
+        .await
+        .unwrap();
+    state.suspend_idle_for(Duration::from_millis(1_000)).await;
+    let router = griffe_web::router(state);
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let held = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/audit/recent")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(held.status(), StatusCode::OK);
+    let held_body = body_text(held).await;
+    assert!(
+        held_body.contains("aucune activité pour l'instant"),
+        "au-delà du délai d'inactivité, la suspension tient encore : {held_body}"
+    );
+
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    let closed = router
+        .oneshot(
+            Request::builder()
+                .uri("/audit/recent")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(closed.status(), StatusCode::OK);
+    let closed_body = body_text(closed).await;
+    assert!(
+        closed_body.contains("Coffre verrouillé"),
+        "une fois la suspension passée, le sondage d'audit referme la fenêtre abandonnée : \
+         {closed_body}"
+    );
+}
+
+#[tokio::test]
+async fn locking_closes_at_once_while_the_idle_suspension_is_live() {
+    let db_path = test_db_path("lock-while-suspended");
+    Store::create(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    let state = AppState::with_idle_timeout(db_path, Duration::from_secs(60));
+    state
+        .unlock(&Passphrase::from(PASSPHRASE), false)
+        .await
+        .unwrap();
+    state.suspend_idle_for(Duration::from_secs(60)).await;
+    let router = griffe_web::router(state);
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/lock")
+                .header("HX-Request", "true")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(response.headers().get("HX-Redirect").unwrap(), "/unlock");
+
+    let after = router
+        .oneshot(
+            Request::builder()
+                .uri("/view/dashboard")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = body_text(after).await;
+    assert!(body.contains("Coffre verrouillé"), "{body}");
 }
 
 #[tokio::test]
@@ -7782,9 +7894,10 @@ async fn phrases_are_a_letter_and_the_next_unopened_mail_uses_them() {
     );
     assert!(page.contains("Enregistrer les phrases"), "{page}");
     assert!(!page.contains("{{"), "{page}");
+    let shown = without_formula_holder(&page);
     for forbidden in ["template", "cadence", "campagne", "workflow", "pipeline"] {
         assert!(
-            !page.contains(forbidden),
+            !shown.contains(forbidden),
             "{forbidden} dans la lettre : {page}"
         );
     }
@@ -8047,11 +8160,12 @@ async fn engaged_conversations_finish_their_series_and_a_new_one_takes_three_mom
     assert!(phrases.contains("value=\"7\""), "{phrases}");
     assert!(phrases.contains("value=\"14\""), "{phrases}");
     assert!(!phrases.contains("step="), "{phrases}");
+    let shown = without_formula_holder(&phrases);
     for forbidden in [
         "template", "cadence", "step", "campagne", "workflow", "pipeline",
     ] {
         assert!(
-            !phrases.contains(forbidden),
+            !shown.contains(forbidden),
             "{forbidden} dans la lettre : {phrases}"
         );
     }
@@ -8294,6 +8408,29 @@ async fn the_genre_changes_only_the_words() {
     .await;
     assert!(!nouvelle.contains("name=\"genre\""), "{nouvelle}");
 
+    let bare = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Camille/fiche")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        bare.contains("Le premier nom servira aux phrases."),
+        "{bare}"
+    );
+    assert!(bare.contains("name=\"genre_other\""), "{bare}");
+    assert!(!bare.contains("word-choice"), "{bare}");
+    assert!(!bare.contains("<select"), "{bare}");
+    assert!(!bare.contains("name=\"genre\" type=\"text\""), "{bare}");
+
     let services = create_genre(&router, "Services publics").await;
     let shops = create_genre(&router, "Commerces").await;
     let services_page = post_form(
@@ -8332,13 +8469,11 @@ async fn the_genre_changes_only_the_words() {
         services_page.contains("Les conversations déjà engagées finissent leur série."),
         "{services_page}"
     );
+    let shown = without_formula_holder(&services_page);
     for forbidden in [
         "template", "cadence", "step", "campagne", "workflow", "pipeline",
     ] {
-        assert!(
-            !services_page.contains(forbidden),
-            "{forbidden} : {services_page}"
-        );
+        assert!(!shown.contains(forbidden), "{forbidden} : {services_page}");
     }
     post_form(
         &router,
@@ -8361,12 +8496,39 @@ async fn the_genre_changes_only_the_words() {
             .unwrap(),
     )
     .await;
-    assert!(camille_fiche.contains("name=\"genre\""), "{camille_fiche}");
+    assert!(
+        camille_fiche.contains("class=\"word-choice\""),
+        "{camille_fiche}"
+    );
+    assert!(
+        camille_fiche.contains("type=\"radio\" name=\"genre\""),
+        "{camille_fiche}"
+    );
     assert!(
         camille_fiche.contains("Services publics"),
         "{camille_fiche}"
     );
     assert!(camille_fiche.contains("Commerces"), "{camille_fiche}");
+    assert!(camille_fiche.contains(">un autre<"), "{camille_fiche}");
+    assert!(
+        camille_fiche.contains("word-other-toggle"),
+        "{camille_fiche}"
+    );
+    assert!(camille_fiche.contains("value=\"autre\""), "{camille_fiche}");
+    assert!(
+        camille_fiche.contains("name=\"genre_other\""),
+        "{camille_fiche}"
+    );
+    assert!(!camille_fiche.contains("aucun"), "{camille_fiche}");
+    assert!(
+        !camille_fiche.contains("name=\"genre\" type=\"text\""),
+        "{camille_fiche}"
+    );
+    assert!(!camille_fiche.contains("<select"), "{camille_fiche}");
+    assert!(
+        !camille_fiche.contains("Le premier nom servira aux phrases."),
+        "{camille_fiche}"
+    );
     for forbidden in [
         "template", "cadence", "step", "campagne", "workflow", "pipeline",
     ] {
@@ -8584,6 +8746,11 @@ async fn the_genre_changes_only_the_words() {
     )
     .await;
     let revision = hidden_value(&camille_fiche, "client_revision");
+    assert!(camille_fiche.contains(">aucun<"), "{camille_fiche}");
+    assert!(
+        camille_fiche.contains("value=\"Services publics\" checked"),
+        "{camille_fiche}"
+    );
     post_form(
         &router,
         "/affaires/Camille/envoye",
@@ -8638,9 +8805,13 @@ async fn the_genre_changes_only_the_words() {
     let created = post_form(
         &router,
         "/affaires/L%C3%A9o/fiche",
-        &format!("who=L%C3%A9o&client_revision={leo_revision}&email=leo@exemple.fr&genre=Ateliers"),
+        &format!(
+            "who=L%C3%A9o&client_revision={leo_revision}&email=leo@exemple.fr&genre_other=Ateliers"
+        ),
     )
     .await;
+    assert!(created.contains("Ateliers"), "{created}");
+    assert!(created.contains("value=\"Ateliers\" checked"), "{created}");
     assert!(
         created.contains("Ce genre n'existe pas encore. La fiche le crée."),
         "{created}"
@@ -8690,6 +8861,73 @@ async fn the_genre_changes_only_the_words() {
     assert!(identity.contains("genre="), "{identity}");
     assert!(identity.contains("selon qui ils sont"), "{identity}");
 
+    let nina_fiche = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Nina/fiche")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    let nina_revision = hidden_value(&nina_fiche, "client_revision");
+    assert!(nina_fiche.contains(">aucun<"), "{nina_fiche}");
+    let unnamed = post_form(
+        &router,
+        "/affaires/Nina/fiche",
+        &format!("who=Nina&client_revision={nina_revision}&email=nina@exemple.fr&genre=autre"),
+    )
+    .await;
+    assert!(unnamed.contains("Nomme le genre."), "{unnamed}");
+    assert!(unnamed.contains(">aucun<"), "{unnamed}");
+    let nina_kept = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Nina/ecrire")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        nina_kept.contains("Commerces · Premier message") || nina_kept.contains("Commerces · "),
+        "{nina_kept}"
+    );
+    assert!(nina_kept.contains("Brouillon figé"), "{nina_kept}");
+    let nina_revision = hidden_value(&unnamed, "client_revision");
+    post_form(
+        &router,
+        "/affaires/Nina/fiche",
+        &format!("who=Nina&client_revision={nina_revision}&email=nina@exemple.fr&genre="),
+    )
+    .await;
+    let nina_plain = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Nina/ecrire")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(nina_plain.contains("Pas encore de genre"), "{nina_plain}");
+    assert!(nina_plain.contains("Brouillon figé"), "{nina_plain}");
+
     let css = body_text(
         router
             .oneshot(
@@ -8710,6 +8948,21 @@ async fn the_genre_changes_only_the_words() {
     assert!(
         line.contains("display: flex") && line.contains("flex-wrap: wrap"),
         "la ligne genre · moment se replie : {line}"
+    );
+    let chosen = css
+        .split(".word-choice label:has(input:checked)")
+        .nth(1)
+        .and_then(|rest| rest.split('}').next())
+        .expect("règle du mot choisi");
+    assert!(
+        chosen.contains("color: var(--ink)")
+            && chosen.contains("box-shadow: inset 0 -1px 0 var(--ink)")
+            && !chosen.contains("background"),
+        "le mot choisi est encre, souligné, sans fond : {chosen}"
+    );
+    assert!(
+        css.contains(".word-choice:has(.word-other-toggle:checked) .word-other"),
+        "la ligne suit le mot « un autre »"
     );
 }
 
@@ -9087,12 +9340,31 @@ async fn a_stopped_conversation_is_visible_and_the_stop_gesture_looks_final() {
 }
 
 #[tokio::test]
-async fn the_remember_checkbox_promises_the_next_launch_only() {
-    let db_path = test_db_path("remember-label");
-    Store::create(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
-    let router = griffe_web::router(AppState::new(db_path));
-    let page = body_text(
-        router
+async fn the_remember_checkbox_keeps_the_window_open_for_twelve_hours() {
+    let label = "Pendant 12 h, ne pas redemander la passphrase, et laisser la fenêtre ouverte.";
+    let previous = "Au prochain lancement, ne pas redemander la passphrase pendant 12 h.";
+
+    let setup_path = test_db_path("remember-setup-label");
+    let setup = body_text(
+        griffe_web::router(AppState::new(setup_path))
+            .oneshot(
+                Request::builder()
+                    .uri("/setup")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(setup.contains("Créer le coffre"), "{setup}");
+    assert!(setup.contains(label), "{setup}");
+    assert!(!setup.contains(previous), "{setup}");
+
+    let unlock_path = test_db_path("remember-unlock-label");
+    Store::create(&unlock_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    let unlock = body_text(
+        griffe_web::router(AppState::new(unlock_path))
             .oneshot(
                 Request::builder()
                     .uri("/unlock")
@@ -9103,11 +9375,9 @@ async fn the_remember_checkbox_promises_the_next_launch_only() {
             .unwrap(),
     )
     .await;
-    assert!(
-        page.contains("Au prochain lancement, ne pas redemander la passphrase pendant 12 h."),
-        "{page}"
-    );
-    assert!(!page.contains("rester déverrouillé"), "{page}");
+    assert!(unlock.contains("Coffre verrouillé"), "{unlock}");
+    assert!(unlock.contains(label), "{unlock}");
+    assert!(!unlock.contains(previous), "{unlock}");
 }
 
 fn page_has(body: &str, needle: &str) -> bool {
@@ -9347,4 +9617,1322 @@ async fn the_expense_form_offers_reverse_charge_and_the_morning_letter_does_not(
     assert!(!letter.contains("reverse_charge"), "{letter}");
     assert!(!letter.contains("445662"), "{letter}");
     assert!(!letter.contains("445200"), "{letter}");
+}
+
+#[tokio::test]
+async fn two_fiches_with_the_same_respondent_open_under_qui() {
+    let db_path = test_db_path("two-qui");
+    let mut store = Store::create(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    for (qui, piste) in [
+        ("Mairie de Hornaing", "site"),
+        ("Mairie de Somain", "accessibilité"),
+    ] {
+        Executor::new(&mut store)
+            .execute(
+                &CreateProspect {
+                    prospect_name: qui.into(),
+                    address: None,
+                    representative: Some("Frédéric DELANNOY".into()),
+                    email: Some("mairie@exemple.fr".into()),
+                    phone: None,
+                    name: piste.into(),
+                    amount: Money::ZERO,
+                    probability: Probability::new(0).unwrap(),
+                    next_action_at: time::macros::date!(2026 - 10 - 07),
+                    source: None,
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+    }
+    drop(store);
+
+    let state = AppState::new(db_path);
+    state
+        .unlock(&Passphrase::from(PASSPHRASE), false)
+        .await
+        .unwrap();
+    let state = state.with_today(time::macros::date!(2026 - 10 - 07));
+    let router = griffe_web::router(state);
+
+    let list = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(list.contains("Mairie de Hornaing"), "{list}");
+    assert!(list.contains("Mairie de Somain"), "{list}");
+    assert!(
+        list.contains("href=\"/affaires/Mairie%20de%20Hornaing\""),
+        "{list}"
+    );
+    assert!(
+        list.contains("href=\"/affaires/Mairie%20de%20Somain\""),
+        "{list}"
+    );
+    assert!(
+        !list.contains(">Frédéric DELANNOY<"),
+        "la liste nomme le Qui : {list}"
+    );
+
+    let found = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires?q=fr%C3%A9d%C3%A9ric")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(found.contains("Mairie de Hornaing"), "{found}");
+    assert!(found.contains("Mairie de Somain"), "{found}");
+
+    let hornaing = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Mairie%20de%20Hornaing")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(hornaing.contains("Mairie de Hornaing"), "{hornaing}");
+    assert!(hornaing.contains("Frédéric DELANNOY"), "{hornaing}");
+    assert!(!hornaing.contains("règle métier"), "{hornaing}");
+
+    let shared = body_text(
+        router
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Fr%C3%A9d%C3%A9ric%20DELANNOY")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(shared.contains("Plusieurs fiches"), "{shared}");
+    assert!(shared.contains("Mairie de Hornaing"), "{shared}");
+    assert!(shared.contains("Mairie de Somain"), "{shared}");
+    assert!(!shared.contains("règle métier"), "{shared}");
+}
+
+#[tokio::test]
+async fn reporter_unfolds_into_three_days_ten_days_or_a_count() {
+    let db_path = test_db_path("reporter-deplie");
+    let mut store = Store::create(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    Executor::new(&mut store)
+        .execute(
+            &CreateProspect {
+                prospect_name: "Atelier Sèvre".into(),
+                address: None,
+                representative: None,
+                email: None,
+                phone: None,
+                name: "site de la cave".into(),
+                amount: Money::from_cents(120_000),
+                probability: Probability::new(40).unwrap(),
+                next_action_at: time::macros::date!(2026 - 09 - 05),
+                source: None,
+            },
+            &human_ctx(),
+        )
+        .unwrap();
+    drop(store);
+
+    let state = AppState::new(db_path);
+    state
+        .unlock(&Passphrase::from(PASSPHRASE), false)
+        .await
+        .unwrap();
+    let state = state.with_today(time::macros::date!(2026 - 09 - 05));
+    let router = griffe_web::router(state);
+    let dossier_uri = "/affaires/Atelier%20S%C3%A8vre";
+
+    let jour = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/jour")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(jour.contains(">Demain<"), "{jour}");
+    assert!(
+        jour.contains("name=\"until\" value=\"2026-09-06\""),
+        "Demain poste le lendemain : {jour}"
+    );
+    assert!(!jour.contains("class=\"snooze\""), "{jour}");
+    assert!(!jour.contains("Reporter de trois jours"), "{jour}");
+
+    let dossier = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(dossier_uri)
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(dossier.contains("<details class=\"snooze\">"), "{dossier}");
+    assert!(dossier.contains(">Reporter<"), "{dossier}");
+    assert!(dossier.contains("name=\"days\" value=\"3\""), "{dossier}");
+    assert!(dossier.contains(">3 jours<"), "{dossier}");
+    assert!(dossier.contains("name=\"days\" value=\"10\""), "{dossier}");
+    assert!(dossier.contains(">10 jours<"), "{dossier}");
+    assert!(dossier.contains("inputmode=\"numeric\""), "{dossier}");
+    assert!(dossier.contains(">jours<"), "{dossier}");
+    assert!(!dossier.contains("Reporter de trois jours"), "{dossier}");
+    assert!(!dossier.contains("<select"), "{dossier}");
+    assert!(!dossier.contains("<script"), "{dossier}");
+    assert!(!dossier.contains("hx-on"), "{dossier}");
+    assert!(!dossier.contains(">Demain<"), "{dossier}");
+
+    let sentence = "Le report se compte de 1 à 366 jours.";
+    for body in ["days=0", "days=367", "days=abc", "days=-1"] {
+        let refused = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("{dossier_uri}/reporter"))
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .header("HX-Request", "true")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), StatusCode::OK, "{body}");
+        assert!(refused.headers().get("HX-Trigger").is_none(), "{body}");
+        let page = body_text(refused).await;
+        assert!(page.contains(sentence), "{body} : {page}");
+    }
+
+    let ten = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("{dossier_uri}/reporter"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from("days=10"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ten.status(), StatusCode::OK);
+    assert_eq!(ten.headers().get("HX-Trigger").unwrap(), "griffe:saved");
+    let ten_page = body_text(ten).await;
+    assert!(ten_page.contains("Atelier Sèvre"), "{ten_page}");
+    assert!(
+        ten_page.contains("<details class=\"snooze\">"),
+        "{ten_page}"
+    );
+
+    let listed = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        listed.contains("15 septembre 2026"),
+        "dix jours après le 5 septembre : {listed}"
+    );
+
+    let three = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("{dossier_uri}/reporter"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from("days=3"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(three.headers().get("HX-Trigger").unwrap(), "griffe:saved");
+    let _ = body_text(three).await;
+    let after_three = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        after_three.contains("8 septembre 2026"),
+        "trois jours après le 5 septembre : {after_three}"
+    );
+
+    let tomorrow = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("{dossier_uri}/reporter"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from("until=2026-09-06"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        tomorrow.headers().get("HX-Trigger").unwrap(),
+        "griffe:saved"
+    );
+    let _ = body_text(tomorrow).await;
+    let after_until = body_text(
+        router
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        after_until.contains("6 septembre 2026"),
+        "until reste le chemin de Demain : {after_until}"
+    );
+}
+
+fn form_encode(pairs: &[(&str, &str)]) -> String {
+    pairs
+        .iter()
+        .map(|(key, value)| format!("{}={}", form_escape(key), form_escape(value)))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+fn form_escape(value: &str) -> String {
+    let mut out = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' => {
+                out.push(char::from(byte));
+            }
+            b' ' => out.push('+'),
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
+#[tokio::test]
+async fn travaux_page_previews_without_saving_and_keeps_the_rendered_note() {
+    let db = test_db_path("travaux");
+    let mut store = Store::create(&db, &Passphrase::from(PASSPHRASE)).unwrap();
+    let client_id = match Executor::new(&mut store)
+        .execute(
+            &CreateClient {
+                name: "Atelier du recit".into(),
+                siren: None,
+                vat_number: None,
+                address: None,
+            },
+            &human_ctx(),
+        )
+        .unwrap()
+    {
+        griffe_core::app::Outcome::Applied(id) => id,
+        other => panic!("création attendue, obtenu {other:?}"),
+    };
+    Executor::new(&mut store)
+        .execute(
+            &CreateOpportunity {
+                client_id,
+                name: "Chantier du recit".into(),
+                amount: Money::from_cents(150_000),
+                probability: Probability::new(40).unwrap(),
+                next_action_at: time::Date::from_calendar_date(2026, time::Month::October, 8)
+                    .unwrap(),
+                source: None,
+            },
+            &human_ctx(),
+        )
+        .unwrap();
+    drop(store);
+
+    let state = AppState::new(db.clone());
+    state
+        .unlock(&Passphrase::from(PASSPHRASE), false)
+        .await
+        .unwrap();
+    let router = griffe_web::router(state);
+    let dossier_uri = "/affaires/Atelier%20du%20recit";
+
+    let dossier = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(dossier_uri)
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    let travaux_at = dossier.find("Les travaux").expect("le bouton Les travaux");
+    let reporter_at = dossier.find("Reporter").expect("Reporter");
+    assert!(
+        travaux_at < reporter_at,
+        "Les travaux se place juste avant Reporter : {dossier}"
+    );
+    assert!(dossier.contains("/travaux"), "{dossier}");
+
+    let empty = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("{dossier_uri}/travaux"))
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(empty.contains("Les travaux."), "{empty}");
+    assert!(empty.contains("Rien d'écrit."), "{empty}");
+    assert!(empty.contains("Où on en est."), "{empty}");
+    assert!(empty.contains("keyup changed delay:400ms"), "{empty}");
+    assert!(empty.contains("/travaux/apercu"), "{empty}");
+
+    let source = "# Le chantier\n\nUne *ligne*.\n\n- un\n\n> dit\n\n`code`\n\n[voir](https://exemple.fr/page)\n\n![plan](https://exemple.fr/plan.png)\n\n<script>alert(1)</script>\n";
+    let preview = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("{dossier_uri}/travaux/apercu"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from(form_encode(&[("body", source)])))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(preview.headers().get("HX-Trigger").is_none());
+    let preview_body = body_text(preview).await;
+    assert!(
+        preview_body.contains("<h1>Le chantier</h1>"),
+        "{preview_body}"
+    );
+    assert!(preview_body.contains("<em>ligne</em>"), "{preview_body}");
+    assert!(preview_body.contains("<li>un</li>"), "{preview_body}");
+    assert!(preview_body.contains("<blockquote>"), "{preview_body}");
+    assert!(preview_body.contains("<code>code</code>"), "{preview_body}");
+    assert!(
+        preview_body.contains("voir (https://exemple.fr/page)"),
+        "{preview_body}"
+    );
+    assert!(!preview_body.contains("<a"), "{preview_body}");
+    assert!(!preview_body.contains("<img"), "{preview_body}");
+    assert!(!preview_body.contains("plan.png"), "{preview_body}");
+    assert!(
+        !preview_body.to_ascii_lowercase().contains("<script"),
+        "{preview_body}"
+    );
+    assert!(preview_body.contains("&lt;script&gt;"), "{preview_body}");
+
+    let still_empty = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("{dossier_uri}/travaux"))
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(still_empty.contains("Rien d'écrit."), "{still_empty}");
+    assert!(
+        !still_empty.contains("Le chantier"),
+        "l'aperçu n'écrit pas : {still_empty}"
+    );
+
+    let saved = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("{dossier_uri}/travaux"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from(form_encode(&[
+                    ("body", source),
+                    ("revision", "0"),
+                ])))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        saved
+            .headers()
+            .get("HX-Trigger")
+            .and_then(|v| v.to_str().ok()),
+        Some("griffe:saved")
+    );
+    let saved_body = body_text(saved).await;
+    assert!(saved_body.contains("<h1>Le chantier</h1>"), "{saved_body}");
+    assert!(
+        !saved_body.to_ascii_lowercase().contains("<script"),
+        "{saved_body}"
+    );
+    assert!(saved_body.contains("&lt;script&gt;"), "{saved_body}");
+
+    let stale = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("{dossier_uri}/travaux"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from(form_encode(&[
+                    ("body", "Un texte périmé.\n"),
+                    ("revision", "0"),
+                ])))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(stale.headers().get("HX-Trigger").is_none());
+    let stale_body = body_text(stale).await;
+    assert!(
+        stale_body.contains("Ce récit a changé. Voici celui du coffre."),
+        "{stale_body}"
+    );
+    assert!(stale_body.contains("Le chantier"), "{stale_body}");
+    assert!(!stale_body.contains("Un texte périmé"), "{stale_body}");
+
+    let estimation = body_text(
+        router
+            .oneshot(
+                Request::builder()
+                    .uri(format!("{dossier_uri}/estimation"))
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        estimation.contains("Ce que chaque ligne vaut."),
+        "{estimation}"
+    );
+}
+
+fn kind_forms(html: &str) -> Vec<(String, String)> {
+    let marker = "hx-post=\"/affaires/types/";
+    let word = "class=\"kind-word\">";
+    let mut rest = html;
+    let mut found = Vec::new();
+    while let Some(at) = rest.find(marker) {
+        let after = &rest[at + marker.len()..];
+        let end = after.find('"').unwrap_or(0);
+        let id = after[..end].to_string();
+        let name = after
+            .find(word)
+            .map(|pos| {
+                let start = pos + word.len();
+                let stop = after[start..].find('<').unwrap_or(0);
+                after[start..start + stop].trim().to_string()
+            })
+            .unwrap_or_default();
+        found.push((id, name));
+        rest = &after[end..];
+    }
+    found
+}
+
+async fn posted(
+    router: &axum::Router,
+    uri: &str,
+    fields: &[(&str, &str)],
+) -> axum::response::Response {
+    router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from(form_encode(fields)))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn work_kinds_filter_the_affaires_and_leave_on_the_second_gesture() {
+    let db_path = test_db_path("types");
+    let mut store = Store::create(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    let quai = match Executor::new(&mut store)
+        .execute(
+            &CreateProspect {
+                prospect_name: "Atelier Quai".into(),
+                address: None,
+                representative: None,
+                email: None,
+                phone: None,
+                name: "Affaire du quai".into(),
+                amount: Money::from_cents(120_000),
+                probability: Probability::new(40).unwrap(),
+                next_action_at: time::macros::date!(2026 - 10 - 07),
+                source: None,
+            },
+            &human_ctx(),
+        )
+        .unwrap()
+    {
+        Outcome::Applied(id) => id,
+        other => panic!("création attendue, obtenu {other:?}"),
+    };
+    let port = match Executor::new(&mut store)
+        .execute(
+            &CreateProspect {
+                prospect_name: "Atelier Port".into(),
+                address: None,
+                representative: None,
+                email: None,
+                phone: None,
+                name: "Affaire du port".into(),
+                amount: Money::from_cents(80_000),
+                probability: Probability::new(40).unwrap(),
+                next_action_at: time::macros::date!(2026 - 10 - 07),
+                source: None,
+            },
+            &human_ctx(),
+        )
+        .unwrap()
+    {
+        Outcome::Applied(id) => id,
+        other => panic!("création attendue, obtenu {other:?}"),
+    };
+    Executor::new(&mut store)
+        .execute(
+            &SetDossierGenre {
+                subject: FollowUpSubject::Opportunity(quai),
+                name: "Mairie".into(),
+            },
+            &human_ctx(),
+        )
+        .unwrap();
+    Executor::new(&mut store)
+        .execute(
+            &WinOpportunity {
+                opportunity_id: port,
+                started_on: time::macros::date!(2026 - 10 - 07),
+            },
+            &human_ctx(),
+        )
+        .unwrap();
+    Executor::new(&mut store)
+        .execute(
+            &RecordExpense {
+                label: "Ramette".into(),
+                category: griffe_core::domain::ExpenseCategory::Software,
+                amount: Money::from_cents(2_000),
+                vat_rate: griffe_core::domain::VatRate::Zero,
+                vat_deductible: Money::ZERO,
+                incurred_on: time::macros::date!(2026 - 10 - 01),
+                receipt_hash: None,
+                receipt_filename: None,
+                bank_transaction_id: None,
+                supplier: Some("Papeterie du Nord".into()),
+                paid_by: griffe_core::domain::ExpensePaidBy::Company,
+                reverse_charge: false,
+            },
+            &human_ctx(),
+        )
+        .unwrap();
+    drop(store);
+
+    let state = AppState::new(db_path.clone());
+    state
+        .unlock(&Passphrase::from(PASSPHRASE), false)
+        .await
+        .unwrap();
+    let state = state.with_today(time::macros::date!(2026 - 10 - 07));
+    let router = griffe_web::router(state);
+    let quai_uri = "/affaires/Atelier%20Quai";
+    let port_uri = "/affaires/Atelier%20Port";
+
+    let naming = posted(
+        &router,
+        &format!("{quai_uri}/types"),
+        &[("kind_other_on", "1"), ("kind_other", "")],
+    )
+    .await;
+    assert_eq!(naming.status(), StatusCode::OK);
+    assert!(naming.headers().get("HX-Trigger").is_none());
+    let naming_body = body_text(naming).await;
+    assert!(naming_body.contains("Nomme le type."), "{naming_body}");
+    assert!(!naming_body.contains("hx-on"), "{naming_body}");
+
+    let created = posted(
+        &router,
+        &format!("{quai_uri}/types"),
+        &[("kind_other_on", "1"), ("kind_other", "site web")],
+    )
+    .await;
+    assert_eq!(
+        created
+            .headers()
+            .get("HX-Trigger")
+            .and_then(|value| value.to_str().ok()),
+        Some("griffe:saved")
+    );
+    let created_body = body_text(created).await;
+    assert!(
+        created_body.contains("value=\"site web\""),
+        "{created_body}"
+    );
+
+    let catalog = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/types")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(catalog.contains("Les types."), "{catalog}");
+    let forms = kind_forms(&catalog);
+    let site_id = forms
+        .iter()
+        .find(|(_, name)| name == "site web")
+        .map(|(id, _)| id.clone())
+        .unwrap_or_else(|| panic!("site web absent du catalogue : {catalog}"));
+
+    let filtered = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/affaires?type={site_id}"))
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(filtered.contains("Atelier Quai"), "{filtered}");
+    assert!(filtered.contains("Papeterie du Nord"), "{filtered}");
+    assert!(
+        filtered.contains("Aucune mission de ce type."),
+        "{filtered}"
+    );
+    assert!(!filtered.contains("Atelier Port"), "{filtered}");
+    assert!(filtered.contains("Les types"), "{filtered}");
+    assert!(
+        filtered.contains("<p class=\"kinds\">site web</p>"),
+        "{filtered}"
+    );
+
+    let both = posted(
+        &router,
+        &format!("{port_uri}/types"),
+        &[
+            ("kind", "site web"),
+            ("kind_other_on", "1"),
+            ("kind_other", "backend"),
+        ],
+    )
+    .await;
+    assert_eq!(
+        both.headers()
+            .get("HX-Trigger")
+            .and_then(|value| value.to_str().ok()),
+        Some("griffe:saved")
+    );
+    let both_body = body_text(both).await;
+    assert!(both_body.contains("value=\"site web\""), "{both_body}");
+    assert!(both_body.contains("value=\"backend\""), "{both_body}");
+
+    let site_page = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/affaires?type={site_id}&q=Port"))
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(site_page.contains("Atelier Quai"), "{site_page}");
+    assert!(site_page.contains("Atelier Port"), "{site_page}");
+    assert!(
+        site_page.contains("href=\"/affaires?q=Port\""),
+        "{site_page}"
+    );
+    assert!(
+        site_page.contains("q=Port&amp;type=") || site_page.contains("q=Port&type="),
+        "{site_page}"
+    );
+
+    let catalog = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/types")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    let forms = kind_forms(&catalog);
+    let backend_id = forms
+        .iter()
+        .find(|(_, name)| name == "backend")
+        .map(|(id, _)| id.clone())
+        .unwrap_or_else(|| panic!("backend absent : {catalog}"));
+    let backend_page = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/affaires?type={backend_id}"))
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        backend_page.contains("Aucune conversation de ce type."),
+        "{backend_page}"
+    );
+    assert!(backend_page.contains("Atelier Port"), "{backend_page}");
+    assert!(
+        !backend_page.contains("href=\"/affaires/Atelier%20Quai\""),
+        "{backend_page}"
+    );
+
+    let renamed = posted(
+        &router,
+        &format!("/affaires/types/{site_id}"),
+        &[("name", "site"), ("geste", "renommer")],
+    )
+    .await;
+    assert_eq!(
+        renamed
+            .headers()
+            .get("HX-Trigger")
+            .and_then(|value| value.to_str().ok()),
+        Some("griffe:saved")
+    );
+    let renamed_body = body_text(renamed).await;
+    assert!(renamed_body.contains("value=\"site\""), "{renamed_body}");
+    assert!(!renamed_body.contains("site web"), "{renamed_body}");
+
+    let followed = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(quai_uri)
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(followed.contains("value=\"site\""), "{followed}");
+    assert!(!followed.contains("site web"), "{followed}");
+
+    let asking = posted(
+        &router,
+        &format!("/affaires/types/{site_id}"),
+        &[("name", "site"), ("geste", "retirer")],
+    )
+    .await;
+    assert!(asking.headers().get("HX-Trigger").is_none());
+    let asking_body = body_text(asking).await;
+    assert!(asking_body.contains("Oui, le retirer"), "{asking_body}");
+    let still = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/affaires?type={site_id}"))
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(still.contains("Atelier Quai"), "{still}");
+    assert!(still.contains("Atelier Port"), "{still}");
+
+    let removed = posted(
+        &router,
+        &format!("/affaires/types/{site_id}"),
+        &[("geste", "confirmer")],
+    )
+    .await;
+    assert_eq!(removed.status(), StatusCode::OK);
+    assert_eq!(
+        removed
+            .headers()
+            .get("HX-Trigger")
+            .and_then(|value| value.to_str().ok()),
+        Some("griffe:saved")
+    );
+    let removed_body = body_text(removed).await;
+    assert!(!removed_body.contains("value=\"site\""), "{removed_body}");
+    assert!(removed_body.contains("value=\"backend\""), "{removed_body}");
+
+    let after = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/affaires?type={site_id}"))
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(after.contains("Aucune conversation de ce type."), "{after}");
+    assert!(after.contains("Aucune mission de ce type."), "{after}");
+    assert!(after.contains("Papeterie du Nord"), "{after}");
+    assert!(
+        !after.contains("href=\"/affaires/Atelier%20Quai\""),
+        "{after}"
+    );
+    assert!(
+        !after.contains("href=\"/affaires/Atelier%20Port\""),
+        "{after}"
+    );
+
+    let port_page = body_text(
+        router
+            .oneshot(
+                Request::builder()
+                    .uri(port_uri)
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(port_page.contains("value=\"backend\""), "{port_page}");
+    assert!(!port_page.contains("value=\"site\""), "{port_page}");
+
+    let check = Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    let genre = prospect_genre_for(check.connection(), quai)
+        .unwrap()
+        .unwrap();
+    assert_eq!(genre.name, "Mairie");
+}
+
+#[tokio::test]
+async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
+    let db_path = test_db_path("courrier-envoi");
+    let today = time::macros::date!(2026 - 09 - 05);
+    {
+        let mut store = Store::create(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+        let client_id = applied(
+            Executor::new(&mut store)
+                .execute(
+                    &CreateClient {
+                        name: "Atelier Nord".into(),
+                        siren: None,
+                        vat_number: None,
+                        address: None,
+                    },
+                    &human_ctx(),
+                )
+                .unwrap(),
+        );
+        Executor::new(&mut store)
+            .execute(
+                &CreateContact {
+                    client_id,
+                    name: "Ada".into(),
+                    email: Some("ada@atelier.test".into()),
+                    phone: None,
+                    role: None,
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+        Executor::new(&mut store)
+            .execute(
+                &CreateOpportunity {
+                    client_id,
+                    name: "Site".into(),
+                    amount: Money::from_cents(12_000),
+                    probability: Probability::new(40).unwrap(),
+                    next_action_at: today,
+                    source: None,
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+    }
+    let state = AppState::new(db_path).with_today(today);
+    state
+        .unlock(&Passphrase::from(PASSPHRASE), false)
+        .await
+        .unwrap();
+    let router = griffe_web::router(state);
+    let secret = "mot-de-passe-application-xyz";
+
+    let chapter = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/societe/courrier")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(chapter.contains("Le courrier."), "{chapter}");
+    assert!(
+        chapter.contains("Une lettre d'essai") || chapter.contains("Une lettre d&#x27;essai"),
+        "{chapter}"
+    );
+    assert!(chapter.contains("Cette lettre est un essai"), "{chapter}");
+    assert!(chapter.contains("Le prénom est fictif"), "{chapter}");
+    assert!(!chapter.contains("Envoyer l'essai"), "{chapter}");
+    assert!(chapter.contains("envoi du jour est"), "{chapter}");
+    assert!(
+        chapter.contains("Activer l'envoi du jour")
+            || chapter.contains("Activer l&#x27;envoi du jour"),
+        "{chapter}"
+    );
+    assert!(!chapter.contains("type=\"password\" value="), "{chapter}");
+
+    let formula = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/societe/courrier/signature")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from("signature=Atelier+Nord"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(formula.headers().get("HX-Trigger").unwrap(), "griffe:saved");
+    let formula_body = body_text(formula).await;
+    assert!(
+        formula_body.contains("La formule est enregistrée."),
+        "{formula_body}"
+    );
+    assert!(formula_body.contains("Atelier Nord"), "{formula_body}");
+    assert!(!formula_body.contains("Envoyer l'essai"), "{formula_body}");
+
+    let saved = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/societe/courrier")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from(
+                    "from_name=Camille&from_address=camille%40studio.test&username=camille%40icloud.test&preset=icloud&host=&port=587",
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(saved.headers().get("HX-Trigger").unwrap(), "griffe:saved");
+    let saved_body = body_text(saved).await;
+    assert!(
+        saved_body.contains("Le serveur est enregistré."),
+        "{saved_body}"
+    );
+    assert!(
+        saved_body.contains("value=\"camille@studio.test\""),
+        "{saved_body}"
+    );
+
+    let hidden = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/societe/courrier/secret")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from(format!("secret={secret}")))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let hidden_body = body_text(hidden).await;
+    assert!(hidden_body.contains("dans le coffre"), "{hidden_body}");
+    assert!(!hidden_body.contains(secret), "{hidden_body}");
+    assert!(
+        hidden_body.contains("Envoyer l'essai") || hidden_body.contains("Envoyer l&#x27;essai"),
+        "{hidden_body}"
+    );
+    assert!(
+        hidden_body.contains("Cette lettre est un essai"),
+        "{hidden_body}"
+    );
+    assert!(hidden_body.contains("Atelier Nord"), "{hidden_body}");
+    assert!(hidden_body.contains("Bonjour Camille"), "{hidden_body}");
+
+    let refused = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/societe/courrier/envoyer")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from("to=pas-une-adresse"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(!refused.headers().contains_key("HX-Trigger"));
+    let refused_body = body_text(refused).await;
+    assert!(refused_body.contains("illisible"), "{refused_body}");
+    assert!(!refused_body.contains(secret), "{refused_body}");
+
+    let trial = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/societe/courrier/envoyer")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from("to=ada%40atelier.test"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(trial.headers().get("HX-Trigger").unwrap(), "griffe:saved");
+    let trial_body = body_text(trial).await;
+    assert!(trial_body.contains("Elle part."), "{trial_body}");
+    assert!(trial_body.contains("Annuler"), "{trial_body}");
+    assert!(!trial_body.contains(secret), "{trial_body}");
+    let trial_id = trial_body
+        .split("name=\"id\" value=\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .expect("identifiant de l'essai");
+
+    let trial_poll = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/societe/courrier/envoi")
+                .header("HX-Request", "true")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(!trial_poll.headers().contains_key("HX-Trigger"));
+    let trial_poll_body = body_text(trial_poll).await;
+    assert!(trial_poll_body.contains("Elle part."), "{trial_poll_body}");
+
+    let trial_kept = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/societe/courrier/envoi/annuler")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .header("HX-Request", "true")
+                    .body(Body::from(format!("id={trial_id}")))
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        trial_kept.contains("Envoyer l'essai") || trial_kept.contains("Envoyer l&#x27;essai"),
+        "{trial_kept}"
+    );
+    assert!(!trial_kept.contains("Elle part."), "{trial_kept}");
+
+    let letter = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Atelier%20Nord/ecrire")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(letter.contains("Une lettre"), "{letter}");
+    assert!(letter.contains("Envoyer"), "{letter}");
+    assert!(letter.contains("C'est parti"), "{letter}");
+    assert!(!letter.contains(secret), "{letter}");
+
+    let armed = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/affaires/Atelier%20Nord/envoyer")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from("subject_line=Bonjour&body=Une+ligne."))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(armed.headers().get("HX-Trigger").unwrap(), "griffe:saved");
+    let armed_body = body_text(armed).await;
+    assert!(armed_body.contains("Elle part."), "{armed_body}");
+    assert!(armed_body.contains("Annuler"), "{armed_body}");
+    assert!(!armed_body.contains(secret), "{armed_body}");
+    let id = armed_body
+        .split("name=\"id\" value=\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .expect("identifiant de la lettre");
+
+    let poll = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/affaires/Atelier%20Nord/envoi")
+                .header("HX-Request", "true")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(!poll.headers().contains_key("HX-Trigger"));
+    let poll_body = body_text(poll).await;
+    assert!(poll_body.contains("Elle part."), "{poll_body}");
+
+    let kept = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/affaires/Atelier%20Nord/envoi/annuler")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .header("HX-Request", "true")
+                    .body(Body::from(format!("id={id}")))
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(kept.contains("Envoyer"), "{kept}");
+    assert!(!kept.contains("Elle part."), "{kept}");
 }

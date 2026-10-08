@@ -49,6 +49,16 @@ allow = [
     "MPL-2.0",
 ]
 
+# Exceptions ponctuelles, pas un élargissement de la liste. Les deux crates viennent
+# de `lettre` (soumission SMTP) et ne sont pas du code que Griffe modifie.
+exceptions = [
+    # Encodage quoted-printable du corps texte. 0BSD, permissive, approuvée OSI.
+    { allow = ["0BSD"], crate = "quoted_printable" },
+    # Racines Mozilla pour vérifier le certificat du serveur. À partir de 1.0 le
+    # paquet de certificats est sous CDLA-Permissive-2.0 (licence de données, permissive).
+    { allow = ["CDLA-Permissive-2.0"], crate = "webpki-roots" },
+]
+
 [licenses.private]
 ignore = true
 

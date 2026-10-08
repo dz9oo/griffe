@@ -1,0 +1,21 @@
+[package]
+name = "griffe-mail"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+griffe-core = { version = "0.3.8", path = "../griffe-core" }
+lettre = { version = "0.11.23", default-features = false, features = [
+    "builder",
+    "smtp-transport",
+    "hostname",
+    "rustls",
+    "ring",
+    "webpki-roots",
+] }
+zeroize = { version = "1.9.0", features = ["derive"] }

@@ -8,7 +8,7 @@ use griffe_core::app::{ExecutionContext, Executor};
 use griffe_core::clients::{
     self, ClientFilter, client_by_id, contact_by_id, list_clients_with, list_contacts,
 };
-use griffe_core::domain::{Address, ContactId, Siren, VatNumber};
+use griffe_core::domain::{Address, ContactId, Siren, VatNumber, display_phone};
 use griffe_core::store::Store;
 
 use crate::error::CliError;
@@ -227,7 +227,9 @@ fn contact_table(contacts: &[griffe_core::domain::Contact]) -> String {
                 c.name.clone(),
                 c.role.clone().unwrap_or_else(|| "—".to_string()),
                 c.email.clone().unwrap_or_else(|| "—".to_string()),
-                c.phone.clone().unwrap_or_else(|| "—".to_string()),
+                c.phone
+                    .as_deref()
+                    .map_or_else(|| "—".to_string(), display_phone),
             ]
         })
         .collect::<Vec<_>>();

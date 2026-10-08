@@ -7,9 +7,11 @@ Les affaires : conversations, missions, chez qui ça sort
 Usage: griffe people [OPTIONS] <COMMAND>
 
 Commands:
-  list  Liste unique : en conversation, en mission, chez qui ça sort
-  show  Dossier d'une personne (nom, préfixe, UUID)
-  help  Print this message or the help of the given subcommand(s)
+  list     Liste unique : en conversation, en mission, chez qui ça sort
+  show     Dossier d'une personne (nom, préfixe, UUID)
+  travaux  Récit markdown d'une fiche. Sans `--file`, imprime le texte
+  types    Les types de travaux
+  help     Print this message or the help of the given subcommand(s)
 
 Options:
       --db <DB>

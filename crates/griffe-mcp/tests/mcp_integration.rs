@@ -9,6 +9,7 @@ use griffe_core::app::{Executor, Outcome};
 use griffe_core::billing::{EmitInvoice, RecordPayment};
 use griffe_core::clients::DeleteContact;
 use griffe_core::store::{Passphrase, Store};
+use griffe_core::work_kinds::DeleteWorkKind;
 use griffe_mcp::FreeflowServer;
 use rmcp::RoleClient;
 use rmcp::ServiceExt;
@@ -186,11 +187,23 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "follow_up.snooze",
         "follow_up.schedule",
         "follow_up.retract",
+        "mail.show",
+        "mail.arm",
+        "mail.automatic",
+        "mail.save_signature",
+        "mail.trial",
         "day.mast",
         "day.gestures",
         "day.month",
         "people.list",
         "people.show",
+        "people.save_work",
+        "people.work_kinds",
+        "people.work_kind_dossiers",
+        "people.create_work_kind",
+        "people.rename_work_kind",
+        "people.delete_work_kind",
+        "people.set_work_kinds",
         "society.show",
         "society.pay",
         "society.duties",
@@ -253,6 +266,8 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "day.month",
         "people.list",
         "people.show",
+        "people.work_kinds",
+        "people.work_kind_dossiers",
         "society.show",
         "society.pay",
         "society.duties",
@@ -264,6 +279,7 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "papers.list",
         "papers.show",
         "papers.checklist",
+        "mail.show",
     ] {
         assert_eq!(
             by_name(read_only)
@@ -292,6 +308,10 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "fiscal.delete_asset",
         "society.delete_vat_credit",
         "papers.purge",
+        "people.delete_work_kind",
+        "mail.arm",
+        "mail.automatic",
+        "mail.trial",
     ] {
         let ann = by_name(destructive).annotations.as_ref().unwrap();
         assert_eq!(ann.read_only_hint, Some(false));
@@ -1018,6 +1038,77 @@ async fn reading_the_missions_resource_returns_the_active_missions() {
 }
 
 #[tokio::test]
+async fn follow_up_snooze_days_counts_from_one_to_366() {
+    let db_path = test_db_path("snooze-days");
+    let store = Store::create(&db_path, &Passphrase::from("s3cret")).unwrap();
+    let client = spawn_client(store).await;
+
+    call(
+        &client,
+        "clients.create",
+        json!({"name": "Cave Ligérienne"}),
+    )
+    .await;
+    call(
+        &client,
+        "prospect.create",
+        json!({
+            "client": "Cave Ligérienne",
+            "name": "visite de chai",
+            "amount_cents": 120_000,
+            "probability_percent": 40,
+            "next_action": "2026-09-04",
+        }),
+    )
+    .await;
+
+    let sentence = "Le report se compte de 1 à 366 jours.";
+    for days in [0, 367] {
+        let refused = call(
+            &client,
+            "follow_up.snooze",
+            json!({"reference": "visite de chai", "days": days, "today": "2026-09-04"}),
+        )
+        .await;
+        assert_eq!(refused.is_error, Some(true), "{}", tool_text(&refused));
+        assert!(
+            tool_text(&refused).contains(sentence),
+            "{}",
+            tool_text(&refused)
+        );
+    }
+
+    let ten = call(
+        &client,
+        "follow_up.snooze",
+        json!({"reference": "visite de chai", "days": 10, "today": "2026-09-04"}),
+    )
+    .await;
+    assert_eq!(ten.is_error, Some(false), "{}", tool_text(&ten));
+    assert_eq!(json_of(&ten)["result"]["due_on"], "2026-09-14");
+
+    let year = call(
+        &client,
+        "follow_up.snooze",
+        json!({"reference": "visite de chai", "days": 366, "today": "2026-09-04"}),
+    )
+    .await;
+    assert_eq!(year.is_error, Some(false), "{}", tool_text(&year));
+    assert_eq!(json_of(&year)["result"]["due_on"], "2027-09-05");
+
+    let tomorrow = call(
+        &client,
+        "follow_up.snooze",
+        json!({"reference": "visite de chai", "preset": "tomorrow", "today": "2026-09-04"}),
+    )
+    .await;
+    assert_eq!(tomorrow.is_error, Some(false), "{}", tool_text(&tomorrow));
+    assert_eq!(json_of(&tomorrow)["result"]["due_on"], "2026-09-05");
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
 async fn reading_an_opportunity_by_name_returns_its_interactions_and_references() {
     let db_path = test_db_path("opportunity-resource");
     let store = Store::create(&db_path, &Passphrase::from("s3cret")).unwrap();
@@ -1581,6 +1672,90 @@ async fn the_day_mast_tool_returns_typed_facts() {
     assert_eq!(gestes.is_error, Some(false));
     let rows = json_of(&gestes);
     assert!(rows.as_array().unwrap()[0]["verb"] == "setup", "{rows}");
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn people_save_work_roundtrips_through_the_resource_and_refuses_a_stale_revision() {
+    let store =
+        Store::create(&test_db_path("people-travaux"), &Passphrase::from("s3cret")).unwrap();
+    let client = spawn_client(store).await;
+    call(
+        &client,
+        "clients.create",
+        json!({"name": "Atelier du recit"}),
+    )
+    .await;
+
+    let read = client
+        .read_resource(ReadResourceRequestParams::new(
+            "griffe://people/Atelier du recit/travaux",
+        ))
+        .await
+        .unwrap();
+    let text = match &read.contents[0] {
+        rmcp::model::ResourceContents::TextResourceContents { text, .. } => text.clone(),
+        other => panic!("expected text contents, got {other:?}"),
+    };
+    let note: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(note["body"], "");
+    assert_eq!(note["revision"], 0);
+
+    let saved = call(
+        &client,
+        "people.save_work",
+        json!({
+            "reference": "Atelier du recit",
+            "body": "# Le chantier\n",
+            "revision": 0
+        }),
+    )
+    .await;
+    assert_eq!(saved.is_error, Some(false), "{}", tool_text(&saved));
+    let saved = json_of(&saved);
+    assert_eq!(saved["status"], "applied");
+    assert_eq!(saved["result"]["revision"], 1);
+
+    let dry = call(
+        &client,
+        "people.save_work",
+        json!({
+            "reference": "Atelier du recit",
+            "body": "pas écrit\n",
+            "revision": 1,
+            "dry_run": true
+        }),
+    )
+    .await;
+    assert_eq!(dry.is_error, Some(false));
+    assert_eq!(json_of(&dry)["status"], "dry_run");
+
+    let stale = call(
+        &client,
+        "people.save_work",
+        json!({
+            "reference": "Atelier du recit",
+            "body": "périmé\n",
+            "revision": 0
+        }),
+    )
+    .await;
+    assert_eq!(stale.is_error, Some(true), "{}", tool_text(&stale));
+
+    let read = client
+        .read_resource(ReadResourceRequestParams::new(
+            "griffe://people/Atelier du recit/travaux",
+        ))
+        .await
+        .unwrap();
+    let text = match &read.contents[0] {
+        rmcp::model::ResourceContents::TextResourceContents { text, .. } => text.clone(),
+        other => panic!("expected text contents, got {other:?}"),
+    };
+    let note: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(note["body"], "# Le chantier\n");
+    assert_eq!(note["revision"], 1);
 
     client.cancel().await.unwrap();
 }
@@ -2852,6 +3027,169 @@ async fn recording_a_vat_reversal_over_mcp_needs_a_human_before_case_15_appears(
     assert_eq!(case15["amount"], 1_000);
     let case25 = boxes.iter().find(|b| b["case"] == "25").expect("case 25");
     assert_eq!(case25["amount"], 39000);
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn work_kinds_follow_a_fiche_and_an_agent_delete_waits() {
+    let db_path = test_db_path("types");
+    let store = Store::create(&db_path, &Passphrase::from("s3cret")).unwrap();
+    let client = spawn_client(store).await;
+
+    for (qui, affaire) in [
+        ("Atelier Quai", "Affaire du quai"),
+        ("Atelier Port", "Affaire du port"),
+    ] {
+        let created = call(
+            &client,
+            "prospect.create",
+            json!({
+                "prospect": qui,
+                "name": affaire,
+                "amount_cents": 120_000,
+                "probability_percent": 40,
+                "next_action": "2026-10-07",
+            }),
+        )
+        .await;
+        assert_eq!(created.is_error, Some(false), "{}", tool_text(&created));
+    }
+    let genre = call(
+        &client,
+        "follow_up.set_genre",
+        json!({"reference": "Affaire du quai", "name": "Mairie"}),
+    )
+    .await;
+    assert_eq!(genre.is_error, Some(false), "{}", tool_text(&genre));
+
+    let created = json_of(
+        &call(
+            &client,
+            "people.create_work_kind",
+            json!({"name": "site web"}),
+        )
+        .await,
+    );
+    assert_eq!(created["status"], "applied");
+    assert_eq!(created["result"]["name"], "site web");
+    let id = created["result"]["id"].as_str().unwrap().to_string();
+
+    let listed = json_of(&call(&client, "people.work_kinds", json!(null)).await);
+    assert_eq!(listed.as_array().unwrap().len(), 1);
+    assert_eq!(listed[0]["name"], "site web");
+
+    let set = json_of(
+        &call(
+            &client,
+            "people.set_work_kinds",
+            json!({"reference": "Atelier Quai", "names": "site web"}),
+        )
+        .await,
+    );
+    assert_eq!(set["status"], "applied");
+    assert_eq!(set["result"][0]["name"], "site web");
+
+    let dossiers = json_of(&call(&client, "people.work_kind_dossiers", json!({"id": id})).await);
+    assert_eq!(dossiers[0]["name"], "Atelier Quai");
+
+    let both = json_of(
+        &call(
+            &client,
+            "people.set_work_kinds",
+            json!({"reference": "Atelier Port", "names": "site web, backend"}),
+        )
+        .await,
+    );
+    assert_eq!(both["status"], "applied");
+    let both_names: Vec<&str> = both["result"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|kind| kind["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(both_names, ["backend", "site web"]);
+
+    let renamed = json_of(
+        &call(
+            &client,
+            "people.rename_work_kind",
+            json!({"id": id, "name": "site"}),
+        )
+        .await,
+    );
+    assert_eq!(renamed["result"]["name"], "site");
+    assert_eq!(renamed["result"]["id"], id);
+
+    let shown = json_of(
+        &call(
+            &client,
+            "people.show",
+            json!({"reference": "Atelier Quai", "today": "2026-10-07"}),
+        )
+        .await,
+    );
+    assert_eq!(shown["work_kinds"][0], "site");
+
+    let pending = json_of(&call(&client, "people.delete_work_kind", json!({"id": id})).await);
+    assert_eq!(pending["status"], "pending_confirmation");
+    let still = json_of(&call(&client, "people.work_kinds", json!(null)).await);
+    assert!(
+        still
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|kind| kind["id"] == id && kind["name"] == "site"),
+        "{still}"
+    );
+
+    let mut confirming =
+        Store::open_with_passphrase(&db_path, &Passphrase::from("s3cret")).unwrap();
+    let confirmed = Executor::new(&mut confirming)
+        .confirm::<DeleteWorkKind>(
+            pending["pending_action_id"]
+                .as_str()
+                .unwrap()
+                .parse()
+                .unwrap(),
+        )
+        .unwrap();
+    assert!(matches!(confirmed, Outcome::Applied(())));
+    drop(confirming);
+
+    let gone = call(&client, "people.work_kind_dossiers", json!({"id": id})).await;
+    assert_eq!(gone.is_error, Some(true));
+    assert!(tool_text(&gone).contains("Ce type n'existe pas."));
+
+    let quai = json_of(
+        &call(
+            &client,
+            "people.show",
+            json!({"reference": "Atelier Quai", "today": "2026-10-07"}),
+        )
+        .await,
+    );
+    assert!(quai.get("work_kinds").is_none());
+    let port = json_of(
+        &call(
+            &client,
+            "people.show",
+            json!({"reference": "Atelier Port", "today": "2026-10-07"}),
+        )
+        .await,
+    );
+    assert_eq!(port["work_kinds"][0], "backend");
+
+    let check = Store::open_with_passphrase(&db_path, &Passphrase::from("s3cret")).unwrap();
+    let affaire = griffe_core::prospection::list_opportunities(check.connection())
+        .unwrap()
+        .into_iter()
+        .find(|item| item.name == "Affaire du quai")
+        .unwrap();
+    let genre = griffe_core::follow_up::prospect_genre_for(check.connection(), affaire.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(genre.name, "Mairie");
 
     client.cancel().await.unwrap();
 }

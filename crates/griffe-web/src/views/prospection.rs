@@ -6,7 +6,7 @@ use griffe_core::app::AppError;
 use griffe_core::clients::list_clients;
 use griffe_core::domain::{
     Interaction, InteractionKind, LossReason, Opportunity, OpportunityId, OpportunityStage,
-    format_date,
+    display_phone, format_date,
 };
 use griffe_core::prospection::{
     OpportunityFilter, OpportunityReferences, list_interactions, list_opportunities_with,
@@ -129,7 +129,12 @@ fn opportunity_form(
                     (form::text("prospect", "Nom du prospect", &values.prospect, errors.prospect.as_deref()))
                     (form::text("representative", "Représentant (optionnel)", &values.representative, None))
                     (form::text("email", "Email (optionnel)", &values.email, None))
-                    (form::text("phone", "Téléphone (optionnel)", &values.phone, None))
+                    (form::text(
+                        "phone",
+                        "Téléphone (optionnel)",
+                        &display_phone(&values.phone),
+                        None,
+                    ))
                     div class="field-group" {
                         @if let Some(msg) = &errors.address {
                             div class="field-error" { (msg) }
@@ -225,7 +230,7 @@ pub fn detail_panel(
                     dt { "email" } dd { (email) }
                 }
                 @if let Some(phone) = &contact.phone {
-                    dt { "téléphone" } dd { (phone) }
+                    dt { "téléphone" } dd { (display_phone(phone)) }
                 }
             }
             @if let Some(address) = party_address(store, opportunity.client_id) {
@@ -552,4 +557,22 @@ pub fn parse_loss_reason(reason: &str, detail: &str) -> Result<LossReason, Strin
 pub fn parse_interaction_kind(s: &str) -> Result<InteractionKind, String> {
     s.parse()
         .map_err(|e: griffe_core::domain::UnknownInteractionKind| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_prospect_form_shows_a_french_phone_in_pairs() {
+        let html = new_panel(
+            &OpportunityFormValues {
+                phone: "+33327444444".into(),
+                ..OpportunityFormValues::default()
+            },
+            &OpportunityFormErrors::default(),
+        )
+        .into_string();
+        assert!(html.contains("value=\"03 27 44 44 44\""), "{html}");
+    }
 }

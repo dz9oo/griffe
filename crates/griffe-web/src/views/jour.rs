@@ -15,7 +15,7 @@ use griffe_core::people::{PeopleList, people_list};
 use griffe_core::setup::setup_status;
 use griffe_core::store::Store;
 use maud::{Markup, html};
-use time::{Date, Weekday};
+use time::{Date, OffsetDateTime, Weekday};
 
 use griffe_core::fiscal::VatFilingScheme;
 use griffe_core::society::{VatRefundStatus, duty_briefing};
@@ -58,6 +58,8 @@ pub fn render(store: &Store, today: Date) -> Result<Markup, AppError> {
 
     let roster = roster_label(people.open_conversations(), people.missions.len());
     let has_people = people.open_conversations() > 0 || !people.missions.is_empty();
+    let courrier = griffe_core::mail::day_notes(conn, today).unwrap_or_default();
+    let pause = griffe_core::mail::hourly_pause(conn, OffsetDateTime::now_utc()).unwrap_or(false);
 
     Ok(html! {
         div class="letter spread" data-view=(ViewId::Jour.slug()) {
@@ -96,6 +98,16 @@ pub fn render(store: &Store, today: Date) -> Result<Markup, AppError> {
                     p class="mast-note" id="next-step" { (text) }
                 } @else if !setup.is_done() {
                     p class="mast-note" id="next-step" { (setup.next_step.text()) }
+                }
+            }
+            @if pause || !courrier.is_empty() {
+                div class="courrier-notes" {
+                    @if pause {
+                        p { "Trop de lettres cette heure. Celles qui restent attendent." }
+                    }
+                    @for line in &courrier {
+                        p { (line) }
+                    }
                 }
             }
             @if has_people {
@@ -299,7 +311,6 @@ fn geste_copy(
     match &g.source {
         GestureSource::Setup { step } => ("Configurer ma société".into(), step.text().to_string()),
         GestureSource::FollowUp {
-            contact_name,
             party,
             title,
             drafted,
@@ -308,7 +319,7 @@ fn geste_copy(
             follow_kind,
             ..
         } => {
-            let who = contact_name.as_deref().unwrap_or(party.as_str());
+            let who = party.as_str();
             let head = match g.verb {
                 GestureVerb::Remind => format!("Relancer {who}"),
                 _ => format!("Écrire à {who}"),
@@ -395,15 +406,10 @@ fn geste_actions(g: &DayGesture, today: Date) -> Markup {
         GestureSource::FollowUp {
             subject,
             drafted,
-            contact_name,
             party,
             ..
         } => {
-            let who = contact_name
-                .as_deref()
-                .filter(|n| !n.is_empty())
-                .unwrap_or(party.as_str());
-            let href = person_href(who);
+            let href = person_href(party);
             let write = format!("{href}/ecrire");
             let tomorrow = format_date(snooze_date(today, SnoozePreset::Tomorrow));
             let _ = subject;

@@ -14,6 +14,7 @@ mod fiscal;
 mod follow_up;
 mod forecast;
 mod invoice;
+mod mail;
 mod mission;
 mod output;
 mod papers;
@@ -108,6 +109,9 @@ enum TopCommand {
     /// Relances : file du jour, brouillon `.eml`, jamais d'envoi.
     #[command(subcommand)]
     FollowUp(follow_up::FollowUpCommand),
+    /// Courrier : compte d'envoi, essai, lettres à poster.
+    #[command(subcommand)]
+    Courrier(mail::MailCommand),
     /// Prospection : opportunités, pipeline, interactions.
     #[command(subcommand)]
     Prospect(prospect::ProspectCommand),
@@ -396,9 +400,10 @@ fn run_command(
         TopCommand::Client(cmd) => client::run(cmd, store, ctx, json),
         TopCommand::Company(cmd) => company::run(cmd, store, ctx, json),
         TopCommand::Day(cmd) => day::run(cmd, store, json),
-        TopCommand::People(cmd) => people::run(cmd, store, json),
+        TopCommand::People(cmd) => people::run(cmd, store, ctx, json),
         TopCommand::Society(cmd) => society::run(cmd, store, ctx, json),
         TopCommand::FollowUp(cmd) => follow_up::run(cmd, store, ctx, json),
+        TopCommand::Courrier(cmd) => mail::run(cmd, store, ctx, json),
         TopCommand::Prospect(cmd) => prospect::run(cmd, store, ctx, json),
         TopCommand::Mission(cmd) => mission::run(cmd, store, ctx, json),
         TopCommand::Quote(cmd) => quote::run(cmd, store, ctx, json),

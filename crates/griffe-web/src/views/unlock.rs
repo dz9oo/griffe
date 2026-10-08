@@ -3,6 +3,9 @@
 
 use maud::{Markup, html};
 
+const REMEMBER_LABEL: &str =
+    "Pendant 12 h, ne pas redemander la passphrase, et laisser la fenêtre ouverte.";
+
 /// `pending` : un changement de passphrase a été commencé et interrompu (voir
 /// `StoreError::PassphraseChangeInterrupted`) — affiché avant même une première tentative,
 /// pour ne pas laisser l'utilisateur deviner pourquoi son ancienne passphrase ne suffit plus.
@@ -29,7 +32,7 @@ pub fn unlock_form(error: Option<&str>, pending: bool) -> Markup {
                 }
                 label class="auth-remember" {
                     input type="checkbox" name="remember" value="on";
-                    "Au prochain lancement, ne pas redemander la passphrase pendant 12 h."
+                    (REMEMBER_LABEL)
                 }
                 button class="auth-submit" type="submit" { "Déverrouiller" }
             }
@@ -62,7 +65,7 @@ pub fn setup_form(error: Option<&str>) -> Markup {
                 }
                 label class="auth-remember" {
                     input type="checkbox" name="remember" value="on";
-                    "Au prochain lancement, ne pas redemander la passphrase pendant 12 h."
+                    (REMEMBER_LABEL)
                 }
                 button class="auth-submit" type="submit" { "Créer le coffre" }
             }
