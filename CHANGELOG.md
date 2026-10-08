@@ -4,6 +4,10 @@ Ce qui change pour qui se sert de Griffe. Une section par version publiée.
 
 ## 0.3.8
 
+- Le courrier, dans La société, règle le serveur qui poste les lettres. Le mot de passe reste dans le coffre. Un essai part vers l'adresse qui signe, avec cinq secondes pour fermer la fenêtre et le garder.
+- Sur une lettre, Envoyer laisse cinq secondes. Le filet s'allonge, Annuler le retient. Passé ce délai, la lettre part. C'est parti classe toujours le double dans l'historique.
+- L'envoi du jour est éteint. L'activer poste, pendant que Griffe est ouvert, les lettres dont la date prévue est aujourd'hui. Une lettre de la veille reste un geste à la main.
+- Ouvrir un coffre déjà créé avance son schéma. La version précédente ne peut plus l'ouvrir.
 - La case des 12 h tient la fenêtre ouverte pendant ces 12 h. Rouvrir Griffe dans ce délai retrouve la passphrase. « Verrouiller » ferme tout de suite. La case vide laisse le quart d'heure d'inactivité.
 - Un numéro français s'affiche par paires, 03 27 44 44 44. Le saisir compact, avec des points, ou avec l'indicatif +33 ou 0033, donne la même forme. Un numéro d'un autre pays reste tel que saisi.
 - Sur le dossier, Reporter se déplie. On choisit 3 jours, 10 jours, ou un nombre de jours, de 1 à 366. Demain, sur le jour, ne change pas.

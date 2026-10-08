@@ -22,6 +22,7 @@ pub mod follow_up;
 pub mod forecast;
 pub mod journal;
 pub mod ledger;
+pub mod mail;
 pub mod missions;
 pub mod opening_balance;
 pub mod papers;

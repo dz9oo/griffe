@@ -1,7 +1,8 @@
 //! Relances de prospection et d'impayés : journal de faits, file dérivée, brouillons `.eml`.
 //!
-//! `FreeFlow` n'envoie jamais le mail. [`PrepareFollowUp`] rend les octets RFC 5322 ; l'adaptateur
-//! écrit le fichier et l'ouvre (`xdg-open`). « Envoyé » est un fait marqué par l'humain.
+//! [`PrepareFollowUp`] rend les octets RFC 5322 ; l'adaptateur écrit le fichier et l'ouvre
+//! (`xdg-open`). Poster la lettre passe par le courrier (`crate::mail`). « Envoyé » peut
+//! aussi être un fait marqué par l'humain.
 
 mod commands;
 mod error;

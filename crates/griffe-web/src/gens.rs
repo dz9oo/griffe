@@ -14,17 +14,19 @@ use griffe_core::clients::{
 use griffe_core::company::company_profile;
 use griffe_core::domain::{
     Address, ExpenseId, FollowUpSubject, InteractionKind, InvoiceId, InvoiceLine, MissionId, Money,
-    Probability, SnoozeDaysError, TemplateContext, VatRate, WriteOffId, chronicle, format_date,
-    given_name, parse_date, phrase_from_editor, phrase_to_editor, render_template, snooze_in_days,
+    Probability, SnoozeDaysError, TemplateContext, VatRate, WriteOffId, chronicle,
+    entered_cycle_key, format_date, given_name, parse_date, phrase_from_editor, phrase_to_editor,
+    render_template, snooze_in_days,
 };
 use griffe_core::dossier_work::{DossierWork, SaveDossierWork, dossier_work};
 use griffe_core::expenses::{AttachReceipt, expense_by_id};
 use griffe_core::follow_up::{
-    ArrangeProspectPhrases, CreateProspectGenre, DropProspectGenre, KeepGenreWords,
+    ArrangeProspectPhrases, CreateProspectGenre, DropProspectGenre, FollowUpCard, KeepGenreWords,
     MarkFollowUpSent, MomentDraft, PrepareFollowUp, ProspectPhrase, SaveGenreLetter,
-    SetDossierGenre, SnoozeFollowUp, follow_up_sender, phrases_for_genre, prospect_genres,
-    prospect_phrases,
+    SetDossierGenre, SnoozeFollowUp, events_for, follow_up_sender, phrases_for_genre,
+    prospect_genres, prospect_phrases,
 };
+use griffe_core::mail::{ArmOutbound, CancelOutbound, ResolveUncertain, RetryOutbound, UNDO_SECS};
 use griffe_core::people::{PersonKey, person, resolve_person};
 use griffe_core::prospection::{
     CreateOpportunity, CreateProspect, EstimationLineInput, LogInteraction, LoseOpportunity,
@@ -1219,6 +1221,298 @@ pub async fn sent(
             page(&headers, content)
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LetterPost {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    sent: String,
+}
+
+pub async fn send_letter(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(reference): Path<String>,
+    Form(form): Form<LetterForm>,
+) -> Response {
+    let today = state.today();
+    let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
+        return page(&headers, gens::not_found(&reference, today)).into_response();
+    };
+    let name = dossier.name.clone();
+    let subject_line = form.subject_line.trim().to_string();
+    let body = form.body.trim().to_string();
+    if subject_line.is_empty() || body.is_empty() {
+        let markup = depart_for(
+            &state,
+            &name,
+            Some("La lettre n'a pas de sujet, ou pas de texte."),
+        )
+        .await;
+        return mail_fragment(&headers, markup, false);
+    }
+    let token = state.mail_session().to_string();
+    let subject = dossier.follow_up_subject;
+    let result = state
+        .with_store_mut(|store| {
+            arm_letter(store, subject, &name, &subject_line, &body, &token, today)
+        })
+        .await;
+    match result {
+        None => locked(&headers).into_response(),
+        Some(Err(error)) => {
+            let note = mail_notice(&error);
+            let markup = depart_for(&state, &name, Some(&note)).await;
+            mail_fragment(&headers, markup, false)
+        }
+        Some(Ok(())) => {
+            let markup = depart_for(&state, &name, None).await;
+            mail_fragment(&headers, markup, true)
+        }
+    }
+}
+
+pub async fn send_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(reference): Path<String>,
+) -> Response {
+    let today = state.today();
+    let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
+        return page(&headers, gens::not_found(&reference, today)).into_response();
+    };
+    let markup = depart_for(&state, &dossier.name, None).await;
+    mail_fragment(&headers, markup, false)
+}
+
+pub async fn send_cancel(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(reference): Path<String>,
+    Form(form): Form<LetterPost>,
+) -> Response {
+    gesture(&state, &headers, &reference, &form.id, |store, id| {
+        Executor::new(store)
+            .execute(
+                &CancelOutbound { id: id.to_string() },
+                &AppState::human_ctx(),
+            )
+            .map(|_| ())
+    })
+    .await
+}
+
+pub async fn send_retry(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(reference): Path<String>,
+    Form(form): Form<LetterPost>,
+) -> Response {
+    let token = state.mail_session().to_string();
+    gesture(&state, &headers, &reference, &form.id, move |store, id| {
+        Executor::new(store)
+            .execute(
+                &RetryOutbound {
+                    id: id.to_string(),
+                    session_token: Some(token),
+                },
+                &AppState::human_ctx(),
+            )
+            .map(|_| ())
+    })
+    .await
+}
+
+pub async fn send_decision(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(reference): Path<String>,
+    Form(form): Form<LetterPost>,
+) -> Response {
+    let sent = form.sent == "1";
+    let today = state.today();
+    gesture(&state, &headers, &reference, &form.id, move |store, id| {
+        Executor::new(store)
+            .execute(
+                &ResolveUncertain {
+                    id: id.to_string(),
+                    sent,
+                    today,
+                },
+                &AppState::human_ctx(),
+            )
+            .map(|_| ())
+    })
+    .await
+}
+
+async fn gesture(
+    state: &AppState,
+    headers: &HeaderMap,
+    reference: &str,
+    id: &str,
+    apply: impl FnOnce(&mut griffe_core::store::Store, &str) -> Result<(), AppError>,
+) -> Response {
+    let today = state.today();
+    let Some(Ok(dossier)) = load_dossier(state, reference).await else {
+        return page(headers, gens::not_found(reference, today)).into_response();
+    };
+    if id.trim().is_empty() {
+        let markup = depart_for(state, &dossier.name, Some("Cette lettre est introuvable.")).await;
+        return mail_fragment(headers, markup, false);
+    }
+    let name = dossier.name.clone();
+    let result = state.with_store_mut(|store| apply(store, id)).await;
+    match result {
+        None => locked(headers).into_response(),
+        Some(Err(error)) => {
+            let note = mail_notice(&error);
+            let markup = depart_for(state, &name, Some(&note)).await;
+            mail_fragment(headers, markup, false)
+        }
+        Some(Ok(())) => {
+            let markup = depart_for(state, &name, None).await;
+            mail_fragment(headers, markup, true)
+        }
+    }
+}
+
+fn arm_letter(
+    store: &mut griffe_core::store::Store,
+    subject: Option<FollowUpSubject>,
+    name: &str,
+    subject_line: &str,
+    body: &str,
+    token: &str,
+    today: time::Date,
+) -> Result<(), AppError> {
+    let profile = griffe_core::mail::profile(store.connection())?;
+    if !profile.ready {
+        return Err(AppError::Domain(
+            "Le courrier n'est pas encore branché.".into(),
+        ));
+    }
+    let card = subject.and_then(|item| gens::load_card(store, item, today).ok().flatten());
+    let Some(to) = card
+        .as_ref()
+        .and_then(|item| item.contact_email.clone())
+        .filter(|value| value.contains('@'))
+    else {
+        return Err(AppError::Domain(
+            "Il manque l'adresse de la personne.".into(),
+        ));
+    };
+    let kind = match subject {
+        Some(FollowUpSubject::Invoice(_)) => "invoice",
+        Some(FollowUpSubject::Opportunity(_)) => "opportunity",
+        None => "letter",
+    };
+    let slot = follow_slot(store, subject, card.as_ref())?;
+    Executor::new(store)
+        .execute(
+            &ArmOutbound {
+                kind: kind.to_string(),
+                anchor: Some(name.to_string()),
+                to_address: to,
+                subject: subject_line.to_string(),
+                body: body.to_string(),
+                delay_secs: UNDO_SECS,
+                session_token: Some(token.to_string()),
+                follow_subject: slot.subject,
+                follow_subject_id: slot.subject_id,
+                follow_cycle: slot.cycle,
+                follow_step: slot.step,
+            },
+            &AppState::human_ctx(),
+        )
+        .map(|_| ())
+}
+
+struct FollowSlot {
+    subject: Option<String>,
+    subject_id: Option<String>,
+    cycle: Option<String>,
+    step: Option<String>,
+}
+
+fn empty_slot() -> FollowSlot {
+    FollowSlot {
+        subject: None,
+        subject_id: None,
+        cycle: None,
+        step: None,
+    }
+}
+
+fn follow_slot(
+    store: &griffe_core::store::Store,
+    subject: Option<FollowUpSubject>,
+    card: Option<&FollowUpCard>,
+) -> Result<FollowSlot, AppError> {
+    let (Some(subject), Some(step)) = (subject, card.and_then(|item| item.step_key.clone())) else {
+        return Ok(empty_slot());
+    };
+    let kind = match subject {
+        FollowUpSubject::Opportunity(_) => "opportunity",
+        FollowUpSubject::Invoice(_) => "invoice",
+    };
+    let id = match subject {
+        FollowUpSubject::Opportunity(id) => id.to_string(),
+        FollowUpSubject::Invoice(id) => id.to_string(),
+    };
+    let events = events_for(store.connection(), subject)?;
+    Ok(FollowSlot {
+        subject: Some(kind.to_string()),
+        subject_id: Some(id),
+        cycle: Some(entered_cycle_key(&events)),
+        step: Some(step),
+    })
+}
+
+async fn depart_for(state: &AppState, name: &str, note: Option<&str>) -> Markup {
+    let href = person_href(name);
+    state
+        .with_store(|store| {
+            let view = griffe_core::mail::outbound_for_anchor(
+                store.connection(),
+                name,
+                OffsetDateTime::now_utc(),
+            )
+            .ok()
+            .flatten();
+            gens::depart_markup(&href, view.as_ref(), note)
+        })
+        .await
+        .unwrap_or_else(|| html! { div id="depart" { "coffre verrouillé" } })
+}
+
+fn mail_fragment(headers: &HeaderMap, content: Markup, saved: bool) -> Response {
+    let mut response = if is_htmx(headers) {
+        Html(content.into_string()).into_response()
+    } else {
+        page(headers, content).into_response()
+    };
+    if saved {
+        response
+            .headers_mut()
+            .insert("HX-Trigger", HeaderValue::from_static("griffe:saved"));
+    }
+    response
+}
+
+fn mail_notice(error: &AppError) -> String {
+    let text = error.to_string();
+    if text.contains("n'est plus annulable") {
+        return "Elle est déjà partie.".to_string();
+    }
+    if text.contains("UNIQUE") || text.contains("constraint failed") {
+        return "Cette lettre est déjà engagée.".to_string();
+    }
+    text.strip_prefix("règle métier violée : ")
+        .unwrap_or(&text)
+        .to_string()
 }
 
 pub async fn meeting_get(

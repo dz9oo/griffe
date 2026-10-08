@@ -12,7 +12,23 @@ sigles des formulaires : [`design.md`](./design.md). Cette page les
 nomme, parce que c’est vous qui les recopiez sur le site de
 l’administration.
 
-La phrase du produit : on recopie, rien n’est télétransmis.
+La phrase du produit, pour l’administration : on recopie, rien n’est télétransmis.
+
+## Le courrier
+
+Le courrier est le chapitre de La société qui dit d’où partent les lettres.
+On y écrit l’adresse qui signe, l’identifiant du serveur, et un mot de passe
+qui reste dans le coffre. Deux ports, tous deux chiffrés : 587, ou 465.
+Un préréglage remplit le serveur d’iCloud. L’identifiant est alors l’adresse
+complète du compte, et le mot de passe est un mot de passe d’application.
+
+Envoyer, sur une lettre, laisse cinq secondes pour se raviser. Fermer la
+fenêtre pendant ces cinq secondes retient la lettre. C’est parti classe le
+double dans l’historique et ne contacte pas le serveur.
+
+L’envoi du jour est éteint. L’activer poste, pendant que le coffre est
+ouvert, les lettres dont la date prévue est aujourd’hui. Une lettre de la
+veille reste à envoyer à la main. Griffe ne lit pas la boîte.
 
 ## Les mots
 

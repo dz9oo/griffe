@@ -187,6 +187,9 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "follow_up.snooze",
         "follow_up.schedule",
         "follow_up.retract",
+        "mail.show",
+        "mail.arm",
+        "mail.automatic",
         "day.mast",
         "day.gestures",
         "day.month",
@@ -274,6 +277,7 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "papers.list",
         "papers.show",
         "papers.checklist",
+        "mail.show",
     ] {
         assert_eq!(
             by_name(read_only)
@@ -303,6 +307,8 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "society.delete_vat_credit",
         "papers.purge",
         "people.delete_work_kind",
+        "mail.arm",
+        "mail.automatic",
     ] {
         let ann = by_name(destructive).annotations.as_ref().unwrap();
         assert_eq!(ann.read_only_hint, Some(false));

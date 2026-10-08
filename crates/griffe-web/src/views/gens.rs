@@ -12,6 +12,7 @@ use griffe_core::dossier_work::DossierWork;
 use griffe_core::follow_up::{
     FollowUpCard, card_for, follow_up_sender, prospect_genre_for, prospect_genres,
 };
+use griffe_core::mail::{OutboundStatus, OutboundView};
 use griffe_core::people::{
     CurrentSituation, HistoryEvent, HistoryKind, MissionShape, OutgoingCadence, OutgoingChapter,
     OutgoingNote, Paper, PaperKind, PaperStatus, PeopleList, PersonAction, PersonChapter,
@@ -1789,6 +1790,92 @@ fn query_href(path: &str, depuis: &str, pour: &str, genre: &str, source: &str) -
     }
 }
 
+/// Le créneau d'envoi, remplaçable tout seul. Le bouton vit dans le formulaire de la lettre.
+#[must_use]
+pub fn depart_markup(href: &str, view: Option<&OutboundView>, note: Option<&str>) -> Markup {
+    let send = format!("{href}/envoyer");
+    let poll = format!("{href}/envoi");
+    let polling = view.is_some_and(depart_polls);
+    let poll_url = polling.then_some(poll.as_str());
+    let trigger = polling.then_some("load delay:1s");
+    let target = polling.then_some("#depart");
+    let swap = polling.then_some("outerHTML");
+    html! {
+        div id="depart" class="depart"
+            hx-get=[poll_url]
+            hx-trigger=[trigger]
+            hx-target=[target]
+            hx-swap=[swap] {
+            @if let Some(note) = note {
+                p class="depart-line" { (note) }
+            }
+            @match view.map(|item| item.status) {
+                Some(OutboundStatus::Armed) => {
+                    p class="depart-line" { "Elle part." }
+                    span class="depart-rule" data-left=(view.map(|item| item.seconds_left).unwrap_or(0)) {}
+                    span class="depart-count" { (view.map(|item| item.seconds_left).unwrap_or(0)) }
+                    (post_button(&format!("{href}/envoi/annuler"), "quiet", "id", view.map(|item| item.id.as_str()), "Annuler"))
+                }
+                Some(OutboundStatus::Sending) => {
+                    p class="depart-line" { "Elle est en route." }
+                }
+                Some(OutboundStatus::Sent) => {
+                    p class="depart-line" { "Elle est partie." }
+                    (envoyer_button(&send))
+                }
+                Some(OutboundStatus::Failed) => {
+                    p class="depart-line" {
+                        (view.and_then(|item| item.error.as_deref()).unwrap_or("Elle n'est pas partie."))
+                    }
+                    (post_button(&format!("{href}/envoi/reessayer"), "quiet", "id", view.map(|item| item.id.as_str()), "Réessayer"))
+                }
+                Some(OutboundStatus::Uncertain) => {
+                    p class="depart-line" { "Griffe ne sait pas si elle est partie." }
+                    input type="hidden" name="id" value=(view.map(|item| item.id.as_str()).unwrap_or(""));
+                    (post_button(&format!("{href}/envoi/decision"), "quiet", "sent", Some("1"), "Elle est partie"))
+                    (post_button(&format!("{href}/envoi/decision"), "quiet", "sent", Some("0"), "Elle n'est pas partie"))
+                    (post_button(&format!("{href}/envoi/reessayer"), "quiet", "retry", Some("1"), "Réessayer"))
+                }
+                Some(OutboundStatus::Cancelled) | None => {
+                    (envoyer_button(&send))
+                }
+            }
+        }
+    }
+}
+
+fn depart_polls(view: &OutboundView) -> bool {
+    matches!(view.status, OutboundStatus::Armed | OutboundStatus::Sending)
+}
+
+fn envoyer_button(action: &str) -> Markup {
+    html! {
+        button class="seal" type="submit"
+               formaction=(action)
+               formmethod="post"
+               hx-post=(action)
+               hx-target="#depart"
+               hx-swap="outerHTML" {
+            "Envoyer"
+        }
+    }
+}
+
+fn post_button(action: &str, class: &str, name: &str, value: Option<&str>, label: &str) -> Markup {
+    html! {
+        button class=(class) type="submit"
+               formaction=(action)
+               formmethod="post"
+               hx-post=(action)
+               hx-target="#depart"
+               hx-swap="outerHTML"
+               name=(name)
+               value=(value.unwrap_or("")) {
+            (label)
+        }
+    }
+}
+
 pub fn letter_page(
     store: &Store,
     dossier: &PersonDossier,
@@ -1800,7 +1887,25 @@ pub fn letter_page(
     let href = person_href(&dossier.name);
     let sender = follow_up_sender(store.connection())?;
     let from = sender.sender_email.as_deref().unwrap_or("—");
-    let to = card.and_then(|c| c.contact_email.as_deref()).unwrap_or("—");
+    let recipient = card.and_then(|c| c.contact_email.as_deref()).unwrap_or("");
+    let to = if recipient.is_empty() {
+        "—"
+    } else {
+        recipient
+    };
+    let mail = griffe_core::mail::profile(store.connection()).unwrap_or_default();
+    let can_send = mail.ready && recipient.contains('@');
+    let depart = if can_send {
+        griffe_core::mail::outbound_for_anchor(
+            store.connection(),
+            &dossier.name,
+            time::OffsetDateTime::now_utc(),
+        )
+        .ok()
+        .flatten()
+    } else {
+        None
+    };
     let preview_subject = card
         .and_then(|c| c.preview_subject.as_deref())
         .unwrap_or("");
@@ -1871,9 +1976,21 @@ pub fn letter_page(
             a class="back" href=(href) hx-get=(href) hx-target="#content" hx-push-url="true" {
                 "← " (dossier.name)
             }
-            h1 { "Une lettre, pas un envoi." }
-            p class="lede" {
-                "Tu écris ici. « C'est parti » classe le double dans l'historique. Griffe n'envoie pas."
+            @if mail.ready {
+                h1 { "Une lettre." }
+                p class="lede" {
+                    "Tu écris ici. « Envoyer » la fait partir, avec cinq secondes pour la retenir. « C'est parti » classe le double dans l'historique."
+                }
+            } @else {
+                h1 { "Une lettre, pas un envoi." }
+                p class="lede" {
+                    "Tu écris ici. « C'est parti » classe le double dans l'historique. Griffe n'envoie pas."
+                }
+                p class="phrase-nav" {
+                    a href="/societe/courrier" hx-get="/societe/courrier" hx-target="#content" hx-push-url="true" {
+                        "Le courrier"
+                    }
+                }
             }
             @if let Some(msg) = flash {
                 p class="mast-note" role="status" { (msg) }
@@ -1898,7 +2015,8 @@ pub fn letter_page(
             }
             div class="letter-draft" {
                 div class="meta" {
-                    "De " (from) " · À " (to) " · ne sera pas envoyé par Griffe"
+                    "De " (from) " · À " (to)
+                    @if !mail.ready { " · ne sera pas envoyé par Griffe" }
                 }
                 form {
                     (form::text("subject_line", "Sujet", subject, None))
@@ -1922,6 +2040,11 @@ pub fn letter_page(
                         input type="hidden" name="genre_name" value=(keep.proposed_name);
                     }
                     div class="row-actions" {
+                        @if can_send {
+                            (depart_markup(&href, depart.as_ref(), None))
+                        } @else if mail.ready {
+                            p class="depart-line" { "Il manque l'adresse de la personne." }
+                        }
                         @if show_keep {
                             button class="quiet" type="submit"
                                    formaction=(mots)

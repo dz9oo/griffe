@@ -15,7 +15,7 @@ use griffe_core::people::{PeopleList, people_list};
 use griffe_core::setup::setup_status;
 use griffe_core::store::Store;
 use maud::{Markup, html};
-use time::{Date, Weekday};
+use time::{Date, OffsetDateTime, Weekday};
 
 use griffe_core::fiscal::VatFilingScheme;
 use griffe_core::society::{VatRefundStatus, duty_briefing};
@@ -58,6 +58,8 @@ pub fn render(store: &Store, today: Date) -> Result<Markup, AppError> {
 
     let roster = roster_label(people.open_conversations(), people.missions.len());
     let has_people = people.open_conversations() > 0 || !people.missions.is_empty();
+    let courrier = griffe_core::mail::day_notes(conn, today).unwrap_or_default();
+    let pause = griffe_core::mail::hourly_pause(conn, OffsetDateTime::now_utc()).unwrap_or(false);
 
     Ok(html! {
         div class="letter spread" data-view=(ViewId::Jour.slug()) {
@@ -96,6 +98,16 @@ pub fn render(store: &Store, today: Date) -> Result<Markup, AppError> {
                     p class="mast-note" id="next-step" { (text) }
                 } @else if !setup.is_done() {
                     p class="mast-note" id="next-step" { (setup.next_step.text()) }
+                }
+            }
+            @if pause || !courrier.is_empty() {
+                div class="courrier-notes" {
+                    @if pause {
+                        p { "Trop de lettres cette heure. Celles qui restent attendent." }
+                    }
+                    @for line in &courrier {
+                        p { (line) }
+                    }
                 }
             }
             @if has_people {

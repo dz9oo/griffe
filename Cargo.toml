@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/griffe-core",
+    "crates/griffe-mail",
     "crates/griffe-cli",
     "crates/griffe-mcp",
     "crates/griffe-web",

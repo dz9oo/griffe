@@ -106,5 +106,7 @@ pub fn migrations() -> Migrations<'static> {
             .down(include_str!("migrations/0043_dossier_work_notes_down.sql")),
         M::up(include_str!("migrations/0044_work_kinds_up.sql"))
             .down(include_str!("migrations/0044_work_kinds_down.sql")),
+        M::up(include_str!("migrations/0045_mail_up.sql"))
+            .down(include_str!("migrations/0045_mail_down.sql")),
     ])
 }

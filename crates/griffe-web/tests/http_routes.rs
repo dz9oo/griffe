@@ -1396,6 +1396,8 @@ async fn la_societe_shows_the_landscape_chapters_and_a_closed_dividend() {
     assert!(home.contains("/societe/payer"), "{home}");
     assert!(home.contains("Les papiers"), "{home}");
     assert!(home.contains("/societe/papiers"), "{home}");
+    assert!(home.contains("Le courrier"), "{home}");
+    assert!(home.contains("/societe/courrier"), "{home}");
     assert!(
         !home.contains("freeflow "),
         "pas de commande CLI dans la lettre : {home}"
@@ -10602,4 +10604,206 @@ async fn work_kinds_filter_the_affaires_and_leave_on_the_second_gesture() {
         .unwrap()
         .unwrap();
     assert_eq!(genre.name, "Mairie");
+}
+
+#[tokio::test]
+async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
+    let db_path = test_db_path("courrier-envoi");
+    let today = time::macros::date!(2026 - 09 - 05);
+    {
+        let mut store = Store::create(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+        let client_id = applied(
+            Executor::new(&mut store)
+                .execute(
+                    &CreateClient {
+                        name: "Atelier Nord".into(),
+                        siren: None,
+                        vat_number: None,
+                        address: None,
+                    },
+                    &human_ctx(),
+                )
+                .unwrap(),
+        );
+        Executor::new(&mut store)
+            .execute(
+                &CreateContact {
+                    client_id,
+                    name: "Ada".into(),
+                    email: Some("ada@atelier.test".into()),
+                    phone: None,
+                    role: None,
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+        Executor::new(&mut store)
+            .execute(
+                &CreateOpportunity {
+                    client_id,
+                    name: "Site".into(),
+                    amount: Money::from_cents(12_000),
+                    probability: Probability::new(40).unwrap(),
+                    next_action_at: today,
+                    source: None,
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+    }
+    let state = AppState::new(db_path).with_today(today);
+    state
+        .unlock(&Passphrase::from(PASSPHRASE), false)
+        .await
+        .unwrap();
+    let router = griffe_web::router(state);
+    let secret = "mot-de-passe-application-xyz";
+
+    let chapter = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/societe/courrier")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(chapter.contains("Le courrier."), "{chapter}");
+    assert!(chapter.contains("envoi du jour est"), "{chapter}");
+    assert!(
+        chapter.contains("Activer l'envoi du jour")
+            || chapter.contains("Activer l&#x27;envoi du jour"),
+        "{chapter}"
+    );
+    assert!(!chapter.contains("type=\"password\" value="), "{chapter}");
+
+    let saved = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/societe/courrier")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from(
+                    "from_name=Camille&from_address=camille%40studio.test&username=camille%40icloud.test&preset=icloud&host=&port=587",
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(saved.headers().get("HX-Trigger").unwrap(), "griffe:saved");
+    let saved_body = body_text(saved).await;
+    assert!(
+        saved_body.contains("Le serveur est enregistré."),
+        "{saved_body}"
+    );
+    assert!(
+        saved_body.contains("value=\"camille@studio.test\""),
+        "{saved_body}"
+    );
+
+    let hidden = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/societe/courrier/secret")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from(format!("secret={secret}")))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let hidden_body = body_text(hidden).await;
+    assert!(hidden_body.contains("dans le coffre"), "{hidden_body}");
+    assert!(!hidden_body.contains(secret), "{hidden_body}");
+    assert!(
+        hidden_body.contains("M'envoyer un essai")
+            || hidden_body.contains("M&#x27;envoyer un essai"),
+        "{hidden_body}"
+    );
+
+    let letter = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Atelier%20Nord/ecrire")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(letter.contains("Une lettre"), "{letter}");
+    assert!(letter.contains("Envoyer"), "{letter}");
+    assert!(letter.contains("C'est parti"), "{letter}");
+    assert!(!letter.contains(secret), "{letter}");
+
+    let armed = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/affaires/Atelier%20Nord/envoyer")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from("subject_line=Bonjour&body=Une+ligne."))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(armed.headers().get("HX-Trigger").unwrap(), "griffe:saved");
+    let armed_body = body_text(armed).await;
+    assert!(armed_body.contains("Elle part."), "{armed_body}");
+    assert!(armed_body.contains("Annuler"), "{armed_body}");
+    assert!(!armed_body.contains(secret), "{armed_body}");
+    let id = armed_body
+        .split("name=\"id\" value=\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .expect("identifiant de la lettre");
+
+    let poll = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/affaires/Atelier%20Nord/envoi")
+                .header("HX-Request", "true")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(!poll.headers().contains_key("HX-Trigger"));
+    let poll_body = body_text(poll).await;
+    assert!(poll_body.contains("Elle part."), "{poll_body}");
+
+    let kept = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/affaires/Atelier%20Nord/envoi/annuler")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .header("HX-Request", "true")
+                    .body(Body::from(format!("id={id}")))
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(kept.contains("Envoyer"), "{kept}");
+    assert!(!kept.contains("Elle part."), "{kept}");
 }

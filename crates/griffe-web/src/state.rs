@@ -38,6 +38,16 @@ pub fn parse_today_opt(raw: Option<&str>) -> Result<Option<time::Date>, String> 
         .map_err(|e| format!("GRIFFE_TODAY invalide ({s}) : {e}"))
 }
 
+/// Jeton propre à ce processus de fenêtre. Une lettre armée sous un autre jeton
+/// ne part pas à la réouverture.
+fn fresh_mail_session() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or(0);
+    format!("{}-{nanos}", std::process::id())
+}
+
 /// Durée de la session trousseau quand la case des 12 h est cochée. La même durée suspend
 /// le verrouillage d'inactivité de la fenêtre, si le trousseau accepte la clé. Même défaut
 /// que `griffe unlock --remember` en CLI.
@@ -137,6 +147,8 @@ pub struct AppState {
     idle_timeout: Duration,
     /// Date du jour figée (tests) ; `None` = l'horloge locale de la machine (lot 36).
     fixed_today: Option<time::Date>,
+    /// Jeton de la fenêtre. Une lettre armée par une fenêtre précédente ne part pas.
+    mail_session: String,
 }
 
 /// Instantané de l'état du coffre pour le rendu et le middleware — ne donne jamais accès au
@@ -162,7 +174,20 @@ impl AppState {
             db_path: Arc::new(db_path),
             idle_timeout: DEFAULT_IDLE_TIMEOUT,
             fixed_today: None,
+            mail_session: fresh_mail_session(),
         }
+    }
+
+    /// Jeton de cette fenêtre, posé à la création de l'état.
+    #[must_use]
+    pub fn mail_session(&self) -> &str {
+        &self.mail_session
+    }
+
+    /// Coffre ouvert en mémoire. Une inactivité déjà écoulée le referme avant de répondre,
+    /// pour que l'horloge du courrier s'arrête avec la session.
+    pub async fn vault_is_open(&self) -> bool {
+        matches!(self.snapshot().await, VaultSnapshot::Unlocked)
     }
 
     /// Fige la date du jour que la fenêtre transmet au cœur (clôture, approbation, parcours,

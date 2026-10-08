@@ -9,12 +9,12 @@ Captures : [`site/shots/`](site/shots/).
 ## Aujourd’hui
 
 Prospection, devis, missions, factures (nées ailleurs ou émises),
-dépenses, relevé, relances en `.eml`, TVA au réel, se payer, clôture
+dépenses, relevé, relances en `.eml` ou postées depuis Le courrier, TVA au réel, se payer, clôture
 indicative, coffre SQLCipher sur ta machine.
 
 ## Ce que ça ne fait pas
 
-Pas d’avis fiscal, pas d’envoi de mail, pas de télétransmission, pas une
+Pas d’avis fiscal, pas de réception de mail, pas de télétransmission, pas une
 plateforme agréée. Griffe calcule et rappelle ; tu déposes ailleurs.
 
 ## Statut

@@ -2,7 +2,7 @@
 //!
 //! Le registre de confirmation (`confirm`) ne liste que les commandes qui déclarent
 //! `requires_confirmation() == true` — à étendre au fil des lots suivants s'il y en a
-//! d'autres (envoi d'email, par exemple, quand ce canal existera).
+//! d'autres. Le courrier y est : armer, annuler, décider, réessayer, envoi du jour.
 
 use clap::Subcommand;
 use griffe_core::app::{self, Actor, Command, ExecutionContext, Executor, PendingActionId};
@@ -16,6 +16,9 @@ use griffe_core::expenses::{DeleteExpense, ReconcileExpense, RecordExpense, Upda
 use griffe_core::fiscal_year::{ApproveFiscalYear, CloseFiscalYear, DeleteFiscalYear};
 use griffe_core::fixed_assets::DeleteFixedAsset;
 use griffe_core::follow_up::MarkFollowUpSent;
+use griffe_core::mail::{
+    ArmOutbound, CancelOutbound, ResolveUncertain, RetryOutbound, SetAutomaticSend,
+};
 use griffe_core::missions::{DeleteMission, DeleteTimeEntry};
 use griffe_core::opening_balance::{
     DeleteOpeningBalance, RecordOpeningBalance, UpdateOpeningBalance,
@@ -297,6 +300,21 @@ pub fn confirm(store: &mut Store, id: PendingActionId, json: bool) -> Result<Str
         Ok(format_outcome(&outcome, json))
     } else if action.command_name == DeleteWorkKind::NAME {
         let outcome = Executor::new(store).confirm::<DeleteWorkKind>(id)?;
+        Ok(format_outcome(&outcome, json))
+    } else if action.command_name == SetAutomaticSend::NAME {
+        let outcome = Executor::new(store).confirm::<SetAutomaticSend>(id)?;
+        Ok(format_outcome(&outcome, json))
+    } else if action.command_name == ArmOutbound::NAME {
+        let outcome = Executor::new(store).confirm::<ArmOutbound>(id)?;
+        Ok(format_outcome(&outcome, json))
+    } else if action.command_name == CancelOutbound::NAME {
+        let outcome = Executor::new(store).confirm::<CancelOutbound>(id)?;
+        Ok(format_outcome(&outcome, json))
+    } else if action.command_name == ResolveUncertain::NAME {
+        let outcome = Executor::new(store).confirm::<ResolveUncertain>(id)?;
+        Ok(format_outcome(&outcome, json))
+    } else if action.command_name == RetryOutbound::NAME {
+        let outcome = Executor::new(store).confirm::<RetryOutbound>(id)?;
         Ok(format_outcome(&outcome, json))
     } else {
         Err(CliError::UnknownConfirmableCommand(action.command_name))

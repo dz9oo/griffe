@@ -49,10 +49,13 @@
         # (`tauri.conf.json`, `capabilities/*.json`, l'icône, le `dist/index.html` placeholder)
         # et, depuis le lot 38, les jeux d'essai de relevés bancaires (`billing/fixtures/*.csv`,
         # `*.ofx`) inclus par `include_bytes!` dans les tests ; lot 43 : le relevé Tiime
-        # (`*.xlsx`) ; lot 48 : les woff2 vendorisés de la lettre. On complète le filtre plutôt
+        # (`*.xlsx`) ; lot 48 : les woff2 vendorisés de la lettre. `NOTICE` n'a pas
+        # d'extension : Tauri l'embarque via `bundle.resources`. On complète le filtre plutôt
         # que de perdre le cache incrémental d'un `src = ./.` non filtré.
         nonRustAssets =
-          path: _type: builtins.match ".*\\.(sql|typst|css|js|json|png|html|csv|ofx|txt|woff2|xlsx|svg)$" path != null;
+          path: _type:
+          builtins.match ".*\\.(sql|typst|css|js|json|png|html|csv|ofx|txt|woff2|xlsx|svg)$" path != null
+          || lib.hasSuffix "/NOTICE" path;
         src = lib.cleanSourceWith {
           src = craneLib.path ./.;
           filter = path: type: (craneLib.filterCargoSources path type) || (nonRustAssets path type);

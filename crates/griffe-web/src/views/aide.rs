@@ -27,10 +27,13 @@ const RELANCER: Recipe = Recipe {
     steps: &[
         "Ouvrez Le jour : s'il y a quelqu'un à relancer, le geste est là, avec un verbe.",
         "Ou ouvrez la personne dans Les affaires : Écrire.",
-        "Un brouillon s'ouvre dans votre client mail. Griffe ne l'envoie pas.",
-        "Quand c'est parti, vous le dites ici — « Envoyé » est un fait humain.",
+        "Dans La société, Le courrier règle le serveur. Tant qu'il n'est pas branché, la lettre reste ici.",
+        "Envoyer la fait partir, avec cinq secondes pour la retenir. C'est parti classe le double dans l'historique.",
+        "L'envoi du jour est éteint. L'activer poste, coffre ouvert, les lettres dues aujourd'hui.",
     ],
-    does_not: Some("Griffe n'envoie rien, et ne lit pas votre boîte."),
+    does_not: Some(
+        "Griffe ne lit pas votre boîte. Un brouillon peut encore s'ouvrir dans votre client mail.",
+    ),
     href: Some("/jour"),
     action: Some("Aller au jour"),
 };
@@ -211,7 +214,7 @@ pub fn index() -> Markup {
         }
         p class="section-label" { "Au quotidien" }
         ul class="chapters" {
-            (chapter_link("/aide/relancer", "Écrire à quelqu'un.", "un geste du Jour, un brouillon, on n'envoie pas"))
+            (chapter_link("/aide/relancer", "Écrire à quelqu'un.", "un geste du Jour, cinq secondes pour retenir la lettre"))
             (chapter_link("/aide/conversation", "Commencer une conversation.", "un nom, une phrase"))
             (chapter_link("/aide/devis", "L'estimation, sur le dossier.", "le sujet et le montant, pas un devis rédigé ici"))
             (chapter_link("/aide/releve", "Ranger le relevé.", "dépense, dette, ou vous"))

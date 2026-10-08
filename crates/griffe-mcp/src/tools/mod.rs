@@ -7,6 +7,7 @@ pub(crate) mod fec;
 pub(crate) mod fiscal;
 pub(crate) mod follow_up;
 pub(crate) mod forecast;
+pub(crate) mod mail;
 pub(crate) mod missions;
 pub(crate) mod papers;
 pub(crate) mod pending;

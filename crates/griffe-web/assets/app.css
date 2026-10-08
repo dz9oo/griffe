@@ -1259,6 +1259,43 @@ tr.row-clickable:hover td { background: var(--paper-2); }
   margin-bottom: 14px;
   letter-spacing: 0.02em;
 }
+.depart {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+}
+.depart-line {
+  margin: 0;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 17px;
+}
+.depart-rule {
+  display: block;
+  height: 1px;
+  background: var(--ink);
+  width: 12px;
+}
+.depart-rule[data-left="5"] { width: 12px; }
+.depart-rule[data-left="4"] { width: 30px; }
+.depart-rule[data-left="3"] { width: 48px; }
+.depart-rule[data-left="2"] { width: 66px; }
+.depart-rule[data-left="1"] { width: 84px; }
+.depart-rule[data-left="0"] { width: 100px; }
+.depart-count {
+  font-family: var(--sans);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
+}
+.courrier-notes {
+  font-family: var(--serif);
+  font-size: 17px;
+  line-height: 1.45;
+  margin: 4px 0 28px;
+}
+.courrier-notes p { margin: 0 0 6px; }
 .letter-draft pre {
   font-family: var(--serif);
   font-size: 17px;

@@ -8,6 +8,7 @@ mod brand;
 mod clients;
 mod cloture;
 mod console;
+mod courrier;
 mod depenses;
 mod devis;
 mod facturation;
@@ -85,6 +86,11 @@ fn people_routes() -> Router<AppState> {
             get(gens::write_get).post(gens::write),
         )
         .route("/{reference}/envoye", post(gens::sent))
+        .route("/{reference}/envoyer", post(gens::send_letter))
+        .route("/{reference}/envoi", get(gens::send_status))
+        .route("/{reference}/envoi/annuler", post(gens::send_cancel))
+        .route("/{reference}/envoi/reessayer", post(gens::send_retry))
+        .route("/{reference}/envoi/decision", post(gens::send_decision))
         .route("/{reference}/mots", post(gens::keep_words))
         .route(
             "/{reference}/rencontre",
@@ -289,6 +295,14 @@ pub fn router(state: AppState) -> Router {
         .route("/societe/cloture", get(handlers::societe_closing))
         .route("/societe/releve", get(handlers::societe_statement))
         .route("/societe/identite", get(handlers::societe_identity))
+        .route(
+            "/societe/courrier",
+            get(courrier::show).post(courrier::save),
+        )
+        .route("/societe/courrier/secret", post(courrier::save_secret))
+        .route("/societe/courrier/retirer", post(courrier::clear_secret))
+        .route("/societe/courrier/automatique", post(courrier::automatic))
+        .route("/societe/courrier/essai", post(courrier::trial))
         .route(
             "/societe/papiers",
             get(papiers::chapter)

@@ -51,7 +51,9 @@ fn back() -> Markup {
 pub fn piece(store: &Store, today: Date) -> Result<Markup, AppError> {
     let home = society_home(store.connection(), today)?;
     let papers_sub = papers_chapter_sub(store, today);
-    Ok(home_markup(&home, today, &papers_sub))
+    let courrier_sub =
+        crate::views::societe::courrier_subtitle(&griffe_core::mail::profile(store.connection())?);
+    Ok(home_markup(&home, today, &papers_sub, courrier_sub))
 }
 
 fn papers_chapter_sub(store: &Store, today: Date) -> String {
@@ -84,7 +86,7 @@ fn papers_chapter_sub(store: &Store, today: Date) -> String {
     }
 }
 
-fn home_markup(home: &SocietyHome, today: Date, papers_sub: &str) -> Markup {
+fn home_markup(home: &SocietyHome, today: Date, papers_sub: &str, courrier_sub: &str) -> Markup {
     let title = home.identity.name.as_deref().unwrap_or("La société.");
     let lede = identity_lede(&home.identity);
     let pay_runway = if home.pay.possible.is_zero() {
@@ -181,6 +183,7 @@ fn home_markup(home: &SocietyHome, today: Date, papers_sub: &str) -> Markup {
                 (chapter_link("/societe/cloture", "Clore l'exercice", &closing_sub))
                 (chapter_link("/societe/releve", "Le relevé", &releve_sub))
                 (chapter_link("/societe/identite", "L'identité", &identite_sub))
+                (chapter_link("/societe/courrier", "Le courrier", courrier_sub))
                 (chapter_link("/societe/papiers", "Les papiers", papers_sub))
             }
         }
@@ -1668,7 +1671,14 @@ fn identity_markup(card: &IdentityCard, phrases: &str) -> Markup {
             }
             div class="block" {
                 h3 { "Le coffre" }
-                p { "Un fichier sur cette machine, chiffré. Aucune connexion sortante. Les mails, la TVA, le greffe se font ailleurs — Griffe prépare, il ne transmet pas." }
+                p {
+                    "Un fichier sur cette machine, chiffré. "
+                    a href="/societe/courrier"
+                      hx-get="/societe/courrier"
+                      hx-target="#content"
+                      hx-push-url="true" { "Le courrier" }
+                    " envoie les lettres vers le serveur que tu y as écrit, pendant que le coffre est ouvert. La TVA et le greffe se déposent ailleurs."
+                }
                 p {
                     a href=(phrases)
                       hx-get=(phrases)

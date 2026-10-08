@@ -18,6 +18,7 @@ Commands:
   people      Les affaires : conversations, missions, chez qui ça sort
   society     La société : paysage, se payer, impôts, clôture, relevé, identité
   follow-up   Relances : file du jour, brouillon `.eml`, jamais d'envoi
+  courrier    Courrier : compte d'envoi, essai, lettres à poster
   prospect    Prospection : opportunités, pipeline, interactions
   mission     Missions : création, saisie de temps, TJM effectif, capacité
   quote       Devis : création, révision, envoi, acceptation

@@ -13,11 +13,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::path::PathBuf;
+use std::time::Duration;
 
+use griffe_core::app::{Actor, ExecutionContext};
 use griffe_core::store::Store;
 use griffe_web::AppState;
 use http_body_util::BodyExt;
 use tauri::http;
+use time::OffsetDateTime;
 use tower::ServiceExt;
 
 fn resolve_db_path() -> PathBuf {
@@ -33,6 +36,56 @@ fn resolve_db_path() -> PathBuf {
     })
 }
 
+fn spawn_mail_clock(state: AppState) {
+    tauri::async_runtime::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(1));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tick.tick().await;
+            if let Err(error) = post_due(&state).await {
+                eprintln!("⚠ courrier : {error}");
+            }
+        }
+    });
+}
+
+async fn post_due(state: &AppState) -> Result<(), String> {
+    if !state.vault_is_open().await {
+        return Ok(());
+    }
+    let token = state.mail_session().to_string();
+    let today = state.today();
+    let now = OffsetDateTime::now_utc();
+    let ctx = ExecutionContext::new(Actor::System, false);
+    let prepared = state
+        .with_store_mut(|store| {
+            if !griffe_core::mail::needs_tick(store.connection(), &token, now, today, true)? {
+                return Ok(None);
+            }
+            griffe_core::mail::take_due(store, &ctx, &token, now, today, true)
+        })
+        .await;
+    let Some(prepared) = prepared else {
+        return Ok(());
+    };
+    let Some(batch) = prepared.map_err(|error| error.to_string())? else {
+        return Ok(());
+    };
+    if batch.letters.is_empty() {
+        return Ok(());
+    }
+    let outcomes = tokio::task::spawn_blocking(move || griffe_mail::submit_batch(batch))
+        .await
+        .map_err(|error| error.to_string())?;
+    let recorded = state
+        .with_store_mut(|store| griffe_core::mail::record_deliveries(store, &ctx, today, &outcomes))
+        .await;
+    match recorded {
+        Some(result) => result.map_err(|error| error.to_string()),
+        None => Ok(()),
+    }
+}
+
 fn error_response(status: http::StatusCode, message: String) -> http::Response<Vec<u8>> {
     http::Response::builder()
         .status(status)
@@ -46,6 +99,7 @@ fn main() {
     let state = AppState::new(db_path);
 
     tauri::async_runtime::block_on(state.try_open_cached());
+    spawn_mail_clock(state.clone());
 
     tauri::Builder::default()
         .register_asynchronous_uri_scheme_protocol("griffe", move |_ctx, request, responder| {
