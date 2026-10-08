@@ -8,14 +8,15 @@ mod secret;
 mod store;
 
 pub use commands::{
-    ArmOutbound, CancelOutbound, ClearMailSecret, ResolveUncertain, RetryOutbound, SaveMailAccount,
-    SaveMailSecret, SaveMailSignature, SetAutomaticSend,
+    ArmOutbound, CancelOutbound, ClearMailSecret, RecordMailProbe, ResolveUncertain, RetryOutbound,
+    SaveMailAccount, SaveMailSecret, SaveMailSignature, SetAutomaticSend,
 };
 pub use error::MailError;
 pub use model::{
-    DeliveryOutcome, HOURLY_CAP, ICLOUD_HOST, MailPreset, MailProfile, MailSubmitError,
-    OutboundMail, OutboundMessage, OutboundStatus, OutboundView, RecordingMail, SmtpEndpoint,
-    SubmissionBatch, SubmissionReceipt, TlsMode, UNDO_SECS,
+    DeliveryOutcome, HOURLY_CAP, ICLOUD_HOST, MailPreset, MailProbeStatus, MailProfile,
+    MailSubmitError, OutboundMail, OutboundMessage, OutboundStatus, OutboundView,
+    PROBE_OK_SENTENCE, ProbeMaterial, RecordingMail, SmtpEndpoint, SubmissionBatch,
+    SubmissionReceipt, TlsMode, UNDO_SECS,
 };
 pub use secret::MailSecret;
 
@@ -26,6 +27,16 @@ pub use secret::MailSecret;
 /// Lecture impossible.
 pub fn profile(conn: &rusqlite::Connection) -> Result<MailProfile, AppError> {
     store::profile(conn)
+}
+
+/// Identifiant, hôte et mot de passe pour un essai de liaison. N'ouvre aucune socket.
+/// `None` quand le compte n'est pas encore branché.
+///
+/// # Errors
+///
+/// Lecture impossible.
+pub fn probe_material(conn: &rusqlite::Connection) -> Result<Option<ProbeMaterial>, AppError> {
+    store::probe_material(conn)
 }
 
 /// Dernière lettre encore ouverte pour cette ancre (dossier ou relance).
@@ -258,9 +269,9 @@ mod tests {
     use time::{Date, Duration, Month, OffsetDateTime, Time};
 
     use super::{
-        ArmOutbound, ClearMailSecret, MailError, MailSubmitError, RecordingMail, SaveMailAccount,
-        SaveMailSecret, SaveMailSignature, SetAutomaticSend, deliver_with, profile,
-        record_deliveries, take_due, trial_letter,
+        ArmOutbound, ClearMailSecret, MailError, MailSubmitError, PROBE_OK_SENTENCE,
+        RecordMailProbe, RecordingMail, SaveMailAccount, SaveMailSecret, SaveMailSignature,
+        SetAutomaticSend, deliver_with, profile, record_deliveries, take_due, trial_letter,
     };
     use crate::app::{Actor, ExecutionContext, Executor, Outcome, recent_audit_entries};
     use crate::clients::{CreateClient, CreateContact};
@@ -832,8 +843,64 @@ mod tests {
         let mut store = test_store("mail-clear-secret");
         save_ready(&mut store);
         Executor::new(&mut store)
+            .execute(
+                &RecordMailProbe {
+                    ok: true,
+                    detail: PROBE_OK_SENTENCE.to_string(),
+                },
+                &human(),
+            )
+            .unwrap();
+        Executor::new(&mut store)
             .execute(&ClearMailSecret, &human())
             .unwrap();
-        assert!(!profile(store.connection()).unwrap().has_secret);
+        let account = profile(store.connection()).unwrap();
+        assert!(!account.has_secret);
+        assert!(account.probe.is_none());
+    }
+
+    #[test]
+    fn a_new_account_forgets_the_previous_probe_and_the_verdict_stays_short() {
+        let mut store = test_store("mail-probe");
+        save_ready(&mut store);
+        let sentence = PROBE_OK_SENTENCE.to_string();
+        Executor::new(&mut store)
+            .execute(
+                &RecordMailProbe {
+                    ok: true,
+                    detail: sentence.clone(),
+                },
+                &human(),
+            )
+            .unwrap();
+        let account = profile(store.connection()).unwrap();
+        let probe = account.probe.expect("verdict");
+        assert!(probe.ok);
+        assert_eq!(probe.detail, sentence);
+        let entries = recent_audit_entries(store.connection(), 0, 20).unwrap();
+        let recorded = entries
+            .iter()
+            .find(|entry| entry.command_name == "mail.record_probe")
+            .unwrap();
+        assert!(recorded.command_json.contains("identifiant est accepté"));
+        assert!(!recorded.command_json.contains("mot-de-passe"));
+
+        save_ready(&mut store);
+        assert!(profile(store.connection()).unwrap().probe.is_none());
+
+        let long = format!("x{}", "y".repeat(400));
+        Executor::new(&mut store)
+            .execute(
+                &RecordMailProbe {
+                    ok: false,
+                    detail: format!("refus\n{long}"),
+                },
+                &human(),
+            )
+            .unwrap();
+        let probe = profile(store.connection()).unwrap().probe.expect("refus");
+        assert!(!probe.ok);
+        assert_eq!(probe.detail.chars().count(), 160);
+        assert!(!probe.detail.contains('\n'));
     }
 }

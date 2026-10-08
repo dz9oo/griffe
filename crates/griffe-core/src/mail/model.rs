@@ -113,6 +113,16 @@ impl OutboundStatus {
     }
 }
 
+/// Phrase quand la liaison a réussi.
+pub const PROBE_OK_SENTENCE: &str = "Le serveur répond, et l'identifiant est accepté.";
+
+/// Dernier essai de liaison, sans le mot de passe.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MailProbeStatus {
+    pub ok: bool,
+    pub detail: String,
+}
+
 /// Compte tel que l'écran le montre. Jamais le secret.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MailProfile {
@@ -128,6 +138,14 @@ pub struct MailProfile {
     pub ready: bool,
     /// Lignes qui ferment la lettre. Vides : la formule « Bien à vous ».
     pub signature: String,
+    /// `None` : la liaison n'a pas été essayée depuis le dernier enregistrement.
+    pub probe: Option<MailProbeStatus>,
+}
+
+/// Ce qu'il faut pour essayer la liaison. Le secret s'efface avec cette valeur.
+pub struct ProbeMaterial {
+    pub endpoint: SmtpEndpoint,
+    pub secret: MailSecret,
 }
 
 impl Default for MailProfile {
@@ -144,6 +162,7 @@ impl Default for MailProfile {
             auto_send: false,
             ready: false,
             signature: String::new(),
+            probe: None,
         }
     }
 }

@@ -1,7 +1,7 @@
-//! Chapitre Le courrier. Trois blocs, la largeur de La société.
+//! Chapitre Le courrier. Un panneau pour le serveur, puis la formule, l'essai, l'envoi du jour.
 
 use griffe_core::app::AppError;
-use griffe_core::mail::{MailPreset, MailProfile, OutboundView, TrialLetter, profile};
+use griffe_core::mail::{ICLOUD_HOST, MailPreset, MailProfile, OutboundView, TrialLetter, profile};
 use griffe_core::store::Store;
 use maud::{Markup, html};
 use time::OffsetDateTime;
@@ -56,6 +56,7 @@ fn markup(
     let signature = form
         .and_then(|item| item.signature.as_deref())
         .unwrap_or(account.signature.as_str());
+
     html! {
         div class="letter" data-view=(ViewId::Societe.slug()) {
             (back())
@@ -72,17 +73,87 @@ fn markup(
             @if pause {
                 p class="prose" { "Trop de lettres cette heure. Celles qui restent attendent." }
             }
-            form id="compte" action="/societe/courrier" method="post" {
-                div class="block" {
-                    h3 { "D'où partent les lettres" }
-                    p class="prose" { "L'adresse qui signe. Les brouillons reprennent la même." }
+            div class="block" {
+                form class="serveur" action="/societe/courrier" method="post"
+                     hx-post="/societe/courrier" hx-target="#content" hx-push-url="true"
+                     hx-disabled-elt="find button" {
+                    h3 { "Le serveur d'envoi" }
+                    (probe_line(account))
+                    p class="probe-wait" { "Griffe joint le serveur…" }
+                    fieldset class="word-choice" {
+                        legend { "Serveur" }
+                        div class="word-choice-row" {
+                            label {
+                                input type="radio" name="preset" value="icloud" checked[icloud];
+                                "iCloud"
+                            }
+                            label {
+                                input type="radio" name="preset" value="custom" checked[!icloud];
+                                "un autre"
+                            }
+                        }
+                    }
                     div class="field" {
                         label for="from_name" { "Nom affiché" }
-                        input id="from_name" name="from_name" type="text" value=(from_name);
+                        input id="from_name" name="from_name" type="text" value=(from_name) autocomplete="off";
                     }
                     div class="field" {
                         label for="from_address" { "L'adresse qui signe" }
                         input id="from_address" name="from_address" type="text" value=(from_address) autocomplete="off";
+                    }
+                    div class="field" {
+                        label for="username" { "L'identifiant du serveur" }
+                        input id="username" name="username" type="text" value=(username) autocomplete="off";
+                    }
+                    div class="serveur-icloud" {
+                        p class="prose" {
+                            (ICLOUD_HOST) ", port 587, liaison chiffrée. L'identifiant est l'adresse complète du compte, en icloud.com, me.com ou mac.com. Le mot de passe est un mot de passe d'application."
+                        }
+                        p class="prose" {
+                            a href="https://account.apple.com" { "Le compte Apple" }
+                            " crée ce mot de passe."
+                        }
+                    }
+                    div class="serveur-custom" {
+                        div class="field" {
+                            label for="host" { "Hôte" }
+                            input id="host" name="host" type="text" value=(host) autocomplete="off";
+                        }
+                        fieldset class="word-choice" {
+                            legend { "Port" }
+                            div class="word-choice-row" {
+                                label {
+                                    input type="radio" name="port" value="587" checked[port != 465];
+                                    "587"
+                                }
+                                label {
+                                    input type="radio" name="port" value="465" checked[port == 465];
+                                    "465"
+                                }
+                            }
+                        }
+                    }
+                    div class="field" {
+                        label for="secret" { "Mot de passe du serveur" }
+                        input id="secret" name="secret" type="password" autocomplete="new-password"
+                              aria-label="Mot de passe du serveur";
+                    }
+                    p class="prose" {
+                        @if account.has_secret {
+                            "Un mot de passe est dans le coffre. Laisser le champ vide le garde. La page ne le réécrit pas."
+                        } @else {
+                            "Il reste dans le coffre chiffré. La page ne le réécrit pas."
+                        }
+                    }
+                    div class="row-actions" {
+                        button class="seal" type="submit" { "Enregistrer et essayer la liaison" }
+                    }
+                }
+                @if account.has_secret {
+                    form hx-post="/societe/courrier/retirer" hx-target="#content" hx-push-url="true" {
+                        div class="row-actions" {
+                            button class="quiet" type="submit" { "Retirer le mot de passe" }
+                        }
                     }
                 }
             }
@@ -104,106 +175,18 @@ fn markup(
             div class="block" {
                 h3 { "Une lettre d'essai" }
                 p class="prose" {
-                    "Le premier message, tel qu'un prospect le lirait. Le prénom est fictif. Rien n'est classé dans une affaire."
+                    "Le premier message, tel qu'un prospect le lirait. Le prénom est fictif. Rien n'est classé dans une affaire. Vers une adresse réelle, pour la lire dans cette boîte."
                 }
                 div class="essai-sheet" {
                     p class="phrase-sheet-subject" { (letter.subject) }
                     pre class="phrase-sheet-body" { (letter.body) }
                 }
-                @if account.ready {
-                    form {
-                        div class="field" {
-                            label for="to" { "À qui" }
-                            input id="to" name="to" type="text" value=(from_address) autocomplete="email";
-                        }
-                        (depart_markup(
-                            "/societe/courrier",
-                            depart,
-                            None,
-                            "Envoyer l'essai",
-                            "Le serveur a pris la lettre.",
-                        ))
-                    }
-                }
-            }
-            div class="block" {
-                h3 { "Le serveur d'envoi" }
-                fieldset class="word-choice" {
-                    legend { "Serveur" }
-                    div class="word-choice-row" {
-                        label {
-                            input type="radio" name="preset" value="icloud" form="compte" checked[icloud];
-                            "iCloud"
-                        }
-                        label {
-                            input type="radio" name="preset" value="custom" form="compte" checked[!icloud];
-                            "un autre"
-                        }
-                    }
-                }
-                @if icloud {
-                    p class="prose" {
-                        "smtp.mail.me.com, port 587, liaison chiffrée. L'identifiant est l'adresse complète du compte, en icloud.com, me.com ou mac.com. Le mot de passe est un mot de passe d'application."
-                    }
-                    p class="prose" {
-                        a href="https://account.apple.com" { "Le compte Apple" }
-                        " crée ce mot de passe."
-                    }
-                }
-                div class="field" {
-                    label for="username" { "L'identifiant du serveur" }
-                    input id="username" name="username" type="text" form="compte" value=(username) autocomplete="off";
-                }
-                @if !icloud {
+                form {
                     div class="field" {
-                        label for="host" { "Hôte" }
-                        input id="host" name="host" type="text" form="compte" value=(host) autocomplete="off";
+                        label for="to" { "Vers" }
+                        input id="to" name="to" type="text" value=(from_address) autocomplete="email";
                     }
-                    fieldset class="word-choice" {
-                        legend { "Port" }
-                        div class="word-choice-row" {
-                            label {
-                                input type="radio" name="port" value="587" form="compte" checked[port != 465];
-                                "587"
-                            }
-                            label {
-                                input type="radio" name="port" value="465" form="compte" checked[port == 465];
-                                "465"
-                            }
-                        }
-                    }
-                }
-                div class="row-actions" {
-                    button class="seal" type="submit" form="compte"
-                           hx-post="/societe/courrier" hx-target="#content" hx-push-url="true" {
-                        "Enregistrer"
-                    }
-                }
-            }
-            div class="block" {
-                h3 { "Le mot de passe" }
-                p class="prose" {
-                    @if account.has_secret {
-                        "Un mot de passe est déjà dans le coffre. Laisser le champ vide le garde."
-                    } @else {
-                        "Il reste dans le coffre chiffré. La page ne le réaffiche pas."
-                    }
-                }
-                form hx-post="/societe/courrier/secret" hx-target="#content" {
-                    div class="field" {
-                        label for="secret" { "Mot de passe du serveur" }
-                        input id="secret" name="secret" type="password" autocomplete="new-password" aria-label="Mot de passe du serveur";
-                    }
-                    div class="row-actions" {
-                        button class="seal" type="submit" { "Enregistrer le mot de passe" }
-                    }
-                }
-                @if account.has_secret {
-                    form hx-post="/societe/courrier/retirer" hx-target="#content" {
-                        div class="row-actions" {
-                            button class="quiet" type="submit" { "Retirer le mot de passe" }
-                        }
-                    }
+                    (depart_markup("/societe/courrier", depart, None, "Envoyer l'essai"))
                 }
             }
             div class="block" {
@@ -226,6 +209,31 @@ fn markup(
             }
         }
     }
+}
+
+fn probe_line(account: &MailProfile) -> Markup {
+    if let Some(probe) = &account.probe {
+        let class = if probe.ok {
+            "probe-status probe-ok"
+        } else {
+            "probe-status probe-bad"
+        };
+        let mark = if probe.ok { "✓" } else { "✗" };
+        return html! {
+            p class=(class) role="status" { (mark) " " (probe.detail) }
+        };
+    }
+    if !account.has_secret && !account.from_address.is_empty() {
+        return html! {
+            p class="probe-status probe-bad" role="status" { "✗ Le mot de passe manque." }
+        };
+    }
+    if account.ready {
+        return html! {
+            p class="probe-status" role="status" { "La liaison n'a pas été essayée." }
+        };
+    }
+    html! {}
 }
 
 fn lede(account: &MailProfile) -> &'static str {

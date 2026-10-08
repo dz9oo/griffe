@@ -2,6 +2,13 @@
 
 Ce qui change pour qui se sert de Griffe. Une section par version publiée.
 
+## 0.3.9
+
+- Le courrier réunit le serveur d'envoi sur un seul panneau. L'adresse, l'identifiant, l'hôte et le port restent affichés. Enregistrer essaie la liaison : une coche si le serveur accepte l'identifiant, une croix s'il la refuse. Le mot de passe reste dans le coffre. Une lettre d'essai part vers l'adresse choisie.
+- L'envoi compte les cinq secondes, une à une. Au bout, Annuler s'efface, la ligne dit Courrier envoyé, et le bouton d'envoi revient. Même geste pour l'essai et pour une lettre.
+- Sur le dossier, cocher un type l'enregistre. Le bouton Enregistrer sous Types n'y est plus.
+- Ouvrir un coffre déjà créé avance son schéma. La version précédente ne peut plus l'ouvrir.
+
 ## 0.3.8
 
 - Le courrier, dans La société, règle le serveur qui poste les lettres. Le mot de passe reste dans le coffre.

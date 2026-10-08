@@ -1293,8 +1293,8 @@ pub async fn send_status(
     let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
         return page(&headers, gens::not_found(&reference, today)).into_response();
     };
-    let markup = depart_for(&state, &dossier.name, None).await;
-    mail_fragment(&headers, markup, false)
+    let (markup, polling) = depart_poll_for(&state, &dossier.name).await;
+    mail_status(&headers, markup, polling)
 }
 
 pub async fn send_cancel(
@@ -1492,10 +1492,41 @@ async fn depart_for(state: &AppState, name: &str, note: Option<&str>) -> Markup 
             )
             .ok()
             .flatten();
-            gens::depart_markup(&href, view.as_ref(), note, "Envoyer", "Elle est partie.")
+            gens::depart_markup(&href, view.as_ref(), note, "Envoyer")
         })
         .await
         .unwrap_or_else(|| html! { div id="depart" { "coffre verrouillé" } })
+}
+
+async fn depart_poll_for(state: &AppState, name: &str) -> (Markup, bool) {
+    let href = person_href(name);
+    state
+        .with_store(|store| {
+            let view = griffe_core::mail::outbound_for_anchor(
+                store.connection(),
+                name,
+                OffsetDateTime::now_utc(),
+            )
+            .ok()
+            .flatten();
+            gens::depart_poll_fragment(&href, view.as_ref(), None, "Envoyer")
+        })
+        .await
+        .unwrap_or_else(|| (html! { div id="depart" { "coffre verrouillé" } }, false))
+}
+
+fn mail_status(headers: &HeaderMap, content: Markup, polling: bool) -> Response {
+    let mut response = mail_fragment(headers, content, false);
+    response.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        HeaderValue::from_static("no-store, no-cache, must-revalidate"),
+    );
+    if !polling {
+        response
+            .headers_mut()
+            .insert("HX-Reswap", HeaderValue::from_static("outerHTML"));
+    }
+    response
 }
 
 fn mail_fragment(headers: &HeaderMap, content: Markup, saved: bool) -> Response {

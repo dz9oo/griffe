@@ -483,7 +483,7 @@ fn kinds_form(dossier: &PersonDossier, href: &str, posted: Option<&KindFormState
     let naming = posted.is_some_and(|state| state.naming);
     let action = format!("{href}/types");
     html! {
-        form hx-post=(action) hx-target="#content" {
+        form hx-post=(action) hx-target="#content" hx-trigger="change, submit" {
             fieldset class="word-choice" {
                 legend { "Types" }
                 div class="word-choice-row" {
@@ -505,9 +505,6 @@ fn kinds_form(dossier: &PersonDossier, href: &str, posted: Option<&KindFormState
             }
             @if naming {
                 div class="field-error" { "Nomme le type." }
-            }
-            div class="row-actions" {
-                button class="seal" type="submit" { "Enregistrer" }
             }
         }
     }
@@ -1794,61 +1791,97 @@ fn query_href(path: &str, depuis: &str, pour: &str, genre: &str, source: &str) -
     }
 }
 
-/// Le créneau d'envoi, remplaçable tout seul. Le bouton vit dans le formulaire de la lettre.
+/// Le créneau d'envoi. Tant que la lettre est retenue ou en route, le bloc reste en place
+/// et son contenu se renouvelle chaque seconde (`every 1s`, `innerHTML`). Le bouton qui
+/// l'a armé le remplace en entier. Une fois partie, annulée ou en échec, la réponse du
+/// sondage porte `HX-Reswap: outerHTML` et ce bloc-ci, sans minuteur.
 #[must_use]
 pub fn depart_markup(
     href: &str,
     view: Option<&OutboundView>,
     note: Option<&str>,
     send_label: &str,
-    sent_line: &str,
 ) -> Markup {
-    let send = format!("{href}/envoyer");
     let poll = format!("{href}/envoi");
     let polling = view.is_some_and(depart_polls);
     let poll_url = polling.then_some(poll.as_str());
-    let trigger = polling.then_some("load delay:1s");
-    let target = polling.then_some("#depart");
-    let swap = polling.then_some("outerHTML");
+    let trigger = polling.then_some("every 1s");
+    let swap = polling.then_some("innerHTML");
     html! {
         div id="depart" class="depart"
             hx-get=[poll_url]
             hx-trigger=[trigger]
-            hx-target=[target]
             hx-swap=[swap] {
-            @if let Some(note) = note {
-                p class="depart-line" { (note) }
-            }
-            @match view.map(|item| item.status) {
-                Some(OutboundStatus::Armed) => {
-                    p class="depart-line" { "Elle part." }
-                    span class="depart-rule" data-left=(view.map(|item| item.seconds_left).unwrap_or(0)) {}
-                    span class="depart-count" { (view.map(|item| item.seconds_left).unwrap_or(0)) }
-                    (post_button(&format!("{href}/envoi/annuler"), "quiet", "id", view.map(|item| item.id.as_str()), "Annuler"))
-                }
-                Some(OutboundStatus::Sending) => {
-                    p class="depart-line" { "Elle est en route." }
-                }
-                Some(OutboundStatus::Sent) => {
-                    p class="depart-line" { (sent_line) }
-                    (envoyer_button(&send, send_label))
-                }
-                Some(OutboundStatus::Failed) => {
-                    p class="depart-line" {
-                        (view.and_then(|item| item.error.as_deref()).unwrap_or("Elle n'est pas partie."))
+            (depart_body(href, view, note, send_label))
+        }
+    }
+}
+
+/// Corps du sondage. `true` tant que le minuteur doit continuer.
+#[must_use]
+pub fn depart_poll_fragment(
+    href: &str,
+    view: Option<&OutboundView>,
+    note: Option<&str>,
+    send_label: &str,
+) -> (Markup, bool) {
+    let polling = view.is_some_and(depart_polls);
+    let markup = if polling {
+        depart_body(href, view, note, send_label)
+    } else {
+        depart_markup(href, view, note, send_label)
+    };
+    (markup, polling)
+}
+
+fn depart_body(
+    href: &str,
+    view: Option<&OutboundView>,
+    note: Option<&str>,
+    send_label: &str,
+) -> Markup {
+    let send = format!("{href}/envoyer");
+    let left = view.map(|item| item.seconds_left).unwrap_or(0);
+    html! {
+        @if let Some(note) = note {
+            p class="depart-line" { (note) }
+        }
+        @match view.map(|item| item.status) {
+            Some(OutboundStatus::Armed) => {
+                p class="depart-line" {
+                    @if left > 0 {
+                        "Elle part dans "
+                        span class="depart-count" { (left) }
+                        "."
+                    } @else {
+                        "Elle part."
                     }
-                    (post_button(&format!("{href}/envoi/reessayer"), "quiet", "id", view.map(|item| item.id.as_str()), "Réessayer"))
                 }
-                Some(OutboundStatus::Uncertain) => {
-                    p class="depart-line" { "Griffe ne sait pas si elle est partie." }
-                    input type="hidden" name="id" value=(view.map(|item| item.id.as_str()).unwrap_or(""));
-                    (post_button(&format!("{href}/envoi/decision"), "quiet", "sent", Some("1"), "Elle est partie"))
-                    (post_button(&format!("{href}/envoi/decision"), "quiet", "sent", Some("0"), "Elle n'est pas partie"))
-                    (post_button(&format!("{href}/envoi/reessayer"), "quiet", "retry", Some("1"), "Réessayer"))
+                span class="depart-track" data-left=(left) { i {} }
+                (post_button(&format!("{href}/envoi/annuler"), "quiet", "id", view.map(|item| item.id.as_str()), "Annuler"))
+            }
+            Some(OutboundStatus::Sending) => {
+                p class="depart-line" { "Elle est en route." }
+            }
+            Some(OutboundStatus::Sent) => {
+                p class="depart-line" { "Courrier envoyé." }
+                (envoyer_button(&send, send_label))
+            }
+            Some(OutboundStatus::Failed) => {
+                p class="depart-line" {
+                    (view.and_then(|item| item.error.as_deref()).unwrap_or("Elle n'est pas partie."))
                 }
-                Some(OutboundStatus::Cancelled) | None => {
-                    (envoyer_button(&send, send_label))
-                }
+                (post_button(&format!("{href}/envoi/reessayer"), "quiet", "id", view.map(|item| item.id.as_str()), "Réessayer"))
+            }
+            Some(OutboundStatus::Uncertain) => {
+                p class="depart-line" { "Griffe ne sait pas si elle est partie." }
+                input type="hidden" name="id" value=(view.map(|item| item.id.as_str()).unwrap_or(""));
+                (post_button(&format!("{href}/envoi/decision"), "quiet", "sent", Some("1"), "Elle est partie"))
+                (post_button(&format!("{href}/envoi/decision"), "quiet", "sent", Some("0"), "Elle n'est pas partie"))
+                (post_button(&format!("{href}/envoi/reessayer"), "quiet", "retry", Some("1"), "Réessayer"))
+            }
+            Some(OutboundStatus::Cancelled) | None => {
+                (envoyer_button(&send, send_label))
             }
         }
     }
@@ -2051,7 +2084,7 @@ pub fn letter_page(
                     }
                     div class="row-actions" {
                         @if can_send {
-                            (depart_markup(&href, depart.as_ref(), None, "Envoyer", "Elle est partie."))
+                            (depart_markup(&href, depart.as_ref(), None, "Envoyer"))
                         } @else if mail.ready {
                             p class="depart-line" { "Il manque l'adresse de la personne." }
                         }

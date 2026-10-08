@@ -7,9 +7,10 @@ use std::path::PathBuf;
 use clap::{ArgGroup, Subcommand};
 use griffe_core::app::{ExecutionContext, Executor};
 use griffe_core::mail::{
-    ArmOutbound, CancelOutbound, ClearMailSecret, MailSecret, SaveMailAccount, SaveMailSecret,
-    SaveMailSignature, SetAutomaticSend, UNDO_SECS, french_submit_error, hourly_pause, profile,
-    record_deliveries, take_due, trial_letter,
+    ArmOutbound, CancelOutbound, ClearMailSecret, MailPreset, MailSecret, PROBE_OK_SENTENCE,
+    RecordMailProbe, SaveMailAccount, SaveMailSecret, SaveMailSignature, SetAutomaticSend,
+    UNDO_SECS, french_submit_error, hourly_pause, probe_material, profile, record_deliveries,
+    take_due, trial_letter,
 };
 use griffe_core::store::Store;
 use time::OffsetDateTime;
@@ -64,6 +65,8 @@ pub enum MailCommand {
         #[arg(long)]
         set: bool,
     },
+    /// Essaie la liaison, sans envoyer de lettre.
+    Essayer,
     /// Arme la lettre d'essai. `flush` la poste après cinq secondes.
     Essai {
         /// Destinataire. Sans lui, l'adresse qui signe.
@@ -139,6 +142,7 @@ pub fn run(
             Ok(format_outcome_as(&outcome, json, |_| sentence.to_string()))
         }
         MailCommand::Signature { set } => signature(store, ctx, json, set),
+        MailCommand::Essayer => essayer(store, ctx, json),
         MailCommand::Essai { to } => essai(store, ctx, json, to),
         MailCommand::Envoyer {
             to,
@@ -195,6 +199,7 @@ fn show(store: &Store, json: bool) -> Result<String, CliError> {
                 "éteint".to_string()
             },
         ),
+        ("liaison", liaison_line(&account)),
     ]);
     if account.signature.is_empty() {
         text.push_str("\nformule : vide");
@@ -337,7 +342,47 @@ fn account_json(account: &griffe_core::mail::MailProfile) -> serde_json::Value {
         "auto_send": account.auto_send,
         "ready": account.ready,
         "signature": account.signature,
+        "probe_ok": account.probe.as_ref().map(|probe| probe.ok),
+        "probe_detail": account.probe.as_ref().map(|probe| probe.detail.clone()),
     })
+}
+
+fn liaison_line(account: &griffe_core::mail::MailProfile) -> String {
+    account.probe.as_ref().map_or_else(
+        || "pas encore essayée".to_string(),
+        |probe| probe.detail.clone(),
+    )
+}
+
+fn essayer(store: &mut Store, ctx: &ExecutionContext, json: bool) -> Result<String, CliError> {
+    let account = profile(store.connection())?;
+    if account.from_address.is_empty() || account.host.is_empty() || account.username.is_empty() {
+        return Err(CliError::Domain(
+            "Le courrier n'est pas encore branché.".into(),
+        ));
+    }
+    if !account.has_secret {
+        return Err(CliError::Domain("Le mot de passe manque.".into()));
+    }
+    let Some(material) = probe_material(store.connection())? else {
+        return Err(CliError::Domain(
+            "Le courrier n'est pas encore branché.".into(),
+        ));
+    };
+    let icloud = account.preset == MailPreset::Icloud;
+    let (ok, detail) = match griffe_mail::probe(&material.endpoint, &material.secret) {
+        Ok(()) => (true, PROBE_OK_SENTENCE.to_string()),
+        Err(error) => (false, french_submit_error(&error, icloud)),
+    };
+    drop(material);
+    let outcome = Executor::new(store).execute(
+        &RecordMailProbe {
+            ok,
+            detail: detail.clone(),
+        },
+        ctx,
+    )?;
+    Ok(format_outcome_as(&outcome, json, |_| detail.clone()))
 }
 
 fn format_json_or(json: bool, value: &serde_json::Value, text: String) -> String {

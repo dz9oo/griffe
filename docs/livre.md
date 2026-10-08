@@ -17,14 +17,19 @@ La phrase du produit, pour l’administration : on recopie, rien n’est télét
 ## Le courrier
 
 Le courrier est le chapitre de La société qui dit d’où partent les lettres.
-On y écrit l’adresse qui signe, l’identifiant du serveur, et un mot de passe
-qui reste dans le coffre. Deux ports, tous deux chiffrés : 587, ou 465.
-Un préréglage remplit le serveur d’iCloud. L’identifiant est alors l’adresse
-complète du compte, et le mot de passe est un mot de passe d’application.
+Un seul panneau réunit l’adresse qui signe, l’identifiant du serveur, l’hôte,
+le port et le mot de passe. Le mot de passe reste dans le coffre et la page
+ne le réécrit pas. Enregistrer essaie la liaison : une coche si le serveur
+accepte l’identifiant, une croix s’il refuse. Deux ports, tous deux chiffrés :
+587, ou 465. Un préréglage remplit le serveur d’iCloud. L’identifiant est alors
+l’adresse complète du compte, et le mot de passe est un mot de passe
+d’application. L’hôte et le port restent lisibles.
 
-Envoyer, sur une lettre, laisse cinq secondes pour se raviser. Fermer la
-fenêtre pendant ces cinq secondes retient la lettre. C’est parti classe le
-double dans l’historique et ne contacte pas le serveur.
+Envoyer, sur une lettre, laisse cinq secondes pour se raviser. Le compte
+s’affiche, une seconde après l’autre. Au bout, Annuler s’efface, la ligne dit
+Courrier envoyé, et le bouton revient. Fermer la fenêtre pendant ces cinq
+secondes retient la lettre. C’est parti classe le double dans l’historique
+et ne contacte pas le serveur.
 
 L’envoi du jour est éteint. L’activer poste, pendant que le coffre est
 ouvert, les lettres dont la date prévue est aujourd’hui. Une lettre de la
@@ -32,9 +37,9 @@ veille reste à envoyer à la main. Griffe ne lit pas la boîte.
 
 La formule, écrite dans ce chapitre, remplace `<signature>` dans les
 lettres et dans les phrases ; vide, elle redevient Bien à vous, le nom,
-la société. Une lettre d’essai reprend le premier message, pour un prénom
-fictif, vers l’adresse choisie : le serveur qui l’accepte ne promet pas
-la boîte du destinataire.
+la société. Une lettre d’essai montre le premier message, pour un prénom
+fictif, et part vers l’adresse choisie. La fenêtre dit Courrier envoyé.
+Cela ne promet pas la boîte du destinataire.
 
 ## Les mots
 

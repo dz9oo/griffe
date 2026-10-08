@@ -10336,6 +10336,11 @@ async fn work_kinds_filter_the_affaires_and_leave_on_the_second_gesture() {
     assert!(naming.headers().get("HX-Trigger").is_none());
     let naming_body = body_text(naming).await;
     assert!(naming_body.contains("Nomme le type."), "{naming_body}");
+    assert!(
+        naming_body.contains("hx-trigger=\"change, submit\""),
+        "{naming_body}"
+    );
+    assert!(!naming_body.contains(">Enregistrer<"), "{naming_body}");
     assert!(!naming_body.contains("hx-on"), "{naming_body}");
 
     let created = posted(
@@ -10667,7 +10672,7 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
             )
             .unwrap();
     }
-    let state = AppState::new(db_path).with_today(today);
+    let state = AppState::new(db_path.clone()).with_today(today);
     state
         .unlock(&Passphrase::from(PASSPHRASE), false)
         .await
@@ -10696,7 +10701,16 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
     );
     assert!(chapter.contains("Cette lettre est un essai"), "{chapter}");
     assert!(chapter.contains("Le prénom est fictif"), "{chapter}");
-    assert!(!chapter.contains("Envoyer l'essai"), "{chapter}");
+    assert!(
+        chapter.contains("Enregistrer et essayer la liaison"),
+        "{chapter}"
+    );
+    assert!(!chapter.contains("form=\"compte\""), "{chapter}");
+    assert!(chapter.contains(">Vers<"), "{chapter}");
+    assert!(
+        chapter.contains("Envoyer l'essai") || chapter.contains("Envoyer l&#x27;essai"),
+        "{chapter}"
+    );
     assert!(chapter.contains("envoi du jour est"), "{chapter}");
     assert!(
         chapter.contains("Activer l'envoi du jour")
@@ -10725,7 +10739,10 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
         "{formula_body}"
     );
     assert!(formula_body.contains("Atelier Nord"), "{formula_body}");
-    assert!(!formula_body.contains("Envoyer l'essai"), "{formula_body}");
+    assert!(
+        formula_body.contains("Envoyer l'essai") || formula_body.contains("Envoyer l&#x27;essai"),
+        "{formula_body}"
+    );
 
     let saved = router
         .clone()
@@ -10813,7 +10830,9 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
         .unwrap();
     assert_eq!(trial.headers().get("HX-Trigger").unwrap(), "griffe:saved");
     let trial_body = body_text(trial).await;
-    assert!(trial_body.contains("Elle part."), "{trial_body}");
+    assert!(trial_body.contains("Elle part dans"), "{trial_body}");
+    assert!(trial_body.contains("every 1s"), "{trial_body}");
+    assert!(trial_body.contains("depart-track"), "{trial_body}");
     assert!(trial_body.contains("Annuler"), "{trial_body}");
     assert!(!trial_body.contains(secret), "{trial_body}");
     let trial_id = trial_body
@@ -10834,8 +10853,22 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
         .await
         .unwrap();
     assert!(!trial_poll.headers().contains_key("HX-Trigger"));
+    assert!(!trial_poll.headers().contains_key("HX-Reswap"));
+    let trial_cache = trial_poll
+        .headers()
+        .get("cache-control")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    assert!(trial_cache.contains("no-store"), "{trial_cache}");
     let trial_poll_body = body_text(trial_poll).await;
-    assert!(trial_poll_body.contains("Elle part."), "{trial_poll_body}");
+    assert!(
+        trial_poll_body.contains("Elle part dans"),
+        "{trial_poll_body}"
+    );
+    assert!(
+        !trial_poll_body.contains("id=\"depart\""),
+        "{trial_poll_body}"
+    );
 
     let trial_kept = body_text(
         router
@@ -10857,7 +10890,9 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
         trial_kept.contains("Envoyer l'essai") || trial_kept.contains("Envoyer l&#x27;essai"),
         "{trial_kept}"
     );
-    assert!(!trial_kept.contains("Elle part."), "{trial_kept}");
+    assert!(!trial_kept.contains("Elle part"), "{trial_kept}");
+    assert!(!trial_kept.contains("Annuler"), "{trial_kept}");
+    assert!(!trial_kept.contains("every 1s"), "{trial_kept}");
 
     let letter = body_text(
         router
@@ -10893,7 +10928,8 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
         .unwrap();
     assert_eq!(armed.headers().get("HX-Trigger").unwrap(), "griffe:saved");
     let armed_body = body_text(armed).await;
-    assert!(armed_body.contains("Elle part."), "{armed_body}");
+    assert!(armed_body.contains("Elle part dans"), "{armed_body}");
+    assert!(armed_body.contains("every 1s"), "{armed_body}");
     assert!(armed_body.contains("Annuler"), "{armed_body}");
     assert!(!armed_body.contains(secret), "{armed_body}");
     let id = armed_body
@@ -10914,8 +10950,15 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
         .await
         .unwrap();
     assert!(!poll.headers().contains_key("HX-Trigger"));
+    assert!(!poll.headers().contains_key("HX-Reswap"));
+    let poll_cache = poll
+        .headers()
+        .get("cache-control")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    assert!(poll_cache.contains("no-store"), "{poll_cache}");
     let poll_body = body_text(poll).await;
-    assert!(poll_body.contains("Elle part."), "{poll_body}");
+    assert!(poll_body.contains("Elle part dans"), "{poll_body}");
 
     let kept = body_text(
         router
@@ -10934,5 +10977,207 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
     )
     .await;
     assert!(kept.contains("Envoyer"), "{kept}");
-    assert!(!kept.contains("Elle part."), "{kept}");
+    assert!(!kept.contains("Elle part"), "{kept}");
+    assert!(!kept.contains("every 1s"), "{kept}");
+
+    let again = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/societe/courrier/envoyer")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from("to=ada%40atelier.test"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let again_body = body_text(again).await;
+    let again_id = again_body
+        .split("name=\"id\" value=\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .expect("identifiant du second essai");
+    let mut store = Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    let now = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap();
+    let updated = store
+        .connection_mut()
+        .execute(
+            "UPDATE outbound_mail SET status = 'sent', updated_at = ?1 WHERE id = ?2",
+            (now.as_str(), again_id),
+        )
+        .unwrap();
+    assert_eq!(updated, 1);
+    drop(store);
+
+    let sent = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/societe/courrier/envoi")
+                .header("HX-Request", "true")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        sent.headers()
+            .get("HX-Reswap")
+            .and_then(|value| value.to_str().ok()),
+        Some("outerHTML")
+    );
+    let sent_body = body_text(sent).await;
+    assert!(sent_body.contains("Courrier envoyé."), "{sent_body}");
+    assert!(
+        sent_body.contains("Envoyer l'essai") || sent_body.contains("Envoyer l&#x27;essai"),
+        "{sent_body}"
+    );
+    assert!(!sent_body.contains("Annuler"), "{sent_body}");
+    assert!(!sent_body.contains("every 1s"), "{sent_body}");
+
+    let prospect_sent = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/affaires/Atelier%20Nord/envoyer")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from("subject_line=Bonjour&body=Une+ligne."))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let prospect_body = body_text(prospect_sent).await;
+    let prospect_id = prospect_body
+        .split("name=\"id\" value=\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .expect("identifiant de la lettre partie");
+    let mut store = Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    let updated = store
+        .connection_mut()
+        .execute(
+            "UPDATE outbound_mail SET status = 'sent', updated_at = ?1 WHERE id = ?2",
+            (now.as_str(), prospect_id),
+        )
+        .unwrap();
+    assert_eq!(updated, 1);
+    drop(store);
+    let prospect_poll = router
+        .oneshot(
+            Request::builder()
+                .uri("/affaires/Atelier%20Nord/envoi")
+                .header("HX-Request", "true")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let prospect_poll_body = body_text(prospect_poll).await;
+    assert!(
+        prospect_poll_body.contains("Courrier envoyé."),
+        "{prospect_poll_body}"
+    );
+    assert!(
+        prospect_poll_body.contains(">Envoyer<"),
+        "{prospect_poll_body}"
+    );
+    assert!(
+        !prospect_poll_body.contains("Annuler"),
+        "{prospect_poll_body}"
+    );
+    assert!(
+        !prospect_poll_body.contains("every 1s"),
+        "{prospect_poll_body}"
+    );
+}
+
+#[tokio::test]
+async fn la_liaison_affiche_la_coche_ou_le_refus_sans_effacer_les_champs() {
+    let db_path = test_db_path("courrier-liaison");
+    Store::create(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    let state = AppState::new(db_path);
+    state
+        .unlock(&Passphrase::from(PASSPHRASE), false)
+        .await
+        .unwrap();
+    state.set_mail_probe(|_, _| Ok(()));
+    let router = griffe_web::router(state.clone());
+    let secret = "mot-de-passe-application-xyz";
+    let body = format!(
+        "from_name=Camille&from_address=camille%40studio.test&username=camille%40icloud.test&preset=custom&host=smtp.exemple.test&port=587&secret={secret}"
+    );
+
+    let held = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/societe/courrier")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from(body.clone()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(held.headers().get("HX-Trigger").unwrap(), "griffe:saved");
+    let held_body = body_text(held).await;
+    assert!(held_body.contains("probe-ok"), "{held_body}");
+    assert!(
+        held_body.contains("Le serveur répond, et l")
+            && held_body.contains("identifiant est accepté"),
+        "{held_body}"
+    );
+    assert!(
+        held_body.contains("value=\"camille@studio.test\""),
+        "{held_body}"
+    );
+    assert!(
+        held_body.contains("value=\"camille@icloud.test\""),
+        "{held_body}"
+    );
+    assert!(
+        held_body.contains("value=\"smtp.exemple.test\""),
+        "{held_body}"
+    );
+    assert!(!held_body.contains(secret), "{held_body}");
+    assert!(
+        !held_body.contains("type=\"password\" value="),
+        "{held_body}"
+    );
+
+    state.set_mail_probe(|_, _| Err(griffe_core::mail::MailSubmitError::Auth));
+    let refused = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/societe/courrier")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let refused_body = body_text(refused).await;
+    assert!(refused_body.contains("probe-bad"), "{refused_body}");
+    assert!(
+        refused_body.contains("Le serveur a refusé le mot de passe."),
+        "{refused_body}"
+    );
+    assert!(
+        refused_body.contains("value=\"smtp.exemple.test\""),
+        "{refused_body}"
+    );
+    assert!(
+        refused_body.contains("value=\"camille@studio.test\""),
+        "{refused_body}"
+    );
+    assert!(!refused_body.contains(secret), "{refused_body}");
 }
