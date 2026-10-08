@@ -1753,6 +1753,8 @@ mod tests {
                         bank_transaction_id: None,
                         supplier: Some("Cabinet Leroy".into()),
                         paid_by: crate::domain::ExpensePaidBy::Company,
+
+                        reverse_charge: false,
                     },
                     &human(),
                 )
@@ -2510,6 +2512,8 @@ mod tests {
                         bank_transaction_id: None,
                         supplier: Some(supplier.into()),
                         paid_by,
+
+                        reverse_charge: false,
                     },
                     &human(),
                 )
@@ -2604,35 +2608,35 @@ mod tests {
 
     #[test]
     fn a_quiet_vendor_has_quiet_since_not_a_debt() {
-        let mut store = test_store("numbr");
+        let mut store = test_store("bureau-calme");
         record_named_expense(
             &mut store,
             "Honoraires 2025",
-            "Numbr Hauts de France",
+            "Bureau Calme",
             180_000,
             date(2026, TimeMonth::January, 12),
             crate::domain::ExpensePaidBy::Company,
             None,
         );
         let list = people_list(store.connection(), today()).unwrap();
-        let numbr = list
+        let vendor = list
             .outgoing
             .iter()
-            .find(|r| r.name.contains("Numbr"))
-            .expect("Numbr");
-        match &numbr.figure {
+            .find(|r| r.name.contains("Bureau Calme"))
+            .expect("Bureau Calme");
+        match &vendor.figure {
             Some(PersonFigure::Spent { amount }) => {
                 assert_eq!(*amount, Money::from_cents(180_000));
             }
             other => panic!("{other:?}"),
         }
         assert!(
-            numbr.cues.iter().any(|c| matches!(
+            vendor.cues.iter().any(|c| matches!(
                 c,
                 PersonCue::QuietSince { on } if *on == date(2026, TimeMonth::January, 12)
             )),
             "{:?}",
-            numbr.cues
+            vendor.cues
         );
     }
 

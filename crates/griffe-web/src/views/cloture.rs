@@ -580,10 +580,10 @@ pub fn balance_panel(period: i32, balance: &TrialBalance, sheet: &BalanceSheet) 
             }
         }
         div class="detail-note" {
-            "Dérivé du grand livre : à-nouveaux, factures et avoirs, encaissements, dépenses, \
-             rémunération du dirigeant réputée due et IS. Présentation 2033-A, sans \
-             amortissement de l'exercice, provision ni régularisation — à faire relire par \
-             l'expert-comptable."
+            "Dérivé du grand livre : à-nouveaux, factures et avoirs, encaissements, dépenses \
+             et IS. Un brut mensuel déclaré au profil n'est pas une dette. Présentation \
+             2033-A, sans amortissement de l'exercice, provision ni régularisation — à \
+             faire relire par l'expert-comptable."
         }
         div class="detail-section" {
             div class="detail-section-head" { span { "Actif" } }

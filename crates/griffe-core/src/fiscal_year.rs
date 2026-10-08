@@ -28,7 +28,9 @@ use thiserror::Error;
 use time::format_description::well_known::Rfc3339;
 use time::{Date, OffsetDateTime};
 
-use crate::accounting::{AccountingResult, CarryBackBase, carry_back, compute_result_with};
+use crate::accounting::{
+    AccountingResult, CarryBackBase, carry_back, compute_result, compute_result_with,
+};
 use crate::app::{AppError, Command};
 use crate::company::{CompanyProfile, company_profile};
 use crate::domain::{FiscalYear, FiscalYearId, Money, format_date, parse_date};
@@ -562,6 +564,13 @@ impl Command for CloseFiscalYear {
             self.dividends,
         )?;
 
+        // Avant l'insertion : la garde d'exercice clos refuserait une date déjà couverte.
+        crate::journal::post_corporate_tax(
+            conn,
+            FiscalYear::new(self.starts_on, self.ends_on),
+            result.corporate_tax,
+        )?;
+
         let id = FiscalYearId::new();
         conn.execute(
             "INSERT INTO fiscal_years
@@ -794,10 +803,14 @@ impl Command for DeleteFiscalYear {
         let record = fiscal_year_by_id(conn, self.id)?.ok_or(FiscalYearError::NotFound(self.id))?;
         require_editable(conn, &record)?;
         require_fiscal_year_revision(conn, self.id, self.revision)?;
+        let period = FiscalYear::new(record.starts_on, record.ends_on);
         conn.execute(
             "DELETE FROM fiscal_years WHERE id = ?1 AND revision = ?2",
             params![self.id.to_string(), self.revision],
         )?;
+        // La ligne est retirée d'abord : tant qu'elle existe, l'extourne est datée
+        // dans un exercice clos et la garde la refuse.
+        crate::journal::reverse_corporate_tax(conn, period)?;
         Ok(())
     }
 }
@@ -898,6 +911,29 @@ pub fn fiscal_year_by_id(
     .map_err(AppError::from)
 }
 
+/// IS de référence d'un exercice pour les acomptes et le solde.
+///
+/// Un exercice déjà clos donne le `corporate_tax` du snapshot. Un exercice
+/// encore ouvert donne l'impôt du livre ([`compute_result`]). `None` sans
+/// snapshot et sans profil.
+///
+/// # Errors
+///
+/// Erreur de lecture SQLite.
+pub fn reference_corporate_tax(
+    conn: &Connection,
+    period: FiscalYear,
+    profile: Option<&CompanyProfile>,
+) -> Result<Option<Money>, AppError> {
+    if let Some(record) = fiscal_year_by_period(conn, period)? {
+        return Ok(Some(record.corporate_tax));
+    }
+    let Some(profile) = profile else {
+        return Ok(None);
+    };
+    Ok(Some(compute_result(conn, period, profile)?.corporate_tax))
+}
+
 /// # Errors
 pub fn fiscal_year_by_period(
     conn: &Connection,
@@ -992,9 +1028,9 @@ mod tests {
         Executor::new(store).execute(&cmd, &human()).unwrap();
     }
 
-    /// Une facture de 6 175 € HT en septembre `year` et une dépense nette de 800 € en octobre :
-    /// résultat avant IS 5 375 €, IS 806 € (arrondi à l'euro), net 4 569 € (mêmes chiffres que le test
-    /// d'intégration de `accounting.rs`).
+    /// Une facture de 6 175 € HT en septembre `year` et une dépense nette de 800 € en octobre,
+    /// avancée par l'associé (la charge est au livre) : résultat avant IS 5 375 €, IS 806 €
+    /// (arrondi à l'euro), net 4 569 €.
     fn seed_activity(store: &mut Store, year: i32) {
         let client_id = ClientId::new();
         store
@@ -1035,7 +1071,9 @@ mod tests {
                     receipt_filename: None,
                     supplier: None,
                     bank_transaction_id: None,
-                    paid_by: crate::domain::ExpensePaidBy::Company,
+                    paid_by: crate::domain::ExpensePaidBy::Associate,
+
+                    reverse_charge: false,
                 },
                 &human(),
             )
@@ -1515,7 +1553,7 @@ mod tests {
                 "512000:Banque:D:1300.00",
             ],
         );
-        // Une seule dépense, aucune facture : perte de 800 € nets.
+        // Une seule dépense, avancée par l'associé, aucune facture : perte de 800 € nets.
         Executor::new(&mut store)
             .execute(
                 &RecordExpense {
@@ -1529,7 +1567,9 @@ mod tests {
                     receipt_filename: None,
                     supplier: None,
                     bank_transaction_id: None,
-                    paid_by: crate::domain::ExpensePaidBy::Company,
+                    paid_by: crate::domain::ExpensePaidBy::Associate,
+
+                    reverse_charge: false,
                 },
                 &human(),
             )
@@ -1566,7 +1606,8 @@ mod tests {
 
     // --- Déficits fiscaux : report en avant et report en arrière (lot 32). ---
 
-    /// Une seule dépense nette de 800 € en mars `year`, aucune facture : déficit de 800 €.
+    /// Une seule dépense nette de 800 € en mars `year`, avancée par l'associé, aucune facture :
+    /// déficit de 800 €.
     fn seed_loss(store: &mut Store, year: i32) {
         Executor::new(store)
             .execute(
@@ -1581,7 +1622,9 @@ mod tests {
                     receipt_filename: None,
                     supplier: None,
                     bank_transaction_id: None,
-                    paid_by: crate::domain::ExpensePaidBy::Company,
+                    paid_by: crate::domain::ExpensePaidBy::Associate,
+
+                    reverse_charge: false,
                 },
                 &human(),
             )
@@ -1947,5 +1990,329 @@ mod tests {
         // Et ce qui s'écrit désormais est lisible par un humain.
         let json = serde_json::to_string(&cmd).unwrap();
         assert!(json.contains("\"starts_on\":\"2026-01-01\""), "{json}");
+    }
+
+    /// Facture seule de 20 000,00 € HT. 15 % = 3 000,00 €, soit 300 000 centimes.
+    fn seed_invoice_only(store: &mut Store) {
+        let client_id = ClientId::new();
+        store
+            .connection()
+            .execute(
+                "INSERT INTO clients (id, name, created_at) \
+                 VALUES (?1, 'Seul client', '2026-01-01T00:00:00Z')",
+                [client_id.to_string()],
+            )
+            .unwrap();
+        Executor::new(store)
+            .execute(
+                &EmitInvoice {
+                    client_id,
+                    mission_id: None,
+                    lines: vec![InvoiceLine {
+                        description: "Prestation".to_string(),
+                        quantity: 1.0,
+                        unit_price: Money::from_cents(2_000_000),
+                        vat_rate: VatRate::Standard,
+                    }],
+                    issued_on: date(2026, TimeMonth::June, 15),
+                    payment_terms_days: 30,
+                },
+                &human(),
+            )
+            .unwrap();
+    }
+
+    fn close_calendar_2026(store: &mut Store) -> FiscalYearId {
+        let cmd = CloseFiscalYear {
+            starts_on: date(2026, TimeMonth::January, 1),
+            ends_on: date(2026, TimeMonth::December, 31),
+            legal_reserve: Money::ZERO,
+            dividends: Money::ZERO,
+            carry_back: false,
+            today: None,
+            non_deductible_expenses: Money::ZERO,
+        };
+        let Outcome::Applied(id) = Executor::new(store).execute(&cmd, &human()).unwrap() else {
+            panic!("expected Applied")
+        };
+        id
+    }
+
+    fn living_piece_count(conn: &rusqlite::Connection, piece: &str) -> i64 {
+        conn.query_row(
+            "SELECT count(*) FROM journal_entries
+              WHERE piece_ref = ?1 AND reversed_at IS NULL AND reversal_of IS NULL",
+            [piece],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    fn living_lines(conn: &rusqlite::Connection, piece: &str) -> Vec<(String, i64)> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT l.account, l.amount_cents
+                   FROM journal_lines l
+                   JOIN journal_entries e ON e.id = l.entry_id
+                  WHERE e.piece_ref = ?1
+                    AND e.reversed_at IS NULL AND e.reversal_of IS NULL
+                  ORDER BY l.position",
+            )
+            .unwrap();
+        stmt.query_map([piece], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    }
+
+    fn ledger_695_cents(conn: &rusqlite::Connection, year: i32) -> Vec<i64> {
+        let (_, ledger) = crate::ledger::ledger_ending_in(conn, year).unwrap();
+        ledger
+            .entries
+            .iter()
+            .flat_map(|entry| &entry.lines)
+            .filter(|line| line.account.number.as_ref() == "695000")
+            .map(|line| line.amount.cents())
+            .collect()
+    }
+
+    fn account_balance(conn: &rusqlite::Connection, year: i32, number: &str) -> Money {
+        let (_, ledger) = crate::ledger::ledger_ending_in(conn, year).unwrap();
+        ledger
+            .trial_balance()
+            .rows
+            .into_iter()
+            .find(|row| row.account.number.as_ref() == number)
+            .map_or(Money::ZERO, |row| row.balance)
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn closing_posts_one_od_is_read_back_by_the_ledger_fec_and_installments() {
+        let mut store = test_store("close-od-is");
+        set_profile(&mut store, Some(100_000));
+        seed_invoice_only(&mut store);
+
+        // La lecture du livre ouvert montre l'IS prévisionnel et n'écrit rien.
+        assert_eq!(living_piece_count(store.connection(), "OD-IS"), 0);
+        assert_eq!(ledger_695_cents(store.connection(), 2026), vec![300_000]);
+
+        let id = close_calendar_2026(&mut store);
+
+        let (journal, entry_date): (String, String) = store
+            .connection()
+            .query_row(
+                "SELECT journal, entry_date FROM journal_entries
+                  WHERE piece_ref = 'OD-IS'
+                    AND reversed_at IS NULL AND reversal_of IS NULL",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(journal, "OD");
+        assert_eq!(entry_date, "2026-12-31");
+        assert_eq!(living_piece_count(store.connection(), "OD-IS"), 1);
+        assert_eq!(
+            living_lines(store.connection(), "OD-IS"),
+            vec![
+                ("695000".to_string(), 300_000),
+                ("444000".to_string(), -300_000),
+            ]
+        );
+        assert_eq!(ledger_695_cents(store.connection(), 2026), vec![300_000]);
+
+        let fec = crate::fec::build_fec(store.connection(), 2026)
+            .unwrap()
+            .render();
+        let lines_695: Vec<_> = fec.lines().filter(|line| line.contains("695000")).collect();
+        assert_eq!(lines_695.len(), 1);
+        assert!(lines_695[0].contains("OD-IS"), "{}", lines_695[0]);
+        assert!(lines_695[0].contains("3000,00"), "{}", lines_695[0]);
+        assert!(lines_695[0].contains("20261231"), "{}", lines_695[0]);
+
+        let _ = crate::ledger::build_ledger(
+            store.connection(),
+            crate::domain::FiscalYear::calendar(2026),
+        )
+        .unwrap();
+        assert_eq!(living_piece_count(store.connection(), "OD-IS"), 1);
+        assert_eq!(ledger_695_cents(store.connection(), 2026), vec![300_000]);
+
+        let record = fiscal_year_by_id(store.connection(), id).unwrap().unwrap();
+        assert_eq!(record.revenue_ht, Money::from_cents(2_000_000));
+        assert_eq!(record.expenses, Money::ZERO);
+        assert_eq!(record.director_remuneration, Money::ZERO);
+        assert_eq!(record.result_before_tax, Money::from_cents(2_000_000));
+        assert_eq!(record.corporate_tax, Money::from_cents(300_000));
+        assert_eq!(record.net_result, Money::from_cents(1_700_000));
+
+        let calendar =
+            crate::fiscal::fiscal_calendar(store.connection(), date(2027, TimeMonth::January, 15))
+                .unwrap();
+        let acompte = calendar
+            .iter()
+            .find(|deadline| deadline.kind == crate::fiscal::FiscalDeadlineKind::IsAcompte)
+            .unwrap();
+        assert_eq!(acompte.due_on, date(2027, TimeMonth::March, 15));
+        assert_eq!(acompte.amount, Some(Money::from_cents(75_000)));
+        let solde = calendar
+            .iter()
+            .find(|deadline| deadline.kind == crate::fiscal::FiscalDeadlineKind::IsSolde)
+            .unwrap();
+        assert_eq!(solde.due_on, date(2027, TimeMonth::May, 15));
+        assert_eq!(solde.amount, Some(Money::from_cents(300_000)));
+
+        // Réviser l'affectation ne réécrit pas l'impôt.
+        Executor::new(&mut store)
+            .execute(
+                &UpdateFiscalYearAppropriation {
+                    id,
+                    revision: 1,
+                    legal_reserve: Money::from_cents(1_000),
+                    dividends: Money::ZERO,
+                },
+                &human(),
+            )
+            .unwrap();
+        assert_eq!(
+            fiscal_year_by_id(store.connection(), id)
+                .unwrap()
+                .unwrap()
+                .corporate_tax,
+            Money::from_cents(300_000)
+        );
+        assert_eq!(
+            living_lines(store.connection(), "OD-IS"),
+            vec![
+                ("695000".to_string(), 300_000),
+                ("444000".to_string(), -300_000),
+            ]
+        );
+
+        // Un brut posé après la clôture ne change ni le snapshot, ni la 695, ni l'acompte.
+        let with_gross = SetCompanyProfile {
+            name: "Argon Digital".to_string(),
+            legal_form: "SASU".to_string(),
+            siren: Siren::parse("552100554").unwrap(),
+            vat_number: None,
+            address: Address {
+                street: "12 rue de la Paix".to_string(),
+                postal_code: "75002".to_string(),
+                city: "Paris".to_string(),
+                country: "FR".to_string(),
+            },
+            share_capital: Some(Money::from_cents(100_000)),
+            rcs_city: Some("Paris".to_string()),
+            iban: None,
+            fiscal_year_end: Some(FiscalYearEnd::CALENDAR),
+            vat_regime: Some(VatRegime::RealNormalMonthly),
+            director_monthly_gross: Some(Money::from_cents(300_000)),
+            director_charge_ratio_bps: Some(4_500),
+            president_name: None,
+            sole_shareholder_name: None,
+            sole_shareholder_address: None,
+            share_count: None,
+        };
+        Executor::new(&mut store)
+            .execute(&with_gross, &human())
+            .unwrap();
+        assert_eq!(
+            fiscal_year_by_id(store.connection(), id)
+                .unwrap()
+                .unwrap()
+                .corporate_tax,
+            Money::from_cents(300_000)
+        );
+        assert_eq!(
+            living_lines(store.connection(), "OD-IS"),
+            vec![
+                ("695000".to_string(), 300_000),
+                ("444000".to_string(), -300_000),
+            ]
+        );
+        let calendar =
+            crate::fiscal::fiscal_calendar(store.connection(), date(2027, TimeMonth::January, 15))
+                .unwrap();
+        let acompte = calendar
+            .iter()
+            .find(|deadline| deadline.kind == crate::fiscal::FiscalDeadlineKind::IsAcompte)
+            .unwrap();
+        assert_eq!(acompte.amount, Some(Money::from_cents(75_000)));
+        let solde = calendar
+            .iter()
+            .find(|deadline| deadline.kind == crate::fiscal::FiscalDeadlineKind::IsSolde)
+            .unwrap();
+        assert_eq!(solde.amount, Some(Money::from_cents(300_000)));
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn deleting_a_project_reverses_the_od_is_and_approval_keeps_it() {
+        let mut store = test_store("reverse-od-is");
+        set_profile(&mut store, Some(100_000));
+        seed_invoice_only(&mut store);
+        let id = close_calendar_2026(&mut store);
+        assert_eq!(living_piece_count(store.connection(), "OD-IS"), 1);
+
+        Executor::new(&mut store)
+            .execute(&DeleteFiscalYear { id, revision: 1 }, &human())
+            .unwrap();
+        assert!(fiscal_year_by_id(store.connection(), id).unwrap().is_none());
+        assert_eq!(living_piece_count(store.connection(), "OD-IS"), 0);
+
+        let extourne: (String, String, String) = store
+            .connection()
+            .query_row(
+                "SELECT journal, entry_date, label FROM journal_entries
+                  WHERE piece_ref = 'EXT-OD-IS'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(extourne.0, "OD");
+        assert_eq!(extourne.1, "2026-12-31");
+        assert_eq!(
+            extourne.2,
+            "Extourne — Impôt sur les sociétés de l'exercice"
+        );
+        assert_eq!(
+            account_balance(store.connection(), 2026, "444000"),
+            Money::from_cents(-300_000)
+        );
+        let _ = crate::ledger::build_ledger(
+            store.connection(),
+            crate::domain::FiscalYear::calendar(2026),
+        )
+        .unwrap();
+        assert_eq!(living_piece_count(store.connection(), "OD-IS"), 0);
+        assert_eq!(
+            account_balance(store.connection(), 2026, "444000"),
+            Money::from_cents(-300_000)
+        );
+
+        let id = close_calendar_2026(&mut store);
+        Executor::new(&mut store)
+            .execute(
+                &ApproveFiscalYear {
+                    id,
+                    revision: 1,
+                    approved_on: date(2027, TimeMonth::May, 15),
+                    today: None,
+                },
+                &human(),
+            )
+            .unwrap();
+        let err = Executor::new(&mut store)
+            .execute(&DeleteFiscalYear { id, revision: 2 }, &human())
+            .unwrap_err();
+        assert!(matches!(err, AppError::Domain(msg) if msg.contains("déjà approuvé")));
+        assert_eq!(living_piece_count(store.connection(), "OD-IS"), 1);
+        assert_eq!(
+            living_lines(store.connection(), "OD-IS"),
+            vec![
+                ("695000".to_string(), 300_000),
+                ("444000".to_string(), -300_000),
+            ]
+        );
     }
 }

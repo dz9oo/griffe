@@ -5,7 +5,9 @@
 //! français. `today` est un argument d'adaptateur, jamais lu ici.
 
 mod filings;
+mod payroll;
 mod vat_carry;
+mod vat_liquidation;
 mod vat_refund;
 mod vat_reversal;
 
@@ -13,10 +15,12 @@ pub use filings::{
     DutyFiling, DutyFilingError, MarkCatchUpFiled, MarkDutyFiled, RetractDutyFiled, filing_for,
     list_filings,
 };
+pub use payroll::{PostedPayroll, RecordPayroll};
 pub use vat_carry::{
     DeleteVatCarryIn, RecordVatCarryIn, UpdateVatCarryIn, VatCarryInError, VatCarryInRecord,
     parse_after_period, vat_carry_in,
 };
+pub use vat_liquidation::{LiquidateCa3, PostedVatLiquidation, VatLiquidationError};
 pub use vat_refund::{
     RequestVatRefund, RetractVatRefund, VatRefundError, VatRefundRecord, VatRefundStatus,
     vat_refund_for,
@@ -31,16 +35,16 @@ use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use time::Date;
 
-use crate::accounting::{compute_result, vat_due_for_period};
+use crate::accounting::vat_due_for_period;
 use crate::app::AppError;
-use crate::billing::{aged_balance, list_bank_transactions, list_invoices, list_write_offs};
+use crate::billing::{aged_balance, list_bank_transactions, list_invoices};
 use crate::clients::client_by_id;
 use crate::closing::{ClosingStage, ClosingStepKey, StepStatus, closing_checklist, closing_target};
 use crate::company::company_profile;
 use crate::day::cash_in_bank;
 use crate::domain::{
     BankTransaction, BankTransactionId, Ca3FilingRule, ExpensePaidBy, FiscalYearEnd, Money, Month,
-    SettlementAccount, Side, VatRate, VatRegime, add_months, sub_months,
+    SettlementAccount, Side, VatRegime, add_months, sub_months,
 };
 use crate::expenses::list_expenses;
 use crate::fiscal::{
@@ -48,7 +52,7 @@ use crate::fiscal::{
     IS_ACOMPTE_DISPENSATION, VatFilingScheme, ca3_filings_in_range, ca3_period_key,
     dividend_social_charges_bps, fiscal_calendar, next_cfe, next_is_acompte,
 };
-use crate::fiscal_year::fiscal_year_ending_in;
+use crate::fiscal_year::{fiscal_year_ending_in, reference_corporate_tax};
 use crate::forecast::{build_forecast_inputs, forecast_12_months};
 use crate::opening_balance::opening_balance;
 use crate::prospection::list_opportunities;
@@ -913,16 +917,12 @@ fn push_ca3_window(
         if has_duty(duties, FiscalDeadlineKind::Ca3, &period_key) {
             continue;
         }
-        let vat = vat_due_for_period(
-            conn,
-            filing.period_start.first_day(),
-            filing.period_end.last_day(),
-        )?;
+        let amount = ca3_signed_due(conn, today, &period_key)?;
         let filed_on = filed_on_for(filings, FiscalDeadlineKind::Ca3, &period_key);
         duties.push(Duty {
             kind: FiscalDeadlineKind::Ca3,
             due_on: filing.due_on,
-            amount: Some(vat.due),
+            amount,
             deposit: DepositPlace::of(FiscalDeadlineKind::Ca3),
             period_key,
             filed_on,
@@ -1102,6 +1102,12 @@ pub struct DutyBriefing {
     /// Montant de la case 15 s'il y a un fait, sinon `None`.
     #[serde(default)]
     pub vat_reversal: Option<Money>,
+    /// Une OD de liquidation vivante existe pour `period_key`.
+    #[serde(default)]
+    pub vat_liquidated: bool,
+    /// Le mois de `period_key` est fini : `today` tombe à son dernier jour, ou après.
+    #[serde(default)]
+    pub vat_month_elapsed: bool,
 }
 
 struct BriefingMeta {
@@ -1285,6 +1291,13 @@ pub fn duty_briefing(
     } else {
         None
     };
+    let vat_liquidated = if kind == FiscalDeadlineKind::Ca3 {
+        crate::journal::vat_liquidation_posted(conn, &period_key)?
+    } else {
+        false
+    };
+    let vat_month_elapsed =
+        kind == FiscalDeadlineKind::Ca3 && vat_month_has_ended(&period_key, today);
     let filed_on =
         resolved
             .as_ref()
@@ -1310,7 +1323,13 @@ pub fn duty_briefing(
         catch_up: resolved.as_ref().is_some_and(|d| d.catch_up),
         vat_refund,
         vat_reversal,
+        vat_liquidated,
+        vat_month_elapsed,
     })
+}
+
+fn vat_month_has_ended(period_key: &str, today: Date) -> bool {
+    parse_after_period(period_key).is_ok_and(|month| today >= month.last_day())
 }
 
 fn resolve_duty<'a>(
@@ -1474,14 +1493,21 @@ fn ca3_bounds_for(period_key: &str, periodicity: Ca3Periodicity) -> Result<(Date
     Ok((start.first_day(), end.last_day()))
 }
 
-/// Case 22 de `period_key` : crédit ancré après la période précédente, ou chaîne dérivée
-/// jusqu'à ce point (ligne 27 de P−1).
+/// Case 22 de `period_key`. Sans ancre, c'est le 445670 déjà au livre. Avec une
+/// ancre, la chaîne part de ce crédit déclaré et replie les mois suivants sur
+/// le livre.
 fn ca3_prior_credit(
     conn: &Connection,
     period_key: &str,
     periodicity: Ca3Periodicity,
 ) -> Result<Money, AppError> {
     let carry = vat_carry_in(conn)?;
+    if carry.is_none() {
+        let (_, end) = ca3_bounds_for(period_key, periodicity)?;
+        let month = Month::new(end.year(), u8::from(end.month()))
+            .expect("la fin d'une période CA3 a un mois valide");
+        return Ok(crate::accounting::ca3_month(conn, month)?.credit_on_book);
+    }
     let opens_on = opening_balance(conn)?.map(|o| o.balance.opens_on);
     let mut between: Vec<(Date, Date, String)> = Vec::new();
     let mut key = period_key.to_string();
@@ -1506,19 +1532,6 @@ fn ca3_prior_credit(
     fold_carried_credit(conn, Money::ZERO, &between)
 }
 
-fn recovered_vat_21(conn: &Connection, start: Date, end: Date) -> Result<Money, AppError> {
-    Ok(list_write_offs(conn)?
-        .into_iter()
-        .filter(|w| {
-            w.retracted_on.is_none()
-                && w.recovers_vat
-                && w.written_off_on >= start
-                && w.written_off_on <= end
-        })
-        .map(|w| w.vat)
-        .sum())
-}
-
 fn fold_carried_credit(
     conn: &Connection,
     mut credit: Money,
@@ -1527,8 +1540,7 @@ fn fold_carried_credit(
     for (start, end, period_key) in between.iter().rev() {
         let vat = vat_due_for_period(conn, *start, *end)?;
         let reversal = vat_reversal_for(conn, period_key)?.map_or(Money::ZERO, |r| r.amount);
-        let recovered_21 = recovered_vat_21(conn, *start, *end)?;
-        let net = vat.due + reversal - credit - recovered_21;
+        let net = vat.due + reversal - credit;
         credit = if net.cents() >= 0 {
             Money::ZERO
         } else {
@@ -1580,7 +1592,7 @@ fn parse_year_month(key: &str) -> Option<Month> {
 
 /// # Errors
 ///
-/// Période illisible, ou lecture des factures / dépenses / crédit repris.
+/// Période illisible, ou lecture du livre.
 pub(super) fn ca3_boxes(
     conn: &Connection,
     today: Date,
@@ -1602,19 +1614,12 @@ pub(super) fn ca3_boxes(
     let vat = vat_due_for_period(conn, period_start, period_end)?;
     let periodicity = ca3_periodicity(conn)?;
     let prior_credit = ca3_prior_credit(conn, period_key, periodicity)?;
-    let mut boxes = vec![ca3_box("02", Some(vat.taxable_ht), BoxRole::Fill)];
-    let vat_20 = vat
-        .collected_by_rate
-        .iter()
-        .find(|b| b.rate == VatRate::Standard)
-        .map_or(Money::ZERO, |b| b.vat_amount);
-    boxes.push(ca3_box("08", Some(vat_20), BoxRole::Fill));
-    for (rate, case) in [(VatRate::Intermediate, "9B"), (VatRate::Reduced, "09")] {
-        if let Some(line) = vat.collected_by_rate.iter().find(|b| b.rate == rate)
-            && !line.vat_amount.is_zero()
-        {
-            boxes.push(ca3_box(case, Some(line.vat_amount), BoxRole::Fill));
-        }
+    let mut boxes = Vec::new();
+    if !vat.taxable_ht.is_zero() {
+        boxes.push(ca3_box("02", Some(vat.taxable_ht), BoxRole::Fill));
+    }
+    if !vat.collected.is_zero() {
+        boxes.push(ca3_box("08", Some(vat.collected), BoxRole::Fill));
     }
     let reversal = vat_reversal_for(conn, period_key)?.map_or(Money::ZERO, |r| r.amount);
     if !reversal.is_zero() {
@@ -1623,15 +1628,13 @@ pub(super) fn ca3_boxes(
     if !vat.deductible_assets.is_zero() {
         boxes.push(ca3_box("19", Some(vat.deductible_assets), BoxRole::Fill));
     }
-    boxes.push(ca3_box("20", Some(vat.deductible_other), BoxRole::Fill));
-    let recovered_21 = recovered_vat_21(conn, period_start, period_end)?;
-    if !recovered_21.is_zero() {
-        boxes.push(ca3_box("21", Some(recovered_21), BoxRole::Fill));
+    if !vat.deductible_other.is_zero() {
+        boxes.push(ca3_box("20", Some(vat.deductible_other), BoxRole::Fill));
     }
     if !prior_credit.is_zero() {
         boxes.push(ca3_box("22", Some(prior_credit), BoxRole::Fill));
     }
-    let net = vat.due + reversal - prior_credit - recovered_21;
+    let net = vat.due + reversal - prior_credit;
     if net.cents() >= 0 {
         boxes.push(ca3_box("28", Some(net), BoxRole::Fill));
     } else {
@@ -1648,6 +1651,30 @@ pub(super) fn ca3_boxes(
         }
     }
     Ok((boxes, BoxCoverage::Complete))
+}
+
+/// Montant de l'échéance : case 28 à payer, ou l'opposé de la case 25 s'il y a un crédit.
+/// `None` quand la période commence avant le bilan d'ouverture.
+///
+/// # Errors
+///
+/// Période illisible, ou lecture du livre.
+pub fn ca3_signed_due(
+    conn: &Connection,
+    today: Date,
+    period_key: &str,
+) -> Result<Option<Money>, AppError> {
+    let (boxes, coverage) = ca3_boxes(conn, today, period_key)?;
+    if coverage != BoxCoverage::Complete {
+        return Ok(None);
+    }
+    if let Some(due) = boxes.iter().find(|b| b.case == "28").and_then(|b| b.amount) {
+        return Ok(Some(due));
+    }
+    if let Some(credit) = boxes.iter().find(|b| b.case == "25").and_then(|b| b.amount) {
+        return Ok(Some(-credit));
+    }
+    Ok(Some(Money::ZERO))
 }
 
 fn ca3_box(case: &'static str, amount: Option<Money>, role: BoxRole) -> FormBox {
@@ -1669,19 +1696,12 @@ fn is_reference(conn: &Connection, today: Date) -> Result<(Option<Money>, bool, 
     let current = fye.current(today);
     let previous = fye.previous(current);
     let reprise = opening_balance(conn)?.filter(|o| previous.start() < o.balance.opens_on);
-    let previous_result = match &reprise {
-        Some(_) => None,
-        None => profile
-            .as_ref()
-            .map(|p| compute_result(conn, previous, p))
-            .transpose()?,
-    };
     let reference_unknown = reprise
         .as_ref()
         .is_some_and(|o| o.prior_corporate_tax.is_none());
     let previous_is = match &reprise {
         Some(o) => o.prior_corporate_tax,
-        None => previous_result.map(|r| r.corporate_tax),
+        None => reference_corporate_tax(conn, previous, profile.as_ref())?,
     };
     Ok((previous_is, reference_unknown, has_profile))
 }
@@ -2378,16 +2398,16 @@ mod tests {
     use super::*;
     use crate::app::{Actor, ExecutionContext, Executor, Outcome};
     use crate::billing::{
-        EmitInvoice, ImportBankTransactions, ParsedTransaction, SettleBankTransaction,
-        WriteOffReceivable, list_bank_transactions,
+        EmitInvoice, ImportBankTransactions, ParsedTransaction, RecordPayment,
+        SettleBankTransaction, WriteOffReceivable, list_bank_transactions,
     };
     use crate::clients::CreateClient;
     use crate::company::SetCompanyProfile;
     use crate::domain::{
-        Address, ExpenseCategory, ExpensePaidBy, InvoiceLine, OpeningBalanceLine, Probability,
-        SettlementAccount, Siren, VatRate, VatRegime,
+        Address, ExpenseCategory, ExpensePaidBy, InvoiceLine, OpeningBalanceLine, PaymentMethod,
+        Probability, SettlementAccount, Siren, VatRate, VatRegime,
     };
-    use crate::expenses::RecordExpense;
+    use crate::expenses::{ReconcileExpense, RecordExpense};
     use crate::fiscal::FiscalDeadlineKind;
     use crate::fiscal_year::CloseFiscalYear;
     use crate::opening_balance::RecordOpeningBalance;
@@ -2514,6 +2534,8 @@ mod tests {
                             bank_transaction_id: None,
                             supplier: None,
                             paid_by: crate::domain::ExpensePaidBy::Company,
+
+                            reverse_charge: false,
                         },
                         &human(),
                     )
@@ -3047,10 +3069,69 @@ mod tests {
         assert_eq!(row.filed_on, Some(today()));
     }
 
+    fn box_amount(boxes: &[FormBox], case: &str) -> Option<Money> {
+        boxes.iter().find(|b| b.case == case).and_then(|b| b.amount)
+    }
+
+    fn account_cents(store: &Store, end_year: i32, number: &str) -> i64 {
+        let exercise = crate::domain::FiscalYear::new(
+            date(end_year - 1, TimeMonth::October, 1),
+            date(end_year, TimeMonth::September, 30),
+        );
+        let ledger = crate::ledger::build_ledger(store.connection(), exercise).unwrap();
+        ledger
+            .entries
+            .iter()
+            .flat_map(|entry| entry.lines.iter())
+            .filter(|line| line.account.number == number)
+            .map(|line| line.amount.cents())
+            .sum()
+    }
+
+    fn service_invoice(
+        store: &mut Store,
+        client_id: crate::domain::ClientId,
+        issued_on: Date,
+        unit_price_cents: i64,
+    ) -> crate::domain::InvoiceId {
+        applied(
+            Executor::new(store)
+                .execute(
+                    &EmitInvoice {
+                        client_id,
+                        mission_id: None,
+                        lines: vec![InvoiceLine {
+                            description: "prestation".into(),
+                            quantity: 1.0,
+                            unit_price: Money::from_cents(unit_price_cents),
+                            vat_rate: VatRate::Standard,
+                        }],
+                        issued_on,
+                        payment_terms_days: 30,
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        )
+        .id
+    }
+
+    fn ca3_of(store: &Store, on: Date, period: &str) -> DutyBriefing {
+        duty_briefing(
+            store.connection(),
+            FiscalDeadlineKind::Ca3,
+            on,
+            Some(period),
+        )
+        .unwrap()
+    }
+
+    /// Facture émise, dépense non payée : ni l'une ni l'autre n'entrent dans les cases.
+    /// La TVA reste créditrice du 445881. L'OD du mois ne crédite pas le 445710.
     #[test]
     fn ca3_boxes_fill_from_invoices_and_expenses() {
         let mut store = test_store("ca3-boxes");
-        set_profile(&mut store);
+        set_monthly_profile(&mut store);
         let client_id = applied(
             Executor::new(&mut store)
                 .execute(
@@ -3064,24 +3145,12 @@ mod tests {
                 )
                 .unwrap(),
         );
-        applied(
-            Executor::new(&mut store)
-                .execute(
-                    &EmitInvoice {
-                        client_id,
-                        mission_id: None,
-                        lines: vec![InvoiceLine {
-                            description: "prestation".into(),
-                            quantity: 1.0,
-                            unit_price: Money::from_cents(100_000),
-                            vat_rate: VatRate::Standard,
-                        }],
-                        issued_on: date(2026, TimeMonth::August, 10),
-                        payment_terms_days: 30,
-                    },
-                    &human(),
-                )
-                .unwrap(),
+        // 100 000 HT + 20 000 de TVA = 120 000 TTC. Rien n'est encaissé.
+        service_invoice(
+            &mut store,
+            client_id,
+            date(2026, TimeMonth::August, 10),
+            100_000,
         );
         applied(
             Executor::new(&mut store)
@@ -3097,37 +3166,60 @@ mod tests {
                         receipt_filename: None,
                         bank_transaction_id: None,
                         supplier: None,
-                        paid_by: crate::domain::ExpensePaidBy::Company,
+                        paid_by: ExpensePaidBy::Company,
+
+                        reverse_charge: false,
                     },
                     &human(),
                 )
                 .unwrap(),
         );
-        let briefing =
-            duty_briefing(store.connection(), FiscalDeadlineKind::Ca3, today(), None).unwrap();
+        let briefing = ca3_of(&store, today(), "2026-08");
         assert_eq!(briefing.coverage, BoxCoverage::Complete);
-        let box_of = |case: &str| {
-            briefing
-                .boxes
-                .iter()
-                .find(|b| b.case == case)
-                .unwrap_or_else(|| panic!("case {case}"))
-        };
-        assert_eq!(box_of("02").amount, Some(Money::from_cents(100_000)));
-        assert_eq!(box_of("08").amount, Some(Money::from_cents(20_000)));
-        assert_eq!(box_of("20").amount, Some(Money::from_cents(2_000)));
-        assert_eq!(box_of("28").amount, Some(Money::from_cents(18_000)));
+        assert_eq!(box_amount(&briefing.boxes, "08"), None);
+        assert_eq!(box_amount(&briefing.boxes, "20"), None);
+        assert_eq!(box_amount(&briefing.boxes, "28"), Some(Money::ZERO));
+        assert_eq!(account_cents(&store, 2026, "445881"), -20_000);
+        assert_eq!(account_cents(&store, 2026, "445710"), 0);
+
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &LiquidateCa3 {
+                        period_key: "2026-08".into(),
+                        on: date(2026, TimeMonth::August, 31),
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        let credited: i64 = store
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM journal_lines l
+                   JOIN journal_entries e ON e.id = l.entry_id
+                  WHERE e.piece_ref = 'CA3-2026-08'
+                    AND l.account = '445710'
+                    AND e.reversed_at IS NULL
+                    AND e.reversal_of IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(credited, 0, "l'OD ne touche pas le 445710");
+        assert_eq!(account_cents(&store, 2026, "445881"), -20_000);
     }
 
+    /// 50 000 puis le solde sur 120 000 TTC, TVA 20 000 : 8 333, puis 11 667.
     #[test]
-    fn filed_issue_period_recovers_vat_on_the_write_off_month() {
-        let mut store = test_store("ca3-case-21");
+    fn collected_vat_enters_box_08_on_the_month_of_the_receipt() {
+        let mut store = test_store("ca3-receipts");
         set_monthly_profile(&mut store);
         let client_id = applied(
             Executor::new(&mut store)
                 .execute(
                     &CreateClient {
-                        name: "Bakari".into(),
+                        name: "Atelier Nord".into(),
                         siren: None,
                         vat_number: None,
                         address: None,
@@ -3136,6 +3228,148 @@ mod tests {
                 )
                 .unwrap(),
         );
+        let invoice_id = service_invoice(
+            &mut store,
+            client_id,
+            date(2026, TimeMonth::August, 10),
+            100_000,
+        );
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &RecordPayment {
+                        invoice_id,
+                        amount: Money::from_cents(50_000),
+                        received_on: date(2026, TimeMonth::August, 18),
+                        method: PaymentMethod::BankTransfer,
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        let august = ca3_of(&store, date(2026, TimeMonth::September, 5), "2026-08");
+        assert_eq!(
+            box_amount(&august.boxes, "08"),
+            Some(Money::from_cents(8_333))
+        );
+
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &RecordPayment {
+                        invoice_id,
+                        amount: Money::from_cents(70_000),
+                        received_on: date(2026, TimeMonth::September, 4),
+                        method: PaymentMethod::BankTransfer,
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        let september = ca3_of(&store, date(2026, TimeMonth::September, 5), "2026-09");
+        assert_eq!(
+            box_amount(&september.boxes, "08"),
+            Some(Money::from_cents(11_667))
+        );
+        let august_after = ca3_of(&store, date(2026, TimeMonth::September, 5), "2026-08");
+        assert_eq!(
+            box_amount(&august_after.boxes, "08"),
+            Some(Money::from_cents(8_333))
+        );
+    }
+
+    /// Une dépense non payée n'entre pas en case 20. Payée par la banque, la case
+    /// vaut la TVA déductible écrite au 445660.
+    #[test]
+    fn deductible_vat_enters_box_20_when_the_bank_pays() {
+        let mut store = test_store("ca3-deductible");
+        set_monthly_profile(&mut store);
+        let expense_id = applied(
+            Executor::new(&mut store)
+                .execute(
+                    &RecordExpense {
+                        label: "logiciel".into(),
+                        category: ExpenseCategory::Software,
+                        amount: Money::from_cents(12_000),
+                        vat_rate: VatRate::Standard,
+                        vat_deductible: Money::from_cents(2_000),
+                        incurred_on: date(2026, TimeMonth::August, 12),
+                        receipt_hash: None,
+                        receipt_filename: None,
+                        bank_transaction_id: None,
+                        supplier: None,
+                        paid_by: ExpensePaidBy::Company,
+
+                        reverse_charge: false,
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        let unpaid = ca3_of(&store, today(), "2026-08");
+        assert_eq!(box_amount(&unpaid.boxes, "20"), None);
+        assert_eq!(account_cents(&store, 2026, "445660"), 0);
+
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &ImportBankTransactions {
+                        transactions: vec![ParsedTransaction {
+                            occurred_on: date(2026, TimeMonth::August, 20),
+                            amount_cents: -12_000,
+                            description: "Logiciel".into(),
+                            fitid: None,
+                        }],
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        let tx = list_bank_transactions(store.connection())
+            .unwrap()
+            .into_iter()
+            .find(|tx| tx.amount_cents == -12_000)
+            .unwrap()
+            .id;
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &ReconcileExpense {
+                        transaction_id: tx,
+                        expense_id,
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        let paid = ca3_of(&store, today(), "2026-08");
+        assert_eq!(account_cents(&store, 2026, "445660"), 2_000);
+        assert_eq!(
+            box_amount(&paid.boxes, "20"),
+            Some(Money::from_cents(2_000))
+        );
+    }
+
+    /// La TVA jamais devenue exigible ne se déclare pas, même si le mois d'émission
+    /// est marqué déposé et que la créance passe ensuite en perte.
+    #[test]
+    fn an_uncollected_invoice_stays_out_of_the_filed_month_and_the_write_off() {
+        let mut store = test_store("ca3-uncollected-write-off");
+        set_monthly_profile(&mut store);
+        let client_id = applied(
+            Executor::new(&mut store)
+                .execute(
+                    &CreateClient {
+                        name: "Hélios".into(),
+                        siren: None,
+                        vat_number: None,
+                        address: None,
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        // 1 000,00 € HT × 20 % = 200,00 € de TVA, jamais encaissée.
         let inv = applied(
             Executor::new(&mut store)
                 .execute(
@@ -3145,7 +3379,7 @@ mod tests {
                         lines: vec![InvoiceLine {
                             description: "Mission".into(),
                             quantity: 1.0,
-                            unit_price: Money::from_cents(350_667),
+                            unit_price: Money::from_cents(100_000),
                             vat_rate: VatRate::Standard,
                         }],
                         issued_on: date(2026, TimeMonth::August, 15),
@@ -3186,50 +3420,42 @@ mod tests {
             date(2026, TimeMonth::August, 31),
         )
         .unwrap();
-        assert_eq!(august_vat.collected, Money::from_cents(70_133));
-        assert_eq!(august_vat.taxable_ht, Money::from_cents(350_667));
-        let september = duty_briefing(
-            store.connection(),
-            FiscalDeadlineKind::Ca3,
-            date(2026, TimeMonth::September, 18),
-            Some("2026-09"),
-        )
-        .unwrap();
-        let case_21 = september
-            .boxes
-            .iter()
-            .find(|b| b.case == "21")
-            .unwrap_or_else(|| panic!("case 21 absente : {:?}", september.boxes));
-        assert_eq!(case_21.amount, Some(Money::from_cents(70_133)));
-        let august = duty_briefing(
-            store.connection(),
-            FiscalDeadlineKind::Ca3,
-            date(2026, TimeMonth::September, 18),
-            Some("2026-08"),
-        )
-        .unwrap();
-        assert!(
-            august.boxes.iter().all(|b| b.case != "21"),
-            "août déjà déposé ne reprend pas la taxe : {:?}",
-            august.boxes
-        );
-        let august_08 = august
-            .boxes
-            .iter()
-            .find(|b| b.case == "08")
-            .expect("case 08");
-        assert_eq!(august_08.amount, Some(Money::from_cents(70_133)));
+        assert_eq!(august_vat.collected, Money::ZERO);
+        assert_eq!(august_vat.taxable_ht, Money::ZERO);
+        let august = ca3_of(&store, date(2026, TimeMonth::September, 18), "2026-08");
+        assert_eq!(box_amount(&august.boxes, "08"), None);
+        assert!(august.boxes.iter().all(|b| b.case != "21"));
+        let september = ca3_of(&store, date(2026, TimeMonth::September, 18), "2026-09");
+        assert_eq!(box_amount(&september.boxes, "21"), None);
+        assert_eq!(box_amount(&september.boxes, "08"), None);
+        let october = ca3_of(&store, date(2026, TimeMonth::November, 5), "2026-10");
+        assert_eq!(box_amount(&october.boxes, "22"), None);
     }
 
+    /// L'échéance du calendrier et la lettre portent le montant du livre,
+    /// pas la TVA de la facture émise.
     #[test]
-    fn case_21_credit_carries_into_the_following_period() {
-        let mut store = test_store("ca3-case-21-carry");
+    fn the_ca3_deadline_and_the_letter_use_the_book_amount() {
+        let mut store = test_store("ca3-deadline-book");
         set_monthly_profile(&mut store);
+        let today = date(2026, TimeMonth::September, 5);
+        let period = crate::fiscal::fiscal_calendar(store.connection(), today)
+            .unwrap()
+            .into_iter()
+            .find(|d| d.kind == FiscalDeadlineKind::Ca3)
+            .expect("échéance CA3")
+            .period_key;
+        let (year, month) = period.split_once('-').unwrap();
+        let issued = date(
+            year.parse().unwrap(),
+            TimeMonth::try_from(month.parse::<u8>().unwrap()).unwrap(),
+            10,
+        );
         let client_id = applied(
             Executor::new(&mut store)
                 .execute(
                     &CreateClient {
-                        name: "Bakari".into(),
+                        name: "Atelier Nord".into(),
                         siren: None,
                         vat_number: None,
                         address: None,
@@ -3238,24 +3464,125 @@ mod tests {
                 )
                 .unwrap(),
         );
-        let inv = applied(
+        let invoice_id = service_invoice(&mut store, client_id, issued, 100_000);
+        let amount_of = |store: &Store| {
+            let calendar = crate::fiscal::fiscal_calendar(store.connection(), today)
+                .unwrap()
+                .into_iter()
+                .find(|d| d.kind == FiscalDeadlineKind::Ca3 && d.period_key == period)
+                .expect("échéance")
+                .amount;
+            let duty = society_duties(store.connection(), today)
+                .unwrap()
+                .into_iter()
+                .find(|d| d.kind == FiscalDeadlineKind::Ca3 && d.period_key == period)
+                .expect("démarche")
+                .amount;
+            let letter = crate::day::day_gestures(store.connection(), today)
+                .unwrap()
+                .into_iter()
+                .find_map(|g| match g.source {
+                    crate::day::GestureSource::StateDuty {
+                        deadline,
+                        period_key,
+                        amount,
+                        ..
+                    } if deadline == FiscalDeadlineKind::Ca3 && period_key == period => {
+                        Some(amount)
+                    }
+                    _ => None,
+                });
+            let briefing = ca3_of(store, today, &period);
+            (calendar, duty, letter, briefing)
+        };
+        let (calendar, duty, letter, briefing) = amount_of(&store);
+        assert_eq!(calendar, Some(Money::ZERO));
+        assert_eq!(duty, Some(Money::ZERO));
+        assert_eq!(letter, Some(Some(Money::ZERO)));
+        assert_eq!(
+            briefing.amount,
+            AmountStory::Due {
+                amount: Money::ZERO,
+                basis: AmountBasis::VatForPeriod,
+            }
+        );
+        assert_eq!(box_amount(&briefing.boxes, "08"), None);
+
+        applied(
             Executor::new(&mut store)
                 .execute(
-                    &EmitInvoice {
-                        client_id,
-                        mission_id: None,
-                        lines: vec![InvoiceLine {
-                            description: "Mission".into(),
-                            quantity: 1.0,
-                            unit_price: Money::from_cents(350_667),
-                            vat_rate: VatRate::Standard,
-                        }],
-                        issued_on: date(2026, TimeMonth::August, 15),
-                        payment_terms_days: 30,
+                    &RecordPayment {
+                        invoice_id,
+                        amount: Money::from_cents(50_000),
+                        received_on: issued,
+                        method: PaymentMethod::BankTransfer,
                     },
                     &human(),
                 )
                 .unwrap(),
+        );
+        let (calendar, duty, letter, briefing) = amount_of(&store);
+        assert_eq!(calendar, Some(Money::from_cents(8_333)));
+        assert_eq!(duty, Some(Money::from_cents(8_333)));
+        assert_eq!(letter, Some(Some(Money::from_cents(8_333))));
+        assert_eq!(
+            briefing.amount,
+            AmountStory::Due {
+                amount: Money::from_cents(8_333),
+                basis: AmountBasis::VatForPeriod,
+            }
+        );
+        assert_eq!(
+            box_amount(&briefing.boxes, "08"),
+            Some(Money::from_cents(8_333))
+        );
+        assert_eq!(
+            box_amount(&briefing.boxes, "28"),
+            Some(Money::from_cents(8_333))
+        );
+    }
+
+    /// Un mois déjà marqué déposé ne relit pas la facture si on la modifie ensuite.
+    #[test]
+    fn a_filed_month_keeps_its_boxes_when_the_invoice_is_rewritten() {
+        let mut store = test_store("ca3-filed-freeze");
+        set_monthly_profile(&mut store);
+        let client_id = applied(
+            Executor::new(&mut store)
+                .execute(
+                    &CreateClient {
+                        name: "Atelier Nord".into(),
+                        siren: None,
+                        vat_number: None,
+                        address: None,
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        let invoice_id = service_invoice(
+            &mut store,
+            client_id,
+            date(2026, TimeMonth::August, 10),
+            100_000,
+        );
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &RecordPayment {
+                        invoice_id,
+                        amount: Money::from_cents(120_000),
+                        received_on: date(2026, TimeMonth::August, 20),
+                        method: PaymentMethod::BankTransfer,
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        let before = ca3_of(&store, today(), "2026-08");
+        assert_eq!(
+            box_amount(&before.boxes, "08"),
+            Some(Money::from_cents(20_000))
         );
         applied(
             Executor::new(&mut store)
@@ -3263,51 +3590,38 @@ mod tests {
                     &MarkDutyFiled {
                         kind: FiscalDeadlineKind::Ca3,
                         period_key: "2026-08".into(),
-                        due_on: date(2026, TimeMonth::September, 15),
-                        filed_on: date(2026, TimeMonth::September, 15),
+                        due_on: date(2026, TimeMonth::September, 21),
+                        filed_on: date(2026, TimeMonth::September, 5),
                     },
                     &human(),
                 )
                 .unwrap(),
         );
-        let w = applied(
-            Executor::new(&mut store)
-                .execute(
-                    &WriteOffReceivable {
-                        invoice_id: inv.id,
-                        written_off_on: date(2026, TimeMonth::September, 17),
-                    },
-                    &human(),
-                )
-                .unwrap(),
+        store
+            .connection()
+            .execute_batch("DROP TRIGGER trg_invoice_lines_immutable_update;")
+            .unwrap();
+        store
+            .connection()
+            .execute(
+                "UPDATE invoice_lines SET unit_price_cents = 1 WHERE invoice_id = ?1",
+                [invoice_id.to_string()],
+            )
+            .unwrap();
+        let price: i64 = store
+            .connection()
+            .query_row(
+                "SELECT unit_price_cents FROM invoice_lines WHERE invoice_id = ?1",
+                [invoice_id.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(price, 1);
+        let after = ca3_of(&store, today(), "2026-08");
+        assert_eq!(
+            box_amount(&after.boxes, "08"),
+            Some(Money::from_cents(20_000))
         );
-        assert!(w.recovers_vat);
-        let september = duty_briefing(
-            store.connection(),
-            FiscalDeadlineKind::Ca3,
-            date(2026, TimeMonth::September, 18),
-            Some("2026-09"),
-        )
-        .unwrap();
-        let sept_21 = september
-            .boxes
-            .iter()
-            .find(|b| b.case == "21")
-            .unwrap_or_else(|| panic!("case 21 absente : {:?}", september.boxes));
-        assert_eq!(sept_21.amount, Some(Money::from_cents(70_133)));
-        let october = duty_briefing(
-            store.connection(),
-            FiscalDeadlineKind::Ca3,
-            date(2026, TimeMonth::November, 5),
-            Some("2026-10"),
-        )
-        .unwrap();
-        let oct_22 = october
-            .boxes
-            .iter()
-            .find(|b| b.case == "22")
-            .unwrap_or_else(|| panic!("case 22 absente : {:?}", october.boxes));
-        assert_eq!(oct_22.amount, Some(Money::from_cents(70_133)));
     }
 
     #[test]
@@ -3341,7 +3655,7 @@ mod tests {
                 .execute(
                     &RecordVatCarryIn {
                         after_period: "2026-08".into(),
-                        credit: Money::from_cents(32_400),
+                        credit: Money::from_cents(40_000),
                         source: Some("CA3 août".into()),
                     },
                     &human(),
@@ -3372,11 +3686,11 @@ mod tests {
             .iter()
             .find(|x| x.case == "27")
             .expect("case 27");
-        assert_eq!(sept_22.amount, Some(Money::from_cents(32_400)));
-        assert_eq!(sept_25.amount, Some(Money::from_cents(32_400)));
+        assert_eq!(sept_22.amount, Some(Money::from_cents(40_000)));
+        assert_eq!(sept_25.amount, Some(Money::from_cents(40_000)));
         assert_eq!(
             sept_27.amount,
-            Some(Money::from_cents(32_400)),
+            Some(Money::from_cents(40_000)),
             "sans fait en septembre, le crédit se reporte"
         );
         assert!(
@@ -3401,7 +3715,7 @@ mod tests {
             august
                 .boxes
                 .iter()
-                .all(|b| b.case != "25" || b.amount != Some(Money::from_cents(32_400))),
+                .all(|b| b.case != "25" || b.amount != Some(Money::from_cents(40_000))),
             "août est la période déjà déposée, pas celle qui reçoit le crédit : {:?}",
             august.boxes
         );
@@ -3416,7 +3730,7 @@ mod tests {
                 .execute(
                     &RecordVatCarryIn {
                         after_period: "2026-08".into(),
-                        credit: Money::from_cents(32_400),
+                        credit: Money::from_cents(40_000),
                         source: None,
                     },
                     &human(),
@@ -3438,6 +3752,8 @@ mod tests {
                         bank_transaction_id: None,
                         supplier: None,
                         paid_by: crate::domain::ExpensePaidBy::Company,
+
+                        reverse_charge: false,
                     },
                     &human(),
                 )
@@ -3459,12 +3775,12 @@ mod tests {
         };
         assert_eq!(
             box_of("22").amount,
-            Some(Money::from_cents(34_400)),
-            "324 € repris + 20 € de septembre : {:?}",
+            Some(Money::from_cents(40_000)),
+            "la dépense de septembre n'est pas payée, le crédit repris reste 400 € : {:?}",
             october.boxes
         );
-        assert_eq!(box_of("25").amount, Some(Money::from_cents(34_400)));
-        assert_eq!(box_of("27").amount, Some(Money::from_cents(34_400)));
+        assert_eq!(box_of("25").amount, Some(Money::from_cents(40_000)));
+        assert_eq!(box_of("27").amount, Some(Money::from_cents(40_000)));
     }
 
     #[test]
@@ -3740,7 +4056,7 @@ mod tests {
 
     #[test]
     fn opening_plus_advance_minus_withdrawal_is_what_the_company_owes() {
-        let mut store = test_store("current-604");
+        let mut store = test_store("current-580");
         applied(
             Executor::new(&mut store)
                 .execute(
@@ -3764,9 +4080,9 @@ mod tests {
             Executor::new(&mut store)
                 .execute(
                     &RecordExpense {
-                        label: "CFE 2025".into(),
+                        label: "Taxe locale".into(),
                         category: ExpenseCategory::Taxes,
-                        amount: Money::from_cents(20_400),
+                        amount: Money::from_cents(18_000),
                         vat_rate: VatRate::Zero,
                         vat_deductible: Money::ZERO,
                         incurred_on: date(2026, TimeMonth::January, 15),
@@ -3775,6 +4091,8 @@ mod tests {
                         bank_transaction_id: None,
                         supplier: None,
                         paid_by: ExpensePaidBy::Associate,
+
+                        reverse_charge: false,
                     },
                     &human(),
                 )
@@ -3815,13 +4133,13 @@ mod tests {
 
         let acc = current_account(store.connection(), date(2026, TimeMonth::January, 31)).unwrap();
         assert_eq!(acc.opening, Money::from_cents(50_000));
-        assert_eq!(acc.advanced, Money::from_cents(20_400));
+        assert_eq!(acc.advanced, Money::from_cents(18_000));
         assert_eq!(acc.taken, Money::from_cents(10_000));
         assert_eq!(acc.brought, Money::ZERO);
         assert_eq!(
             acc.balance,
             CurrentAccountBalance::CompanyOwes {
-                amount: Money::from_cents(60_400)
+                amount: Money::from_cents(58_000)
             }
         );
 

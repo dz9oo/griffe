@@ -152,6 +152,13 @@ pub struct Expense {
     /// par la banque.
     #[serde(default)]
     pub paid_by: ExpensePaidBy,
+    /// Prestation intracommunautaire autoliquidée. Défaut : paiement domestique.
+    /// Les dépenses déjà enregistrées restent domestiques.
+    ///
+    /// La charge est le montant payé entier. La TVA française est
+    /// [`VatRate::tax_on`] de ce montant, due en 445200 et déductible en 445662.
+    #[serde(default)]
+    pub reverse_charge: bool,
     #[serde(with = "crate::domain::serde_date::datetime")]
     pub created_at: OffsetDateTime,
     /// Révision optimiste (lot 21) — voir `crate::app::revision`. La colonne SQL existait depuis

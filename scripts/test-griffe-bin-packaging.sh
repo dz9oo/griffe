@@ -132,10 +132,33 @@ fi
 if grep -n 'DeterminateSystems\|nix develop' "$wf" | grep -q griffe-bin; then
   fail "pas de Nix dans griffe-bin"
 fi
-# le job appimage continue de publier AppImage + tar.xz
+# Les jobs de build déposent les artefacts. La Release part de sign-release.
 grep -q 'name: griffe-linux-appimage' "$wf" || fail "artefact AppImage"
 grep -Fq 'target/release/bundle/native/*.tar.xz' "$wf" \
-  || fail "Release tar.xz appimage inchangée"
+  || fail "artefact tar.xz"
+grep -q 'packaging/sign-release.sh' "$wf" || fail "script de signature"
+grep -q 'MINISIGN_SECRET_KEY' "$wf" || fail "secret MINISIGN_SECRET_KEY"
+grep -q 'merge-multiple: true' "$wf" || fail "merge-multiple"
+grep -q 'cp -t publish' "$wf" || fail "rassemblement publish/"
+nrel=$(grep -c 'action-gh-release' "$wf" || true)
+[ "$nrel" -eq 1 ] || fail "une seule publication GitHub Release (trouvé $nrel)"
+sign_line=$(awk '/^  sign-release:/{print NR; exit}' "$wf")
+rel_line=$(awk '/action-gh-release/{print NR; exit}' "$wf")
+[ -n "$sign_line" ] || fail "job sign-release manquant"
+[ "$rel_line" -gt "$sign_line" ] || fail "Release hors de sign-release"
+awk '
+  /^  griffe-bin:/ { p = 1; next }
+  /^  [a-z0-9-]+:/ { p = 0 }
+  p && /MINISIGN/ { bad = 1 }
+  END { exit bad ? 1 : 0 }
+' "$wf" || fail "le conteneur privilégié ne voit pas la clé minisign"
+grep -q 'contents: read' "$wf" || fail "permissions contents: read"
+awk '
+  /^  sign-release:/ { p = 1; next }
+  /^  [a-z0-9-]+:/ { p = 0 }
+  p && /contents: write/ { ok = 1 }
+  END { exit ok ? 0 : 1 }
+' "$wf" || fail "sign-release doit avoir contents: write"
 
 echo "OK yaml-griffe-bin"
 

@@ -401,10 +401,10 @@ mod tests {
 
     #[test]
     fn scale_matches_spec_prorata() {
-        let ht = Money::from_cents(350_667);
-        let remaining = Money::from_cents(320_800);
-        let original = Money::from_cents(420_800);
-        assert_eq!(ht.scale(remaining, original), Money::from_cents(267_333));
+        let ht = Money::from_cents(100_000);
+        let remaining = Money::from_cents(70_000);
+        let original = Money::from_cents(120_000);
+        assert_eq!(ht.scale(remaining, original), Money::from_cents(58_333));
     }
 
     #[test]

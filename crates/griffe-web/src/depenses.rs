@@ -103,6 +103,9 @@ pub struct ExpenseForm {
     /// de `expense record --transaction`.
     bank_transaction_id: Option<String>,
     paid_by: Option<String>,
+    /// Case « prestation intracommunautaire autoliquidée » (`on` quand cochée).
+    /// Absente : paiement domestique.
+    reverse_charge: bool,
 }
 
 /// Fichier reçu dans le champ `receipt` du formulaire, tel quel, avant archivage.
@@ -158,6 +161,7 @@ async fn read_multipart_form(
                 form.bank_transaction_id = Some(value).filter(|v| !v.is_empty());
             }
             "paid_by" => form.paid_by = Some(value).filter(|v| !v.is_empty()),
+            "reverse_charge" => form.reverse_charge = value == "on" || value == "true",
             // Un champ inconnu est une soumission forgée ou un formulaire d'une autre version :
             // ignoré, les validations de champ feront le reste.
             _ => {}
@@ -199,6 +203,7 @@ impl From<&ExpenseForm> for ExpenseFormValues {
             bank_transaction_id: f.bank_transaction_id.clone(),
             bank_transaction_note: None,
             paid_by: f.paid_by.clone().unwrap_or_default(),
+            reverse_charge: f.reverse_charge,
         }
     }
 }
@@ -467,6 +472,7 @@ pub async fn create(State(state): State<AppState>, multipart: Multipart) -> Resp
         bank_transaction_id,
         supplier: parsed.supplier,
         paid_by,
+        reverse_charge: form.reverse_charge,
     };
     match execute(&state, cmd).await {
         None => locked_fragment().into_response(),
@@ -623,6 +629,7 @@ pub async fn update(
             Some("me") => griffe_core::domain::ExpensePaidBy::Associate,
             _ => griffe_core::domain::ExpensePaidBy::Company,
         },
+        reverse_charge: form.reverse_charge,
     };
     match execute(&state, cmd).await {
         None => locked_fragment().into_response(),

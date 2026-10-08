@@ -108,6 +108,7 @@
             cargo-insta
             cargo-machete
             just
+            minisign
             typst
             libxml2 # `xmllint` : validation XSD du XML CII contre le schéma EN 16931 (lot 10)
             sqlcipher

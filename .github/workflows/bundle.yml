@@ -9,7 +9,7 @@ on:
   push:
     tags: ["v*"]
 permissions:
-  contents: write
+  contents: read
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
@@ -98,9 +98,6 @@ jobs:
           # Après un éventuel recompress : le SHA publié doit matcher le fichier.
           sha256sum "$(basename "${img[0]}")" | tee "$(basename "${img[0]}").sha256"
           sha256sum -c "$(basename "${img[0]}").sha256"
-      - name: Notes de version
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: packaging/release-notes.sh "${GITHUB_REF_NAME}" > release-notes.md
       - name: Tarball natif (ELF + Typst, WebKit hôte)
         run: |
           set -euo pipefail
@@ -166,16 +163,6 @@ jobs:
           path: |
             target/release/bundle/native/*.tar.xz
             target/release/bundle/native/*.sha256
-      - name: GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
-        with:
-          body_path: release-notes.md
-          files: |
-            target/release/bundle/appimage/*.AppImage
-            target/release/bundle/appimage/*.sha256
-            target/release/bundle/native/*.tar.xz
-            target/release/bundle/native/*.sha256
   griffe-bin:
     needs: appimage
     runs-on: ubuntu-26.04
@@ -212,17 +199,48 @@ jobs:
             aur-src/.SRCINFO
             aur-src/LICENSE
             aur-src/griffe-bin.changelog
+  sign-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [appimage, griffe-bin]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: minisign
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y minisign
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: griffe-linux-*
+          path: release-staging
+          merge-multiple: true
+      - name: Signer
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: packaging/sign-release.sh release-staging
+      - name: Rassembler
+        run: |
+          set -euo pipefail
+          mkdir -p publish
+          find release-staging -type f \
+            \( -name '*.AppImage' -o -name '*.tar.xz' -o -name '*.pkg.tar.zst' \
+               -o -name '*.sha256' -o -name '*.minisig' \) \
+            -exec cp -t publish {} +
+          test "$(find publish -name '*.minisig' | wc -l)" -eq 3
+          test "$(find publish -name '*.AppImage' | wc -l)" -eq 1
+          test "$(find publish -name '*.tar.xz' | wc -l)" -eq 1
+          test "$(find publish -name '*.pkg.tar.zst' | wc -l)" -eq 1
+          test "$(find publish -name '*.sha256' | wc -l)" -eq 3
       - name: Notes de version
-        if: startsWith(github.ref, 'refs/tags/v')
         run: packaging/release-notes.sh "${GITHUB_REF_NAME}" > release-notes.md
-      - name: GitHub Release (paquet Arch)
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: GitHub Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           body_path: release-notes.md
-          files: |
-            arch-pkg/*.pkg.tar.zst
-            arch-pkg/*.sha256
+          files: publish/*
   aur-publish:
     if: github.event_name == 'workflow_dispatch' && inputs.publish_aur
     needs: griffe-bin

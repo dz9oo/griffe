@@ -558,7 +558,7 @@ fn profile_step(facts: &Facts) -> ClosingStep {
     }
     let director = profile.director_monthly_gross.map_or_else(
         || "président non rémunéré".to_string(),
-        |gross| format!("président rémunéré {gross} brut par mois, coût réputé dû"),
+        |gross| format!("président, brut mensuel déclaré {gross}"),
     );
     let fye = facts.fye();
     let summary = format!(
@@ -1986,7 +1986,9 @@ mod tests {
                     receipt_filename: None,
                     supplier: None,
                     bank_transaction_id: None,
-                    paid_by: crate::domain::ExpensePaidBy::Company,
+                    paid_by: crate::domain::ExpensePaidBy::Associate,
+
+                    reverse_charge: false,
                 },
                 &human(),
             )
@@ -2462,7 +2464,7 @@ mod tests {
         set_profile(&mut store, Some(1_000_000));
         seed_activity(&mut store, 2026);
         close(&mut store, 2026, 22_844);
-        // 2027 : une seule dépense de 800 € HT, aucun CA.
+        // 2027 : une seule dépense de 800 € HT, avancée par l'associé, aucun CA.
         Executor::new(&mut store)
             .execute(
                 &RecordExpense {
@@ -2476,7 +2478,9 @@ mod tests {
                     receipt_filename: Some("honoraires.pdf".to_string()),
                     supplier: None,
                     bank_transaction_id: None,
-                    paid_by: crate::domain::ExpensePaidBy::Company,
+                    paid_by: crate::domain::ExpensePaidBy::Associate,
+
+                    reverse_charge: false,
                 },
                 &human(),
             )
@@ -2612,6 +2616,8 @@ mod tests {
                     supplier: supplier.map(str::to_string),
                     bank_transaction_id: None,
                     paid_by: crate::domain::ExpensePaidBy::Company,
+
+                    reverse_charge: false,
                 },
                 &human(),
             )
@@ -2622,7 +2628,19 @@ mod tests {
     fn the_vat_step_sums_the_exercise_and_counts_the_filings_due() {
         let mut store = test_store("vat-step");
         set_profile(&mut store, Some(1_000_000));
-        seed_activity(&mut store, 2026);
+        let invoice_id = seed_activity(&mut store, 2026);
+        // 7 410 € TTC encaissés : les 1 235 € de TVA deviennent exigibles.
+        Executor::new(&mut store)
+            .execute(
+                &RecordPayment {
+                    invoice_id,
+                    amount: Money::from_cents(741_000),
+                    received_on: date(2026, TimeMonth::October, 15),
+                    method: PaymentMethod::BankTransfer,
+                },
+                &human(),
+            )
+            .unwrap();
         let checklist =
             closing_checklist(store.connection(), 2026, date(2027, TimeMonth::January, 15))
                 .unwrap();

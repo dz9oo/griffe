@@ -28,11 +28,11 @@ pub struct CompanyProfile {
     pub fiscal_year_end: Option<FiscalYearEnd>,
     /// Régime de TVA déclaré (pilote la périodicité CA3).
     pub vat_regime: Option<VatRegime>,
-    /// Rémunération mensuelle brute du président (assimilé salarié). `None` = non rémunéré, donc
-    /// aucune DSN ni cotisation sociale.
+    /// Rémunération mensuelle brute déclarée au profil. Elle ne poste aucune écriture
+    /// et ne crée aucune échéance. `None` = non rémunéré.
     pub director_monthly_gross: Option<Money>,
-    /// Ratio charges/net paramétrable (dix-millièmes, ex. `8000` = 80 %) pour estimer, à titre
-    /// indicatif, les cotisations sociales sur la rémunération du président.
+    /// Ratio charges/brut (dix-millièmes, ex. `8000` = 80 %). Il n'estime pas une échéance :
+    /// celle-ci suit une paie déjà écrite.
     pub director_charge_ratio_bps: Option<u32>,
     /// Nom du président (lot 39) — signataire du PV et des comptes.
     #[serde(default)]

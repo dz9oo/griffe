@@ -995,7 +995,7 @@ fn society_vat_credit_seeds_the_next_ca3() {
             "--after",
             "2026-08",
             "--amount",
-            "324.00",
+            "400.00",
         ])
         .assert()
         .success();
@@ -1008,7 +1008,7 @@ fn society_vat_credit_seeds_the_next_ca3() {
         .clone();
     let value: serde_json::Value = serde_json::from_slice(&show).unwrap();
     assert_eq!(value["after_period"], "2026-08");
-    assert_eq!(value["credit"], 32400);
+    assert_eq!(value["credit"], 40000);
     let duty = unlocked(&db)
         .args([
             "--json",
@@ -1028,11 +1028,11 @@ fn society_vat_credit_seeds_the_next_ca3() {
     let duty: serde_json::Value = serde_json::from_slice(&duty).unwrap();
     let boxes = duty["boxes"].as_array().expect("boxes");
     let case22 = boxes.iter().find(|b| b["case"] == "22").expect("case 22");
-    assert_eq!(case22["amount"], 32400);
+    assert_eq!(case22["amount"], 40000);
     let case25 = boxes.iter().find(|b| b["case"] == "25").expect("case 25");
-    assert_eq!(case25["amount"], 32400);
+    assert_eq!(case25["amount"], 40000);
     let case27 = boxes.iter().find(|b| b["case"] == "27").expect("case 27");
-    assert_eq!(case27["amount"], 32400);
+    assert_eq!(case27["amount"], 40000);
     let again = unlocked(&db)
         .args([
             "society",
@@ -1090,7 +1090,7 @@ fn society_vat_refund_on_december_clears_january() {
             "--after",
             "2026-08",
             "--amount",
-            "324.00",
+            "400.00",
         ])
         .assert()
         .success();
@@ -1102,13 +1102,13 @@ fn society_vat_refund_on_december_clears_january() {
             "request",
             "2026-09",
             "--amount",
-            "324.00",
+            "400.00",
             "--today",
             "2026-09-08",
         ])
         .output()
         .unwrap();
-    assert!(!too_soon.status.success(), "324 € < 760 € en septembre");
+    assert!(!too_soon.status.success(), "400 € < 760 € en septembre");
     let stderr = String::from_utf8_lossy(&too_soon.stderr);
     assert!(stderr.contains("760"), "{stderr}");
 
@@ -1143,7 +1143,7 @@ fn society_vat_refund_on_december_clears_january() {
     let december: serde_json::Value = serde_json::from_slice(&december).unwrap();
     let boxes = december["boxes"].as_array().expect("boxes");
     let case26 = boxes.iter().find(|b| b["case"] == "26").expect("case 26");
-    assert_eq!(case26["amount"], 32400);
+    assert_eq!(case26["amount"], 40000);
     assert!(
         boxes.iter().all(|b| b["case"] != "27"),
         "pas de case 27 : {boxes:?}"
@@ -1174,7 +1174,7 @@ fn society_vat_refund_on_december_clears_january() {
 }
 
 #[test]
-fn society_vat_reversal_drops_september_credit_to_319() {
+fn society_vat_reversal_drops_the_carried_credit() {
     let db = temp_db("society-vat-reversal");
     provision(&db);
     unlocked(&db)
@@ -1210,7 +1210,7 @@ fn society_vat_reversal_drops_september_credit_to_319() {
             "--after",
             "2026-08",
             "--amount",
-            "324.00",
+            "400.00",
         ])
         .assert()
         .success();
@@ -1221,7 +1221,7 @@ fn society_vat_reversal_drops_september_credit_to_319() {
             "record",
             "2026-09",
             "--amount",
-            "5.00",
+            "10.00",
             "--today",
             "2026-09-15",
         ])
@@ -1247,13 +1247,13 @@ fn society_vat_reversal_drops_september_credit_to_319() {
     let duty: serde_json::Value = serde_json::from_slice(&duty).unwrap();
     let boxes = duty["boxes"].as_array().expect("boxes");
     let case15 = boxes.iter().find(|b| b["case"] == "15").expect("case 15");
-    assert_eq!(case15["amount"], 500);
+    assert_eq!(case15["amount"], 1_000);
     let case22 = boxes.iter().find(|b| b["case"] == "22").expect("case 22");
-    assert_eq!(case22["amount"], 32400);
+    assert_eq!(case22["amount"], 40000);
     let case25 = boxes.iter().find(|b| b["case"] == "25").expect("case 25");
-    assert_eq!(case25["amount"], 31900);
+    assert_eq!(case25["amount"], 39000);
     let case27 = boxes.iter().find(|b| b["case"] == "27").expect("case 27");
-    assert_eq!(case27["amount"], 31900);
+    assert_eq!(case27["amount"], 39000);
 
     let shown = unlocked(&db)
         .args(["--json", "society", "show", "--today", "2026-10-08"])
@@ -1264,7 +1264,7 @@ fn society_vat_reversal_drops_september_credit_to_319() {
         .clone();
     let shown: serde_json::Value = serde_json::from_slice(&shown).unwrap();
     assert_eq!(shown["vat_position"]["kind"], "credit");
-    assert_eq!(shown["vat_position"]["amount"], 31900);
+    assert_eq!(shown["vat_position"]["amount"], 39000);
 
     let october = unlocked(&db)
         .args([
@@ -1292,7 +1292,126 @@ fn society_vat_reversal_drops_september_credit_to_319() {
         .iter()
         .find(|b| b["case"] == "22")
         .expect("case 22");
-    assert_eq!(oct22["amount"], 31900);
+    assert_eq!(oct22["amount"], 39000);
+}
+
+#[test]
+fn society_liquidate_writes_the_month_vat_once() {
+    let db = temp_db("society-liquidate");
+    provision(&db);
+    unlocked(&db)
+        .args([
+            "company",
+            "set-profile",
+            "--name",
+            "Lumen Conseil",
+            "--legal-form",
+            "SASU",
+            "--siren",
+            "552100554",
+            "--street",
+            "18 rue des Ateliers",
+            "--postal-code",
+            "69003",
+            "--city",
+            "Lyon",
+            "--country",
+            "FR",
+            "--fiscal-year-end",
+            "30/09",
+            "--vat-regime",
+            "real_normal_monthly",
+        ])
+        .assert()
+        .success();
+    unlocked(&db)
+        .args([
+            "society",
+            "vat-credit",
+            "set",
+            "--after",
+            "2026-08",
+            "--amount",
+            "400.00",
+        ])
+        .assert()
+        .success();
+    unlocked(&db)
+        .args([
+            "society",
+            "vat-reversal",
+            "record",
+            "2026-09",
+            "--amount",
+            "10.00",
+            "--today",
+            "2026-09-15",
+        ])
+        .assert()
+        .success();
+
+    let before = unlocked(&db)
+        .args([
+            "--json",
+            "society",
+            "duty",
+            "ca3",
+            "--period",
+            "2026-09",
+            "--today",
+            "2026-09-30",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let before: serde_json::Value = serde_json::from_slice(&before).unwrap();
+    assert_eq!(before["vat_liquidated"], false);
+    assert_eq!(before["vat_month_elapsed"], true);
+
+    unlocked(&db)
+        .args(["society", "liquidate", "2026-09", "--today", "2026-09-30"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("TVA du mois écrite"));
+    unlocked(&db)
+        .args(["society", "liquidate", "2026-09", "--today", "2026-09-30"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("TVA du mois inchangée"));
+
+    let after = unlocked(&db)
+        .args([
+            "--json",
+            "society",
+            "duty",
+            "ca3",
+            "--period",
+            "2026-09",
+            "--today",
+            "2026-09-30",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let after: serde_json::Value = serde_json::from_slice(&after).unwrap();
+    assert_eq!(after["vat_liquidated"], true);
+    let boxes = after["boxes"].as_array().expect("boxes");
+    assert_eq!(
+        boxes.iter().find(|b| b["case"] == "15").unwrap()["amount"],
+        1_000
+    );
+    assert_eq!(
+        boxes.iter().find(|b| b["case"] == "25").unwrap()["amount"],
+        39000
+    );
+    assert_eq!(
+        boxes.iter().find(|b| b["case"] == "27").unwrap()["amount"],
+        39000
+    );
 }
 
 #[test]
@@ -1421,9 +1540,9 @@ fn invoice_help_is_a_stable_interface_contract() {
 fn agent_write_off_stays_pending_until_a_human_confirms() {
     let db = temp_db("write-off-pending");
     provision(&db);
-    let client_id = create_client(&db, "Bakari");
+    let client_id = create_client(&db, "Hélios");
     let lines =
-        r#"[{"description":"Mission","quantity":1,"unit_price":350667,"vat_rate":"Standard"}]"#;
+        r#"[{"description":"Mission","quantity":1,"unit_price":100000,"vat_rate":"Standard"}]"#;
     let emit_out = unlocked(&db)
         .args([
             "--json",
@@ -1489,9 +1608,9 @@ fn agent_write_off_stays_pending_until_a_human_confirms() {
     assert_eq!(confirmed["status"], "applied");
     assert_eq!(confirmed["result"]["invoice_id"], invoice_id);
     assert_eq!(confirmed["result"]["written_off_on"], "2026-10-15");
-    assert_eq!(confirmed["result"]["ht"], 350667);
-    assert_eq!(confirmed["result"]["vat"], 70133);
-    assert_eq!(confirmed["result"]["ttc"], 420800);
+    assert_eq!(confirmed["result"]["ht"], 100000);
+    assert_eq!(confirmed["result"]["vat"], 20000);
+    assert_eq!(confirmed["result"]["ttc"], 120000);
     assert_eq!(confirmed["result"]["recovers_vat"], false);
     assert!(confirmed["result"]["retracted_on"].is_null());
 
@@ -2120,14 +2239,15 @@ fn fec_export_writes_the_regulatory_file_for_the_exercise() {
         "JournalCode|JournalLib|EcritureNum|EcritureDate|CompteNum|CompteLib|CompAuxNum|CompAuxLib|PieceRef|PieceDate|EcritureLib|Debit|Credit|EcritureLet|DateLet|ValidDate|Montantdevise|Idevise"
     );
     let body: Vec<&str> = records.collect();
-    // Facture : 411 / 706 / 445710 ; dépense : 651 / 445660 / 512 ; puis l'IS de clôture en OD
-    // (lot 31) : 15 % du bénéfice de 1 900 € = 285 €, 695 / 444.
-    assert_eq!(body.len(), 8, "{content}");
+    // Facture non encaissée : 411 / 706 / 445881. La licence n'est pas payée : elle n'entre pas
+    // (pas de 651, pas de 401). L'IS de clôture est recalculé sur le livre :
+    // 15 % de 2 000 € = 300 €, 695 / 444.
+    assert_eq!(body.len(), 5, "{content}");
     assert!(
-        body[6].starts_with("OD|Opérations diverses|1|20261231|695000|"),
+        body[3].starts_with("OD|Opérations diverses|1|20261231|695000|"),
         "{content}"
     );
-    assert!(body[6].ends_with("|285,00|0,00|||20261231||"), "{content}");
+    assert!(body[3].ends_with("|300,00|0,00|||20261231||"), "{content}");
     assert!(
         body[0].starts_with("VE|Ventes|1|20260310|411000|Clients|"),
         "{content}"
@@ -2138,8 +2258,8 @@ fn fec_export_writes_the_regulatory_file_for_the_exercise() {
     );
     assert!(body[0].ends_with("|2400,00|0,00|||20260310||"), "{content}");
     assert!(
-        body[3].starts_with("AC|Achats|1|20260312|651000|"),
-        "{content}"
+        body.iter().all(|line| !line.contains("|651000|")),
+        "facture non payée : aucune charge,\n{content}"
     );
     assert!(body.iter().all(|l| l.split('|').count() == 18), "{content}");
 
@@ -2156,10 +2276,10 @@ fn fec_export_writes_the_regulatory_file_for_the_exercise() {
     let shown = json_result(&out);
     assert_eq!(shown["path"], file.to_str().unwrap());
     assert_eq!(shown["summary"]["file_name"], "552100554FEC20261231.txt");
-    assert_eq!(shown["summary"]["entries"], 3);
-    assert_eq!(shown["summary"]["lines"], 8);
-    assert_eq!(shown["summary"]["total_debit_cents"], 280_500);
-    assert_eq!(shown["summary"]["total_credit_cents"], 280_500);
+    assert_eq!(shown["summary"]["entries"], 2);
+    assert_eq!(shown["summary"]["lines"], 5);
+    assert_eq!(shown["summary"]["total_debit_cents"], 270_000);
+    assert_eq!(shown["summary"]["total_credit_cents"], 270_000);
     assert!(file.exists());
 
     // Le FEC qu'on vient d'écrire passe le contrôle de structure, coffre ouvert (--period)
@@ -3077,6 +3197,8 @@ fn year_deficits_are_carried_forward_then_back_from_the_cli() {
             "16",
             "--incurred-on",
             "2027-03-05",
+            "--paid-by",
+            "me",
         ])
         .assert()
         .success();

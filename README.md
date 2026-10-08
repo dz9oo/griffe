@@ -55,6 +55,12 @@ chmod +x ./Griffe_*.AppImage
 scripts/install-griffe.sh ./Griffe_*.AppImage
 ```
 
+Les Releases construites avec le secret GitHub `MINISIGN_SECRET_KEY` publient un `.minisig` à côté de l’AppImage. Le script le vérifie avant d’écrire, avec la clé embarquée : la même que [`packaging/minisign.pub`](packaging/minisign.pub) et que [minisign.pub](https://dz9oo.github.io/griffe/minisign.pub). Il faut le paquet `minisign` (`pacman -S minisign`, `apt install minisign`). Les Releases déjà en ligne n’ont pas encore ce fichier. Le `.sha256` reste un contrôle d’intégrité.
+
+```bash
+minisign -Vm ./Griffe_*.AppImage -p packaging/minisign.pub
+```
+
 Le script copie l’AppImage vers `~/.local/bin/griffe` (un fichier, pas un
 lien), écrit l’icône et la fiche `.desktop`. Pas de `sudo`, pas de réseau.
 WebKit et Typst sont dans l’AppImage. Tes données restent dans
@@ -72,7 +78,8 @@ rm ~/.local/bin/griffe \
 ```
 
 Sans le clone, copie [`scripts/install-griffe.sh`](scripts/install-griffe.sh)
-depuis ce dépôt, ou colle les trois `install` / `cat` :
+depuis ce dépôt : le script vérifie la signature. Les trois commandes
+`install` / `cat` qui suivent copient le fichier, elles ne le vérifient pas.
 
 ```sh
 chmod +x ./Griffe_*.AppImage
@@ -105,7 +112,13 @@ native (`~/.local/lib/griffe/`) existe, la retirer **avant** `pacman -U`
 ```bash
 rm -f ~/.local/bin/griffe-desktop \
   ~/.local/lib/griffe/griffe-desktop ~/.local/lib/griffe/typst
-sudo pacman -U ./griffe-bin-0.3.6-1-x86_64.pkg.tar.zst
+sudo pacman -U ./griffe-bin-0.3.7-1-x86_64.pkg.tar.zst
+```
+
+Pour une Release qui publie le `.minisig`, la vérification précède `pacman -U` :
+
+```bash
+minisign -Vm ./griffe-bin-<version>-1-x86_64.pkg.tar.zst -p packaging/minisign.pub
 ```
 
 Désinstall : `sudo pacman -Rns griffe-bin`. Le coffre
@@ -114,6 +127,12 @@ nouveau fichier.
 
 Sans pacman, le tarball `griffe-*-x86_64-linux.tar.xz` et
 `scripts/install-griffe-native.sh` restent le geste `~/.local`.
+Le script vérifie le `.minisig` du tarball de la même façon. Un répertoire
+déjà déballé sur la machine n’a pas cette signature.
+
+```bash
+minisign -Vm ./griffe-<version>-x86_64-linux.tar.xz -p packaging/minisign.pub
+```
 
 L’AUR `griffe-bin` n’est pas soumis pour l’instant : le binaire pacman
 vit sur la GitHub Release, pas dans l’AUR.

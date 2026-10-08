@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use super::Money;
+
 /// Un taux de TVA français. `Zero` couvre l'exonération, l'autoliquidation intracommunautaire
 /// et l'export : dans les trois cas la ligne apparaît sur la facture sans TVA collectée.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -43,6 +45,16 @@ impl VatRate {
         }
     }
 
+    /// TVA française ajoutée à une base hors taxe : `montant × taux`, au centime,
+    /// par [`Money::apply_rate_bps`]. Ce n'est pas la TVA contenue dans un TTC.
+    ///
+    /// 10 000 centimes au taux normal font 2 000 centimes :
+    /// `10 000 × 2 000 / 10 000`, sans reste.
+    #[must_use]
+    pub fn tax_on(self, amount: Money) -> Money {
+        amount.apply_rate_bps(self.basis_points())
+    }
+
     /// Les cinq taux, dans un ordre stable — utilisé pour construire une ventilation de TVA
     /// déterministe (une ligne par taux réellement présent sur la facture).
     pub const ALL: [Self; 5] = [
@@ -80,5 +92,14 @@ mod tests {
             ht.apply_rate_bps(VatRate::Standard.basis_points()),
             Money::from_cents(123_500)
         );
+    }
+
+    /// 100,00 € × 20 % = 20,00 €, sans reste.
+    #[test]
+    fn standard_tax_on_10000_cents_is_2000() {
+        let base = Money::from_cents(10_000);
+        let vat = VatRate::Standard.tax_on(base);
+        assert_eq!(vat, Money::from_cents(2_000));
+        assert!(vat <= base);
     }
 }

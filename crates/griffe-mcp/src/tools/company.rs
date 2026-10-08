@@ -57,11 +57,11 @@ pub(crate) struct SetProfileArgs {
     /// Régime de TVA : `real_normal_monthly`, `real_normal_quarterly`, `real_simplified`, ou
     /// `franchise`.
     vat_regime: Option<String>,
-    /// Rémunération mensuelle brute du président (assimilé salarié), en centimes. Absent = non
-    /// rémunéré.
+    /// Rémunération mensuelle brute déclarée, en centimes. Elle ne poste aucune paie.
+    /// Absent = non rémunéré.
     director_monthly_gross_cents: Option<i64>,
-    /// Ratio charges/net du dirigeant, en dix-millièmes (ex. `8000` = 80 %), pour estimer les
-    /// cotisations.
+    /// Ratio charges/brut, en dix-millièmes (ex. `8000` = 80 %). Il ne remplit pas le
+    /// calendrier.
     director_charge_ratio_bps: Option<u32>,
     /// Nom du président (signataire du PV et des comptes).
     president_name: Option<String>,

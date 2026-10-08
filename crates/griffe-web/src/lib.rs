@@ -269,6 +269,14 @@ pub fn router(state: AppState) -> Router {
             "/societe/impots/{kind}/{period}/vat-reversal/retract",
             post(handlers::societe_vat_reversal_retract_at),
         )
+        .route(
+            "/societe/impots/{kind}/vat-liquidation",
+            post(handlers::societe_vat_liquidation),
+        )
+        .route(
+            "/societe/impots/{kind}/{period}/vat-liquidation",
+            post(handlers::societe_vat_liquidation_at),
+        )
         .route("/societe/cloture", get(handlers::societe_closing))
         .route("/societe/releve", get(handlers::societe_statement))
         .route("/societe/identite", get(handlers::societe_identity))

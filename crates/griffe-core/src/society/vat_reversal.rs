@@ -283,8 +283,8 @@ mod tests {
         );
     }
 
-    fn seed_carry_324(store: &mut Store) {
-        seed_carry(store, "2026-08", 32_400);
+    fn seed_sample_credit(store: &mut Store) {
+        seed_carry(store, "2026-08", 40_000);
     }
 
     fn record(
@@ -333,47 +333,47 @@ mod tests {
     }
 
     #[test]
-    fn september_five_euros_drops_the_credit_to_319() {
-        let mut store = test_store("sept-5");
+    fn a_ten_euro_reversal_drops_the_carried_credit() {
+        let mut store = test_store("sept-reversal");
         set_monthly_profile(&mut store);
-        seed_carry_324(&mut store);
+        seed_sample_credit(&mut store);
         let on = date(2026, TimeMonth::September, 15);
 
         let september = ca3(&store, on, "2026-09");
-        assert_eq!(box_of(&september, "22").amount, Some(cents(32_400)));
-        assert_eq!(box_of(&september, "25").amount, Some(cents(32_400)));
-        assert_eq!(box_of(&september, "27").amount, Some(cents(32_400)));
+        assert_eq!(box_of(&september, "22").amount, Some(cents(40_000)));
+        assert_eq!(box_of(&september, "25").amount, Some(cents(40_000)));
+        assert_eq!(box_of(&september, "27").amount, Some(cents(40_000)));
         assert!(!has_case(&september, "15"), "{:?}", september.boxes);
         assert!(!has_case(&september, "26"), "{:?}", september.boxes);
         assert!(!has_case(&september, "28"), "{:?}", september.boxes);
         assert!(september.vat_reversal.is_none());
 
-        applied(record(&mut store, "2026-09", 500, on).unwrap());
+        applied(record(&mut store, "2026-09", 1_000, on).unwrap());
 
         let september = ca3(&store, on, "2026-09");
-        assert_eq!(box_of(&september, "15").amount, Some(cents(500)));
-        assert_eq!(box_of(&september, "22").amount, Some(cents(32_400)));
-        assert_eq!(box_of(&september, "25").amount, Some(cents(31_900)));
-        assert_eq!(box_of(&september, "27").amount, Some(cents(31_900)));
+        assert_eq!(box_of(&september, "15").amount, Some(cents(1_000)));
+        assert_eq!(box_of(&september, "22").amount, Some(cents(40_000)));
+        assert_eq!(box_of(&september, "25").amount, Some(cents(39_000)));
+        assert_eq!(box_of(&september, "27").amount, Some(cents(39_000)));
         assert!(!has_case(&september, "26"), "{:?}", september.boxes);
         assert!(!has_case(&september, "28"), "{:?}", september.boxes);
-        assert_eq!(september.vat_reversal, Some(cents(500)));
+        assert_eq!(september.vat_reversal, Some(cents(1_000)));
 
         let carry = vat_carry_in(store.connection()).unwrap().unwrap();
         assert_eq!(carry.after_period, "2026-08");
-        assert_eq!(carry.credit, cents(32_400));
+        assert_eq!(carry.credit, cents(40_000));
 
         let october = ca3(&store, date(2026, TimeMonth::October, 8), "2026-10");
-        assert_eq!(box_of(&october, "22").amount, Some(cents(31_900)));
-        assert_eq!(box_of(&october, "25").amount, Some(cents(31_900)));
-        assert_eq!(box_of(&october, "27").amount, Some(cents(31_900)));
+        assert_eq!(box_of(&october, "22").amount, Some(cents(39_000)));
+        assert_eq!(box_of(&october, "25").amount, Some(cents(39_000)));
+        assert_eq!(box_of(&october, "27").amount, Some(cents(39_000)));
         assert!(!has_case(&october, "15"), "{:?}", october.boxes);
 
         let pos = vat_position(store.connection(), date(2026, TimeMonth::October, 8)).unwrap();
         assert_eq!(
             pos,
             Some(VatPosition::Credit {
-                amount: cents(31_900)
+                amount: cents(39_000)
             })
         );
         let home = society_home(store.connection(), date(2026, TimeMonth::October, 8)).unwrap();
@@ -381,8 +381,8 @@ mod tests {
     }
 
     #[test]
-    fn december_2025_four_hundred_sixty_four_euros() {
-        let mut store = test_store("dec-464");
+    fn a_december_reversal_reduces_the_carried_credit() {
+        let mut store = test_store("dec-reversal");
         set_monthly_profile(&mut store);
         applied(
             Executor::new(&mut store)
@@ -402,22 +402,24 @@ mod tests {
                 )
                 .unwrap(),
         );
-        seed_carry(&mut store, "2025-11", 64_300);
+        seed_carry(&mut store, "2025-11", 50_000);
         applied(
             Executor::new(&mut store)
                 .execute(
                     &RecordExpense {
                         label: "logiciel".into(),
                         category: ExpenseCategory::Software,
-                        amount: Money::from_cents(14_400),
+                        amount: Money::from_cents(12_000),
                         vat_rate: VatRate::Standard,
-                        vat_deductible: Money::from_cents(2_400),
+                        vat_deductible: Money::from_cents(2_000),
                         incurred_on: date(2025, TimeMonth::December, 12),
                         receipt_hash: None,
                         receipt_filename: None,
                         bank_transaction_id: None,
                         supplier: None,
-                        paid_by: crate::domain::ExpensePaidBy::Company,
+                        paid_by: crate::domain::ExpensePaidBy::Associate,
+
+                        reverse_charge: false,
                     },
                     &human(),
                 )
@@ -425,17 +427,17 @@ mod tests {
         );
         let on = date(2026, TimeMonth::January, 8);
         let december = ca3(&store, on, "2025-12");
-        assert_eq!(box_of(&december, "22").amount, Some(cents(64_300)));
-        assert_eq!(box_of(&december, "20").amount, Some(cents(2_400)));
-        assert_eq!(box_of(&december, "25").amount, Some(cents(66_700)));
-        assert_eq!(box_of(&december, "27").amount, Some(cents(66_700)));
+        assert_eq!(box_of(&december, "22").amount, Some(cents(50_000)));
+        assert_eq!(box_of(&december, "20").amount, Some(cents(2_000)));
+        assert_eq!(box_of(&december, "25").amount, Some(cents(52_000)));
+        assert_eq!(box_of(&december, "27").amount, Some(cents(52_000)));
 
-        applied(record(&mut store, "2025-12", 46_400, on).unwrap());
+        applied(record(&mut store, "2025-12", 15_000, on).unwrap());
         let december = ca3(&store, on, "2025-12");
-        assert_eq!(box_of(&december, "15").amount, Some(cents(46_400)));
-        assert_eq!(box_of(&december, "22").amount, Some(cents(64_300)));
-        assert_eq!(box_of(&december, "25").amount, Some(cents(20_300)));
-        assert_eq!(box_of(&december, "27").amount, Some(cents(20_300)));
+        assert_eq!(box_of(&december, "15").amount, Some(cents(15_000)));
+        assert_eq!(box_of(&december, "22").amount, Some(cents(50_000)));
+        assert_eq!(box_of(&december, "25").amount, Some(cents(37_000)));
+        assert_eq!(box_of(&december, "27").amount, Some(cents(37_000)));
         assert!(!has_case(&december, "26"), "{:?}", december.boxes);
     }
 
@@ -443,12 +445,12 @@ mod tests {
     fn two_reversals_on_two_periods_coexist() {
         let mut store = test_store("two-periods");
         set_monthly_profile(&mut store);
-        seed_carry_324(&mut store);
+        seed_sample_credit(&mut store);
         applied(
             record(
                 &mut store,
                 "2026-09",
-                500,
+                1_000,
                 date(2026, TimeMonth::September, 15),
             )
             .unwrap(),
@@ -467,7 +469,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .amount,
-            cents(500)
+            cents(1_000)
         );
         assert_eq!(
             vat_reversal_for(store.connection(), "2026-10")
@@ -477,21 +479,21 @@ mod tests {
             cents(1_000)
         );
         let october = ca3(&store, date(2026, TimeMonth::October, 8), "2026-10");
-        assert_eq!(box_of(&october, "22").amount, Some(cents(31_900)));
+        assert_eq!(box_of(&october, "22").amount, Some(cents(39_000)));
         assert_eq!(box_of(&october, "15").amount, Some(cents(1_000)));
-        assert_eq!(box_of(&october, "27").amount, Some(cents(30_900)));
+        assert_eq!(box_of(&october, "27").amount, Some(cents(38_000)));
     }
 
     #[test]
     fn an_agent_only_deposits_a_pending_action() {
         let mut store = test_store("agent");
         set_monthly_profile(&mut store);
-        seed_carry_324(&mut store);
+        seed_sample_credit(&mut store);
         let outcome = Executor::new(&mut store)
             .execute(
                 &RecordVatReversal {
                     period_key: "2026-09".into(),
-                    amount: cents(500),
+                    amount: cents(1_000),
                     recorded_on: date(2026, TimeMonth::September, 15),
                 },
                 &agent(),
@@ -512,9 +514,9 @@ mod tests {
     fn retracting_a_filing_does_not_drop_the_reversal() {
         let mut store = test_store("retract-filing");
         set_monthly_profile(&mut store);
-        seed_carry_324(&mut store);
+        seed_sample_credit(&mut store);
         let on = date(2026, TimeMonth::September, 15);
-        applied(record(&mut store, "2026-09", 500, on).unwrap());
+        applied(record(&mut store, "2026-09", 1_000, on).unwrap());
         let briefing = ca3(&store, on, "2026-09");
         applied(
             Executor::new(&mut store)
@@ -538,7 +540,7 @@ mod tests {
             )
             .unwrap_err();
         assert!(while_filed.to_string().contains("déposée"), "{while_filed}");
-        let again = record(&mut store, "2026-09", 500, on).unwrap_err();
+        let again = record(&mut store, "2026-09", 1_000, on).unwrap_err();
         assert!(again.to_string().contains("déposée"), "{again}");
 
         applied(
@@ -555,7 +557,7 @@ mod tests {
         let still = vat_reversal_for(store.connection(), "2026-09")
             .unwrap()
             .expect("le 15 survit au dépôt rétracté");
-        assert_eq!(still.amount, cents(500));
+        assert_eq!(still.amount, cents(1_000));
 
         applied(
             Executor::new(&mut store)
@@ -568,7 +570,7 @@ mod tests {
                 .unwrap(),
         );
         let restored = ca3(&store, on, "2026-09");
-        assert_eq!(box_of(&restored, "27").amount, Some(cents(32_400)));
+        assert_eq!(box_of(&restored, "27").amount, Some(cents(40_000)));
         assert!(!has_case(&restored, "15"), "{:?}", restored.boxes);
     }
 
@@ -576,19 +578,19 @@ mod tests {
     fn a_reversal_larger_than_credit_creates_a_due() {
         let mut store = test_store("due");
         set_monthly_profile(&mut store);
-        seed_carry_324(&mut store);
+        seed_sample_credit(&mut store);
         let on = date(2026, TimeMonth::September, 15);
-        applied(record(&mut store, "2026-09", 40_000, on).unwrap());
+        applied(record(&mut store, "2026-09", 55_000, on).unwrap());
         let september = ca3(&store, on, "2026-09");
-        assert_eq!(box_of(&september, "15").amount, Some(cents(40_000)));
-        assert_eq!(box_of(&september, "28").amount, Some(cents(7_600)));
+        assert_eq!(box_of(&september, "15").amount, Some(cents(55_000)));
+        assert_eq!(box_of(&september, "28").amount, Some(cents(15_000)));
         assert!(!has_case(&september, "25"), "{:?}", september.boxes);
         assert!(!has_case(&september, "27"), "{:?}", september.boxes);
         let pos = vat_position(store.connection(), date(2026, TimeMonth::October, 8)).unwrap();
         assert_eq!(
             pos,
             Some(VatPosition::Due {
-                amount: cents(7_600)
+                amount: cents(15_000)
             })
         );
     }
@@ -597,21 +599,21 @@ mod tests {
     fn a_reversal_that_would_break_an_existing_refund_is_refused() {
         let mut store = test_store("refund-lock");
         set_monthly_profile(&mut store);
-        seed_carry_324(&mut store);
+        seed_sample_credit(&mut store);
         let on = date(2027, TimeMonth::January, 8);
         applied(
             Executor::new(&mut store)
                 .execute(
                     &RequestVatRefund {
                         period_key: "2026-12".into(),
-                        amount: cents(32_400),
+                        amount: cents(40_000),
                         requested_on: on,
                     },
                     &human(),
                 )
                 .unwrap(),
         );
-        let err = record(&mut store, "2026-12", 500, on).unwrap_err();
+        let err = record(&mut store, "2026-12", 1_000, on).unwrap_err();
         assert!(
             err.to_string().contains("versement") || err.to_string().contains("crédit"),
             "{err}"
@@ -627,13 +629,13 @@ mod tests {
     fn other_refusals() {
         let mut store = test_store("refusals");
         set_monthly_profile(&mut store);
-        seed_carry_324(&mut store);
+        seed_sample_credit(&mut store);
         let on = date(2026, TimeMonth::September, 15);
         let zero = record(&mut store, "2026-09", 0, on).unwrap_err();
         assert!(zero.to_string().contains("positif"), "{zero}");
 
-        applied(record(&mut store, "2026-09", 500, on).unwrap());
-        let second = record(&mut store, "2026-09", 500, on).unwrap_err();
+        applied(record(&mut store, "2026-09", 1_000, on).unwrap());
+        let second = record(&mut store, "2026-09", 1_000, on).unwrap_err();
         assert!(second.to_string().contains("déjà"), "{second}");
 
         let missing = Executor::new(&mut store)
@@ -669,7 +671,7 @@ mod tests {
         let err = record(
             &mut before,
             "2026-09",
-            500,
+            1_000,
             date(2026, TimeMonth::October, 8),
         )
         .unwrap_err();

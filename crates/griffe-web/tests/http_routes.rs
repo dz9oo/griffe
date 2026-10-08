@@ -991,7 +991,7 @@ async fn les_affaires_qualifies_amounts_and_opens_an_outgoing_dossier() {
     Executor::new(&mut store)
         .execute(
             &CreateProspect {
-                prospect_name: "Mairie de Lewarde".into(),
+                prospect_name: "Atelier Nord".into(),
                 address: None,
                 representative: None,
                 email: None,
@@ -1019,6 +1019,8 @@ async fn les_affaires_qualifies_amounts_and_opens_an_outgoing_dossier() {
                 bank_transaction_id: None,
                 supplier: Some("Tiime".into()),
                 paid_by: griffe_core::domain::ExpensePaidBy::Company,
+
+                reverse_charge: false,
             },
             &human_ctx(),
         )
@@ -1049,7 +1051,7 @@ async fn les_affaires_qualifies_amounts_and_opens_an_outgoing_dossier() {
     assert!(list.contains("Chez qui ça sort"), "{list}");
     assert!(!list.contains("Fournisseurs"), "{list}");
     assert!(
-        list.contains("autour de") && list.contains("Mairie de Lewarde"),
+        list.contains("autour de") && list.contains("Atelier Nord"),
         "l'enveloppe se dit : {list}"
     );
     assert!(
@@ -1084,7 +1086,7 @@ async fn les_affaires_qualifies_amounts_and_opens_an_outgoing_dossier() {
         router
             .oneshot(
                 Request::builder()
-                    .uri("/affaires/Mairie%20de%20Lewarde")
+                    .uri("/affaires/Atelier%20Nord")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1879,7 +1881,7 @@ async fn a_vat_carry_in_posted_from_the_letter_fills_case_25() {
                 .uri("/societe/impots/ca3/2026-09/vat-credit")
                 .header("content-type", "application/x-www-form-urlencoded")
                 .header("HX-Request", "true")
-                .body(Body::from("after_period=2026-08&credit=324.00"))
+                .body(Body::from("after_period=2026-08&credit=400.00"))
                 .unwrap(),
         )
         .await
@@ -1887,7 +1889,7 @@ async fn a_vat_carry_in_posted_from_the_letter_fills_case_25() {
     assert_eq!(posted.status(), StatusCode::OK);
     let body = body_text(posted).await;
     assert!(
-        body.contains("324,00") || body.contains("324.00"),
+        body.contains("400,00") || body.contains("400.00"),
         "cases 22 et 25 après reprise : {body}"
     );
     assert!(body.contains("Figé"), "{body}");
@@ -1897,7 +1899,7 @@ async fn a_vat_carry_in_posted_from_the_letter_fills_case_25() {
     );
     assert!(
         !body.contains("L\u{2019}État me le verse") && !body.contains("L'État me le verse"),
-        "324 € < 760 € en septembre : {body}"
+        "400 € < 760 € en septembre : {body}"
     );
     assert!(body.contains("760"), "seuil en cours d'année : {body}");
     assert!(body.contains("150"), "seuil de fin d'année : {body}");
@@ -1917,14 +1919,14 @@ async fn a_vat_carry_in_posted_from_the_letter_fills_case_25() {
     assert_eq!(again.status(), StatusCode::OK);
     let again_body = body_text(again).await;
     assert!(
-        again_body.contains("324,00") || again_body.contains("324.00"),
+        again_body.contains("400,00") || again_body.contains("400.00"),
         "le 100 € n'écrase pas : {again_body}"
     );
     assert!(!again_body.contains("100,00"), "{again_body}");
 }
 
 #[tokio::test]
-async fn letter_vat_reversal_drops_september_to_319() {
+async fn letter_vat_reversal_drops_the_carried_credit() {
     let db_path = test_db_path("letter-vat-reversal");
     let state = unlocked_state(&db_path)
         .await
@@ -1969,7 +1971,7 @@ async fn letter_vat_reversal_drops_september_to_319() {
                 .execute(
                     &griffe_core::society::RecordVatCarryIn {
                         after_period: "2026-08".into(),
-                        credit: Money::from_cents(32_400),
+                        credit: Money::from_cents(40_000),
                         source: Some("CA3 août".into()),
                     },
                     &human_ctx(),
@@ -2022,7 +2024,7 @@ async fn letter_vat_reversal_drops_september_to_319() {
                 .uri("/societe/impots/ca3/2026-09/vat-reversal")
                 .header("content-type", "application/x-www-form-urlencoded")
                 .header("HX-Request", "true")
-                .body(Body::from("amount=5.00"))
+                .body(Body::from("amount=10.00"))
                 .unwrap(),
         )
         .await
@@ -2034,8 +2036,8 @@ async fn letter_vat_reversal_drops_september_to_319() {
         Some(b"griffe:saved" as &[u8])
     );
     let body = body_text(posted).await;
-    assert!(body.contains("5,00") || body.contains("5.00"), "{body}");
-    assert!(body.contains("319,00") || body.contains("319.00"), "{body}");
+    assert!(body.contains("10,00") || body.contains("10.00"), "{body}");
+    assert!(body.contains("390,00") || body.contains("390.00"), "{body}");
     assert!(body.contains("rendus"), "{body}");
     let site = body.find("Sur le site").expect("Sur le site");
     assert!(
@@ -2058,10 +2060,198 @@ async fn letter_vat_reversal_drops_september_to_319() {
     )
     .await;
     assert!(
-        home.contains("319,00") || home.contains("319.00") || home.contains("319"),
-        "La société montre 319 : {home}"
+        home.contains("390,00") || home.contains("390.00"),
+        "La société montre 390 : {home}"
     );
     assert!(home.contains("TVA"), "{home}");
+}
+
+#[tokio::test]
+async fn letter_writes_the_month_vat_once_and_the_morning_letter_stays_plain() {
+    let db_path = test_db_path("letter-vat-liquidation");
+    let state = unlocked_state(&db_path)
+        .await
+        .with_today(time::macros::date!(2026 - 09 - 30));
+    {
+        let mut store =
+            Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &griffe_core::company::SetCompanyProfile {
+                        name: "Lumen Conseil".into(),
+                        legal_form: "SASU".into(),
+                        siren: griffe_core::domain::Siren::parse("552100554").unwrap(),
+                        vat_number: None,
+                        address: griffe_core::domain::Address {
+                            street: "18 rue des Ateliers".into(),
+                            postal_code: "69003".into(),
+                            city: "Lyon".into(),
+                            country: "FR".into(),
+                        },
+                        share_capital: Some(Money::from_cents(100_000)),
+                        rcs_city: Some("Lyon".into()),
+                        iban: None,
+                        fiscal_year_end: Some(
+                            griffe_core::domain::FiscalYearEnd::new(9, 30).unwrap(),
+                        ),
+                        vat_regime: Some(griffe_core::domain::VatRegime::RealNormalMonthly),
+                        director_monthly_gross: None,
+                        director_charge_ratio_bps: None,
+                        president_name: None,
+                        sole_shareholder_name: None,
+                        sole_shareholder_address: None,
+                        share_count: None,
+                    },
+                    &human_ctx(),
+                )
+                .unwrap(),
+        );
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &griffe_core::society::RecordVatCarryIn {
+                        after_period: "2026-08".into(),
+                        credit: Money::from_cents(40_000),
+                        source: Some("déclaration d'août".into()),
+                    },
+                    &human_ctx(),
+                )
+                .unwrap(),
+        );
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &griffe_core::society::MarkDutyFiled {
+                        kind: griffe_core::fiscal::FiscalDeadlineKind::Ca3,
+                        period_key: "2026-08".into(),
+                        due_on: time::macros::date!(2026 - 09 - 21),
+                        filed_on: time::macros::date!(2026 - 09 - 08),
+                    },
+                    &human_ctx(),
+                )
+                .unwrap(),
+        );
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &griffe_core::society::RecordVatReversal {
+                        period_key: "2026-09".into(),
+                        amount: Money::from_cents(1_000),
+                        recorded_on: time::macros::date!(2026 - 09 - 15),
+                    },
+                    &human_ctx(),
+                )
+                .unwrap(),
+        );
+    }
+    let router = griffe_web::router(state);
+
+    let august = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/societe/impots/ca3/2026-08")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        !august.contains("Écrire la TVA du mois"),
+        "un mois déposé n'offre pas l'écriture : {august}"
+    );
+
+    let september = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/societe/impots/ca3/2026-09")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(september.contains("Écrire la TVA du mois"), "{september}");
+    assert!(
+        !september.contains("La TVA du mois est écrite."),
+        "{september}"
+    );
+
+    let posted = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/societe/impots/ca3/2026-09/vat-liquidation")
+                .header("HX-Request", "true")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(posted.status(), StatusCode::OK);
+    assert_eq!(
+        posted.headers().get("HX-Trigger").map(|v| v.as_bytes()),
+        Some(b"griffe:saved" as &[u8])
+    );
+    let body = body_text(posted).await;
+    assert!(body.contains("La TVA du mois est écrite."), "{body}");
+    assert!(body.contains("390,00") || body.contains("390.00"), "{body}");
+    let site = body.find("Sur le site").expect("Sur le site");
+    assert!(
+        !body[..site].contains("3310") && !body[..site].contains("CA3"),
+        "le geste ne nomme pas le formulaire : {body}"
+    );
+
+    let again = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/societe/impots/ca3/2026-09/vat-liquidation")
+                .header("HX-Request", "true")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(again.status(), StatusCode::OK);
+    assert_eq!(
+        again.headers().get("HX-Trigger").map(|v| v.as_bytes()),
+        Some(b"griffe:saved" as &[u8])
+    );
+
+    let live: i64 = Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE))
+        .unwrap()
+        .connection()
+        .query_row(
+            "SELECT COUNT(*) FROM journal_entries
+              WHERE source_kind = 'vat_liquidation' AND source_id = '2026-09'
+                AND reversed_at IS NULL AND reversal_of IS NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(live, 1);
+
+    let morning = body_text(
+        router
+            .oneshot(Request::builder().uri("/jour").body(Body::empty()).unwrap())
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(!morning.contains("CA3"), "{morning}");
+    assert!(!morning.contains("3310"), "{morning}");
+    assert!(!morning.contains("3514"), "{morning}");
+    assert!(morning.contains("Savoir pour la TVA"), "{morning}");
 }
 
 fn assert_3519_only_after_sur_le_site(html: &str) {
@@ -2124,7 +2314,7 @@ async fn requesting_the_december_credit_from_the_letter_fills_case_26() {
                 .execute(
                     &griffe_core::society::RecordVatCarryIn {
                         after_period: "2026-08".into(),
-                        credit: Money::from_cents(32_400),
+                        credit: Money::from_cents(40_000),
                         source: Some("test".into()),
                     },
                     &human_ctx(),
@@ -2163,10 +2353,7 @@ async fn requesting_the_december_credit_from_the_letter_fills_case_26() {
     )
     .await;
     assert!(jour.contains("Savoir pour la TVA"), "{jour}");
-    assert!(
-        jour.contains("324,00") || jour.contains("324"),
-        "montant du crédit offert : {jour}"
-    );
+    assert!(jour.contains("400,00"), "montant du crédit offert : {jour}");
     assert!(jour.contains("récupérer"), "{jour}");
 
     let posted = router
@@ -2185,8 +2372,8 @@ async fn requesting_the_december_credit_from_the_letter_fills_case_26() {
     assert_eq!(posted.headers().get("HX-Trigger").unwrap(), "griffe:saved");
     let body = body_text(posted).await;
     assert!(
-        body.contains("324,00") || body.contains("324.00"),
-        "case 26 = 324 : {body}"
+        body.contains("400,00") || body.contains("400.00"),
+        "case 26 = 400 : {body}"
     );
     assert!(body.contains("À vous verser"), "{body}");
     assert!(
@@ -2520,6 +2707,8 @@ async fn every_screen_renders_successfully_against_a_freshly_seeded_vault() {
                     supplier: None,
                     bank_transaction_id: None,
                     paid_by: griffe_core::domain::ExpensePaidBy::Company,
+
+                    reverse_charge: false,
                 },
                 &human_ctx(),
             )
@@ -7071,9 +7260,9 @@ async fn creating_an_expense_without_payer_or_statement_is_refused() {
     let router = griffe_web::router(state);
     let (content_type, body) = multipart_form(
         &[
-            ("label", "CFE 2025"),
+            ("label", "Taxe locale"),
             ("category", "taxes"),
-            ("amount", "204.00"),
+            ("amount", "180.00"),
             ("vat_rate", "zero"),
             ("vat_deductible", "0.00"),
             ("incurred_on", "2026-01-15"),
@@ -7110,9 +7299,9 @@ async fn creating_an_associate_paid_expense_keeps_the_panel() {
     let router = griffe_web::router(state);
     let (content_type, body) = multipart_form(
         &[
-            ("label", "CFE 2025"),
+            ("label", "Taxe locale"),
             ("category", "taxes"),
-            ("amount", "204.00"),
+            ("amount", "180.00"),
             ("vat_rate", "zero"),
             ("vat_deductible", "0.00"),
             ("incurred_on", "2026-01-15"),
@@ -7138,7 +7327,7 @@ async fn creating_an_associate_paid_expense_keeps_the_panel() {
     );
     let body = body_text(response).await;
     assert!(body.contains("La société te doit"), "{body}");
-    assert!(body.contains("204"), "{body}");
+    assert!(body.contains("180,00"), "{body}");
 }
 
 #[tokio::test]
@@ -7312,7 +7501,7 @@ async fn the_dossier_lets_a_human_stop_waiting_for_an_invoice() {
                     lines: vec![griffe_core::domain::InvoiceLine {
                         description: "Prestation".to_string(),
                         quantity: 1.0,
-                        unit_price: Money::from_cents(350_667),
+                        unit_price: Money::from_cents(100_000),
                         vat_rate: griffe_core::domain::VatRate::Standard,
                     }],
                     issued_on: time::Date::from_calendar_date(2026, time::Month::September, 1)
@@ -7448,7 +7637,7 @@ async fn the_dossier_archives_a_local_notice_when_the_issue_period_was_filed() {
                     lines: vec![griffe_core::domain::InvoiceLine {
                         description: "Prestation".to_string(),
                         quantity: 1.0,
-                        unit_price: Money::from_cents(350_667),
+                        unit_price: Money::from_cents(100_000),
                         vat_rate: griffe_core::domain::VatRate::Standard,
                     }],
                     issued_on: time::Date::from_calendar_date(2026, time::Month::August, 15)
@@ -9121,4 +9310,41 @@ async fn october_first_declares_september_vat_and_closes_the_year_that_just_ende
         jour.contains("href=\"/societe/cloture\""),
         "la ligne ouvre Clore : {jour}"
     );
+}
+
+/// Le drapeau est sur le formulaire de dépense. La lettre du matin ne le porte pas.
+#[tokio::test]
+async fn the_expense_form_offers_reverse_charge_and_the_morning_letter_does_not() {
+    let state = unlocked_state(&test_db_path("reverse-charge-form")).await;
+    let router = griffe_web::router(state);
+
+    let form = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/depenses/new")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        form.contains("Prestation intracommunautaire autoliquidée"),
+        "{form}"
+    );
+    assert!(form.contains("name=\"reverse_charge\""), "{form}");
+
+    let letter = body_text(
+        router
+            .oneshot(Request::builder().uri("/jour").body(Body::empty()).unwrap())
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(!letter.contains("reverse_charge"), "{letter}");
+    assert!(!letter.contains("445662"), "{letter}");
+    assert!(!letter.contains("445200"), "{letter}");
 }

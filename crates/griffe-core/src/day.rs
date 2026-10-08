@@ -1072,6 +1072,8 @@ mod tests {
                             bank_transaction_id: None,
                             supplier: None,
                             paid_by: crate::domain::ExpensePaidBy::Company,
+
+                            reverse_charge: false,
                         },
                         &human(),
                     )
@@ -1363,6 +1365,8 @@ mod tests {
                             bank_transaction_id: None,
                             supplier: None,
                             paid_by: crate::domain::ExpensePaidBy::Company,
+
+                            reverse_charge: false,
                         },
                         &human(),
                     )
@@ -1524,7 +1528,7 @@ mod tests {
     }
 
     fn stale_invoice(store: &mut Store) -> crate::domain::InvoiceId {
-        let client = create_client(store, "Bakari");
+        let client = create_client(store, "Hélios");
         applied(
             Executor::new(store)
                 .execute(
@@ -1534,7 +1538,7 @@ mod tests {
                         lines: vec![InvoiceLine {
                             description: "Mission".into(),
                             quantity: 1.0,
-                            unit_price: Money::from_cents(350_667),
+                            unit_price: Money::from_cents(100_000),
                             vat_rate: VatRate::Standard,
                         }],
                         issued_on: date(2026, TimeMonth::July, 1),
@@ -1609,8 +1613,8 @@ mod tests {
                 ..
             } => {
                 assert_eq!(*id, invoice_id);
-                assert_eq!(party, "Bakari");
-                assert_eq!(*amount, Money::from_cents(420_800));
+                assert_eq!(party, "Hélios");
+                assert_eq!(*amount, Money::from_cents(120_000));
             }
             other => panic!("{other:?}"),
         }

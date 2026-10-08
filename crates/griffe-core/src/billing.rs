@@ -29,7 +29,7 @@ pub use queries::{
     verify_chain,
 };
 pub(crate) use row::{
-    active_write_off_for, bank_transaction_for_expense, clear_transaction_match, list_write_offs,
+    bank_transaction_for_expense, clear_transaction_match, list_write_offs,
     mark_transaction_matched_expense,
 };
 pub use totals::{InvoiceTotals, VatBreakdownLine, compute_totals};
@@ -40,12 +40,14 @@ mod tests {
 
     use super::*;
     use crate::app::{Actor, AppError, ExecutionContext, Executor, Outcome};
+    use crate::company::SetCompanyProfile;
     use crate::domain::{
-        ClientId, InvoiceLine, InvoiceOrigin, InvoiceWriteOff, Money, PaymentMethod, VatRate,
-        WriteOffId,
+        Address, ClientId, FiscalYear, FiscalYearEnd, InvoiceLine, InvoiceOrigin, InvoiceWriteOff,
+        Money, PaymentMethod, Siren, VatRate, VatRegime, WriteOffId,
     };
-    use crate::store::Store;
-    use crate::store::testing::test_store as empty_test_store;
+    use crate::ledger::{Journal, build_ledger};
+    use crate::store::testing::{PASSPHRASE, test_store as empty_test_store};
+    use crate::store::{Passphrase, Store};
 
     fn date(year: i32, month: Month, day: u8) -> Date {
         Date::from_calendar_date(year, month, day).unwrap()
@@ -70,11 +72,11 @@ mod tests {
         }]
     }
 
-    fn bakari_lines() -> Vec<InvoiceLine> {
+    fn mission_lines() -> Vec<InvoiceLine> {
         vec![InvoiceLine {
             description: "Mission".into(),
             quantity: 1.0,
-            unit_price: Money::from_cents(350_667),
+            unit_price: Money::from_cents(100_000),
             vat_rate: VatRate::Standard,
         }]
     }
@@ -94,11 +96,11 @@ mod tests {
         emitted
     }
 
-    fn emit_bakari(store: &mut Store, client_id: ClientId, issued_on: Date) -> EmittedInvoice {
+    fn emit_mission(store: &mut Store, client_id: ClientId, issued_on: Date) -> EmittedInvoice {
         let cmd = EmitInvoice {
             client_id,
             mission_id: None,
-            lines: bakari_lines(),
+            lines: mission_lines(),
             issued_on,
             payment_terms_days: 30,
         };
@@ -1369,9 +1371,9 @@ mod tests {
             id: WriteOffId::new(),
             invoice_id: emitted.id,
             written_off_on: date(2026, Month::September, 17),
-            ht: Money::from_cents(267_333),
-            vat: Money::from_cents(53_467),
-            ttc: Money::from_cents(320_800),
+            ht: Money::from_cents(58_333),
+            vat: Money::from_cents(11_667),
+            ttc: Money::from_cents(70_000),
             recovers_vat: false,
             retracted_on: None,
         };
@@ -1395,7 +1397,7 @@ mod tests {
     #[test]
     fn writing_off_an_unpaid_invoice_clears_aged_balance_without_a_credit_note() {
         let (mut store, client_id) = test_store("write-off-ok");
-        let inv = emit_bakari(&mut store, client_id, date(2026, Month::August, 15));
+        let inv = emit_mission(&mut store, client_id, date(2026, Month::August, 15));
         let Outcome::Applied(w) = Executor::new(&mut store)
             .execute(
                 &WriteOffReceivable {
@@ -1408,9 +1410,9 @@ mod tests {
         else {
             panic!("expected Applied")
         };
-        assert_eq!(w.ht, Money::from_cents(350_667));
-        assert_eq!(w.vat, Money::from_cents(70_133));
-        assert_eq!(w.ttc, Money::from_cents(420_800));
+        assert_eq!(w.ht, Money::from_cents(100_000));
+        assert_eq!(w.vat, Money::from_cents(20_000));
+        assert_eq!(w.ttc, Money::from_cents(120_000));
         assert!(!w.recovers_vat);
         assert!(
             aged_balance(store.connection(), date(2026, Month::September, 17))
@@ -1423,7 +1425,7 @@ mod tests {
     #[test]
     fn cannot_write_off_twice_or_credit_after_write_off() {
         let (mut store, client_id) = test_store("write-off-twice");
-        let inv = emit_bakari(&mut store, client_id, date(2026, Month::August, 15));
+        let inv = emit_mission(&mut store, client_id, date(2026, Month::August, 15));
         let write_off = WriteOffReceivable {
             invoice_id: inv.id,
             written_off_on: date(2026, Month::September, 17),
@@ -1463,7 +1465,7 @@ mod tests {
     fn cannot_write_off_a_credited_or_fully_paid_invoice() {
         let (mut store, client_id) = test_store("write-off-guards");
         let issued_on = date(2026, Month::August, 15);
-        let inv = emit_bakari(&mut store, client_id, issued_on);
+        let inv = emit_mission(&mut store, client_id, issued_on);
         let Outcome::Applied(credit) = Executor::new(&mut store)
             .execute(
                 &IssueCreditNote {
@@ -1505,12 +1507,12 @@ mod tests {
             "{on_credit_note}"
         );
 
-        let paid_inv = emit_bakari(&mut store, client_id, issued_on);
+        let paid_inv = emit_mission(&mut store, client_id, issued_on);
         Executor::new(&mut store)
             .execute(
                 &RecordPayment {
                     invoice_id: paid_inv.id,
-                    amount: Money::from_cents(420_800),
+                    amount: Money::from_cents(120_000),
                     received_on: date(2026, Month::September, 1),
                     method: PaymentMethod::BankTransfer,
                 },
@@ -1531,7 +1533,7 @@ mod tests {
             "{nothing}"
         );
 
-        let unpaid = emit_bakari(&mut store, client_id, issued_on);
+        let unpaid = emit_mission(&mut store, client_id, issued_on);
         let too_early = Executor::new(&mut store)
             .execute(
                 &WriteOffReceivable {
@@ -1550,12 +1552,12 @@ mod tests {
     #[test]
     fn partial_payment_writes_off_only_the_remainder() {
         let (mut store, client_id) = test_store("write-off-partial");
-        let inv = emit_bakari(&mut store, client_id, date(2026, Month::August, 15));
+        let inv = emit_mission(&mut store, client_id, date(2026, Month::August, 15));
         Executor::new(&mut store)
             .execute(
                 &RecordPayment {
                     invoice_id: inv.id,
-                    amount: Money::from_cents(100_000),
+                    amount: Money::from_cents(50_000),
                     received_on: date(2026, Month::September, 1),
                     method: PaymentMethod::BankTransfer,
                 },
@@ -1575,9 +1577,9 @@ mod tests {
         else {
             panic!("expected Applied")
         };
-        assert_eq!(w.ttc, Money::from_cents(320_800));
-        assert_eq!(w.ht, Money::from_cents(267_333));
-        assert_eq!(w.vat, Money::from_cents(53_467));
+        assert_eq!(w.ttc, Money::from_cents(70_000));
+        assert_eq!(w.ht, Money::from_cents(58_333));
+        assert_eq!(w.vat, Money::from_cents(11_667));
         assert!(!w.recovers_vat);
         assert!(
             aged_balance(store.connection(), date(2026, Month::September, 17))
@@ -1590,7 +1592,7 @@ mod tests {
     #[test]
     fn an_agent_only_deposits_a_pending_write_off() {
         let (mut store, client_id) = test_store("write-off-agent");
-        let inv = emit_bakari(&mut store, client_id, date(2026, Month::August, 15));
+        let inv = emit_mission(&mut store, client_id, date(2026, Month::August, 15));
         let agent_ctx = ExecutionContext::new(
             Actor::Agent {
                 session: "sess-1".into(),
@@ -1628,7 +1630,8 @@ mod tests {
     #[test]
     fn unfiled_write_off_is_absent_from_collected_vat() {
         let (mut store, client_id) = test_store("write-off-unfiled-vat");
-        let inv = emit_bakari(&mut store, client_id, date(2026, Month::August, 15));
+        provision(&mut store);
+        let inv = emit_mission(&mut store, client_id, date(2026, Month::August, 15));
         let Outcome::Applied(_) = Executor::new(&mut store)
             .execute(
                 &WriteOffReceivable {
@@ -1654,7 +1657,7 @@ mod tests {
     #[test]
     fn cannot_write_off_in_a_filed_month() {
         let (mut store, client_id) = test_store("write-off-filed-month");
-        let inv = emit_bakari(&mut store, client_id, date(2026, Month::August, 15));
+        let inv = emit_mission(&mut store, client_id, date(2026, Month::August, 15));
         Executor::new(&mut store)
             .execute(
                 &crate::society::MarkDutyFiled {
@@ -1684,7 +1687,7 @@ mod tests {
     #[test]
     fn cannot_write_off_in_a_closed_fiscal_year() {
         let (mut store, client_id) = test_store("write-off-closed-year");
-        let inv = emit_bakari(&mut store, client_id, date(2026, Month::August, 15));
+        let inv = emit_mission(&mut store, client_id, date(2026, Month::August, 15));
         store
             .connection()
             .execute(
@@ -1718,7 +1721,7 @@ mod tests {
     #[test]
     fn retracting_a_write_off_restores_aged_balance() {
         let (mut store, client_id) = test_store("retract-write-off-ok");
-        let inv = emit_bakari(&mut store, client_id, date(2026, Month::August, 15));
+        let inv = emit_mission(&mut store, client_id, date(2026, Month::August, 15));
         let Outcome::Applied(w) = Executor::new(&mut store)
             .execute(
                 &WriteOffReceivable {
@@ -1752,7 +1755,7 @@ mod tests {
 
         let aged = aged_balance(store.connection(), date(2026, Month::September, 18)).unwrap();
         assert_eq!(aged.len(), 1);
-        assert_eq!(aged[0].outstanding, Money::from_cents(420_800));
+        assert_eq!(aged[0].outstanding, Money::from_cents(120_000));
         assert!(
             row::active_write_off_for(store.connection(), inv.id)
                 .unwrap()
@@ -1767,7 +1770,7 @@ mod tests {
     #[test]
     fn cannot_retract_when_the_write_off_month_is_filed() {
         let (mut store, client_id) = test_store("retract-write-off-filed");
-        let inv = emit_bakari(&mut store, client_id, date(2026, Month::August, 15));
+        let inv = emit_mission(&mut store, client_id, date(2026, Month::August, 15));
         let Outcome::Applied(w) = Executor::new(&mut store)
             .execute(
                 &WriteOffReceivable {
@@ -1821,7 +1824,7 @@ mod tests {
     #[test]
     fn an_agent_only_deposits_a_pending_retract() {
         let (mut store, client_id) = test_store("retract-write-off-agent");
-        let inv = emit_bakari(&mut store, client_id, date(2026, Month::August, 15));
+        let inv = emit_mission(&mut store, client_id, date(2026, Month::August, 15));
         let Outcome::Applied(w) = Executor::new(&mut store)
             .execute(
                 &WriteOffReceivable {
@@ -1859,5 +1862,390 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    /// Prestations, option pour les encaissements (CGI art. 269, 2, c).
+    /// HT 100 000, TVA 20 000, TTC 120 000 — posés à la main.
+    /// Une facture émise et non payée débite 411, crédite 706 et 445881.
+    /// Aucun 445710. Une seconde lecture ne réécrit pas l'écriture.
+    #[test]
+    fn an_unpaid_service_invoice_keeps_vat_pending_until_collection() {
+        let (mut store, client_id) = test_store("sale-unpaid");
+        provision(&mut store);
+        let emitted = emit_service(&mut store, client_id, date(2026, Month::March, 10));
+
+        let ledger = build_ledger(store.connection(), FiscalYear::calendar(2026)).unwrap();
+        let of = |number: &str| account_balance(&ledger, number);
+        assert_eq!(of("411000"), Money::from_cents(120_000));
+        assert_eq!(of("706000"), Money::from_cents(-100_000));
+        assert_eq!(of("445881"), Money::from_cents(-20_000));
+        assert_eq!(of("445710"), Money::ZERO);
+        assert_eq!(of("512000"), Money::ZERO);
+
+        let sale = ledger
+            .entries
+            .iter()
+            .find(|e| e.journal == Journal::Sales && e.piece_ref == emitted.number)
+            .expect("écriture de vente");
+        assert_eq!(sale.date, date(2026, Month::March, 10));
+        assert_eq!(
+            sale.lines[0].aux.as_ref().map(|aux| aux.label.as_str()),
+            Some("Argon Digital")
+        );
+        assert_eq!(
+            journal_amounts(store.connection(), &emitted.number, "VE"),
+            vec![
+                ("411000".to_string(), 120_000),
+                ("706000".to_string(), -100_000),
+                ("445881".to_string(), -20_000),
+            ]
+        );
+
+        let _ = build_ledger(store.connection(), FiscalYear::calendar(2026)).unwrap();
+        assert_eq!(live_count(store.connection(), "sale"), 1);
+
+        let path = store.db_path().to_path_buf();
+        drop(store);
+        let store = Store::open_with_passphrase(&path, &Passphrase::from(PASSPHRASE)).unwrap();
+        assert_eq!(live_count(store.connection(), "sale"), 1);
+        let again = build_ledger(store.connection(), FiscalYear::calendar(2026)).unwrap();
+        assert_eq!(
+            account_balance(&again, "445881"),
+            Money::from_cents(-20_000)
+        );
+        assert_eq!(account_balance(&again, "445710"), Money::ZERO);
+    }
+
+    /// Premier encaissement 50 000 : TVA déplacée 8 333.
+    /// Solde 70 000 : TVA déplacée 11 667. Somme 20 000.
+    #[test]
+    fn a_partial_receipt_then_the_balance_moves_the_hand_set_vat_cents() {
+        let (mut store, client_id) = test_store("sale-partial");
+        provision(&mut store);
+        let emitted = emit_service(&mut store, client_id, date(2026, Month::March, 10));
+        pay(&mut store, emitted.id, 50_000, date(2026, Month::April, 2));
+
+        let mid = build_ledger(store.connection(), FiscalYear::calendar(2026)).unwrap();
+        assert_eq!(account_balance(&mid, "411000"), Money::from_cents(70_000));
+        assert_eq!(account_balance(&mid, "512000"), Money::from_cents(50_000));
+        assert_eq!(account_balance(&mid, "706000"), Money::from_cents(-100_000));
+        assert_eq!(account_balance(&mid, "445881"), Money::from_cents(-11_667));
+        assert_eq!(account_balance(&mid, "445710"), Money::from_cents(-8_333));
+        assert_eq!(
+            journal_amounts(store.connection(), &emitted.number, "BQ"),
+            vec![
+                ("512000".to_string(), 50_000),
+                ("411000".to_string(), -50_000),
+                ("445881".to_string(), 8_333),
+                ("445710".to_string(), -8_333),
+            ]
+        );
+
+        pay(&mut store, emitted.id, 70_000, date(2026, Month::May, 20));
+        let done = build_ledger(store.connection(), FiscalYear::calendar(2026)).unwrap();
+        assert_eq!(account_balance(&done, "411000"), Money::ZERO);
+        assert_eq!(account_balance(&done, "512000"), Money::from_cents(120_000));
+        assert_eq!(
+            account_balance(&done, "706000"),
+            Money::from_cents(-100_000)
+        );
+        assert_eq!(account_balance(&done, "445881"), Money::ZERO);
+        assert_eq!(account_balance(&done, "445710"), Money::from_cents(-20_000));
+        assert_eq!(live_count(store.connection(), "sale"), 1);
+        assert_eq!(live_count(store.connection(), "sale_collection"), 2);
+        let _ = build_ledger(store.connection(), FiscalYear::calendar(2026)).unwrap();
+        assert_eq!(live_count(store.connection(), "sale_collection"), 2);
+    }
+
+    /// Un avoir sur une facture non encaissée inverse 411, 706 et 445881.
+    /// Les lignes de la facture déjà émise ne changent pas.
+    #[test]
+    fn a_credit_note_on_an_uncollected_invoice_reverses_pending_vat() {
+        let (mut store, client_id) = test_store("sale-credit");
+        provision(&mut store);
+        let emitted = emit_service(&mut store, client_id, date(2026, Month::March, 10));
+        let original = journal_amounts(store.connection(), &emitted.number, "VE");
+        let credit = Executor::new(&mut store)
+            .execute(
+                &IssueCreditNote {
+                    invoice_id: emitted.id,
+                    issued_on: date(2026, Month::March, 18),
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+        let Outcome::Applied(credit) = credit else {
+            panic!("expected Applied")
+        };
+
+        assert_eq!(
+            journal_amounts(store.connection(), &emitted.number, "VE"),
+            original,
+            "la facture émise n'est pas réécrite"
+        );
+        assert_eq!(
+            journal_amounts(store.connection(), &credit.number, "VE"),
+            vec![
+                ("411000".to_string(), -120_000),
+                ("706000".to_string(), 100_000),
+                ("445881".to_string(), 20_000),
+            ]
+        );
+        let ledger = build_ledger(store.connection(), FiscalYear::calendar(2026)).unwrap();
+        assert_eq!(account_balance(&ledger, "411000"), Money::ZERO);
+        assert_eq!(account_balance(&ledger, "706000"), Money::ZERO);
+        assert_eq!(account_balance(&ledger, "445881"), Money::ZERO);
+        assert_eq!(account_balance(&ledger, "445710"), Money::ZERO);
+    }
+
+    /// Annuler l'encaissement extourne la trésorerie et ramène la TVA de 445710 vers 445881.
+    /// Les centimes déjà écrits restent.
+    #[test]
+    fn voiding_a_receipt_returns_the_moved_vat_to_pending() {
+        let (mut store, client_id) = test_store("sale-void");
+        provision(&mut store);
+        let emitted = emit_service(&mut store, client_id, date(2026, Month::March, 10));
+        let payment_id = pay(&mut store, emitted.id, 50_000, date(2026, Month::April, 2));
+        let booked = journal_amounts(store.connection(), &emitted.number, "BQ");
+        assert_eq!(
+            booked,
+            vec![
+                ("512000".to_string(), 50_000),
+                ("411000".to_string(), -50_000),
+                ("445881".to_string(), 8_333),
+                ("445710".to_string(), -8_333),
+            ]
+        );
+
+        Executor::new(&mut store)
+            .execute(
+                &VoidPayment {
+                    payment_id,
+                    reason: Some("doublon".to_string()),
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+
+        assert_eq!(
+            journal_amounts(store.connection(), &emitted.number, "BQ"),
+            booked,
+            "l'encaissement d'origine n'est pas réécrit"
+        );
+        let reversal_date: String = store
+            .connection()
+            .query_row(
+                "SELECT entry_date FROM journal_entries
+                  WHERE reversal_of IS NOT NULL AND journal = 'BQ'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(reversal_date, "2026-04-02");
+        assert_eq!(
+            journal_amounts(store.connection(), &format!("EXT-{}", emitted.number), "BQ"),
+            vec![
+                ("512000".to_string(), -50_000),
+                ("411000".to_string(), 50_000),
+                ("445881".to_string(), -8_333),
+                ("445710".to_string(), 8_333),
+            ]
+        );
+
+        let ledger = build_ledger(store.connection(), FiscalYear::calendar(2026)).unwrap();
+        assert_eq!(
+            account_balance(&ledger, "411000"),
+            Money::from_cents(120_000)
+        );
+        assert_eq!(account_balance(&ledger, "512000"), Money::ZERO);
+        assert_eq!(
+            account_balance(&ledger, "445881"),
+            Money::from_cents(-20_000)
+        );
+        assert_eq!(account_balance(&ledger, "445710"), Money::ZERO);
+        assert_eq!(
+            account_balance(&ledger, "706000"),
+            Money::from_cents(-100_000)
+        );
+    }
+
+    /// Une écriture datée dans un exercice clos est refusée : ni la facture, ni l'encaissement.
+    #[test]
+    fn a_sale_or_receipt_dated_in_a_closed_exercise_is_refused() {
+        let (mut store, client_id) = test_store("sale-closed");
+        provision(&mut store);
+        store
+            .connection()
+            .execute(
+                "INSERT INTO fiscal_years (
+                    id, starts_on, ends_on, revenue_ht_cents, expenses_cents,
+                    director_remuneration_cents, result_before_tax_cents,
+                    corporate_tax_cents, net_result_cents, retained_earnings_cents,
+                    created_at
+                 ) VALUES (
+                    '0199aaaa-0000-7000-8000-000000000001', '2026-01-01', '2026-12-31',
+                    0, 0, 0, 0, 0, 0, 0, '2026-01-01T00:00:00Z'
+                 )",
+                [],
+            )
+            .unwrap();
+
+        let refused = Executor::new(&mut store).execute(
+            &EmitInvoice {
+                client_id,
+                mission_id: None,
+                lines: service_lines(),
+                issued_on: date(2026, Month::June, 15),
+                payment_terms_days: 30,
+            },
+            &human_ctx(),
+        );
+        assert!(
+            matches!(refused, Err(AppError::Domain(ref msg)) if msg.contains("clos")),
+            "facture dans un exercice clos : {refused:?}"
+        );
+        let invoices: i64 = store
+            .connection()
+            .query_row("SELECT count(*) FROM invoices", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(invoices, 0);
+
+        let emitted = emit_service(&mut store, client_id, date(2027, Month::February, 1));
+        let refused_pay = Executor::new(&mut store).execute(
+            &RecordPayment {
+                invoice_id: emitted.id,
+                amount: Money::from_cents(50_000),
+                received_on: date(2026, Month::December, 15),
+                method: PaymentMethod::BankTransfer,
+            },
+            &human_ctx(),
+        );
+        assert!(
+            matches!(refused_pay, Err(AppError::Domain(ref msg)) if msg.contains("clos")),
+            "encaissement dans un exercice clos : {refused_pay:?}"
+        );
+        assert_eq!(live_count(store.connection(), "sale_collection"), 0);
+        let open = build_ledger(store.connection(), FiscalYear::calendar(2027)).unwrap();
+        assert_eq!(account_balance(&open, "411000"), Money::from_cents(120_000));
+        assert_eq!(account_balance(&open, "445881"), Money::from_cents(-20_000));
+        assert_eq!(account_balance(&open, "445710"), Money::ZERO);
+    }
+
+    fn service_lines() -> Vec<InvoiceLine> {
+        vec![InvoiceLine {
+            description: "Mission".into(),
+            quantity: 1.0,
+            unit_price: Money::from_cents(100_000),
+            vat_rate: VatRate::Standard,
+        }]
+    }
+
+    fn emit_service(store: &mut Store, client_id: ClientId, issued_on: Date) -> EmittedInvoice {
+        let cmd = EmitInvoice {
+            client_id,
+            mission_id: None,
+            lines: service_lines(),
+            issued_on,
+            payment_terms_days: 30,
+        };
+        let Outcome::Applied(emitted) = Executor::new(store).execute(&cmd, &human_ctx()).unwrap()
+        else {
+            panic!("expected Applied")
+        };
+        emitted
+    }
+
+    fn pay(
+        store: &mut Store,
+        invoice_id: crate::domain::InvoiceId,
+        cents: i64,
+        received_on: Date,
+    ) -> crate::domain::PaymentId {
+        let Outcome::Applied(id) = Executor::new(store)
+            .execute(
+                &RecordPayment {
+                    invoice_id,
+                    amount: Money::from_cents(cents),
+                    received_on,
+                    method: PaymentMethod::BankTransfer,
+                },
+                &human_ctx(),
+            )
+            .unwrap()
+        else {
+            panic!("expected Applied")
+        };
+        id
+    }
+
+    fn provision(store: &mut Store) {
+        Executor::new(store)
+            .execute(
+                &SetCompanyProfile {
+                    name: "Argon Digital".to_string(),
+                    legal_form: "SASU".to_string(),
+                    siren: Siren::parse("552100554").unwrap(),
+                    vat_number: None,
+                    address: Address {
+                        street: "12 rue de la Paix".to_string(),
+                        postal_code: "75002".to_string(),
+                        city: "Paris".to_string(),
+                        country: "FR".to_string(),
+                    },
+                    share_capital: Some(Money::from_cents(100_000)),
+                    rcs_city: Some("Paris".to_string()),
+                    iban: None,
+                    fiscal_year_end: Some(FiscalYearEnd::CALENDAR),
+                    vat_regime: Some(VatRegime::RealNormalMonthly),
+                    director_monthly_gross: None,
+                    director_charge_ratio_bps: None,
+                    president_name: None,
+                    sole_shareholder_name: None,
+                    sole_shareholder_address: None,
+                    share_count: None,
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+    }
+
+    fn account_balance(ledger: &crate::ledger::Ledger, number: &str) -> Money {
+        ledger
+            .trial_balance()
+            .rows
+            .iter()
+            .find(|row| row.account.number == number)
+            .map_or(Money::ZERO, |row| row.balance)
+    }
+
+    fn journal_amounts(
+        conn: &rusqlite::Connection,
+        piece_ref: &str,
+        journal: &str,
+    ) -> Vec<(String, i64)> {
+        conn.prepare(
+            "SELECT l.account, l.amount_cents
+               FROM journal_lines l
+               JOIN journal_entries e ON e.id = l.entry_id
+              WHERE e.piece_ref = ?1 AND e.journal = ?2
+              ORDER BY e.entry_date, e.created_at, l.position",
+        )
+        .unwrap()
+        .query_map(rusqlite::params![piece_ref, journal], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+    }
+
+    fn live_count(conn: &rusqlite::Connection, source_kind: &str) -> i64 {
+        conn.query_row(
+            "SELECT count(*) FROM journal_entries
+              WHERE source_kind = ?1 AND reversed_at IS NULL AND reversal_of IS NULL",
+            [source_kind],
+            |row| row.get(0),
+        )
+        .unwrap()
     }
 }

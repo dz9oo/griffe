@@ -318,6 +318,8 @@ impl Store {
             }
         }
         migrations.to_latest(&mut conn)?;
+        crate::journal::backfill_expense_payments(&mut conn)?;
+        crate::journal::backfill_service_bookings(&mut conn)?;
         tighten_permissions(db_path);
         Ok(Self {
             conn,
@@ -786,6 +788,8 @@ impl Store {
         apply_key(&conn, &new_key)?;
         configure(&conn)?;
         migrations::migrations().to_latest(&mut conn)?;
+        crate::journal::backfill_expense_payments(&mut conn)?;
+        crate::journal::backfill_service_bookings(&mut conn)?;
         tighten_permissions(&self.db_path);
 
         self.conn = conn;

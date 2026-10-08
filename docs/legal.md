@@ -1,17 +1,28 @@
 # Conformité légale et fiscale
 
-Ce n’est **pas** un cours. C’est la politique pour qu’un contributeur
-(ou son agent) ne rende pas Griffe moins fiable.
+Ce n’est **pas** un cours, ni le dossier d’une société.
+C’est la politique pour qu’un contributeur (ou son agent)
+ne rende pas Griffe moins fiable.
 
 Un PR qui change une règle fiscale, un document Cerfa, le FEC ou la liasse
 **sans source primaire** est refusé.
 
+Le détail d’un calcul vit dans le doc-comment du module et dans le test.
+On ne le recopie pas ici. Aucun dossier réel n’entre dans ce dépôt :
+pas de raison sociale, pas de SIREN, pas d’adresse, pas de pièce déposée,
+pas de montant repris d’un exercice réel.
+
+Le livre et les déclarations, tels que tout utilisateur les voit, sont
+dans [livre.md](./livre.md). Cette page ne reprend pas ce parcours.
+
 ## Doctrine
 
 1. **Disclaimer.** Griffe calcule et rappelle. Ce n’est pas un avis fiscal,
-   pas une attestation DGFiP, pas un SAE. Le FEC dérivé n’est pas une
-   comptabilité tenue. La phrase figure dans le README, ici, et déjà dans
-   le produit (parcours, notices).
+   pas une attestation DGFiP, pas un SAE. Le FEC est l’extrait des écritures
+   du coffre. Ce n’est pas une attestation, ni un dépôt. Rien n’est
+   télétransmis. Pas d’EDI, pas de PDF Cerfa. La phrase « on recopie, rien
+   n’est télétransmis » figure dans le produit.
+   Une écriture déjà posée ne se réécrit pas. Une correction est une extourne.
 2. **Source primaire.** Toute règle nouvelle ou changée cite BOFIP, CGI,
    C. com., ou notice Cerfa (extrait `pdftotext` d’un PDF officiel, pas un
    souvenir). La citation vit dans le doc-comment du type / de la fonction
@@ -19,7 +30,8 @@ Un PR qui change une règle fiscale, un document Cerfa, le FEC ou la liasse
 3. **Chiffre avant l’assert.** Les montants attendus sont écrits à la main
    dans le test (patron `crates/griffe-cli/tests/closing_scenario.rs`,
    `settlement_scenario.rs`). Le test se plie au chiffre de
-   l’expert-comptable, jamais l’inverse.
+   l’expert-comptable, jamais l’inverse. Ce chiffre est un exemple du test,
+   pas un extrait d’un dossier.
 4. **Limite connue à côté de la règle.** Si on ne modélise pas (DAS2
    natures de somme, cession d’immo, régime 2027 non précisé…), on le dit
    dans le même module. Pas une checklist perso dans le README.
@@ -31,21 +43,14 @@ Un PR qui change une règle fiscale, un document Cerfa, le FEC ou la liasse
    `if year > 2026` magique.
 7. **Arrondis.** IS à l’euro (art. 1657 CGI) déjà dans le cœur ; un PR ne
    « simplifie » pas en flottant.
-8. **Culture générale interdite.** Un agent qui « sait » que la CA3 tombe
-   le 15 d’après le SIREN a tort. S’il n’a pas la source sous la main, il
-   s’arrête.
+8. **Culture générale interdite.** Un agent qui « sait » que la déclaration
+   de TVA tombe le 15 d’après le SIREN a tort. S’il n’a pas la source sous
+   la main, il s’arrête.
 
-## Créances irrécouvrables
+## Limites
 
-Geste distinct d'un avoir : le CA (706) reste ; charge 654 HT ; 411 soldé.
-Prestations : exigibilité à l'encaissement (CGI 269-2-c, BOI-TVA-BASE-20-20)
-sauf option débits. Pas encaissé et période d'émission non marquée déposée :
-cette TVA n'entre pas dans la collectée. Déjà déposée : case 21 du mois du
-geste (CGI 272-1, BOI-TVA-DED-40-10-20). Duplicata + mention seulement alors.
-
-Limite : Griffe calcule encore la collectée des périodes ouvertes sur les
-factures émises, pas sur les virements. On ne recable pas l'exigibilité ici.
-Le 445881 d'un bilan d'ouverture n'est pas reclasse.
+Une créance irrécouvrable n’est pas un avoir : le chiffre d’affaires de la
+vente reste. La source et l’écriture sont dans le module des ventes.
 
 ## CODEOWNERS
 
@@ -59,6 +64,7 @@ Les chemins fiscaux restent listés pour le lecteur humain :
 /crates/griffe-core/src/fiscal.rs        @dz9oo
 /crates/griffe-core/src/fiscal_year.rs   @dz9oo
 /crates/griffe-core/src/ledger.rs        @dz9oo
+/crates/griffe-core/src/journal.rs       @dz9oo
 /crates/griffe-core/src/fec/             @dz9oo
 /crates/griffe-core/src/closing.rs       @dz9oo
 /crates/griffe-core/src/opening_balance.rs @dz9oo

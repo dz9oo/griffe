@@ -1,13 +1,13 @@
 //! Calcul du résultat comptable et de l'impôt sur les sociétés — le premier calcul de *montant*
 //! fiscal du projet (lot 18), là où `fiscal.rs` ne produisait jusqu'ici que des *dates*.
 //!
-//! **Périmètre volontairement simplifié, et indicatif.** Le résultat est
-//! `produits (factures émises HT) − charges (dépenses + rémunération du dirigeant)`, **sans
-//! amortissements, provisions, variation de stock, ni produits/charges constatés d'avance**. Il
-//! converge donc avec le résultat comptable réel pour une activité de prestation sans
-//! immobilisations, et s'en écarte dès qu'il y en a. Ce module ne remplace pas la liasse produite
-//! par un expert-comptable via EDI-TDFC : il sert au pilotage et à la production des documents de
-//! synthèse. Tout est en centimes entiers (`Money`), jamais en flottant.
+//! **Périmètre indicatif.** Le résultat de clôture lit le livre : classes 6 et 7
+//! avant le compte 695, dotation 681 comprise lorsqu'elle est encore dérivée à
+//! la lecture. Une dépense sans écriture vivante reste hors résultat. Le brut
+//! déclaré au profil reste hors résultat. Ce module ne remplace pas la liasse
+//! produite par un expert-comptable via EDI-TDFC : il sert au pilotage et à la
+//! production des documents de synthèse. Tout est en centimes entiers (`Money`),
+//! jamais en flottant.
 //!
 //! **Déficits (lot 32).** Le résultat *fiscal* n'est pas le résultat comptable : les déficits des
 //! exercices antérieurs s'imputent sur le bénéfice avant IS (report en avant, art. 209 I CGI,
@@ -19,11 +19,10 @@
 use rusqlite::Connection;
 
 use crate::app::AppError;
-use crate::billing::{VatBreakdownLine, active_write_off_for, compute_totals, list_invoices};
+use crate::billing::VatBreakdownLine;
 use crate::company::CompanyProfile;
-use crate::domain::{ExpenseId, FiscalYear, Money, VatRate};
-use crate::expenses::expenses_between;
-use crate::fixed_assets::list_fixed_assets;
+use crate::domain::{FiscalYear, FiscalYearEnd, Money, Month, VatRate};
+use crate::ledger::{Journal, Ledger, LedgerEntry, accounts};
 
 /// Plafond de la tranche à taux réduit d'IS : 42 500 € de bénéfice.
 const REDUCED_RATE_CEILING: Money = Money::from_cents(4_250_000);
@@ -46,20 +45,17 @@ pub const LOSS_CARRY_BACK_CAP: Money = Money::from_cents(100_000_000);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct AccountingResult {
     pub period: FiscalYear,
-    /// Chiffre d'affaires HT : somme des factures émises sur la période (les avoirs, à lignes
-    /// négatives, se soustraient naturellement).
+    /// Chiffre d'affaires HT : solde créditeur du 706 au livre (un avoir s'y soustrait).
     pub revenue_ht: Money,
-    /// Charges externes : coût net des dépenses (montant − TVA déductible, récupérée par ailleurs
-    /// via la CA3).
+    /// Charges de classe 6 au livre, hors 641, 645, 681, 695 et 699.
     pub expenses: Money,
-    /// Coût employeur de la rémunération du président sur la période (brut × mois + cotisations
-    /// patronales estimées), à titre indicatif.
+    /// 641 et 645 réellement au livre. Zéro quand aucune paie n'y est écrite.
     pub director_remuneration: Money,
     /// Dotations aux amortissements de l'exercice (lot 42, ligne 254 du 2033-B) : linéaires,
     /// prorata temporis, sur les immobilisations déclarées — la dépense immobilisée n'est plus
     /// dans `expenses`.
     pub depreciation: Money,
-    /// Résultat **comptable** avant impôt : produits − charges.
+    /// Résultat **comptable** avant impôt : classes 6 et 7 du livre, avant le 695 et le 699.
     pub result_before_tax: Money,
     /// Charges comptabilisées mais non déductibles fiscalement (art. 39-4 CGI : amendes,
     /// dépenses somptuaires…), réintégrées au résultat fiscal — déclarées à la clôture,
@@ -273,8 +269,9 @@ fn months_in(period: FiscalYear) -> u32 {
 }
 
 /// Rémunération brute du président sur `period` : brut mensuel × nombre de mois entiers de
-/// l'exercice — `None` s'il n'est pas rémunéré. Partagée avec le grand livre dérivé
-/// (`crate::ledger`), qui sépare le brut (641) des cotisations patronales (645).
+/// l'exercice — `None` s'il n'est pas rémunéré. Le résultat de clôture lit le 641 et le 645
+/// du livre. Le grand livre ne poste pas ce brut. Les cases 250 et 252 de la liasse lisent
+/// ces mêmes comptes.
 #[must_use]
 pub fn director_gross(profile: &CompanyProfile, period: FiscalYear) -> Option<Money> {
     let gross = profile.director_monthly_gross?;
@@ -283,7 +280,8 @@ pub fn director_gross(profile: &CompanyProfile, period: FiscalYear) -> Option<Mo
 }
 
 /// Coût employeur indicatif de la rémunération du président sur `period` : brut mensuel × nombre
-/// de mois, majoré des cotisations patronales estimées par le ratio du profil.
+/// de mois, majoré des cotisations patronales estimées par le ratio du profil. Le résultat de
+/// clôture ne l'utilise pas : il lit le livre.
 #[must_use]
 pub fn director_cost(profile: &CompanyProfile, period: FiscalYear) -> Money {
     let Some(gross_annual) = director_gross(profile, period) else {
@@ -340,31 +338,24 @@ pub fn compute_result_with(
     prior_losses_available: Money,
     non_deductible_expenses: Money,
 ) -> Result<AccountingResult, AppError> {
-    let revenue_ht: Money = list_invoices(conn)?
-        .iter()
-        .filter(|inv| period.contains(inv.issued_on))
-        .map(|inv| compute_totals(&inv.lines).subtotal_ht)
-        .sum();
-
-    // Lot 42 : une dépense immobilisée n'est plus une charge (elle entre à l'actif) ; sa
-    // dotation l'est. Les charges constatées d'avance reprises au bilan d'ouverture (486) sont
-    // extournées au premier jour de l'exercice qui s'ouvre sur ce bilan : une charge de plus.
-    let assets = crate::fixed_assets::list_fixed_assets(conn)?;
-    let immobilized = crate::fixed_assets::assets_by_expense(&assets);
-    let prepaid: Money = crate::opening_balance::opening_balance(conn)?
-        .filter(|o| o.balance.opens_on == period.start())
-        .map_or(Money::ZERO, |o| prepaid_expenses_of(&o.balance.lines));
-    let expenses: Money = expenses_between(conn, period.start(), period.end())?
-        .iter()
-        .filter(|e| !immobilized.contains_key(&e.id))
-        .map(|e| e.amount - e.vat_deductible)
-        .sum::<Money>()
-        + prepaid;
-    let depreciation = crate::fixed_assets::depreciation_of(&assets, period);
-
-    let director_remuneration = director_cost(profile, period);
-
-    let result_before_tax = revenue_ht - expenses - depreciation - director_remuneration;
+    // Le profil reste dans la signature : les appelants le passent déjà.
+    // Le brut déclaré n'entre pas dans ce résultat.
+    let _ = profile;
+    let ledger = crate::ledger::build_ledger(conn, period)?;
+    let revenue_ht = -signed_on(&ledger, |number| number.starts_with("706"));
+    let director_remuneration = signed_on(&ledger, |number| {
+        number.starts_with("641") || number.starts_with("645")
+    });
+    let depreciation = signed_on(&ledger, |number| number.starts_with("681"));
+    let expenses = signed_on(&ledger, |number| {
+        number.starts_with('6')
+            && !number.starts_with("641")
+            && !number.starts_with("645")
+            && !number.starts_with("681")
+            && !number.starts_with("695")
+            && !number.starts_with("699")
+    });
+    let result_before_tax = -signed_on(&ledger, is_result_before_tax);
     let non_deductible_expenses = non_deductible_expenses.max(Money::ZERO);
     let imputation = impute_prior_losses(
         result_before_tax + non_deductible_expenses,
@@ -391,6 +382,23 @@ pub fn compute_result_with(
     })
 }
 
+/// Somme signée des lignes dont le numéro de compte satisfait `keep`.
+fn signed_on(ledger: &Ledger, keep: impl Fn(&str) -> bool) -> Money {
+    ledger
+        .entries
+        .iter()
+        .flat_map(|entry| &entry.lines)
+        .filter(|line| keep(line.account.number.as_ref()))
+        .map(|line| line.amount)
+        .sum()
+}
+
+/// Compte de gestion hors impôt (695) et hors produit de report en arrière (699).
+fn is_result_before_tax(number: &str) -> bool {
+    let class = number.as_bytes().first().copied().unwrap_or(b'0');
+    (class == b'6' || class == b'7') && !number.starts_with("695") && !number.starts_with("699")
+}
+
 /// Les charges constatées d'avance reprises au bilan d'ouverture (comptes 486, au débit) :
 /// des charges de l'exercice précédent payées d'avance pour celui-ci, extournées au premier
 /// jour (lot 42). Pure, partagée par le résultat et le grand livre.
@@ -403,8 +411,9 @@ pub fn prepaid_expenses_of(lines: &[crate::domain::OpeningBalanceLine]) -> Money
         .sum()
 }
 
-/// Déclaration de TVA d'une période (CA3) : TVA collectée sur les factures émises, TVA déductible
-/// sur les dépenses, et le solde à reverser (positif) ou le crédit de TVA (négatif).
+/// Déclaration de TVA d'une période, lue sur le livre : collectée devenue
+/// exigible, déductible arrondie à l'euro, solde à reverser (positif) ou crédit
+/// (négatif).
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct VatReturn {
     #[serde(with = "crate::domain::serde_date::date")]
@@ -415,84 +424,253 @@ pub struct VatReturn {
     pub deductible: Money,
     /// `collected − deductible` : à reverser si positif, crédit de TVA reportable si négatif.
     pub due: Money,
-    /// Bases HT et TVA collectée, un élément par taux réellement présent (lot 56, cases CA3).
+    /// La collectée du livre tient sur un seul compte, 445710. Un seul taux est donc rapporté.
     pub collected_by_rate: Vec<VatBreakdownLine>,
-    /// TVA déductible des dépenses immobilisées (CA3 ligne 19).
+    /// TVA déductible des immobilisations (case 19), dans la ligne arrondie.
     pub deductible_assets: Money,
-    /// TVA déductible des autres biens et services (CA3 ligne 20).
+    /// TVA déductible des autres biens et services (case 20), dans la ligne arrondie.
     pub deductible_other: Money,
-    /// Total HT des factures émises de la période (CA3 cadre A, prestations).
+    /// HT des encaissements qui ont rendu la TVA exigible.
     pub taxable_ht: Money,
 }
 
-/// TVA due sur une période `[start, end]` (bornes inclusives) — premier calcul de montant de la
-/// déclaration CA3 du projet, depuis les factures émises et les dépenses de la période.
+/// TVA d'un mois lue sur les écritures conservées. Les cases, l'échéance et
+/// l'OD de liquidation appellent cette fonction. Une facture non encaissée
+/// reste en 445881. Une dépense non payée ne débite pas le 445660.
+///
+/// Sans profil, le livre ne se construit pas : la lecture rend des zéros.
+/// L'OD de liquidation refuse toujours l'absence de profil.
+///
+/// La déductible est arrondie à l'euro ([`round_to_euro`], art. 1657 CGI).
+/// L'écart entre les centimes du livre et cette ligne ne figure pas ici : l'OD
+/// le porte au 758. Limite : un seul compte de TVA en attente, 445881, donc
+/// toute la collectée exigible est au taux normal.
+///
+/// Une prestation intracommunautaire autoliquidée débite 445662 et crédite
+/// 445200 du même montant. [`Ca3Month::intracom`] porte ce net signé du 445662
+/// quand les deux comptes sont opposés. Il n'entre ni dans la collectée ni
+/// dans la déductible : les cases 08 et 20 ne prennent pas ces comptes. Aucune
+/// case n'est ajoutée pour eux.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ca3Month {
+    /// Crédit du 445710 venu du 445881 dans le mois, exprimé en positif.
+    pub collected: Money,
+    /// Même somme, signe du livre : un crédit est négatif.
+    pub collected_signed: Money,
+    /// HT des encaissements qui ont déplacé cette TVA.
+    pub taxable_ht: Money,
+    /// 445660 du mois, hors à-nouveaux et hors pièce de liquidation, plancher à zéro.
+    pub deductible_book: Money,
+    /// Ligne arrondie à l'euro de [`Self::deductible_book`].
+    pub deductible_rounded: Money,
+    /// Part de la ligne arrondie portée par une écriture qui débite un compte 2xx.
+    pub deductible_assets: Money,
+    /// Reste de la ligne arrondie.
+    pub deductible_other: Money,
+    /// 445670 au dernier jour, à-nouveaux compris, hors pièce de liquidation du mois.
+    pub credit_on_book: Money,
+    /// Net signé du 445662 sur le mois, quand il est l'opposé du 445200.
+    /// Positif : le 445662 est débiteur. Zéro si les deux comptes ne se
+    /// compensent pas, ou s'il n'y a pas ce mouvement. Hors cases 08 et 20.
+    pub intracom: Money,
+}
+
+/// # Errors
+///
+/// Erreur de lecture SQLite.
+pub fn ca3_month(conn: &Connection, month: Month) -> Result<Ca3Month, AppError> {
+    ca3_window(
+        conn,
+        month.first_day(),
+        month.last_day(),
+        &month.to_string(),
+    )
+}
+
+fn ca3_window(
+    conn: &Connection,
+    from: time::Date,
+    to: time::Date,
+    period_key: &str,
+) -> Result<Ca3Month, AppError> {
+    let Some(profile) = crate::company::company_profile(conn)? else {
+        return Ok(Ca3Month {
+            collected: Money::ZERO,
+            collected_signed: Money::ZERO,
+            taxable_ht: Money::ZERO,
+            deductible_book: Money::ZERO,
+            deductible_rounded: Money::ZERO,
+            deductible_assets: Money::ZERO,
+            deductible_other: Money::ZERO,
+            credit_on_book: Money::ZERO,
+            intracom: Money::ZERO,
+        });
+    };
+    let year_end = profile.fiscal_year_end.unwrap_or(FiscalYearEnd::CALENDAR);
+    let ledger = crate::ledger::build_ledger(conn, year_end.containing(to))?;
+    let movement = |entry: &LedgerEntry| {
+        entry.date >= from
+            && entry.date <= to
+            && entry.journal != Journal::Opening
+            && !own_ca3_piece(period_key, &entry.piece_ref)
+    };
+    let mut collected_signed = Money::ZERO;
+    let mut taxable_ht = Money::ZERO;
+    let mut raw_assets = Money::ZERO;
+    let mut raw_other = Money::ZERO;
+    let mut intracom_deductible = Money::ZERO;
+    let mut intracom_due = Money::ZERO;
+    for entry in ledger.entries.iter().filter(|entry| movement(entry)) {
+        if transfers_pending_vat(entry) {
+            let pending = account_sum(entry, accounts::VAT_COLLECTED.number.as_ref());
+            let clients = account_sum(entry, accounts::CLIENTS.number.as_ref());
+            collected_signed += pending;
+            taxable_ht += -clients + pending;
+        }
+        let deductible = account_sum(entry, accounts::VAT_DEDUCTIBLE.number.as_ref());
+        if !deductible.is_zero() {
+            if debits_asset(entry) {
+                raw_assets += deductible;
+            } else {
+                raw_other += deductible;
+            }
+        }
+        intracom_deductible +=
+            account_sum(entry, accounts::VAT_INTRACOM_DEDUCTIBLE.number.as_ref());
+        intracom_due += account_sum(entry, accounts::VAT_INTRACOM_DUE.number.as_ref());
+    }
+    let intracom = if intracom_deductible == -intracom_due {
+        intracom_deductible
+    } else {
+        Money::ZERO
+    };
+    let net = raw_assets + raw_other;
+    let deductible_book = if net.is_negative() { Money::ZERO } else { net };
+    let deductible_rounded = round_to_euro(deductible_book);
+    let assets_base = if raw_assets.cents() > 0 {
+        raw_assets
+    } else {
+        Money::ZERO
+    };
+    let mut deductible_assets = round_to_euro(assets_base);
+    if deductible_assets > deductible_rounded {
+        deductible_assets = deductible_rounded;
+    }
+    let deductible_other = deductible_rounded - deductible_assets;
+    let collected = if collected_signed.is_negative() {
+        -collected_signed
+    } else {
+        Money::ZERO
+    };
+    Ok(Ca3Month {
+        collected,
+        collected_signed,
+        taxable_ht,
+        deductible_book,
+        deductible_rounded,
+        deductible_assets,
+        deductible_other,
+        credit_on_book: sum_account(&ledger, accounts::VAT_CREDIT.number.as_ref(), &|entry| {
+            entry.date <= to && !own_ca3_piece(period_key, &entry.piece_ref)
+        }),
+        intracom,
+    })
+}
+
+fn transfers_pending_vat(entry: &LedgerEntry) -> bool {
+    let pending = account_sum(entry, accounts::VAT_PENDING.number.as_ref());
+    let collected = account_sum(entry, accounts::VAT_COLLECTED.number.as_ref());
+    !pending.is_zero() && !collected.is_zero()
+}
+
+fn debits_asset(entry: &LedgerEntry) -> bool {
+    entry.lines.iter().any(|line| {
+        line.account
+            .number
+            .as_bytes()
+            .first()
+            .is_some_and(|digit| *digit == b'2')
+            && line.amount.cents() > 0
+    })
+}
+
+fn account_sum(entry: &LedgerEntry, number: &str) -> Money {
+    entry
+        .lines
+        .iter()
+        .filter(|line| line.account.number == number)
+        .map(|line| line.amount)
+        .sum()
+}
+
+fn own_ca3_piece(period_key: &str, piece: &str) -> bool {
+    let liquidation = format!("CA3-{period_key}");
+    let extourne = format!("EXT-CA3-{period_key}");
+    piece == liquidation || piece == extourne
+}
+
+fn sum_account(ledger: &Ledger, number: &str, keep: &impl Fn(&LedgerEntry) -> bool) -> Money {
+    ledger
+        .entries
+        .iter()
+        .filter(|entry| keep(entry))
+        .flat_map(|entry| entry.lines.iter())
+        .filter(|line| line.account.number == number)
+        .map(|line| line.amount)
+        .sum()
+}
+
+/// TVA lue sur le livre pour `[start, end]` (bornes inclusives). Chaque mois
+/// civil est arrondi seul, puis les mois s'additionnent.
 ///
 /// # Errors
 ///
 /// Erreur de lecture SQLite.
+///
+/// # Panics
+///
+/// Ne panique jamais : le mois d'une date est compris entre 1 et 12.
 pub fn vat_due_for_period(
     conn: &Connection,
     start: time::Date,
     end: time::Date,
 ) -> Result<VatReturn, AppError> {
-    let mut invoices = Vec::new();
-    for inv in list_invoices(conn)? {
-        if inv.issued_on < start || inv.issued_on > end {
-            continue;
-        }
-        if let Some(write_off) = active_write_off_for(conn, inv.id)?
-            && !write_off.recovers_vat
-        {
-            continue;
-        }
-        invoices.push(inv);
-    }
-    let totals: Vec<_> = invoices
-        .iter()
-        .map(|inv| compute_totals(&inv.lines))
-        .collect();
-    let collected: Money = totals.iter().map(|t| t.total_vat).sum();
-    let taxable_ht: Money = totals.iter().map(|t| t.subtotal_ht).sum();
-    let collected_by_rate: Vec<VatBreakdownLine> = VatRate::ALL
-        .into_iter()
-        .filter_map(|rate| {
-            let taxable_amount: Money = totals
-                .iter()
-                .flat_map(|t| t.vat_breakdown.iter())
-                .filter(|b| b.rate == rate)
-                .map(|b| b.taxable_amount)
-                .sum();
-            let vat_amount: Money = totals
-                .iter()
-                .flat_map(|t| t.vat_breakdown.iter())
-                .filter(|b| b.rate == rate)
-                .map(|b| b.vat_amount)
-                .sum();
-            (!taxable_amount.is_zero() || !vat_amount.is_zero()).then_some(VatBreakdownLine {
-                rate,
-                taxable_amount,
-                vat_amount,
-            })
-        })
-        .collect();
-
-    let asset_expense_ids: Vec<ExpenseId> = list_fixed_assets(conn)?
-        .into_iter()
-        .filter_map(|a| a.expense_id)
-        .collect();
-    let expenses = expenses_between(conn, start, end)?;
+    let mut collected = Money::ZERO;
+    let mut deductible = Money::ZERO;
     let mut deductible_assets = Money::ZERO;
     let mut deductible_other = Money::ZERO;
-    for expense in &expenses {
-        if asset_expense_ids.contains(&expense.id) {
-            deductible_assets += expense.vat_deductible;
-        } else {
-            deductible_other += expense.vat_deductible;
+    let mut taxable_ht = Money::ZERO;
+    if start <= end {
+        let mut month = Month::new(start.year(), u8::from(start.month()))
+            .expect("le mois d'une date est compris entre 1 et 12");
+        let last = Month::new(end.year(), u8::from(end.month()))
+            .expect("le mois d'une date est compris entre 1 et 12");
+        loop {
+            let from = month.first_day().max(start);
+            let to = month.last_day().min(end);
+            if from <= to {
+                let part = ca3_window(conn, from, to, &month.to_string())?;
+                collected += part.collected;
+                deductible += part.deductible_rounded;
+                deductible_assets += part.deductible_assets;
+                deductible_other += part.deductible_other;
+                taxable_ht += part.taxable_ht;
+            }
+            if month == last {
+                break;
+            }
+            month = month.succ();
         }
     }
-    let deductible = deductible_assets + deductible_other;
-
+    let collected_by_rate = if collected.is_zero() && taxable_ht.is_zero() {
+        Vec::new()
+    } else {
+        vec![VatBreakdownLine {
+            rate: VatRate::Standard,
+            taxable_amount: taxable_ht,
+            vat_amount: collected,
+        }]
+    };
     Ok(VatReturn {
         period_start: start,
         period_end: end,
@@ -752,11 +930,15 @@ mod tests {
             )
             .unwrap();
 
+        // Brut mensuel 3 000 € et ratio 45 % : le résultat de clôture ne le lit pas.
+        let mut profile_cmd = profile_without_director();
+        profile_cmd.director_monthly_gross = Some(Money::from_cents(300_000));
+        profile_cmd.director_charge_ratio_bps = Some(4_500);
         Executor::new(&mut store)
-            .execute(&profile_without_director(), &human())
+            .execute(&profile_cmd, &human())
             .unwrap();
 
-        // Facture : 9,5 j × 650 € = 6 175,00 € HT, émise dans l'exercice civil 2026.
+        // Facture : 9,5 j × 650 € = 6 175,00 € HT, émise, non encaissée. Le 706 est au livre.
         Executor::new(&mut store)
             .execute(
                 &EmitInvoice {
@@ -775,7 +957,8 @@ mod tests {
             )
             .unwrap();
 
-        // Dépense : 1 000 € dont 200 € de TVA déductible → charge nette de 800 €.
+        // Dépense : 960,00 € TTC dont 160,00 € de TVA, payée par la société, sans relevé.
+        // Aucune écriture vivante : elle n'entre pas au résultat.
         Executor::new(&mut store)
             .execute(
                 &RecordExpense {
@@ -790,6 +973,8 @@ mod tests {
                     supplier: None,
                     bank_transaction_id: None,
                     paid_by: crate::domain::ExpensePaidBy::Company,
+
+                    reverse_charge: false,
                 },
                 &human(),
             )
@@ -804,28 +989,24 @@ mod tests {
             .current(date(2026, TimeMonth::December, 31));
         let result = compute_result(store.connection(), period, &profile).unwrap();
 
+        // 6 175,00 € au livre. 15 % = 926,25 € → 926 € (art. 1657 CGI).
         assert_eq!(result.revenue_ht, Money::from_cents(617_500));
-        assert_eq!(result.expenses, Money::from_cents(80_000));
+        assert_eq!(result.expenses, Money::ZERO);
         assert_eq!(result.director_remuneration, Money::ZERO);
-        assert_eq!(result.result_before_tax, Money::from_cents(537_500));
-        // 15 % de 5 375 € = 806,25 € → 806 € (art. 1657 CGI, lot 41).
-        assert_eq!(result.corporate_tax, Money::from_cents(80_600));
-        assert_eq!(result.net_result, Money::from_cents(456_900));
+        assert_eq!(result.depreciation, Money::ZERO);
+        assert_eq!(result.result_before_tax, Money::from_cents(617_500));
+        assert_eq!(result.corporate_tax, Money::from_cents(92_600));
+        assert_eq!(result.net_result, Money::from_cents(524_900));
 
-        // TVA de l'exercice : 20 % de 6 175 € collectés (1 235 €) − 160 € déductibles = 1 075 €.
+        // Ni la facture ni la dépense ne sont payées : le livre n'a pas de TVA exigible.
         let vat = vat_due_for_period(store.connection(), period.start(), period.end()).unwrap();
-        assert_eq!(vat.collected, Money::from_cents(123_500));
-        assert_eq!(vat.deductible, Money::from_cents(16_000));
-        assert_eq!(vat.due, Money::from_cents(107_500));
-        assert_eq!(vat.taxable_ht, Money::from_cents(617_500));
+        assert_eq!(vat.collected, Money::ZERO);
+        assert_eq!(vat.deductible, Money::ZERO);
+        assert_eq!(vat.due, Money::ZERO);
+        assert_eq!(vat.taxable_ht, Money::ZERO);
         assert_eq!(vat.deductible_assets, Money::ZERO);
-        assert_eq!(vat.deductible_other, Money::from_cents(16_000));
-        assert_eq!(vat.collected_by_rate.len(), 1);
-        assert_eq!(vat.collected_by_rate[0].rate, VatRate::Standard);
-        assert_eq!(
-            vat.collected_by_rate[0].vat_amount,
-            Money::from_cents(123_500)
-        );
+        assert_eq!(vat.deductible_other, Money::ZERO);
+        assert!(vat.collected_by_rate.is_empty());
     }
 
     // --- Lot 41 : arrondi à l'euro (art. 1657 CGI). ---

@@ -22,8 +22,9 @@ use griffe_core::domain::{Money, parse_date};
 use griffe_core::fiscal::FiscalDeadlineKind;
 use griffe_core::setup::vault_started_on;
 use griffe_core::society::{
-    MarkCatchUpFiled, MarkDutyFiled, RecordVatCarryIn, RecordVatReversal, RequestVatRefund,
-    RetractDutyFiled, RetractVatRefund, RetractVatReversal, VatRefundStatus, duty_briefing,
+    LiquidateCa3, MarkCatchUpFiled, MarkDutyFiled, RecordVatCarryIn, RecordVatReversal,
+    RequestVatRefund, RetractDutyFiled, RetractVatRefund, RetractVatReversal, VatRefundStatus,
+    duty_briefing,
 };
 
 #[derive(Debug, Default, Deserialize)]
@@ -549,6 +550,62 @@ async fn record_vat_reversal(
                     period_key: briefing.period_key,
                     amount,
                     recorded_on: today,
+                },
+                &AppState::human_ctx(),
+            )?;
+            Ok::<_, griffe_core::app::AppError>(())
+        })
+        .await;
+    if let Some(Err(e)) = result {
+        return respond(headers, ViewId::Societe, error_markup(ViewId::Societe, e))
+            .await
+            .into_response();
+    }
+    let mut response = letter(state, headers, ViewId::Societe, move |store, today| {
+        views::societe::duty(store, today, kind, period.as_deref())
+    })
+    .await
+    .into_response();
+    response
+        .headers_mut()
+        .insert("HX-Trigger", HeaderValue::from_static("griffe:saved"));
+    response
+}
+
+pub async fn societe_vat_liquidation(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(kind): Path<String>,
+) -> Response {
+    record_vat_liquidation(&state, headers, kind, None).await
+}
+
+pub async fn societe_vat_liquidation_at(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((kind, period)): Path<(String, String)>,
+) -> Response {
+    record_vat_liquidation(&state, headers, kind, Some(period)).await
+}
+
+async fn record_vat_liquidation(
+    state: &AppState,
+    headers: HeaderMap,
+    kind: String,
+    period: Option<String>,
+) -> Response {
+    let Some(kind) = parse_external_kind(&kind) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let today = state.today();
+    let period_owned = period.clone();
+    let result = state
+        .with_store_mut(|store| {
+            let briefing = duty_briefing(store.connection(), kind, today, period_owned.as_deref())?;
+            Executor::new(store).execute(
+                &LiquidateCa3 {
+                    period_key: briefing.period_key,
+                    on: today,
                 },
                 &AppState::human_ctx(),
             )?;

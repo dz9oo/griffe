@@ -1,28 +1,88 @@
 //! Export des données de la liasse fiscale : les cases principales des formulaires 2065
 //! (déclaration de résultats IS) et 2033 (régime simplifié — 2033-B compte de résultat, et
-//! depuis le lot 31 le bilan 2033-A dérivé du grand livre), en structure sérialisable JSON —
-//! **pas** le PDF Cerfa officiel. Le dépôt réel passe par EDI-TDFC (format XML propriétaire
-//! DGFiP, via partenaire agréé), hors périmètre : cet export sert à transmettre les chiffres à
-//! l'expert-comptable qui télédéclare.
+//! depuis le lot 31 le bilan 2033-A dérivé du grand livre), en structure sérialisable JSON.
+//! Ce n'est pas un PDF Cerfa et ce n'est pas un EDI : on recopie, rien n'est télétransmis.
+//!
+//! Quand un livre est fourni, les cases du compte de résultat se lisent sur sa balance.
+//! Sans livre, elles ne sont pas remplies depuis le snapshot. La case C1 du 2065 reste le
+//! résultat fiscal du snapshot (`taxable_result`), pas un compte. Chaque case gardée porte
+//! les centimes du livre et l'euro entier à recopier (art. 1657 CGI). Une case dont cet
+//! euro est 0 est omise. Le 2033-E et le 2033-G sont déclarés néant. Pas d'autoliquidation.
 
-use griffe_core::accounting::director_gross;
+use griffe_core::accounting::round_to_euro;
 use griffe_core::company::CompanyProfile;
-use griffe_core::domain::{AssetRow, Money};
+use griffe_core::domain::{AssetRow, ExpenseCategory, Money};
 use griffe_core::fiscal_year::FiscalYearRecord;
-use griffe_core::ledger::{BalanceSheet, Journal, Ledger};
+use griffe_core::ledger::{BalanceSheet, Journal, Ledger, charge_account};
 use serde::Serialize;
 use time::Date;
 
-/// Une case de formulaire : le montant en centimes, jamais en flottant (doctrine `Money`).
+/// Une case de formulaire à recopier.
+///
+/// `amount_cents` est le montant du livre, non arrondi. `amount_euros` est l'euro entier
+/// du formulaire : `round_to_euro` (art. 1657 CGI), la fraction égale à 0,50 comptée pour 1.
+/// Une case dont cet euro est 0 est omise. Les centimes d'une case gardée ne sont pas réécrits.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LiasseEntry {
-    /// Formulaire d'origine (`"2065"`, `"2033-B"`).
+    /// Formulaire d'origine (`"2065"`, `"2033-A"`, `"2033-B"`, `"2033-C"`, `"2033-D"`).
     pub form: &'static str,
     /// Référence de case sur le formulaire.
     pub case: &'static str,
     pub label: String,
+    /// Centimes du livre, non arrondis.
     pub amount_cents: i64,
+    /// Euros entiers à recopier sur le formulaire.
+    pub amount_euros: i64,
 }
+
+/// Euro entier à recopier sur le formulaire (art. 1657 CGI).
+///
+/// `round_to_euro(Money::from_cents(amount_cents)).cents() / 100`. Le montant du livre
+/// reste dans [`LiasseEntry::amount_cents`].
+fn euros_to_copy(amount_cents: i64) -> i64 {
+    round_to_euro(Money::from_cents(amount_cents)).cents() / 100
+}
+
+fn push_case(
+    entries: &mut Vec<LiasseEntry>,
+    form: &'static str,
+    case: &'static str,
+    label: &str,
+    amount_cents: i64,
+) {
+    let amount_euros = euros_to_copy(amount_cents);
+    if amount_euros != 0 {
+        entries.push(LiasseEntry {
+            form,
+            case,
+            label: label.to_string(),
+            amount_cents,
+            amount_euros,
+        });
+    }
+}
+
+/// Formulaire coché néant. Le 2033-E-SD (effectifs et valeur ajoutée) et
+/// le 2033-G-SD (filiales) portent la mention néant. Pas d'effectif,
+/// pas de valeur ajoutée, pas de liste de filiales, pas de moteur de CVAE, même si un 641 existe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct LiasseMention {
+    /// `"2033-E"` ou `"2033-G"`.
+    pub form: &'static str,
+    /// Toujours `"néant"`.
+    pub text: &'static str,
+}
+
+const NIL_MENTIONS: [LiasseMention; 2] = [
+    LiasseMention {
+        form: "2033-E",
+        text: "néant",
+    },
+    LiasseMention {
+        form: "2033-G",
+        text: "néant",
+    },
+];
 
 /// Composition du capital social (formulaire 2033-F-SD, lot 41) : cadre I, nombre d'associés
 /// et de parts détenus par des personnes morales (P1/P3) et physiques (P2/P4) ; cadre II, les
@@ -79,6 +139,17 @@ impl CapitalComposition {
     }
 }
 
+/// Un chiffre que le snapshot de clôture et le livre ne disent pas de la même façon.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LiasseDiscrepancy {
+    /// « chiffre d'affaires », « coût du dirigeant », « résultat » ou « impôt sur les bénéfices ».
+    pub subject: &'static str,
+    /// Ce que le snapshot dit, en centimes.
+    pub snapshot_cents: i64,
+    /// Ce que le livre dit, en centimes.
+    pub ledger_cents: i64,
+}
+
 /// L'export complet, prêt à être sérialisé en JSON pour l'expert-comptable.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LiasseExport {
@@ -91,24 +162,22 @@ pub struct LiasseExport {
     pub entries: Vec<LiasseEntry>,
     /// Composition du capital (2033-F), `null` tant que le profil ne nomme pas l'associé unique.
     pub capital: Option<CapitalComposition>,
+    /// Chiffres où le snapshot et le livre divergent. Vide sans livre, ou quand ils concordent.
+    /// Centimes seulement : l'écart compare le snapshot et le livre, pas le formulaire.
+    pub discrepancies: Vec<LiasseDiscrepancy>,
+    /// 2033-E et 2033-G, toujours néant pour cette SASU.
+    pub mentions: [LiasseMention; 2],
     /// Limite de l'export, répétée dans la donnée elle-même pour voyager avec le fichier.
     pub note: &'static str,
 }
 
 /// Les cases du bilan simplifié 2033-A-SD : à l'actif la colonne brut et, si elle n'est pas
 /// vide, la colonne amortissements de chaque rubrique, puis les totaux ; au passif chaque
-/// rubrique et les totaux. Les cases à zéro sont omises, comme sur un formulaire.
+/// rubrique et les totaux. Une case dont l'euro recopié est 0 est omise.
 fn balance_sheet_entries(sheet: &BalanceSheet) -> Vec<LiasseEntry> {
     let mut entries = Vec::new();
     let mut push = |case: &'static str, label: &str, cents: i64| {
-        if cents != 0 {
-            entries.push(LiasseEntry {
-                form: "2033-A",
-                case,
-                label: label.to_string(),
-                amount_cents: cents,
-            });
-        }
+        push_case(&mut entries, "2033-A", case, label, cents);
     };
     for a in &sheet.assets {
         push(a.case_gross, a.label, a.gross.cents());
@@ -164,18 +233,11 @@ fn balance_sheet_entries(sheet: &BalanceSheet) -> Vec<LiasseEntry> {
 /// (356), les déficits antérieurs imputés (360) et le déficit fiscal de l'exercice (372) ; sur
 /// le 2033-D, le relevé des déficits reportables (982 restant à reporter au titre de l'exercice
 /// précédent, 983 imputés, 984 non imputés, 860 déficit de l'exercice après report en arrière,
-/// 870 total restant à reporter). Cases à zéro omises, comme sur un formulaire.
+/// 870 total restant à reporter). Une case dont l'euro recopié est 0 est omise.
 fn tax_loss_entries(year: &FiscalYearRecord) -> Vec<LiasseEntry> {
     let mut entries = Vec::new();
     let mut push = |form: &'static str, case: &'static str, label: &str, cents: i64| {
-        if cents != 0 {
-            entries.push(LiasseEntry {
-                form,
-                case,
-                label: label.to_string(),
-                amount_cents: cents,
-            });
-        }
+        push_case(&mut entries, form, case, label, cents);
     };
     let deficit = year.deficit();
     let available_before = year.losses_available_before();
@@ -231,7 +293,7 @@ fn tax_loss_entries(year: &FiscalYearRecord) -> Vec<LiasseEntry> {
 }
 
 /// Tableau 2033-C (cadres I et II) : brut et amortissements par rubrique, dérivés du grand
-/// livre — à-nouveaux = début, acquisitions (journal AC sur un 2xx) = augmentations, dotations
+/// livre — à-nouveaux = début, acquisitions (journal AC ou BQ sur un 2xx) = augmentations, dotations
 /// (`681`) = charges d'amortissement. Pas de cession dans le domaine : diminutions à zéro.
 fn asset_table_entries(ledger: &Ledger) -> Vec<LiasseEntry> {
     #[derive(Clone, Copy, Default)]
@@ -245,7 +307,7 @@ fn asset_table_entries(ledger: &Ledger) -> Vec<LiasseEntry> {
     let idx = |row: AssetRow| AssetRow::ALL.iter().position(|r| *r == row).unwrap_or(8);
     for entry in &ledger.entries {
         match entry.journal {
-            Journal::Opening | Journal::Purchases => {
+            Journal::Opening | Journal::Purchases | Journal::Bank => {
                 for line in &entry.lines {
                     let number = line.account.number.as_ref();
                     let i = idx(AssetRow::from_account(number));
@@ -281,14 +343,7 @@ fn asset_table_entries(ledger: &Ledger) -> Vec<LiasseEntry> {
     }
     let mut entries = Vec::new();
     let mut push = |case: &'static str, label: &str, cents: i64| {
-        if cents != 0 {
-            entries.push(LiasseEntry {
-                form: "2033-C",
-                case,
-                label: label.to_string(),
-                amount_cents: cents,
-            });
-        }
+        push_case(&mut entries, "2033-C", case, label, cents);
     };
     let mut tot_g = Mov::default();
     let mut tot_d = Mov::default();
@@ -342,109 +397,189 @@ fn asset_table_entries(ledger: &Ledger) -> Vec<LiasseEntry> {
     entries
 }
 
+/// Solde du livre (`débit − crédit`) des comptes dont le numéro commence par `prefix`.
+fn signed_balance(ledger: &Ledger, prefix: &str) -> Money {
+    ledger
+        .trial_balance()
+        .rows
+        .iter()
+        .filter(|row| row.account.number.starts_with(prefix))
+        .map(|row| row.balance)
+        .sum()
+}
+
+/// Case de produit : un crédit du livre est un montant positif.
+fn product_case(ledger: &Ledger, prefix: &str) -> Money {
+    -signed_balance(ledger, prefix)
+}
+
+/// Case de charge : un débit du livre est un montant positif.
+fn charge_case(ledger: &Ledger, prefix: &str) -> Money {
+    signed_balance(ledger, prefix)
+}
+
+/// Case 242 : les comptes de charge déjà visés par [`charge_account`], hors 635 (case 244).
+fn external_charges(ledger: &Ledger) -> Money {
+    ExpenseCategory::ALL
+        .into_iter()
+        .map(charge_account)
+        .filter(|account| !account.number.starts_with("635"))
+        .map(|account| charge_case(ledger, account.number.as_ref()))
+        .sum()
+}
+
+fn push_income_case(
+    entries: &mut Vec<LiasseEntry>,
+    case: &'static str,
+    label: &str,
+    amount: Money,
+) {
+    push_case(entries, "2033-B", case, label, amount.cents());
+}
+
+fn push_gap(
+    gaps: &mut Vec<LiasseDiscrepancy>,
+    subject: &'static str,
+    snapshot: Money,
+    book: Money,
+) {
+    if snapshot != book {
+        gaps.push(LiasseDiscrepancy {
+            subject,
+            snapshot_cents: snapshot.cents(),
+            ledger_cents: book.cents(),
+        });
+    }
+}
+
+/// Cases 2033-B lues sur la balance. La case 210 (ventes de marchandises) n'est pas émise.
+/// La case 230 « Autres produits » lit le compte 758. L'export garde les
+/// centimes du livre et ajoute l'euro à recopier.
+fn income_statement_entries(ledger: &Ledger) -> Vec<LiasseEntry> {
+    let mut entries = Vec::new();
+    push_income_case(
+        &mut entries,
+        "218",
+        "Production vendue — services (HT)",
+        product_case(ledger, "706"),
+    );
+    push_income_case(
+        &mut entries,
+        "230",
+        "Autres produits",
+        product_case(ledger, "758"),
+    );
+    push_income_case(
+        &mut entries,
+        "242",
+        "Autres charges externes (nettes de TVA déductible, hors impôts et taxes)",
+        external_charges(ledger),
+    );
+    push_income_case(
+        &mut entries,
+        "244",
+        "Impôts, taxes et versements assimilés",
+        charge_case(ledger, "635"),
+    );
+    push_income_case(
+        &mut entries,
+        "250",
+        "Salaires et traitements",
+        charge_case(ledger, "641"),
+    );
+    push_income_case(
+        &mut entries,
+        "252",
+        "Charges sociales",
+        charge_case(ledger, "645"),
+    );
+    push_income_case(
+        &mut entries,
+        "254",
+        "Dotations aux amortissements et aux provisions",
+        charge_case(ledger, "681"),
+    );
+    push_income_case(
+        &mut entries,
+        "306",
+        "Impôt sur les bénéfices (compte 695 du livre)",
+        charge_case(ledger, "695"),
+    );
+    push_income_case(
+        &mut entries,
+        "310",
+        "Bénéfice ou perte — résultat comptable du livre (classes 6 et 7)",
+        ledger.net_result(),
+    );
+    entries
+}
+
+fn book_discrepancies(year: &FiscalYearRecord, ledger: &Ledger) -> Vec<LiasseDiscrepancy> {
+    let mut gaps = Vec::new();
+    push_gap(
+        &mut gaps,
+        "chiffre d'affaires",
+        year.revenue_ht,
+        product_case(ledger, "706"),
+    );
+    push_gap(
+        &mut gaps,
+        "coût du dirigeant",
+        year.director_remuneration,
+        charge_case(ledger, "641") + charge_case(ledger, "645"),
+    );
+    push_gap(&mut gaps, "résultat", year.net_result, ledger.net_result());
+    push_gap(
+        &mut gaps,
+        "impôt sur les bénéfices",
+        year.corporate_tax,
+        charge_case(ledger, "695"),
+    );
+    gaps
+}
+
+const NOTE: &str = "Export indicatif pour recopier les cases (2065, 2033-A, 2033-B, 2033-C, \
+    2033-D, 2033-F). On recopie, rien n’est télétransmis. On recopie les euros ; les centimes \
+    du livre restent dans le JSON. Pas d’EDI, pas de PDF Cerfa. Le 2033-E et le 2033-G sont \
+    néant. Pas d’autoliquidation. Les cases du compte de résultat se lisent sur le livre \
+    lorsqu’il est fourni ; une case dont l’euro recopié est 0 est omise. L’impôt de la case \
+    306 est celui du compte 695 du livre. La case C1 du 2065 reste le résultat fiscal du \
+    snapshot (taxable_result). Le résultat de clôture lit le livre. L’écart entre le snapshot \
+    et le livre (chiffre d’affaires, coût du dirigeant, résultat, impôt) reste en centimes, \
+    sans euro, quand les deux chiffres diffèrent.";
+
 /// Construit l'export de liasse depuis le snapshot figé d'un exercice clos, et le bilan dérivé
-/// de son grand livre (`balance_sheet`) s'il est fourni.
+/// de son grand livre s'il est fourni.
+///
+/// Les cases du 2033-B viennent de la balance de ce livre. Le snapshot n'en est pas la source.
+/// S'il ne dit pas le même chiffre d'affaires, le même coût du dirigeant, le même résultat ou
+/// le même impôt, l'écart est listé en centimes dans [`LiasseExport::discrepancies`] et le
+/// snapshot n'est pas modifié. La case C1 reste [`FiscalYearRecord::taxable_result`] ; elle
+/// gagne seulement l'euro à recopier. Le 2033-E et le 2033-G sont néant.
 #[must_use]
 pub fn liasse_export(
     profile: &CompanyProfile,
     year: &FiscalYearRecord,
     ledger: Option<&Ledger>,
 ) -> LiasseExport {
-    // Lot 37 : les impôts et taxes (635) sortent des « autres charges externes » pour la case
-    // 244 — lus dans la balance du grand livre, le snapshot ne connaissant que le total.
-    let taxes = ledger.map_or(Money::ZERO, |l| {
-        l.trial_balance()
-            .rows
-            .iter()
-            .filter(|r| r.account.number.starts_with("635"))
-            .map(|r| r.balance)
-            .sum()
+    let mut entries = Vec::new();
+    let discrepancies = ledger.map_or_else(Vec::new, |book| {
+        entries.extend(income_statement_entries(book));
+        book_discrepancies(year, book)
     });
-    // Lot 41, vérifié sur la notice 2033-SD : 218 production vendue de services (210 est la
-    // vente de marchandises), 250 salaires et traitements, 252 charges sociales, 306 IS. Le
-    // brut du dirigeant vient du profil (comme le grand livre, `director_gross`), les charges
-    // sociales en sont le complément dans le coût figé au snapshot ; si le profil ne s'y prête
-    // plus, tout le coût va en 250.
-    let period = year.period();
-    let director_gross = director_gross(profile, period)
-        .filter(|g| *g <= year.director_remuneration)
-        .unwrap_or(year.director_remuneration);
-    let director_charges = year.director_remuneration - director_gross;
-    let entry = |form: &'static str, case: &'static str, label: &str, amount: Money| LiasseEntry {
-        form,
-        case,
-        label: label.to_string(),
-        amount_cents: amount.cents(),
-    };
-    let mut entries = vec![
-        entry(
-            "2033-B",
-            "218",
-            "Production vendue — services (HT)",
-            year.revenue_ht,
+    let taxable = year.taxable_result();
+    push_case(
+        &mut entries,
+        "2065",
+        "C1",
+        &format!(
+            "Résultat fiscal (bénéfice imposable après réintégration de {} de charges non \
+             déductibles et imputation des déficits antérieurs, négatif = déficit). Ce \
+             n'est pas un compte du livre : c'est le résultat fiscal du snapshot.",
+            year.non_deductible_expenses
         ),
-        entry(
-            "2033-B",
-            "242",
-            "Autres charges externes (nettes de TVA déductible, hors impôts et taxes)",
-            year.expenses - taxes,
-        ),
-        entry(
-            "2033-B",
-            "244",
-            "Impôts, taxes et versements assimilés",
-            taxes,
-        ),
-        entry(
-            "2033-B",
-            "250",
-            "Salaires et traitements (rémunération brute du dirigeant)",
-            director_gross,
-        ),
-        entry(
-            "2033-B",
-            "252",
-            "Charges sociales (cotisations sur la rémunération du dirigeant)",
-            director_charges,
-        ),
-        entry(
-            "2033-B",
-            "254",
-            "Dotations aux amortissements et aux provisions",
-            year.depreciation,
-        ),
-        entry(
-            "2033-B",
-            "306",
-            "Impôt sur les bénéfices (barème 15 % / 25 %, arrondi à l'euro — art. 1657 CGI)",
-            year.corporate_tax,
-        ),
-        entry(
-            "2033-B",
-            "310",
-            "Bénéfice ou perte — résultat comptable de l'exercice (après IS)",
-            year.net_result,
-        ),
-        entry(
-            "2065",
-            "C1",
-            &format!(
-                "Résultat fiscal (bénéfice imposable après réintégration de {} de charges non \
-                 déductibles et imputation des déficits antérieurs, négatif = déficit)",
-                year.non_deductible_expenses
-            ),
-            year.taxable_result(),
-        ),
-    ];
-    if !year.dividends.is_zero() {
-        entries.push(entry(
-            "2065",
-            "distributions",
-            "Répartition des produits distribués — montant net des dividendes décidés au titre \
-             de l'exercice (ouvre la déclaration 2777 le 15 du mois suivant leur paiement)",
-            year.dividends,
-        ));
-    }
+        taxable.cents(),
+    );
     entries.extend(tax_loss_entries(year));
     if let Some(ledger) = ledger {
         entries.extend(balance_sheet_entries(&ledger.balance_sheet()));
@@ -458,9 +593,8 @@ pub fn liasse_export(
         approved: year.is_approved(),
         entries,
         capital: CapitalComposition::from_profile(profile),
-        note: "Export indicatif des cases principales (2065, 2033-A, 2033-B, 2033-C, 2033-D, \
-               2033-F) à destination de l'expert-comptable — le bilan 2033-A et le tableau \
-               2033-C sont dérivés du grand livre ; le dépôt réel de la liasse passe par \
-               EDI-TDFC, hors périmètre de FreeFlow.",
+        discrepancies,
+        mentions: NIL_MENTIONS,
+        note: NOTE,
     }
 }
