@@ -577,6 +577,8 @@ fn load_letter(conn: &Connection, id: &str, status: &str) -> Result<Option<Ready
         .as_deref()
         .and_then(|value| OffsetDateTime::parse(value, &Rfc3339).ok())
         .unwrap_or_else(OffsetDateTime::now_utc);
+    let chrome = LetterChrome::from_profile(&profile(conn)?);
+    let text = super::present::close_letter(&text, &chrome.signature);
     Ok(Some(ReadyLetter {
         id,
         message: OutboundMessage {
@@ -585,7 +587,7 @@ fn load_letter(conn: &Connection, id: &str, status: &str) -> Result<Option<Ready
             to_address,
             subject,
             text,
-            chrome: LetterChrome::from_profile(&profile(conn)?),
+            chrome,
             message_id,
             at,
         },

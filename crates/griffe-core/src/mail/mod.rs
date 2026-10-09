@@ -21,7 +21,7 @@ pub use model::{
     OutboundView, PROBE_OK_SENTENCE, ProbeMaterial, ProbeVerdict, ReadyLetter, RecordingMail,
     SentCopyStatus, SmtpEndpoint, SubmissionBatch, SubmissionReceipt, TlsMode, UNDO_SECS,
 };
-pub use present::{LINK_HINT, LetterParts, letter_html, readable_links};
+pub use present::{LINK_HINT, LetterParts, close_letter, letter_card, letter_html, readable_links};
 pub use secret::MailSecret;
 
 /// Compte d'envoi, sans le secret.
@@ -75,19 +75,31 @@ pub struct TrialLetter {
 ///
 /// Lecture impossible.
 pub fn trial_letter(conn: &rusqlite::Connection) -> Result<TrialLetter, AppError> {
+    let account = profile(conn)?;
+    trial_with_closing(conn, &account.signature)
+}
+
+/// Même lettre d'essai, fermée par le texte donné. N'écrit rien.
+///
+/// # Errors
+///
+/// Lecture impossible.
+pub fn trial_with_closing(
+    conn: &rusqlite::Connection,
+    signature: &str,
+) -> Result<TrialLetter, AppError> {
     let phrases = crate::follow_up::prospect_phrases(conn)?;
     let (subject_template, body_template) = phrases.into_iter().next().map_or_else(
         || ("{{sujet}}".to_string(), "{{signature}}\n".to_string()),
         |phrase| (phrase.subject, phrase.body),
     );
-    let account = profile(conn)?;
     let (moi, societe) = crate::follow_up::letter_speaker(conn)?;
     let ctx = TemplateContext {
         prenom: "Camille".into(),
         sujet: "cette lettre d'essai".into(),
         moi,
         societe,
-        signature: account.signature,
+        signature: signature.to_string(),
         ..TemplateContext::default()
     };
     let rendered_subject = render_template(&subject_template, &ctx);
@@ -688,6 +700,54 @@ mod tests {
         assert!(!letter.body.contains("Marie"));
         assert!(!letter.body.contains("Refonte"));
         assert!(!letter.body.contains("Bien à vous"));
+    }
+
+    #[test]
+    fn arming_closes_the_letter_with_the_formula_once() {
+        let mut store = test_store("arm-formula");
+        save_ready(&mut store);
+        let Outcome::Applied(()) = Executor::new(&mut store)
+            .execute(
+                &SaveMailSignature {
+                    signature: "Nicolas\nAtelier".into(),
+                },
+                &human(),
+            )
+            .unwrap()
+        else {
+            panic!("formule");
+        };
+        let Outcome::Applied(id) = Executor::new(&mut store)
+            .execute(
+                &ArmOutbound {
+                    kind: "trial".into(),
+                    anchor: Some("essai".into()),
+                    to_address: "ada@atelier.test".into(),
+                    subject: "Essai".into(),
+                    body: "Bonjour.".into(),
+                    delay_secs: 0,
+                    session_token: None,
+                    follow_subject: None,
+                    follow_subject_id: None,
+                    follow_cycle: None,
+                    follow_step: None,
+                    client_id: None,
+                },
+                &human(),
+            )
+            .unwrap()
+        else {
+            panic!("armement");
+        };
+        let body: String = store
+            .connection()
+            .query_row(
+                "SELECT body FROM outbound_mail WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(body, "Bonjour.\n\nNicolas\nAtelier");
     }
 
     #[test]

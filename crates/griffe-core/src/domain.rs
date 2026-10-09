@@ -72,7 +72,7 @@ pub use period::{
     FiscalYear, FiscalYearEnd, FiscalYearEndError, Month, MonthError, UnknownVatRegime, VatRegime,
     format_date, parse_date,
 };
-pub use phone::display_phone;
+pub use phone::{display_phone, tel_href};
 pub use quote::{
     Discount, LineKind, Quote, QuoteLine, QuoteLineParseError, QuoteStatus, UnknownQuoteStatus,
 };

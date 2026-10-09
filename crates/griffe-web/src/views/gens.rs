@@ -12,7 +12,9 @@ use griffe_core::dossier_work::DossierWork;
 use griffe_core::follow_up::{
     FollowUpCard, card_for, follow_up_sender, prospect_genre_for, prospect_genres,
 };
-use griffe_core::mail::{LINK_HINT, OutboundStatus, OutboundView};
+use griffe_core::mail::{
+    LINK_HINT, LetterChrome, LetterParts, OutboundStatus, OutboundView, close_letter, letter_card,
+};
 use griffe_core::people::{
     CurrentSituation, HistoryEvent, HistoryKind, MissionShape, OutgoingCadence, OutgoingChapter,
     OutgoingNote, Paper, PaperKind, PaperStatus, PeopleList, PersonAction, PersonChapter,
@@ -450,7 +452,63 @@ fn cue_fr(cue: &PersonCue) -> String {
 
 pub fn dossier_page(store: &Store, needle: &str, today: Date) -> Result<Markup, AppError> {
     let dossier = person(store.connection(), needle, today)?;
-    Ok(dossier_markup(&dossier, today, None))
+    let look = LetterLook::from_store(store);
+    Ok(dossier_body(&dossier, today, None, None, &look))
+}
+
+/// Habit de la lettre sur cet écran. Le dossier ne le porte pas : une relecture
+/// d'erreur, sans coffre sous la main, reste sur l'habit neutre.
+struct LetterLook {
+    from_name: String,
+    chrome: LetterChrome,
+}
+
+impl LetterLook {
+    fn plain() -> Self {
+        Self {
+            from_name: String::new(),
+            chrome: LetterChrome::default(),
+        }
+    }
+
+    fn from_store(store: &Store) -> Self {
+        let account = griffe_core::mail::profile(store.connection()).unwrap_or_default();
+        Self {
+            from_name: account.from_name.clone(),
+            chrome: LetterChrome::from_profile(&account),
+        }
+    }
+}
+
+/// La carte telle qu'elle part. `close` ajoute la formule sans l'écrire dans le champ.
+/// `heading` pose le sujet au-dessus, quand la page ne l'a pas déjà.
+pub fn letter_stage(
+    from_name: &str,
+    subject: &str,
+    body: &str,
+    chrome: &LetterChrome,
+    close: bool,
+    heading: bool,
+) -> Markup {
+    let text = if close {
+        close_letter(body, &chrome.signature)
+    } else {
+        body.to_string()
+    };
+    let card = letter_card(&LetterParts {
+        from_name,
+        subject,
+        body: &text,
+        chrome,
+    });
+    html! {
+        div class="letter-stage" {
+            @if heading && !subject.trim().is_empty() {
+                p class="letter-stage-subject" { (subject) }
+            }
+            (PreEscaped(card))
+        }
+    }
 }
 
 /// Saisie des types sur le dossier. `naming` affiche « Nomme le type. » sans écrire.
@@ -462,7 +520,8 @@ pub struct KindFormState {
 }
 
 pub fn dossier_markup(dossier: &PersonDossier, today: Date, flash: Option<&str>) -> Markup {
-    dossier_body(dossier, today, flash, None)
+    let look = LetterLook::plain();
+    dossier_body(dossier, today, flash, None, &look)
 }
 
 pub fn dossier_with_kinds(
@@ -471,7 +530,8 @@ pub fn dossier_with_kinds(
     flash: Option<&str>,
     kinds: &KindFormState,
 ) -> Markup {
-    dossier_body(dossier, today, flash, Some(kinds))
+    let look = LetterLook::plain();
+    dossier_body(dossier, today, flash, Some(kinds), &look)
 }
 
 fn kinds_form(dossier: &PersonDossier, href: &str, posted: Option<&KindFormState>) -> Markup {
@@ -515,6 +575,7 @@ fn dossier_body(
     today: Date,
     flash: Option<&str>,
     posted: Option<&KindFormState>,
+    look: &LetterLook,
 ) -> Markup {
     let href = person_href(&dossier.name);
     let client_fiche = matches!(dossier.key, PersonKey::Client { .. });
@@ -610,7 +671,7 @@ fn dossier_body(
                     h3 { "Histoire" }
                     ul class="hist" {
                         @for event in &dossier.history {
-                            (history_item(event))
+                            (history_item(event, look))
                         }
                     }
                 }
@@ -1024,11 +1085,11 @@ fn paper_line(paper: &Paper) -> String {
     }
 }
 
-fn history_item(event: &HistoryEvent) -> Markup {
+fn history_item(event: &HistoryEvent, look: &LetterLook) -> Markup {
     html! {
         li {
             time { (format_date_fr(event.on)) }
-            (history_body(event))
+            (history_body(event, look))
         }
     }
 }
@@ -1069,7 +1130,7 @@ fn fold(summary: Markup, body: &str) -> Markup {
     }
 }
 
-fn history_body(event: &HistoryEvent) -> Markup {
+fn history_body(event: &HistoryEvent, look: &LetterLook) -> Markup {
     match &event.kind {
         HistoryKind::Letter { subject, body } => {
             let title = if subject.is_empty() {
@@ -1077,7 +1138,16 @@ fn history_body(event: &HistoryEvent) -> Markup {
             } else {
                 subject.clone()
             };
-            fold(html! { span class="preview" { (title) } }, body)
+            // Le texte classé, tel quel. La formule d'aujourd'hui ne s'y ajoute pas.
+            html! {
+                details class="letter-fold" {
+                    summary {
+                        span class="preview" { (title) }
+                        span class="fold-mark" aria-hidden="true" {}
+                    }
+                    (letter_stage(&look.from_name, subject, body, &look.chrome, false, false))
+                }
+            }
         }
         HistoryKind::Interaction { interaction } => {
             let nature = nature_fr(*interaction);
@@ -1488,8 +1558,7 @@ pub fn estimate_page(
     }
 }
 
-/// Fragment rendu du récit, cible de l'aperçu. Une page vide dit « Rien d'écrit. »
-pub fn travaux_fragment(body: &str) -> Markup {
+fn travaux_prose(body: &str) -> Markup {
     if body.is_empty() {
         html! { p class="work-empty" { "Rien d'écrit." } }
     } else {
@@ -1497,40 +1566,121 @@ pub fn travaux_fragment(body: &str) -> Markup {
     }
 }
 
-pub fn travaux_page(dossier: &PersonDossier, note: &DossierWork, error: Option<&str>) -> Markup {
-    let href = person_href(&dossier.name);
-    let action = format!("{href}/travaux");
-    let preview = format!("{href}/travaux/apercu");
+fn travaux_back(href: &str, name: &str) -> Markup {
     html! {
-        div class="letter spread" data-view=(ViewId::Gens.slug()) {
-            a class="back" href=(href) hx-get=(href) hx-target="#content" hx-push-url="true" {
-                "← " (dossier.name)
-            }
+        a class="back" href=(href) hx-get=(href) hx-target="#content" hx-push-url="true" {
+            "← " (name)
+        }
+    }
+}
+
+/// Lecture du récit. Le markdown n'est pas là : « Écrire » ouvre la source.
+pub fn travaux_page(dossier: &PersonDossier, note: &DossierWork) -> Markup {
+    let href = person_href(&dossier.name);
+    let edit = format!("{href}/travaux/ecrire");
+    html! {
+        div class="letter spread" data-view=(ViewId::Gens.slug()) hx-history="false" {
+            (travaux_back(&href, &dossier.name))
             h1 { "Les travaux." }
             p class="lede" {
                 "Où on en est. L'estimation, à côté, dit ce que chaque ligne vaut."
             }
-            @if let Some(msg) = error {
-                p class="mast-note" role="alert" { (msg) }
+            a class="quiet" href=(edit) hx-get=(edit) hx-target="#content" hx-push-url="true" {
+                "Écrire"
             }
-            div id="travaux-rendu" class="work-prose" {
-                (travaux_fragment(&note.body))
+            div class="work-prose" {
+                (travaux_prose(&note.body))
             }
-            form hx-post=(action) hx-target="#content" hx-push-url="true" {
-                input type="hidden" name="revision" value=(note.revision);
-                div class="field" {
-                    label for="body" { "Le récit" }
-                    textarea id="body" name="body" rows="14"
-                      hx-post=(preview)
-                      hx-trigger="keyup changed delay:400ms"
-                      hx-target="#travaux-rendu"
-                      hx-swap="innerHTML" {
-                        (note.body)
+        }
+    }
+}
+
+/// Source markdown. `saved` est le texte du coffre : s'il diffère du champ, la page est sale.
+/// `alert` s'affiche au-dessus. `offer_vault` propose de jeter le brouillon et de relire le coffre.
+pub fn travaux_edit(
+    dossier: &PersonDossier,
+    draft: &DossierWork,
+    saved: &str,
+    alert: Option<&str>,
+    offer_vault: bool,
+) -> Markup {
+    let href = person_href(&dossier.name);
+    let action = format!("{href}/travaux");
+    let edit = format!("{href}/travaux/ecrire");
+    html! {
+        div class="letter spread" data-view=(ViewId::Gens.slug()) hx-history="false" {
+            (travaux_back(&href, &dossier.name))
+            h1 { "Les travaux." }
+            p class="travaux-hint" { "Il se garde tout seul." }
+            form class="travaux-ecrire" method="post" action=(action)
+              data-saved=(saved) data-edit=(edit) hx-sync="this:queue last" {
+                input id="travaux-revision" type="hidden" name="revision" value=(draft.revision);
+                (travaux_alert(alert, offer_vault.then_some(edit.as_str())))
+                div class="row-actions travaux-bar" {
+                    span id="travaux-etat" class="travaux-etat" {}
+                    button class="seal" type="submit" name="intent" value="relire"
+                      hx-post=(action) hx-target="#content" hx-swap="innerHTML"
+                      hx-include="closest form" hx-push-url="false" {
+                        "Relire"
                     }
                 }
-                div class="row-actions" {
-                    button class="seal" type="submit" { "Garder" }
+                textarea id="body" class="travaux-source" name="body" aria-label="Le récit"
+                  autofocus
+                  hx-post=(action)
+                  hx-trigger="input changed delay:600ms"
+                  hx-swap="none"
+                  hx-push-url="false"
+                  hx-include="#travaux-revision" {
+                    (draft.body)
                 }
+            }
+        }
+    }
+}
+
+/// Réponse d'une sauvegarde qui laisse le champ en place : révision, « Gardé. », alerte vide.
+pub fn travaux_kept(revision: i64) -> Markup {
+    html! {
+        input id="travaux-revision" type="hidden" name="revision" value=(revision) hx-swap-oob="true";
+        span id="travaux-etat" class="travaux-etat" hx-swap-oob="true" { "Gardé." }
+        div id="travaux-alerte" hx-swap-oob="true" {}
+    }
+}
+
+/// Alerte hors bande, sans toucher au champ. `reload` est le lien qui reprend le coffre.
+pub fn travaux_notice(message: &str, reload: Option<&str>) -> Markup {
+    html! {
+        (travaux_alert_oob(message, reload))
+        span id="travaux-etat" class="travaux-etat" hx-swap-oob="true" {}
+    }
+}
+
+fn travaux_alert(message: Option<&str>, reload: Option<&str>) -> Markup {
+    html! {
+        div id="travaux-alerte" {
+            @if let Some(message) = message {
+                (travaux_alert_body(message, reload))
+            }
+        }
+    }
+}
+
+fn travaux_alert_oob(message: &str, reload: Option<&str>) -> Markup {
+    html! {
+        div id="travaux-alerte" hx-swap-oob="true" {
+            (travaux_alert_body(message, reload))
+        }
+    }
+}
+
+fn travaux_alert_body(message: &str, reload: Option<&str>) -> Markup {
+    html! {
+        p class="mast-note" role="alert" { (message) }
+        @if let Some(href) = reload {
+            a class="quiet" href=(href)
+              hx-get=(href) hx-target="#content" hx-push-url="true"
+              data-travaux-discard="true" {
+                "Reprendre le récit du coffre"
             }
         }
     }
@@ -1569,13 +1719,10 @@ pub struct PhrasesView {
     pub moments: Vec<PhraseMoment>,
     pub chronicle: String,
     pub read_caption: String,
-    pub prenom: String,
-    pub sujet: String,
-    pub montant: String,
-    pub moi: String,
-    pub societe: String,
-    /// Formule déjà résolue, pour l'aperçu à côté de la frise.
-    pub signature: String,
+    /// Nom en tête de la carte.
+    pub from_name: String,
+    /// Couleur, métier, site, formule brute.
+    pub chrome: LetterChrome,
     pub banner: Option<String>,
     pub status: Option<String>,
 }
@@ -1615,6 +1762,8 @@ pub struct KeepUi {
     /// Texte encore dans la lettre, quand le geste n'est pas terminé.
     pub subject: Option<String>,
     pub body: Option<String>,
+    /// Relire est ouvert : la carte remplace la zone d'écriture.
+    pub reading: bool,
 }
 
 pub fn phrases_page(view: &PhrasesView) -> Markup {
@@ -1624,13 +1773,7 @@ pub fn phrases_page(view: &PhrasesView) -> Markup {
         .map(|moment| moment.key.as_str())
         .collect::<Vec<_>>()
         .join(",");
-    let open = view.moments.iter().find(|moment| moment.open);
-    let sheet_subject = open
-        .map(|moment| moment.reads_subject.as_str())
-        .unwrap_or("");
-    let sheet_body = open
-        .map(|moment| griffe_core::mail::readable_links(&moment.reads))
-        .unwrap_or_default();
+    let preview = phrase_preview_href(&view.action);
     html! {
         div class="phrase-desk" data-view=(ViewId::Gens.slug()) {
             a class="back" href=(view.back_href) hx-get=(view.back_href) hx-target="#content" hx-push-url="true" {
@@ -1695,9 +1838,9 @@ pub fn phrases_page(view: &PhrasesView) -> Markup {
                                     }
                                 }
                                 div class="phrase-panel" {
-                                    (phrase_line(&format!("label_{}", moment.key), "Ce moment", &moment.label, false))
-                                    (phrase_line(&format!("subject_{}", moment.key), "Sujet", &moment.subject, false))
-                                    (phrase_line(&format!("body_{}", moment.key), "Lettre", &moment.body, true))
+                                    (phrase_line(&format!("label_{}", moment.key), "Ce moment", &moment.label, false, ""))
+                                    (phrase_line(&format!("subject_{}", moment.key), "Sujet", &moment.subject, false, &preview))
+                                    (phrase_line(&format!("body_{}", moment.key), "Lettre", &moment.body, true, &preview))
                                     input type="hidden" name=(format!("revision_{}", moment.key)) value=(moment.revision);
                                     div class="token-row" {
                                         @for (name, insert) in PHRASE_TOKENS {
@@ -1719,16 +1862,8 @@ pub fn phrases_page(view: &PhrasesView) -> Markup {
                             }
                         }
                     }
-                    aside class="phrase-sheet"
-                          data-prenom=(view.prenom)
-                          data-sujet=(view.sujet)
-                          data-montant=(view.montant)
-                          data-moi=(view.moi)
-                          data-societe=(view.societe) {
-                        template class="signature-source" { (view.signature) }
-                        p class="phrase-caption" { (view.read_caption) }
-                        p class="phrase-sheet-subject" { (sheet_subject) }
-                        pre class="phrase-sheet-body" { (sheet_body) }
+                    aside class="phrase-sheet" id="phrase-sheet" {
+                        (phrase_sheet_inner(view))
                     }
                 }
                 div class="row-actions" {
@@ -1752,13 +1887,46 @@ const PHRASE_TOKENS: &[(&str, &str)] = &[
     ("<signature>", "<signature>"),
 ];
 
-fn phrase_line(id: &str, label: &str, value: &str, letter: bool) -> Markup {
+/// L'intérieur de la feuille, seul. L'aperçu le remplace sans réécrire la frise.
+pub fn phrase_sheet_inner(view: &PhrasesView) -> Markup {
+    let open = view.moments.iter().find(|moment| moment.open);
+    let subject = open
+        .map(|moment| moment.reads_subject.as_str())
+        .unwrap_or("");
+    let body = open.map(|moment| moment.reads.as_str()).unwrap_or("");
+    html! {
+        p class="phrase-caption" { (view.read_caption) }
+        p class="phrase-sheet-subject" { (subject) }
+        (letter_stage(&view.from_name, subject, body, &view.chrome, true, false))
+    }
+}
+
+fn phrase_preview_href(action: &str) -> String {
+    action.replacen("/affaires/phrases", "/affaires/phrases/apercu", 1)
+}
+
+fn phrase_line(id: &str, label: &str, value: &str, letter: bool, preview: &str) -> Markup {
+    let watch = letter || id.starts_with("subject_");
     html! {
         div class="field" {
             label for=(id) { (label) }
             @if letter {
-                textarea id=(id) name=(id) rows="8" { (value) }
+                textarea id=(id) name=(id) rows="8"
+                    hx-post=(preview)
+                    hx-trigger="input changed delay:600ms, preview"
+                    hx-include="closest form"
+                    hx-target="#phrase-sheet"
+                    hx-swap="innerHTML"
+                    hx-push-url="false" { (value) }
                 p class="field-help" { (LINK_HINT) }
+            } @else if watch {
+                input id=(id) name=(id) type="text" value=(value)
+                    hx-post=(preview)
+                    hx-trigger="input changed delay:600ms, preview"
+                    hx-include="closest form"
+                    hx-target="#phrase-sheet"
+                    hx-swap="innerHTML"
+                    hx-push-url="false";
             } @else {
                 input id=(id) name=(id) type="text" value=(value);
             }
@@ -2032,8 +2200,13 @@ pub fn letter_page(
         .iter()
         .filter(|e| matches!(e.kind, HistoryKind::Letter { .. }))
         .collect();
+    let look = LetterLook {
+        from_name: mail.from_name.clone(),
+        chrome: LetterChrome::from_profile(&mail),
+    };
+    let relire = format!("{href}/relire");
     Ok(html! {
-        div class="letter spread" data-view=(ViewId::Gens.slug()) {
+        div class="letter spread letter-desk" data-view=(ViewId::Gens.slug()) {
             a class="back" href=(href) hx-get=(href) hx-target="#content" hx-push-url="true" {
                 "← " (dossier.name)
             }
@@ -2074,13 +2247,20 @@ pub fn letter_page(
                     }
                 }
             }
-            div class="letter-compose" {
-            div class="letter-draft" {
-                div class="meta" {
-                    "De " (from) " · À " (to)
-                    @if !mail.ready { " · ne sera pas envoyé par Griffe" }
+            form class="letter-compose" {
+                input class="letter-face-pick" type="radio" name="face" id="face-write" value="ecrire" checked[!keep.reading];
+                input class="letter-face-pick" type="radio" name="face" id="face-read" value="relire" checked[keep.reading];
+                div class="letter-faces" {
+                    label class="quiet" for="face-write" { "Écrire" }
+                    button class="quiet letter-relire" type="submit"
+                           formaction=(relire)
+                           formmethod="post"
+                           hx-post=(relire)
+                           hx-target="#content" {
+                        "Relire"
+                    }
                 }
-                form {
+                div class="letter-draft" {
                     (form::text("subject_line", "Sujet", subject, None))
                     (form::textarea("body", "Lettre", body, 12, None))
                     p class="field-help" { (LINK_HINT) }
@@ -2101,6 +2281,18 @@ pub fn letter_page(
                     }
                     @if keep.confirm && genre.is_none() {
                         input type="hidden" name="genre_name" value=(keep.proposed_name);
+                    }
+                    @if !keep.ask && !(keep.confirm && genre.is_none()) && !keep.proposed_name.is_empty() {
+                        input type="hidden" name="genre_name" value=(keep.proposed_name);
+                    }
+                }
+                @if keep.reading {
+                    (letter_stage(&look.from_name, subject, body, &look.chrome, true, true))
+                }
+                div class="letter-under" {
+                    div class="meta" {
+                        "De " (from) " · À " (to)
+                        @if !mail.ready { " · ne sera pas envoyé par Griffe" }
                     }
                     div class="row-actions" {
                         @if can_send {
@@ -2131,20 +2323,12 @@ pub fn letter_page(
                     }
                 }
             }
-            (letter_face(
-                &mail.from_name,
-                &mail.metier,
-                body,
-                &mail.site,
-                mail.link_ink.as_str(),
-            ))
-            }
             @if !previous.is_empty() {
                 div class="block" {
                     h3 { "Déjà classées" }
                     ul class="hist" {
                         @for event in previous {
-                            (history_item(event))
+                            (history_item(event, &look))
                         }
                     }
                 }
@@ -2152,35 +2336,6 @@ pub fn letter_page(
             p class="date" { (letter_date(today)) }
         }
     })
-}
-
-pub fn letter_face(name: &str, metier: &str, body: &str, site: &str, ink: &str) -> Markup {
-    let name = name.trim();
-    let metier = metier.trim();
-    let site = site.trim();
-    let ink = match ink {
-        "encre" | "sceau" => ink,
-        _ => "vert",
-    };
-    let body = griffe_core::mail::readable_links(body);
-    let site_label = griffe_core::mail::readable_links(site);
-    html! {
-        aside class=(format!("letter-face letter-ink-{ink}")) {
-            @if !name.is_empty() {
-                p class="letter-face-name" { (name) }
-            }
-            @if !metier.is_empty() {
-                p class="letter-face-metier" { (metier) }
-            }
-            @if !name.is_empty() || !metier.is_empty() {
-                hr class="letter-face-rule";
-            }
-            pre class="letter-face-body" { (body) }
-            @if !site.is_empty() {
-                p class="letter-face-site" { (site_label) }
-            }
-        }
-    }
 }
 
 fn lower_first(value: &str) -> String {

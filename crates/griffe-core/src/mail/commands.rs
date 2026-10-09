@@ -6,6 +6,7 @@ use time::{Date, Duration, OffsetDateTime};
 
 use super::error::MailError;
 use super::model::{ICLOUD_HOST, LetterInk, MailPreset, PROBE_OK_SENTENCE, TlsMode, UNDO_SECS};
+use super::present::close_letter;
 use super::secret::MailSecret;
 use super::store::{self, NewLetter};
 use crate::app::{AppError, Command};
@@ -387,7 +388,8 @@ impl Command for ArmOutbound {
     fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
         let to_address = parse_email(self.to_address.trim()).map_err(|_| MailError::Address)?;
         let subject = self.subject.trim().to_string();
-        let body = self.body.trim().to_string();
+        let signature = store::profile(conn)?.signature;
+        let body = close_letter(self.body.trim(), &signature);
         if subject.is_empty() || body.is_empty() {
             return Err(MailError::Incomplete.into());
         }

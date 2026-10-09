@@ -11,7 +11,8 @@ use time::OffsetDateTime;
 use griffe_core::mail::{
     DeliveryOutcome, ICLOUD_HOST, ImapEndpoint, LetterParts, MailSecret, MailSubmitError,
     OutboundMail, OutboundMessage, PROBE_OK_SENTENCE, ProbeVerdict, ReadyLetter, SentCopyStatus,
-    SmtpEndpoint, SubmissionBatch, SubmissionReceipt, TlsMode, french_submit_error, letter_html,
+    SmtpEndpoint, SubmissionBatch, SubmissionReceipt, TlsMode, close_letter, french_submit_error,
+    letter_html,
 };
 use lettre::message::{Mailbox, Message, MultiPart, SinglePart};
 use lettre::transport::smtp::authentication::Credentials;
@@ -256,13 +257,14 @@ pub fn letter_bytes(message: &OutboundMessage) -> Result<Vec<u8>, MailSubmitErro
 fn compose(message: &OutboundMessage) -> Result<Message, MailSubmitError> {
     let from = mailbox(message.from_name.as_deref(), &message.from_address)?;
     let to = mailbox(None, &message.to_address)?;
+    let text = close_letter(&message.text, &message.chrome.signature);
     let html = letter_html(&LetterParts {
         from_name: message.from_name.as_deref().unwrap_or(""),
         subject: &message.subject,
-        body: &message.text,
+        body: &text,
         chrome: &message.chrome,
     });
-    let plain = SinglePart::plain(message.text.clone());
+    let plain = SinglePart::plain(text);
     let rich = SinglePart::html(html);
     Message::builder()
         .date(system_time(message.at))

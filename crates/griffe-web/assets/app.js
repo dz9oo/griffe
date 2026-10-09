@@ -48,7 +48,7 @@ document.body.addEventListener("change", (event) => {
     const desk = input.closest(".phrase-desk");
     if (desk) {
       placePlayhead(desk, false);
-      fillSheet(desk);
+      previewPhrase(desk);
     }
     return;
   }
@@ -75,7 +75,7 @@ document.body.addEventListener("click", (event) => {
       field.selectionStart = caret;
       field.selectionEnd = caret;
       field.focus();
-      if (desk) fillSheet(desk);
+      if (desk) previewPhrase(desk, field);
     }
     return;
   }
@@ -118,8 +118,6 @@ document.body.addEventListener("click", (event) => {
 });
 
 document.body.addEventListener("input", (event) => {
-  const compose = event.target.closest?.(".letter-compose");
-  if (compose && event.target.id === "body") fillLetter(compose);
   const desk = event.target.closest?.(".phrase-desk");
   if (!desk) return;
   const field = event.target;
@@ -132,7 +130,6 @@ document.body.addEventListener("input", (event) => {
     if (name) name.textContent = field.value.trim() || "Ce moment";
   }
   if (field.name.startsWith("label_") || field.name.startsWith("ecart_")) refreshChronicle(desk);
-  if (field.name.startsWith("subject_") || field.tagName === "TEXTAREA") fillSheet(desk);
 });
 
 document.body.addEventListener("htmx:afterSwap", (event) => {
@@ -140,7 +137,6 @@ document.body.addEventListener("htmx:afterSwap", (event) => {
   const slug = viewSlugFrom(event.detail.target);
   if (slug) markNav(slug);
   bootPhrases(event.detail.target);
-  bootLetter(event.detail.target);
 });
 
 const JOUR_MOTS = [
@@ -163,19 +159,11 @@ function bootPhrases(root) {
   const desk = root?.querySelector?.(".phrase-desk");
   if (!desk) return;
   placePlayhead(desk, true);
-  fillSheet(desk);
 }
 
-function bootLetter(root) {
-  const compose = root?.querySelector?.(".letter-compose");
-  if (!compose) return;
-  fillLetter(compose);
-}
-
-function fillLetter(compose) {
-  const body = compose.querySelector("textarea#body");
-  const out = compose.querySelector(".letter-face-body");
-  if (body && out) out.textContent = readableText(body.value);
+function previewPhrase(desk, field) {
+  const target = field || openPanel(desk)?.querySelector("textarea");
+  if (target && window.htmx) window.htmx.trigger(target, "preview");
 }
 
 function placePlayhead(desk, instant) {
@@ -195,46 +183,6 @@ function placePlayhead(desk, instant) {
 
 function openPanel(desk) {
   return desk.querySelector(".phrase-unit:has(.phrase-pick:checked) .phrase-panel");
-}
-
-function fillSheet(desk) {
-  const sheet = desk.querySelector(".phrase-sheet");
-  const panel = openPanel(desk);
-  if (!sheet || !panel) return;
-  const subject = panel.querySelector("input[name^='subject_']");
-  const body = panel.querySelector("textarea");
-  const subjectOut = sheet.querySelector(".phrase-sheet-subject");
-  const bodyOut = sheet.querySelector(".phrase-sheet-body");
-  if (subjectOut && subject) subjectOut.textContent = applyTags(subject.value, sheet);
-  if (bodyOut && body) bodyOut.textContent = readableText(applyTags(body.value, sheet));
-}
-
-function signatureOf(sheet) {
-  const node = sheet.querySelector?.(".signature-source");
-  if (!node) return "";
-  // Le contenu d'un <template> n'est pas dans textContent : il vit dans .content.
-  if (node.content) return node.content.textContent || "";
-  return node.textContent || "";
-}
-
-function applyTags(text, sheet) {
-  const data = sheet.dataset || {};
-  const tags = [
-    ["<prénom>", data.prenom || ""],
-    ["<contact>", data.contact || ""],
-    ["<client>", data.client || ""],
-    ["<sujet>", data.sujet || ""],
-    ["<montant>", data.montant || ""],
-    ["<moi>", data.moi || ""],
-    ["<société>", data.societe || ""],
-    ["<signature>", signatureOf(sheet)],
-  ];
-  let out = text;
-  tags.forEach(([tag, value]) => {
-    out = out.split(tag).join(value);
-  });
-  if (!data.prenom) out = out.replace(/(Bonjour|Cher)[ \t]+,/g, "$1,");
-  return out;
 }
 
 function refreshChronicle(desk) {
@@ -274,70 +222,7 @@ function lowerFirst(value) {
   return value.charAt(0).toLowerCase() + value.slice(1);
 }
 
-function readableText(text) {
-  const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-  const chars = [...normalized];
-  let out = "";
-  let index = 0;
-  let gapAt = 0;
-  while (index < chars.length) {
-    if (urlAt(chars, index)) {
-      out += chars.slice(gapAt, index).join("");
-      const taken = takeUrl(chars, index);
-      out += withoutUtm(taken.url);
-      index = taken.next;
-      gapAt = index;
-    } else {
-      index += 1;
-    }
-  }
-  out += chars.slice(gapAt).join("");
-  return out;
-}
-
-function urlAt(chars, index) {
-  const scheme = startsAt(chars, index, "https://") || startsAt(chars, index, "http://");
-  if (!scheme) return false;
-  if (index === 0) return true;
-  const prev = chars[index - 1];
-  return /\s/u.test(prev) || !/[A-Za-z0-9]/.test(prev);
-}
-
-function startsAt(chars, index, prefix) {
-  for (let offset = 0; offset < prefix.length; offset += 1) {
-    if (chars[index + offset] !== prefix[offset]) return false;
-  }
-  return true;
-}
-
-function takeUrl(chars, index) {
-  let end = index;
-  while (end < chars.length) {
-    const ch = chars[end];
-    if (/\s/u.test(ch) || ch === "<" || ch === ">" || ch === "\"" || ch === "'") break;
-    end += 1;
-  }
-  while (end > index && ".,;:!?)]".includes(chars[end - 1])) end -= 1;
-  return { url: chars.slice(index, end).join(""), next: end };
-}
-
-function withoutUtm(url) {
-  const hash = url.indexOf("#");
-  const main = hash === -1 ? url : url.slice(0, hash);
-  const fragment = hash === -1 ? "" : url.slice(hash);
-  const queryAt = main.indexOf("?");
-  if (queryAt === -1) return url;
-  const path = main.slice(0, queryAt);
-  const kept = main.slice(queryAt + 1).split("&").filter((part) => {
-    if (!part) return false;
-    const name = part.split("=")[0];
-    return !name.toLowerCase().startsWith("utm_");
-  });
-  return path + (kept.length ? `?${kept.join("&")}` : "") + fragment;
-}
-
 bootPhrases(document);
-bootLetter(document);
 
 const paletteOverlay = document.getElementById("palette-overlay");
 const paletteInput = document.getElementById("palette-input");
@@ -660,3 +545,223 @@ document.body.addEventListener("keydown", (event) => {
   document.querySelectorAll(".date-pick").forEach(closeDatePick);
   dismissNativeDatePicker(document.activeElement);
 });
+
+// Les travaux : le markdown se garde avant de quitter. Le rendu est l'autre page.
+(() => {
+  let travauxInflight = 0;
+  let travauxXhr = null;
+  let travauxFlushing = false;
+  let travauxLetting = false;
+  // Relire remplace #content avant htmx:afterRequest. L'événement repart
+  // alors d'un ancêtre, et le formulaire n'est plus là. On suit le XHR.
+  const travauxRequests = new Set();
+
+  function travauxFormOf(event) {
+    const elt = event.detail?.elt;
+    if (!(elt instanceof Element)) return null;
+    if (elt.matches("form.travaux-ecrire")) return elt;
+    return elt.closest("form.travaux-ecrire");
+  }
+
+  function travauxForm() {
+    return document.querySelector("form.travaux-ecrire");
+  }
+
+  function travauxDirty(form) {
+    const area = form.querySelector("textarea.travaux-source");
+    return Boolean(area) && area.value !== form.dataset.saved;
+  }
+
+  document.body.addEventListener("input", (event) => {
+    const area = event.target;
+    if (!(area instanceof HTMLTextAreaElement) || !area.classList.contains("travaux-source")) return;
+    const etat = document.getElementById("travaux-etat");
+    if (etat) etat.textContent = "";
+  });
+
+  function settleTravaux(event) {
+    const xhr = event.detail?.xhr;
+    if (!xhr || !travauxRequests.has(xhr)) return null;
+    travauxRequests.delete(xhr);
+    travauxInflight = Math.max(0, travauxInflight - 1);
+    if (travauxXhr === xhr) travauxXhr = null;
+    return xhr;
+  }
+
+  document.body.addEventListener("htmx:beforeRequest", (event) => {
+    if (!travauxFormOf(event)) return;
+    if (travauxFlushing) {
+      event.preventDefault();
+      return;
+    }
+    const xhr = event.detail?.xhr;
+    if (!xhr || travauxRequests.has(xhr)) return;
+    travauxRequests.add(xhr);
+    travauxInflight += 1;
+    travauxXhr = xhr;
+  });
+
+  document.body.addEventListener("htmx:afterRequest", (event) => {
+    const xhr = settleTravaux(event);
+    if (!xhr || !event.detail.successful) return;
+    if (xhr.getResponseHeader("X-Griffe-Travaux") !== "ok") return;
+    const form = travauxForm() || travauxFormOf(event);
+    if (!form) return;
+    const sent = event.detail.requestConfig?.parameters?.body;
+    if (typeof sent === "string") form.dataset.saved = sent;
+  });
+
+  document.body.addEventListener("htmx:onLoadError", (event) => {
+    settleTravaux(event);
+  });
+
+  function travauxIdle() {
+    if (travauxInflight === 0) return Promise.resolve();
+    return new Promise((resolve) => {
+      const onDone = () => {
+        if (travauxInflight > 0) return;
+        document.body.removeEventListener("htmx:afterRequest", onDone);
+        resolve();
+      };
+      document.body.addEventListener("htmx:afterRequest", onDone);
+    });
+  }
+
+  function applyTravauxFragment(html) {
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    ["travaux-revision", "travaux-etat", "travaux-alerte"].forEach((id) => {
+      const next = doc.getElementById(id);
+      const current = document.getElementById(id);
+      if (!next || !current) return;
+      current.replaceWith(next);
+    });
+    const alert = document.getElementById("travaux-alerte");
+    if (alert && window.htmx) window.htmx.process(alert);
+  }
+
+  async function postTravaux(form, posted, revision) {
+    const url = form.getAttribute("action");
+    if (!url) return false;
+    const body = new URLSearchParams();
+    body.set("body", posted);
+    body.set("revision", revision);
+    let response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "HX-Request": "true",
+        },
+        body: body.toString(),
+      });
+    } catch {
+      return false;
+    }
+    const html = await response.text();
+    applyTravauxFragment(html);
+    return response.headers.get("X-Griffe-Travaux") === "ok";
+  }
+
+  async function flushTravaux() {
+    travauxFlushing = true;
+    try {
+      await travauxIdle();
+      for (let guard = 0; guard < 4; guard += 1) {
+        const form = travauxForm();
+        if (!form) return true;
+        const area = form.querySelector("textarea.travaux-source");
+        const revision = form.querySelector("#travaux-revision");
+        if (!area || area.value === form.dataset.saved) return true;
+        const posted = area.value;
+        const ok = await postTravaux(form, posted, revision ? revision.value : "");
+        if (!ok) return false;
+        form.dataset.saved = posted;
+      }
+      const form = travauxForm();
+      return !form || !travauxDirty(form);
+    } finally {
+      travauxFlushing = false;
+    }
+  }
+
+  document.addEventListener("click", (event) => {
+    if (travauxLetting || event.defaultPrevented) return;
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    const form = travauxForm();
+    if (!form) return;
+    if (travauxFlushing) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    const link = event.target instanceof Element ? event.target.closest("a[href]") : null;
+    if (!link) return;
+    if (link.hasAttribute("data-travaux-discard")) {
+      const area = form.querySelector("textarea.travaux-source");
+      if (area) form.dataset.saved = area.value;
+      return;
+    }
+    if (!travauxDirty(form) && travauxInflight === 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    flushTravaux().then((ok) => {
+      if (!ok) return;
+      travauxLetting = true;
+      link.click();
+      travauxLetting = false;
+    });
+  }, true);
+
+  window.addEventListener("popstate", (event) => {
+    const form = travauxForm();
+    if (!form) return;
+    const previous = window.onpopstate;
+    window.onpopstate = null;
+    event.stopPropagation();
+    const dest = `${location.pathname}${location.search}`;
+    const editUrl = form.dataset.edit || "";
+    flushTravaux()
+      .then((ok) => {
+        if (!ok) {
+          if (editUrl) history.pushState({ htmx: true }, "", editUrl);
+          return undefined;
+        }
+        const content = document.getElementById("content");
+        if (!content || !window.htmx) return undefined;
+        return window.htmx.ajax("GET", dest, {
+          source: content,
+          target: content,
+          swap: "innerHTML",
+        });
+      })
+      .finally(() => {
+        window.onpopstate = previous;
+      });
+  }, true);
+
+  window.addEventListener("pagehide", () => {
+    const form = travauxForm();
+    if (!form || !travauxDirty(form)) return;
+    const area = form.querySelector("textarea.travaux-source");
+    const revision = form.querySelector("#travaux-revision");
+    const url = form.getAttribute("action");
+    if (!area || !url) return;
+    if (travauxXhr) {
+      travauxXhr.abort();
+      travauxXhr = null;
+    }
+    const body = new URLSearchParams();
+    body.set("body", area.value);
+    body.set("revision", revision ? revision.value : "");
+    fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "HX-Request": "true",
+      },
+      body: body.toString(),
+      keepalive: true,
+    }).catch(() => {});
+  });
+})();

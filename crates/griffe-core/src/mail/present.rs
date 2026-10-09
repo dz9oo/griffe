@@ -2,6 +2,7 @@
 //! Aucune IO. Le corps stocké ne change pas : l'habit se calcule à l'envoi.
 
 use super::model::LetterChrome;
+use crate::domain::{display_phone, parse_email, tel_href};
 
 /// Phrase sous la zone d'écriture. Une adresse de suivi se tape en entier.
 pub const LINK_HINT: &str = "Une adresse suivie de ?utm_… reste cliquable en entier. \
@@ -9,11 +10,9 @@ La personne lit l'adresse sans cette partie.";
 
 const SERIF: &str =
     "Georgia,'Iowan Old Style','Palatino Linotype',Palatino,'Times New Roman',serif";
-const SANS: &str = "system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif";
 const PAPER: &str = "#f6f1e7";
 const MARGIN: &str = "#efe8dc";
 const INK: &str = "#1c1814";
-const MUTED: &str = "#6a635a";
 const RULE: &str = "#e3d9c8";
 
 /// Ce qu'il faut pour habiller une lettre. Le corps est le texte écrit, formule comprise.
@@ -32,7 +31,7 @@ pub struct LetterParts<'a> {
 #[must_use]
 pub fn letter_html(letter: &LetterParts<'_>) -> String {
     let body = normalize(letter.body);
-    let (prose, signature) = peel_signature(&body, &letter.chrome.signature);
+    let (prose, _) = peel_signature(&body, &letter.chrome.signature);
     let preheader = first_line(prose);
     let mut html = String::new();
     html.push_str("<!DOCTYPE html><html lang=\"fr\"><head><meta charset=\"utf-8\">");
@@ -48,6 +47,17 @@ pub fn letter_html(letter: &LetterParts<'_>) -> String {
         html.push_str(&escape(preheader));
         html.push_str("</div>");
     }
+    html.push_str(&letter_card(letter));
+    html.push_str("</body></html>");
+    html
+}
+
+/// La carte, marge comprise, sans le document. La fenêtre l'insère telle quelle.
+#[must_use]
+pub fn letter_card(letter: &LetterParts<'_>) -> String {
+    let body = normalize(letter.body);
+    let (prose, signature) = peel_signature(&body, &letter.chrome.signature);
+    let mut html = String::new();
     html.push_str(
         "<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"background:",
     );
@@ -60,22 +70,31 @@ pub fn letter_html(letter: &LetterParts<'_>) -> String {
     );
     html.push_str(PAPER);
     html.push_str(";border-collapse:collapse;\"><tr><td style=\"padding:32px 28px;\">");
-    header(&mut html, letter.chrome, letter.from_name);
+    header(&mut html, letter.from_name);
     html.push_str("<div style=\"margin:20px 0 0;\">");
-    prose_blocks(&mut html, prose, letter.chrome.ink.css());
+    prose_blocks(&mut html, prose, INK, INK);
     html.push_str("</div>");
     if let Some(signature) = signature {
-        html.push_str("<div style=\"margin:8px 0 0;font-family:");
-        html.push_str(SANS);
-        html.push_str(";font-size:16px;line-height:1.55;color:");
-        html.push_str(MUTED);
-        html.push_str(";\">");
-        prose_blocks(&mut html, signature, MUTED);
-        html.push_str("</div>");
+        signature_block(&mut html, signature);
     }
-    site_line(&mut html, &letter.chrome.site);
-    html.push_str("</td></tr></table></td></tr></table></body></html>");
+    html.push_str("</td></tr></table></td></tr></table>");
     html
+}
+
+/// Ajoute la formule quand le texte ne l'a pas déjà. Une formule vide ne change rien.
+#[must_use]
+pub fn close_letter(body: &str, signature: &str) -> String {
+    let signature = normalize(signature).trim().to_string();
+    let body = normalize(body);
+    if signature.is_empty() || signature_in_body(body.trim(), &signature) {
+        return body;
+    }
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        signature
+    } else {
+        format!("{trimmed}\n\n{signature}")
+    }
 }
 
 /// Le même texte, avec chaque adresse de suivi écrite sans ses paramètres `utm_`.
@@ -92,52 +111,106 @@ pub fn readable_links(text: &str) -> String {
     out
 }
 
-fn header(html: &mut String, chrome: &LetterChrome, from_name: &str) {
+fn header(html: &mut String, from_name: &str) {
     let name = from_name.trim();
-    let metier = chrome.metier.trim();
-    if name.is_empty() && metier.is_empty() {
+    if name.is_empty() {
         return;
     }
-    if !name.is_empty() {
-        html.push_str("<p style=\"margin:0;font-family:");
-        html.push_str(SERIF);
-        html.push_str(";font-size:22px;line-height:1.2;letter-spacing:-0.02em;color:");
-        html.push_str(INK);
-        html.push_str(";\">");
-        html.push_str(&escape(name));
-        html.push_str("</p>");
-    }
-    if !metier.is_empty() {
-        html.push_str("<p style=\"margin:6px 0 0;font-family:");
-        html.push_str(SANS);
-        html.push_str(
-            ";font-size:12px;line-height:1.4;letter-spacing:0.08em;text-transform:uppercase;color:",
-        );
-        html.push_str(chrome.ink.css());
-        html.push_str(";\">");
-        html.push_str(&escape(metier));
-        html.push_str("</p>");
-    }
+    html.push_str("<p style=\"margin:0;font-family:");
+    html.push_str(SERIF);
+    html.push_str(";font-size:22px;line-height:1.2;letter-spacing:-0.02em;color:");
+    html.push_str(INK);
+    html.push_str(";\">");
+    html.push_str(&escape(name));
+    html.push_str("</p>");
     html.push_str("<p style=\"margin:16px 0 0;border-top:1px solid ");
     html.push_str(RULE);
     html.push_str(";font-size:0;line-height:0;\">&nbsp;</p>");
 }
 
-fn site_line(html: &mut String, site: &str) {
-    let site = site.trim();
-    if site.is_empty() {
-        return;
+/// La formule, dans la même encre et le même serif que la lettre. Un mail, un
+/// numéro ou une adresse, seuls sur leur ligne, restent cliquables, sans
+/// soulignement et sans autre couleur. La première ligne de texte est un peu
+/// plus présente.
+fn signature_block(html: &mut String, signature: &str) {
+    let mut started = false;
+    let mut named = false;
+    for line in signature.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if !started {
+            html.push_str("<div style=\"margin:28px 0 0;\">");
+            started = true;
+        }
+        let strong =
+            !named && whole_url(line).is_none() && !whole_email(line) && tel_href(line).is_none();
+        if strong {
+            named = true;
+        }
+        signature_line(html, line, strong);
     }
-    html.push_str("<p style=\"margin:28px 0 0;font-family:");
-    html.push_str(SANS);
-    html.push_str(";font-size:13px;line-height:1.4;color:");
-    html.push_str(MUTED);
+    if started {
+        html.push_str("</div>");
+    }
+}
+
+fn signature_line(html: &mut String, line: &str, strong: bool) {
+    html.push_str("<p style=\"margin:");
+    html.push_str(if strong { "0" } else { "4px 0 0" });
+    html.push_str(";font-family:");
+    html.push_str(SERIF);
+    html.push_str(";font-size:");
+    html.push_str(if strong { "17px" } else { "16px" });
+    html.push_str(";line-height:1.45;color:");
+    html.push_str(INK);
+    if strong {
+        html.push_str(";font-weight:600");
+    }
     html.push_str(";\">");
-    html.push_str(&anchor(site, &without_utm(site), MUTED));
+    if let Some(url) = whole_url(line) {
+        html.push_str(&anchor(&url, &without_utm(&url), INK));
+    } else if whole_email(line) {
+        html.push_str(&anchor(&format!("mailto:{line}"), line, INK));
+    } else if let Some(href) = tel_href(line) {
+        html.push_str(&anchor(&href, &display_phone(line), INK));
+    } else {
+        linked_line(html, line, INK);
+    }
     html.push_str("</p>");
 }
 
-fn prose_blocks(html: &mut String, text: &str, ink: &str) {
+fn whole_url(line: &str) -> Option<String> {
+    let line = line.trim();
+    if !(line.starts_with("https://") || line.starts_with("http://"))
+        || line.chars().any(char::is_whitespace)
+    {
+        return None;
+    }
+    let chars: Vec<char> = line.chars().collect();
+    let (url, next) = take_url(&chars, 0);
+    let trailing = chars[next..]
+        .iter()
+        .all(|ch| matches!(ch, '.' | ',' | ';' | ':' | '!' | '?' | ')' | ']'));
+    (!url.is_empty() && trailing).then_some(url)
+}
+
+fn whole_email(line: &str) -> bool {
+    parse_email(line).is_ok()
+}
+
+fn signature_in_body(body: &str, signature: &str) -> bool {
+    if body == signature {
+        return true;
+    }
+    if let Some(rest) = body.strip_suffix(signature) {
+        return rest.is_empty() || rest.ends_with('\n');
+    }
+    body.contains(&format!("\n{signature}\n"))
+}
+
+fn prose_blocks(html: &mut String, text: &str, text_ink: &str, link_ink: &str) {
     let mut started = false;
     for para in text.split("\n\n") {
         if para.trim().is_empty() {
@@ -149,9 +222,9 @@ fn prose_blocks(html: &mut String, text: &str, ink: &str) {
             html.push_str("<p style=\"margin:0;font-family:");
         }
         started = true;
-        html.push_str(SANS);
+        html.push_str(SERIF);
         html.push_str(";font-size:16px;line-height:1.55;color:");
-        html.push_str(ink);
+        html.push_str(text_ink);
         html.push_str(";\">");
         let mut first_line = true;
         for line in para.split('\n') {
@@ -159,7 +232,7 @@ fn prose_blocks(html: &mut String, text: &str, ink: &str) {
                 html.push_str("<br>");
             }
             first_line = false;
-            linked_line(html, line, ink);
+            linked_line(html, line, link_ink);
         }
         html.push_str("</p>");
     }
@@ -180,7 +253,7 @@ fn anchor(href: &str, label: &str, ink: &str) -> String {
     out.push_str(&escape(href));
     out.push_str("\" style=\"color:");
     out.push_str(ink);
-    out.push_str(";text-decoration:underline;\">");
+    out.push_str(";text-decoration:none;\">");
     out.push_str(&escape(label));
     out.push_str("</a>");
     out
@@ -316,7 +389,7 @@ fn escape(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{letter_html, readable_links, without_utm};
+    use super::{close_letter, letter_html, readable_links, without_utm};
     use crate::mail::{LetterChrome, LetterInk, LetterParts};
 
     const TRACKED: &str = "https://atelier.example/conformite?utm_source=mairie&utm_medium=email&utm_campaign=automne-2026";
@@ -361,11 +434,58 @@ mod tests {
         assert!(!html.contains("<script>"));
         assert!(!html.contains("<img"));
         assert!(!html.contains("@import"));
-        assert!(html.contains("Ingénieur logiciel"));
-        assert!(html.contains("#3e6b34"));
-        assert!(html.contains("https://atelier.example</a>"));
+        assert!(!html.contains("Ingénieur logiciel"));
+        assert!(!html.contains("#3e6b34"));
+        assert!(!html.contains("https://atelier.example</a>"));
+        assert!(html.contains("text-decoration:none"));
+        assert!(!html.contains("text-decoration:underline"));
         assert_eq!(html.matches("Bien à vous").count(), 1);
         assert!(html.contains("Bonjour"));
+    }
+
+    #[test]
+    fn the_formula_closes_once_and_its_lines_become_links() {
+        let signature = "\
+Nicolas COLLIER
+Ingénieur logiciel indépendant
+hello@atelier.example
+06 70 12 32 60
+https://atelier.example/conformite?utm_source=mairie&utm_medium=email&utm_campaign=automne-2026";
+        let closed = close_letter("Bonjour Camille,\n\nLe dossier avance.", signature);
+        assert!(closed.ends_with(signature));
+        assert_eq!(close_letter(&closed, signature), closed);
+        assert_eq!(close_letter("Bonjour.", ""), "Bonjour.");
+
+        let chrome = LetterChrome {
+            ink: LetterInk::Sceau,
+            metier: "Ingénieur logiciel indépendant".into(),
+            site: "https://atelier.example/conformite".into(),
+            signature: signature.into(),
+        };
+        let html = letter_html(&LetterParts {
+            from_name: "Nicolas Collier",
+            subject: "Essai",
+            body: &closed,
+            chrome: &chrome,
+        });
+        assert_eq!(html.matches("Ingénieur logiciel indépendant").count(), 1);
+        assert_eq!(
+            html.matches("https://atelier.example/conformite").count(),
+            2
+        );
+        assert!(html.contains("href=\"mailto:hello@atelier.example\""));
+        assert!(html.contains("href=\"tel:+33670123260\""));
+        assert!(html.contains(">06 70 12 32 60</a>"));
+        assert!(html.contains("href=\"https://atelier.example/conformite?utm_source=mairie&amp;utm_medium=email&amp;utm_campaign=automne-2026\""));
+        assert!(html.contains(">https://atelier.example/conformite</a>"));
+        assert!(!html.contains("#9f3218"));
+        assert!(!html.contains("text-transform:uppercase"));
+        assert!(html.contains("text-decoration:none"));
+        assert!(!html.contains("text-decoration:underline"));
+        assert!(html.contains("font-weight:600"));
+        assert!(!html.contains("color:#0000ee"));
+        let middle = format!("Avant.\n\n{signature}\n\nAprès.");
+        assert_eq!(close_letter(&middle, signature), middle);
     }
 
     #[test]

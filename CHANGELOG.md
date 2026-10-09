@@ -4,8 +4,11 @@ Ce qui change pour qui se sert de Griffe. Une section par version publiée.
 
 ## 0.3.10
 
+- Sur le dossier, Les travaux se lisent en rendu. Écrire ouvre le markdown, qui se garde seul. Relire revient au rendu. Plusieurs allers et retours laissent la page répondre : on peut revenir en arrière et changer de pièce.
 - Une lettre part en page, et le texte seul reste pour les boîtes qui ne lisent pas la page. Une adresse suivie de ?utm_… reste cliquable en entier. La personne lit l'adresse sans cette partie.
-- Dans Le courrier, la couleur des liens se choisit en trois mots : vert, encre, sceau. Une ligne de métier et un site, facultatifs, habillent la lettre.
+- Dans Les affaires, Écrire et Relire se succèdent. Relire montre la lettre telle qu'elle part. La zone d'écriture garde le texte.
+- Le courrier montre la lettre, et la formule à côté. D'où elles partent tient sur une ligne une fois le serveur connu. L'essai est cette lettre. L'envoi du jour reste à part.
+- La formule ferme la lettre à la relecture et à l'envoi. Elle n'est pas recopiée dans la zone d'écriture. Un mail, un numéro ou une adresse, seuls sur leur ligne, restent cliquables, dans l'encre de la lettre, sans soulignement. Une lettre déjà classée garde son texte.
 - Annuler, pendant les cinq secondes et jusqu'à l'envoi, retient la lettre. Passé l'envoi, la ligne dit qu'elle est en route.
 - Ouvrir un coffre déjà créé avance son schéma. La version précédente ne peut plus l'ouvrir.
 

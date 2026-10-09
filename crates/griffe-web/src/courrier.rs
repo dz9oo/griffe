@@ -11,7 +11,7 @@ use griffe_core::mail::{
     RetryOutbound, SaveLetterface, SaveMailAccount, SaveMailSecret, SaveMailSignature,
     SetAutomaticSend, UNDO_SECS, probe_material,
 };
-use maud::Markup;
+use maud::{Markup, html};
 use serde::Deserialize;
 
 use crate::layout::ViewId;
@@ -79,13 +79,18 @@ pub async fn save(
             .await,
         );
     };
+    let username = if form.username.trim().is_empty() {
+        form.from_address.clone()
+    } else {
+        form.username.clone()
+    };
     let command = SaveMailAccount {
         from_name: Some(form.from_name),
         from_address: form.from_address,
         host: form.host,
         port,
         tls: tls.to_string(),
-        username: form.username,
+        username,
         preset: preset.to_string(),
         imap_host: form.imap_host.clone(),
         imap_port: form.imap_port.trim().parse().unwrap_or(0),
@@ -403,9 +408,6 @@ pub async fn save_apparence(
                 &state,
                 Some(&CourrierForm {
                     error: Some(french(&error)),
-                    ink: Some(form.ink),
-                    metier: Some(form.metier),
-                    site: Some(form.site),
                     ..CourrierForm::blank()
                 }),
             )
@@ -423,6 +425,19 @@ pub async fn save_apparence(
             .await,
         ),
     }
+}
+
+/// Aperçu de la carte. N'écrit rien et ne signale pas une sauvegarde.
+pub async fn letter_preview(
+    State(state): State<AppState>,
+    Form(form): Form<SignatureForm>,
+) -> Html<String> {
+    let content = state
+        .with_store(|store| crate::views::societe::preview_card(store, &form.signature))
+        .await
+        .and_then(Result::ok)
+        .unwrap_or_else(|| html! { p class="phrase-caption" { "coffre verrouillé" } });
+    Html(content.into_string())
 }
 
 pub async fn save_signature(
@@ -472,6 +487,105 @@ pub async fn save_signature(
             )
             .await,
         ),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ReadForm {
+    #[serde(default)]
+    ink: String,
+    #[serde(default)]
+    metier: String,
+    #[serde(default)]
+    site: String,
+    #[serde(default)]
+    signature: String,
+}
+
+/// Couleur, ligne sous le nom, bas de lettre, puis formule. La formule n'est
+/// enregistrée que si l'allure a été acceptée.
+pub async fn save_lire(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(form): Form<ReadForm>,
+) -> Response {
+    let face = state
+        .with_store_mut(|store| {
+            Executor::new(store).execute(
+                &SaveLetterface {
+                    ink: form.ink.clone(),
+                    metier: form.metier.clone(),
+                    site: form.site.clone(),
+                },
+                &AppState::human_ctx(),
+            )
+        })
+        .await;
+    let posted = CourrierForm {
+        signature: Some(form.signature.clone()),
+        ..CourrierForm::blank()
+    };
+    match face {
+        None => return locked(&headers),
+        Some(Err(error)) => {
+            return saved(
+                &headers,
+                courrier_markup(
+                    &state,
+                    Some(&CourrierForm {
+                        error: Some(french(&error)),
+                        ..posted
+                    }),
+                )
+                .await,
+            );
+        }
+        Some(Ok(_)) => {}
+    }
+    let empty = form.signature.replace('\r', "");
+    let empty = empty.trim().is_empty();
+    let signature = state
+        .with_store_mut(|store| {
+            Executor::new(store).execute(
+                &SaveMailSignature {
+                    signature: form.signature.clone(),
+                },
+                &AppState::human_ctx(),
+            )
+        })
+        .await;
+    match signature {
+        None => locked(&headers),
+        Some(Err(error)) => saved(
+            &headers,
+            courrier_markup(
+                &state,
+                Some(&CourrierForm {
+                    error: Some(french(&error)),
+                    signature: Some(form.signature),
+                    ..CourrierForm::blank()
+                }),
+            )
+            .await,
+        ),
+        Some(Ok(_)) => {
+            let notice = if empty {
+                "La lettre se ferme par Bien à vous, le nom, la société."
+            } else {
+                "La lettre est enregistrée."
+            };
+            saved(
+                &headers,
+                courrier_markup(
+                    &state,
+                    Some(&CourrierForm {
+                        notice: Some(notice.into()),
+                        ..CourrierForm::blank()
+                    }),
+                )
+                .await,
+            )
+        }
     }
 }
 
@@ -715,9 +829,6 @@ impl CourrierForm {
             error: None,
             notice: None,
             signature: None,
-            ink: None,
-            metier: None,
-            site: None,
             redisplay: false,
         }
     }
@@ -741,9 +852,6 @@ fn posted_from(form: &AccountForm) -> CourrierForm {
         error: None,
         notice: None,
         signature: None,
-        ink: None,
-        metier: None,
-        site: None,
         redisplay: true,
     }
 }
@@ -761,9 +869,6 @@ fn posted_from_command(command: &SaveMailAccount) -> CourrierForm {
         error: None,
         notice: None,
         signature: None,
-        ink: None,
-        metier: None,
-        site: None,
         redisplay: true,
     }
 }

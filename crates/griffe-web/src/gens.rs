@@ -24,7 +24,9 @@ use griffe_core::follow_up::{
     SetDossierGenre, SnoozeFollowUp, events_for, follow_up_sender, phrases_for_genre,
     prospect_genres, prospect_phrases,
 };
-use griffe_core::mail::{ArmOutbound, CancelOutbound, ResolveUncertain, RetryOutbound, UNDO_SECS};
+use griffe_core::mail::{
+    ArmOutbound, CancelOutbound, LetterChrome, ResolveUncertain, RetryOutbound, UNDO_SECS,
+};
 use griffe_core::people::{PersonKey, person, resolve_person};
 use griffe_core::prospection::{
     CreateOpportunity, CreateProspect, EstimationLineInput, LogInteraction, LoseOpportunity,
@@ -212,6 +214,16 @@ pub struct LetterForm {
     body: String,
 }
 
+#[derive(Debug, Deserialize, Default)]
+pub struct RelireForm {
+    #[serde(default)]
+    subject_line: String,
+    #[serde(default)]
+    body: String,
+    #[serde(default)]
+    genre_name: String,
+}
+
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct PhrasesQuery {
     #[serde(default)]
@@ -354,6 +366,20 @@ pub async fn phrases_post(
             page(&headers, content).into_response()
         }
     }
+}
+
+/// Aperçu de la feuille. N'écrit rien, ne pousse pas l'URL, ne signale pas une sauvegarde.
+pub async fn phrases_preview(
+    State(state): State<AppState>,
+    Query(query): Query<PhrasesQuery>,
+    Form(fields): Form<HashMap<String, String>>,
+) -> Html<String> {
+    let today = state.today();
+    let content = state
+        .with_store(|store| phrases_sheet(store, &query, today, &fields))
+        .await
+        .unwrap_or_else(|| html! { p class="phrase-caption" { "coffre verrouillé" } });
+    Html(content.into_string())
 }
 
 pub async fn genre_new_get(
@@ -602,11 +628,42 @@ fn phrases_markup(
     store: &griffe_core::store::Store,
     query: &PhrasesQuery,
     today: time::Date,
-    mut banner: Option<String>,
+    banner: Option<String>,
     status: Option<String>,
     fields: Option<&HashMap<String, String>>,
     navigation: Option<&HashMap<String, String>>,
 ) -> Markup {
+    gens::phrases_page(&assemble_phrases(
+        store, query, today, banner, status, fields, navigation,
+    ))
+}
+
+fn phrases_sheet(
+    store: &griffe_core::store::Store,
+    query: &PhrasesQuery,
+    today: time::Date,
+    fields: &HashMap<String, String>,
+) -> Markup {
+    gens::phrase_sheet_inner(&assemble_phrases(
+        store,
+        query,
+        today,
+        None,
+        None,
+        Some(fields),
+        Some(fields),
+    ))
+}
+
+fn assemble_phrases(
+    store: &griffe_core::store::Store,
+    query: &PhrasesQuery,
+    today: time::Date,
+    mut banner: Option<String>,
+    status: Option<String>,
+    fields: Option<&HashMap<String, String>>,
+    navigation: Option<&HashMap<String, String>>,
+) -> gens::PhrasesView {
     let genre_id = query.genre.trim();
     let genres = prospect_genres(store.connection()).unwrap_or_default();
     let selected = genres.iter().find(|genre| genre.id == genre_id);
@@ -667,7 +724,7 @@ fn phrases_markup(
         })
         .collect();
     let chronicle = chronicle_of(&moments);
-    gens::phrases_page(&gens::PhrasesView {
+    gens::PhrasesView {
         back_href: reading.back_href,
         back_label: reading.back_label,
         action: reading.action,
@@ -679,15 +736,11 @@ fn phrases_markup(
         moments,
         chronicle,
         read_caption: reading.caption,
-        prenom: reading.ctx.prenom,
-        sujet: reading.ctx.sujet,
-        montant: reading.ctx.montant,
-        moi: reading.ctx.moi,
-        societe: reading.ctx.societe,
-        signature: reading.signature,
+        from_name: reading.from_name,
+        chrome: reading.chrome,
         banner,
         status,
-    })
+    }
 }
 
 fn chronicle_of(moments: &[gens::PhraseMoment]) -> String {
@@ -769,8 +822,8 @@ fn neighbor_after_drop(
 struct PhraseReading {
     caption: String,
     ctx: TemplateContext,
-    /// Formule déjà résolue, pour l'aperçu.
-    signature: String,
+    from_name: String,
+    chrome: LetterChrome,
     back_href: String,
     back_label: String,
     action: String,
@@ -783,15 +836,17 @@ fn phrase_reading(
     genre: &str,
 ) -> PhraseReading {
     let (moi, societe) = speaker(store);
-    let raw_signature = griffe_core::mail::profile(store.connection())
-        .map(|account| account.signature)
-        .unwrap_or_default();
+    let account = griffe_core::mail::profile(store.connection()).unwrap_or_default();
+    let raw_signature = account.signature.clone();
+    let from_name = account.from_name.clone();
+    let chrome = LetterChrome::from_profile(&account);
     let pour = query.pour.trim();
     let depuis = query.depuis.trim();
     let action = gens::phrases_href(depuis, pour, genre);
     let example = PhraseReading {
         caption: "Exemple, pour voir.".to_string(),
-        signature: griffe_core::domain::resolve_signature(&raw_signature, &moi, &societe),
+        from_name: from_name.clone(),
+        chrome: chrome.clone(),
         ctx: TemplateContext {
             prenom: "Camille".into(),
             sujet: "la refonte".into(),
@@ -830,7 +885,8 @@ fn phrase_reading(
     };
     PhraseReading {
         caption,
-        signature: griffe_core::domain::resolve_signature(&raw_signature, &moi, &societe),
+        from_name,
+        chrome,
         ctx: TemplateContext {
             prenom,
             sujet: dossier
@@ -926,6 +982,35 @@ fn optional_letter_field(value: String) -> Option<String> {
     } else {
         Some(value)
     }
+}
+
+pub async fn relire(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(reference): Path<String>,
+    Form(form): Form<RelireForm>,
+) -> Html<String> {
+    let today = state.today();
+    let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
+        return page(&headers, gens::not_found(&reference, today));
+    };
+    let Some(_) = dossier.follow_up_subject else {
+        return page(
+            &headers,
+            gens::dossier_markup(&dossier, today, Some("rien à écrire pour l'instant")),
+        );
+    };
+    let keep = gens::KeepUi {
+        reading: true,
+        subject: Some(form.subject_line),
+        body: Some(form.body),
+        proposed_name: form.genre_name,
+        ..gens::KeepUi::default()
+    };
+    page(
+        &headers,
+        render_letter(&state, &dossier, today, None, &keep).await,
+    )
 }
 
 pub async fn write_get(
@@ -3268,6 +3353,8 @@ pub struct TravauxForm {
     body: String,
     #[serde(default)]
     revision: String,
+    #[serde(default)]
+    intent: String,
 }
 
 pub async fn travaux_get(
@@ -3275,41 +3362,42 @@ pub async fn travaux_get(
     headers: HeaderMap,
     Path(reference): Path<String>,
 ) -> Html<String> {
-    let today = state.today();
-    let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
-        return page(&headers, gens::not_found(&reference, today));
-    };
-    match load_travaux(&state, &dossier).await {
-        TravauxLoad::Locked => locked(&headers),
-        TravauxLoad::NotAFiche => page(
-            &headers,
-            gens::dossier_markup(&dossier, today, Some("Les travaux tiennent sur une fiche.")),
-        ),
-        TravauxLoad::Failed(msg) => {
-            page(&headers, gens::dossier_markup(&dossier, today, Some(&msg)))
-        }
-        TravauxLoad::Ready(note) => page(&headers, gens::travaux_page(&dossier, &note, None)),
-    }
+    travaux_show(&state, &headers, &reference, false).await
 }
 
-pub async fn travaux_preview(
+pub async fn travaux_edit_get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(reference): Path<String>,
-    Form(form): Form<TravauxForm>,
+) -> Html<String> {
+    travaux_show(&state, &headers, &reference, true).await
+}
+
+async fn travaux_show(
+    state: &AppState,
+    headers: &HeaderMap,
+    reference: &str,
+    editing: bool,
 ) -> Html<String> {
     let today = state.today();
-    let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
-        return page(&headers, gens::not_found(&reference, today));
+    let Some(Ok(dossier)) = load_dossier(state, reference).await else {
+        return page(headers, gens::not_found(reference, today));
     };
-    if !matches!(dossier.key, PersonKey::Client { .. }) {
-        return page(
-            &headers,
+    match load_travaux(state, &dossier).await {
+        TravauxLoad::Locked => locked(headers),
+        TravauxLoad::NotAFiche => page(
+            headers,
             gens::dossier_markup(&dossier, today, Some("Les travaux tiennent sur une fiche.")),
-        );
+        ),
+        TravauxLoad::Failed(msg) => {
+            page(headers, gens::dossier_markup(&dossier, today, Some(&msg)))
+        }
+        TravauxLoad::Ready(note) if editing => page(
+            headers,
+            gens::travaux_edit(&dossier, &note, &note.body, None, false),
+        ),
+        TravauxLoad::Ready(note) => page(headers, gens::travaux_page(&dossier, &note)),
     }
-    // L'aperçu ne passe pas par la commande : rien n'est écrit, pas de griffe:saved.
-    page(&headers, gens::travaux_fragment(&form.body))
 }
 
 pub async fn travaux_post(
@@ -3322,28 +3410,16 @@ pub async fn travaux_post(
     let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
         return page(&headers, gens::not_found(&reference, today)).into_response();
     };
+    let before = match load_travaux(&state, &dossier).await {
+        TravauxLoad::Ready(note) => note,
+        other => return travaux_closed(&headers, &dossier, today, other),
+    };
     let PersonKey::Client { id } = dossier.key else {
-        return page(
-            &headers,
-            gens::dossier_markup(&dossier, today, Some("Les travaux tiennent sur une fiche.")),
-        )
-        .into_response();
+        return travaux_closed(&headers, &dossier, today, TravauxLoad::NotAFiche);
     };
-    let Some(revision) = form.revision.parse::<i64>().ok() else {
-        return match load_travaux(&state, &dossier).await {
-            TravauxLoad::Ready(note) => page(
-                &headers,
-                gens::travaux_page(&dossier, &note, Some("Rechargez la page.")),
-            )
-            .into_response(),
-            TravauxLoad::Locked => locked(&headers).into_response(),
-            TravauxLoad::NotAFiche | TravauxLoad::Failed(_) => page(
-                &headers,
-                gens::dossier_markup(&dossier, today, Some("Rechargez la page.")),
-            )
-            .into_response(),
-        };
-    };
+    // Une révision illisible ne bloque pas : on repart de celle du coffre, lue à l'instant.
+    let revision = form.revision.parse::<i64>().unwrap_or(before.revision);
+    let reread = form.intent == "relire";
     let cmd = SaveDossierWork {
         client: id,
         body: form.body.clone(),
@@ -3352,55 +3428,132 @@ pub async fn travaux_post(
     let result = state
         .with_store_mut(|store| Executor::new(store).execute(&cmd, &AppState::human_ctx()))
         .await;
+    let read = format!("{}/travaux", gens::person_href(&dossier.name));
     match result {
         None => locked(&headers).into_response(),
-        Some(Err(error)) => match load_travaux(&state, &dossier).await {
-            TravauxLoad::Ready(stored) if matches!(error, AppError::Conflict { .. }) => page(
+        Some(Err(error)) => travaux_refused(
+            &headers, &dossier, &before, &form.body, revision, reread, &error,
+        ),
+        Some(Ok(outcome)) => match outcome {
+            Outcome::Applied(note) | Outcome::AlreadyApplied(note) => {
+                let wrote = note.revision != before.revision;
+                if reread {
+                    travaux_ok(
+                        &headers,
+                        gens::travaux_page(&dossier, &note),
+                        note.revision,
+                        true,
+                        Some(&read),
+                    )
+                } else {
+                    travaux_ok(
+                        &headers,
+                        gens::travaux_kept(note.revision),
+                        note.revision,
+                        wrote,
+                        None,
+                    )
+                }
+            }
+            Outcome::DryRun | Outcome::PendingConfirmation(_) => travaux_refused(
                 &headers,
-                gens::travaux_page(
-                    &dossier,
-                    &stored,
-                    Some("Ce récit a changé. Voici celui du coffre."),
-                ),
-            )
-            .into_response(),
-            TravauxLoad::Ready(stored) => {
-                let message = error.to_string();
-                let shown = DossierWork {
-                    body: form.body,
-                    revision: stored.revision,
-                };
-                page(
-                    &headers,
-                    gens::travaux_page(&dossier, &shown, Some(&message)),
-                )
-                .into_response()
-            }
-            TravauxLoad::Locked => locked(&headers).into_response(),
-            TravauxLoad::NotAFiche => page(
-                &headers,
-                gens::dossier_markup(&dossier, today, Some("Les travaux tiennent sur une fiche.")),
-            )
-            .into_response(),
-            TravauxLoad::Failed(msg) => {
-                page(&headers, gens::dossier_markup(&dossier, today, Some(&msg))).into_response()
-            }
-        },
-        Some(Ok(_)) => match load_travaux(&state, &dossier).await {
-            TravauxLoad::Ready(note) => {
-                saved_page(&headers, gens::travaux_page(&dossier, &note, None))
-            }
-            TravauxLoad::Locked => locked(&headers).into_response(),
-            TravauxLoad::NotAFiche => page(
-                &headers,
-                gens::dossier_markup(&dossier, today, Some("Les travaux tiennent sur une fiche.")),
-            )
-            .into_response(),
-            TravauxLoad::Failed(msg) => {
-                page(&headers, gens::dossier_markup(&dossier, today, Some(&msg))).into_response()
-            }
+                &dossier,
+                &before,
+                &form.body,
+                revision,
+                reread,
+                &AppError::Command("Rechargez la page.".into()),
+            ),
         },
     }
+}
+
+fn travaux_closed(
+    headers: &HeaderMap,
+    dossier: &griffe_core::people::PersonDossier,
+    today: time::Date,
+    load: TravauxLoad,
+) -> Response {
+    match load {
+        TravauxLoad::Locked | TravauxLoad::Ready(_) => locked(headers).into_response(),
+        TravauxLoad::NotAFiche => page(
+            headers,
+            gens::dossier_markup(dossier, today, Some("Les travaux tiennent sur une fiche.")),
+        )
+        .into_response(),
+        TravauxLoad::Failed(msg) => {
+            page(headers, gens::dossier_markup(dossier, today, Some(&msg))).into_response()
+        }
+    }
+}
+
+fn travaux_refusal(error: &AppError) -> (String, bool, &'static str) {
+    match error {
+        AppError::Conflict { .. } => (
+            "Ce récit a changé. Voici celui du coffre.".into(),
+            true,
+            "conflit",
+        ),
+        AppError::Domain(message) => (message.clone(), false, "refuse"),
+        other => (other.to_string(), false, "refuse"),
+    }
+}
+
+fn travaux_refused(
+    headers: &HeaderMap,
+    dossier: &griffe_core::people::PersonDossier,
+    before: &DossierWork,
+    body: &str,
+    revision: i64,
+    reread: bool,
+    error: &AppError,
+) -> Response {
+    let (message, offer_vault, mark) = travaux_refusal(error);
+    let shown = DossierWork {
+        body: body.to_string(),
+        revision,
+    };
+    let edit = format!("{}/travaux/ecrire", gens::person_href(&dossier.name));
+    let markup = if reread {
+        gens::travaux_edit(dossier, &shown, &before.body, Some(&message), offer_vault)
+    } else {
+        gens::travaux_notice(&message, offer_vault.then_some(edit.as_str()))
+    };
+    travaux_marked(headers, markup, mark)
+}
+
+fn travaux_ok(
+    headers: &HeaderMap,
+    body: Markup,
+    revision: i64,
+    trigger: bool,
+    push: Option<&str>,
+) -> Response {
+    let mut response = travaux_marked(headers, body, "ok");
+    if let Ok(value) = HeaderValue::from_str(&revision.to_string()) {
+        response
+            .headers_mut()
+            .insert("X-Griffe-Travaux-Revision", value);
+    }
+    if trigger {
+        response
+            .headers_mut()
+            .insert("HX-Trigger", HeaderValue::from_static("griffe:saved"));
+    }
+    if let Some(url) = push
+        && let Ok(value) = HeaderValue::from_str(url)
+    {
+        response.headers_mut().insert("HX-Push-Url", value);
+    }
+    response
+}
+
+fn travaux_marked(headers: &HeaderMap, body: Markup, mark: &'static str) -> Response {
+    let mut response = page(headers, body).into_response();
+    response
+        .headers_mut()
+        .insert("X-Griffe-Travaux", HeaderValue::from_static(mark));
+    response
 }
 
 enum TravauxLoad {
