@@ -112,5 +112,7 @@ pub fn migrations() -> Migrations<'static> {
             .down(include_str!("migrations/0046_mail_signature_down.sql")),
         M::up(include_str!("migrations/0047_mail_probe_up.sql"))
             .down(include_str!("migrations/0047_mail_probe_down.sql")),
+        M::up(include_str!("migrations/0048_sent_copy_up.sql"))
+            .down(include_str!("migrations/0048_sent_copy_down.sql")),
     ])
 }

@@ -52,6 +52,37 @@ pub struct SaveMailAccount {
     pub tls: String,
     pub username: String,
     pub preset: String,
+    /// Hôte des copies. Ignoré pour iCloud. Vide : pas de copie.
+    #[serde(default)]
+    pub imap_host: String,
+    /// Port des copies. 993, ou ignoré quand l'hôte est vide.
+    #[serde(default = "default_imap_port")]
+    pub imap_port: u16,
+}
+
+fn default_imap_port() -> u16 {
+    super::model::IMAP_PORT
+}
+
+fn checked_copy(
+    preset: MailPreset,
+    host: &str,
+    port: u16,
+) -> Result<(Option<String>, Option<u16>), AppError> {
+    if preset == MailPreset::Icloud {
+        return Ok((None, None));
+    }
+    let host = host.trim();
+    if host.is_empty() {
+        return Ok((None, None));
+    }
+    if host.contains("://") || host.contains(char::is_whitespace) {
+        return Err(MailError::Incomplete.into());
+    }
+    if port != super::model::IMAP_PORT {
+        return Err(MailError::CopyPort.into());
+    }
+    Ok((Some(host.to_string()), Some(super::model::IMAP_PORT)))
 }
 
 impl Command for SaveMailAccount {
@@ -67,6 +98,7 @@ impl Command for SaveMailAccount {
             &self.username,
             &self.preset,
         )?;
+        let (imap_host, imap_port) = checked_copy(preset, &self.imap_host, self.imap_port)?;
         let name = self
             .from_name
             .as_deref()
@@ -83,6 +115,8 @@ impl Command for SaveMailAccount {
             tls,
             &username,
             preset,
+            imap_host.as_deref(),
+            imap_port,
             &now,
         )?;
         SetFollowUpSender {
@@ -139,6 +173,77 @@ impl Command for RecordMailProbe {
     fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
         let detail = checked_detail(self.ok, &self.detail);
         store::record_probe(conn, self.ok, &detail, &now_stamp()?)
+    }
+}
+
+/// Retient l'identifiant IMAP qui a ouvert la session. Pas un secret.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RememberImapUsername {
+    pub username: String,
+}
+
+impl Command for RememberImapUsername {
+    type Output = ();
+    const NAME: &'static str = "mail.remember_imap_username";
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        let Some(username) = checked_imap_username(&self.username) else {
+            return Ok(());
+        };
+        store::remember_username(conn, &username)
+    }
+}
+
+fn checked_imap_username(raw: &str) -> Option<String> {
+    let text = raw.trim();
+    if text.is_empty()
+        || text.chars().count() > 200
+        || text.chars().any(|ch| ch.is_whitespace() || ch.is_control())
+    {
+        return None;
+    }
+    Some(text.to_string())
+}
+
+/// Résultat du dépôt dans Envoyés. La lettre est déjà partie.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct RecordSentCopy {
+    pub id: String,
+    pub status: String,
+    pub detail: String,
+    pub imap_username: Option<String>,
+}
+
+impl Command for RecordSentCopy {
+    type Output = ();
+    const NAME: &'static str = "mail.record_copy";
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        if !matches!(self.status.as_str(), "saved" | "failed" | "skipped") {
+            return Err(MailError::Missing.into());
+        }
+        let detail = {
+            let text: String = self
+                .detail
+                .chars()
+                .filter(|ch| !ch.is_control())
+                .take(160)
+                .collect();
+            let text = text.trim();
+            (!text.is_empty()).then(|| text.to_string())
+        };
+        let username = self
+            .imap_username
+            .as_deref()
+            .and_then(checked_imap_username);
+        store::record_copy(
+            conn,
+            &self.id,
+            &self.status,
+            detail.as_deref(),
+            username.as_deref(),
+            &now_stamp()?,
+        )
     }
 }
 
@@ -223,6 +328,10 @@ pub struct ArmOutbound {
     pub follow_subject_id: Option<String>,
     pub follow_cycle: Option<String>,
     pub follow_step: Option<String>,
+    /// Fiche dont le courriel est relu au moment de l'envoi. `None` : lettre d'essai
+    /// ou lettre sans fiche, l'adresse saisie reste.
+    #[serde(default)]
+    pub client_id: Option<String>,
 }
 
 impl Command for ArmOutbound {
@@ -257,6 +366,7 @@ impl Command for ArmOutbound {
                 follow_subject_id: self.follow_subject_id.clone(),
                 follow_cycle: self.follow_cycle.clone(),
                 follow_step: self.follow_step.clone(),
+                client_id: self.client_id.clone(),
             },
             &now,
         )

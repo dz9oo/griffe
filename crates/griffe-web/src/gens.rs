@@ -8,9 +8,7 @@ use axum::http::{HeaderMap, HeaderValue};
 use axum::response::{Html, IntoResponse, Response};
 use griffe_core::app::{AppError, Executor, Outcome};
 use griffe_core::billing::{ImportIssuedInvoice, RetractWriteOff, WriteOffReceivable};
-use griffe_core::clients::{
-    CreateContact, UpdateClient, UpdateContact, client_by_id, list_contacts,
-};
+use griffe_core::clients::{CreateContact, UpdateClient, UpdateContact, client_by_id};
 use griffe_core::company::company_profile;
 use griffe_core::domain::{
     Address, ExpenseId, FollowUpSubject, InteractionKind, InvoiceId, InvoiceLine, MissionId, Money,
@@ -1267,7 +1265,20 @@ pub async fn send_letter(
     let subject = dossier.follow_up_subject;
     let result = state
         .with_store_mut(|store| {
-            arm_letter(store, subject, &name, &subject_line, &body, &token, today)
+            let client_id = match dossier.key {
+                griffe_core::people::PersonKey::Client { id } => Some(id.to_string()),
+                griffe_core::people::PersonKey::Supplier { .. } => None,
+            };
+            arm_letter(
+                store,
+                subject,
+                &name,
+                &subject_line,
+                &body,
+                &token,
+                today,
+                client_id,
+            )
         })
         .await;
     match result {
@@ -1389,6 +1400,7 @@ async fn gesture(
     }
 }
 
+#[allow(clippy::too_many_arguments)] // lettre, jeton, jour, et la fiche qui la reçoit
 fn arm_letter(
     store: &mut griffe_core::store::Store,
     subject: Option<FollowUpSubject>,
@@ -1397,6 +1409,7 @@ fn arm_letter(
     body: &str,
     token: &str,
     today: time::Date,
+    client_id: Option<String>,
 ) -> Result<(), AppError> {
     let profile = griffe_core::mail::profile(store.connection())?;
     if !profile.ready {
@@ -1408,11 +1421,9 @@ fn arm_letter(
     let Some(to) = card
         .as_ref()
         .and_then(|item| item.contact_email.clone())
-        .filter(|value| value.contains('@'))
+        .and_then(|value| griffe_core::domain::parse_email(&value).ok())
     else {
-        return Err(AppError::Domain(
-            "Il manque l'adresse de la personne.".into(),
-        ));
+        return Err(AppError::Domain(griffe_core::mail::MISSING_ADDRESS.into()));
     };
     let kind = match subject {
         Some(FollowUpSubject::Invoice(_)) => "invoice",
@@ -1434,6 +1445,7 @@ fn arm_letter(
                 follow_subject_id: slot.subject_id,
                 follow_cycle: slot.cycle,
                 follow_step: slot.step,
+                client_id,
             },
             &AppState::human_ctx(),
         )
@@ -1481,8 +1493,23 @@ fn follow_slot(
     })
 }
 
+fn fiche_courriel(
+    store: &griffe_core::store::Store,
+    name: &str,
+    today: time::Date,
+) -> Option<String> {
+    let dossier = person(store.connection(), name, today).ok()?;
+    let griffe_core::people::PersonKey::Client { id } = dossier.key else {
+        return None;
+    };
+    let contact = griffe_core::clients::correspondent(store.connection(), id).ok()??;
+    let email = contact.email.as_deref()?;
+    griffe_core::domain::parse_email(email).ok()
+}
+
 async fn depart_for(state: &AppState, name: &str, note: Option<&str>) -> Markup {
     let href = person_href(name);
+    let today = state.today();
     state
         .with_store(|store| {
             let view = griffe_core::mail::outbound_for_anchor(
@@ -1492,7 +1519,14 @@ async fn depart_for(state: &AppState, name: &str, note: Option<&str>) -> Markup 
             )
             .ok()
             .flatten();
-            gens::depart_markup(&href, view.as_ref(), note, "Envoyer")
+            let destination = fiche_courriel(store, name, today);
+            gens::depart_markup(
+                &href,
+                view.as_ref(),
+                note,
+                "Envoyer",
+                destination.as_deref(),
+            )
         })
         .await
         .unwrap_or_else(|| html! { div id="depart" { "coffre verrouillé" } })
@@ -1500,6 +1534,7 @@ async fn depart_for(state: &AppState, name: &str, note: Option<&str>) -> Markup 
 
 async fn depart_poll_for(state: &AppState, name: &str) -> (Markup, bool) {
     let href = person_href(name);
+    let today = state.today();
     state
         .with_store(|store| {
             let view = griffe_core::mail::outbound_for_anchor(
@@ -1509,7 +1544,14 @@ async fn depart_poll_for(state: &AppState, name: &str) -> (Markup, bool) {
             )
             .ok()
             .flatten();
-            gens::depart_poll_fragment(&href, view.as_ref(), None, "Envoyer")
+            let destination = fiche_courriel(store, name, today);
+            gens::depart_poll_fragment(
+                &href,
+                view.as_ref(),
+                None,
+                "Envoyer",
+                destination.as_deref(),
+            )
         })
         .await
         .unwrap_or_else(|| (html! { div id="depart" { "coffre verrouillé" } }, false))
@@ -1986,7 +2028,7 @@ pub async fn fiche_get(
         .with_store(|store| -> Result<_, AppError> {
             let client = client_by_id(store.connection(), id)?
                 .ok_or_else(|| AppError::from(griffe_core::clients::ClientError::NotFound(id)))?;
-            let contact = list_contacts(store.connection(), id)?.into_iter().next();
+            let contact = griffe_core::clients::correspondent(store.connection(), id)?;
             Ok((client, contact))
         })
         .await;
@@ -2007,6 +2049,7 @@ pub async fn fiche_get(
                     &gens::FicheErrors {
                         who: None,
                         address: None,
+                        email: None,
                         banner: None,
                     },
                     &genre,
@@ -2090,6 +2133,7 @@ pub async fn fiche_post(
                     &gens::FicheErrors {
                         who: None,
                         address: Some(msg),
+                        email: None,
                         banner: None,
                     },
                     &genre,
@@ -2120,6 +2164,39 @@ pub async fn fiche_post(
                 &gens::FicheErrors {
                     who: Some("un nom, pour commencer".into()),
                     address: None,
+                    email: None,
+                    banner: None,
+                },
+                &genre,
+            ),
+        )
+        .into_response();
+    }
+    if let Some(email) = blank(&form.email)
+        && griffe_core::domain::parse_email(&email).is_err()
+    {
+        let values = gens::FicheValues {
+            who,
+            street: form.street,
+            postal_code: form.postal_code,
+            city: form.city,
+            representative: form.representative,
+            email: form.email,
+            phone: form.phone,
+            client_revision: form.client_revision.parse().unwrap_or(0),
+            contact_id: form.contact_id,
+            contact_revision: form.contact_revision,
+        };
+        let genre = load_genre_field(&state, &dossier, Some(&posted_genre), false).await;
+        return page(
+            &headers,
+            gens::fiche_page(
+                &dossier,
+                &values,
+                &gens::FicheErrors {
+                    who: None,
+                    address: None,
+                    email: Some("Cette adresse est illisible.".into()),
                     banner: None,
                 },
                 &genre,
@@ -2157,6 +2234,7 @@ pub async fn fiche_post(
                 &gens::FicheErrors {
                     who: None,
                     address: None,
+                    email: None,
                     banner: None,
                 },
                 &genre,
@@ -2173,7 +2251,15 @@ pub async fn fiche_post(
         .with_store_mut(|store| -> Result<bool, AppError> {
             let client = client_by_id(store.connection(), id)?
                 .ok_or_else(|| AppError::from(griffe_core::clients::ClientError::NotFound(id)))?;
-            let contact = list_contacts(store.connection(), id)?.into_iter().next();
+            let contact = griffe_core::clients::correspondent(store.connection(), id)?;
+            let posted_id = form.contact_id.trim();
+            let mismatch = match &contact {
+                Some(current) => posted_id.is_empty() || posted_id != current.id.to_string(),
+                None => !posted_id.is_empty(),
+            };
+            if mismatch {
+                return Err(AppError::Domain("Cette fiche a changé, rechargez.".into()));
+            }
             Executor::new(store).execute(
                 &UpdateClient {
                     id,
@@ -2251,6 +2337,7 @@ pub async fn fiche_post(
                     &gens::FicheErrors {
                         who: None,
                         address: None,
+                        email: None,
                         banner: Some(e.to_string()),
                     },
                     &genre,
@@ -2265,7 +2352,7 @@ pub async fn fiche_post(
                     let client = client_by_id(store.connection(), id)?.ok_or_else(|| {
                         AppError::from(griffe_core::clients::ClientError::NotFound(id))
                     })?;
-                    let contact = list_contacts(store.connection(), id)?.into_iter().next();
+                    let contact = griffe_core::clients::correspondent(store.connection(), id)?;
                     let values = fiche_values_from(&client, contact.as_ref());
                     let genre = gens::genre_field(store, &dossier, None, true)?;
                     let href = format!("{}/fiche", person_href(&dossier.name));
@@ -2275,6 +2362,7 @@ pub async fn fiche_post(
                         &gens::FicheErrors {
                             who: None,
                             address: None,
+                            email: None,
                             banner: None,
                         },
                         &genre,

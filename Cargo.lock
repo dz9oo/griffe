@@ -2001,6 +2001,9 @@ version = "0.3.9"
 dependencies = [
  "griffe-core",
  "lettre",
+ "rustls",
+ "time",
+ "webpki-roots",
  "zeroize",
 ]
 

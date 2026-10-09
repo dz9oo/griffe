@@ -6,7 +6,7 @@ use time::Date;
 
 use crate::app::AppError;
 use crate::billing::{aged_balance, invoice_by_id};
-use crate::clients::{client_by_id, list_contacts};
+use crate::clients::{client_by_id, correspondent};
 use crate::company::company_profile;
 use crate::domain::{
     ClientId, FollowUpEvent, FollowUpKind, FollowUpSubject, Money, Opportunity, TemplateContext,
@@ -471,16 +471,18 @@ pub fn events_for(
     row::events_for(conn, subject)
 }
 
-/// Premier contact qui a un email, sinon rien.
+/// Courriel du correspondant, et personne d'autre. Une adresse illisible compte
+/// comme une absence : un autre contact ne la remplace pas.
 pub(super) fn first_recipient(
     conn: &Connection,
     client_id: ClientId,
 ) -> Result<Option<(String, String)>, AppError> {
-    let contacts = list_contacts(conn, client_id)?;
-    Ok(contacts.into_iter().find_map(|c| {
-        c.email
-            .as_deref()
-            .and_then(|e| parse_email(e).ok())
-            .map(|email| (c.name, email))
-    }))
+    let Some(contact) = correspondent(conn, client_id)? else {
+        return Ok(None);
+    };
+    Ok(contact
+        .email
+        .as_deref()
+        .and_then(|email| parse_email(email).ok())
+        .map(|email| (contact.name, email)))
 }

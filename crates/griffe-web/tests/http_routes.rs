@@ -11106,7 +11106,14 @@ async fn la_liaison_affiche_la_coche_ou_le_refus_sans_effacer_les_champs() {
         .unlock(&Passphrase::from(PASSPHRASE), false)
         .await
         .unwrap();
-    state.set_mail_probe(|_, _| Ok(()));
+    state.set_mail_probe(|_, _, _| griffe_core::mail::ProbeVerdict {
+        ok: true,
+        detail: format!(
+            "{} La copie n'ira pas dans Envoyés.",
+            griffe_core::mail::PROBE_OK_SENTENCE
+        ),
+        imap_username: None,
+    });
     let router = griffe_web::router(state.clone());
     let secret = "mot-de-passe-application-xyz";
     let body = format!(
@@ -11152,7 +11159,11 @@ async fn la_liaison_affiche_la_coche_ou_le_refus_sans_effacer_les_champs() {
         "{held_body}"
     );
 
-    state.set_mail_probe(|_, _| Err(griffe_core::mail::MailSubmitError::Auth));
+    state.set_mail_probe(|_, _, _| griffe_core::mail::ProbeVerdict {
+        ok: false,
+        detail: "Le serveur a refusé le mot de passe.".to_string(),
+        imap_username: None,
+    });
     let refused = router
         .oneshot(
             Request::builder()
@@ -11180,4 +11191,144 @@ async fn la_liaison_affiche_la_coche_ou_le_refus_sans_effacer_les_champs() {
         "{refused_body}"
     );
     assert!(!refused_body.contains(secret), "{refused_body}");
+}
+
+#[tokio::test]
+async fn la_fiche_refuse_une_adresse_illisible_et_ecrire_prend_la_nouvelle() {
+    let db_path = test_db_path("fiche-courriel");
+    let state = unlocked_state(&db_path).await;
+    let router = griffe_web::router(state);
+    let created = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/affaires/nouvelle")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from("who=Atelier+Copie&phrase=signaletique"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::OK);
+
+    let client_id = client_id_by_name(&db_path, "Atelier Copie");
+    let revision = {
+        let store = Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+        griffe_core::clients::client_by_id(store.connection(), client_id)
+            .unwrap()
+            .unwrap()
+            .revision
+    };
+    let first = format!(
+        "who=Atelier+Copie&representative=Ada&email=ada.ancienne%40exemple.fr&phone=&client_revision={revision}&contact_id=&contact_revision=&street=&postal_code=&city="
+    );
+    let saved = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/affaires/Atelier%20Copie/fiche")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .header("HX-Request", "true")
+                    .body(Body::from(first))
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(saved.contains("Fiche à jour"), "{saved}");
+
+    let (client_revision, contact_id, contact_revision) = {
+        let store = Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+        let client = griffe_core::clients::client_by_id(store.connection(), client_id)
+            .unwrap()
+            .unwrap();
+        let contact = griffe_core::clients::correspondent(store.connection(), client_id)
+            .unwrap()
+            .expect("correspondant");
+        assert_eq!(contact.email.as_deref(), Some("ada.ancienne@exemple.fr"));
+        (client.revision, contact.id.to_string(), contact.revision)
+    };
+    let bad = format!(
+        "who=Atelier+Copie&representative=Ada&email=ada+sans+arobase&phone=&client_revision={client_revision}&contact_id={contact_id}&contact_revision={contact_revision}&street=&postal_code=&city="
+    );
+    let refused = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/affaires/Atelier%20Copie/fiche")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .header("HX-Request", "true")
+                    .body(Body::from(bad))
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        refused.contains("Cette adresse est illisible."),
+        "{refused}"
+    );
+    assert!(refused.contains("value=\"ada sans arobase\""), "{refused}");
+
+    let kept = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Atelier%20Copie/fiche")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(kept.contains("value=\"ada.ancienne@exemple.fr\""), "{kept}");
+    assert!(!kept.contains("ada sans arobase"), "{kept}");
+
+    let next = format!(
+        "who=Atelier+Copie&representative=Ada&email=ada.nouvelle%40exemple.fr&phone=&client_revision={client_revision}&contact_id={contact_id}&contact_revision={contact_revision}&street=&postal_code=&city="
+    );
+    let updated = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/affaires/Atelier%20Copie/fiche")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .header("HX-Request", "true")
+                    .body(Body::from(next))
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(updated.contains("Fiche à jour"), "{updated}");
+
+    let letter = body_text(
+        router
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Atelier%20Copie/ecrire")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(letter.contains("À ada.nouvelle@exemple.fr"), "{letter}");
+    assert!(!letter.contains("ada.ancienne@exemple.fr"), "{letter}");
 }

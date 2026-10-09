@@ -490,6 +490,8 @@ impl Command for CreateContact {
         // Vérifié explicitement pour échouer proprement plutôt que de heurter la contrainte de
         // clé étrangère avec une erreur SQLite peu lisible.
         client_by_id(conn, self.client_id)?.ok_or(ClientError::NotFound(self.client_id))?;
+        // Le premier contact de la fiche est le correspondant. Un suivant ne le vole pas.
+        let correspondent = correspondent(conn, self.client_id)?.is_none();
         let contact = Contact {
             id: ContactId::new(),
             client_id: self.client_id,
@@ -497,6 +499,7 @@ impl Command for CreateContact {
             email: self.email.clone(),
             phone: stored_phone(self.phone.as_deref()),
             role: self.role.clone(),
+            correspondent,
             revision: 1,
         };
         insert_contact(conn, &contact)?;
@@ -565,7 +568,8 @@ impl Command for DeleteContact {
 
 pub(crate) fn insert_contact(conn: &Connection, contact: &Contact) -> Result<(), AppError> {
     conn.execute(
-        "INSERT INTO contacts (id, client_id, name, email, phone, role) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO contacts (id, client_id, name, email, phone, role, correspondent)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![
             contact.id.to_string(),
             contact.client_id.to_string(),
@@ -573,6 +577,7 @@ pub(crate) fn insert_contact(conn: &Connection, contact: &Contact) -> Result<(),
             contact.email,
             contact.phone,
             contact.role,
+            i64::from(contact.correspondent),
         ],
     )?;
     Ok(())
@@ -586,6 +591,7 @@ fn row_to_contact(row: &Row) -> rusqlite::Result<Contact> {
     let id: String = row.get("id")?;
     let client_id: String = row.get("client_id")?;
     let phone: Option<String> = row.get("phone")?;
+    let correspondent: i64 = row.get("correspondent")?;
     Ok(Contact {
         id: id.parse().map_err(conv_err)?,
         client_id: client_id.parse().map_err(conv_err)?,
@@ -593,8 +599,25 @@ fn row_to_contact(row: &Row) -> rusqlite::Result<Contact> {
         email: row.get("email")?,
         phone: stored_phone(phone.as_deref()),
         role: row.get("role")?,
+        correspondent: correspondent == 1,
         revision: row.get("revision")?,
     })
+}
+
+/// Le contact qui reçoit les lettres. `None` s'il a été retiré : personne d'autre
+/// n'est promu à sa place.
+///
+/// # Errors
+///
+/// Lecture impossible.
+pub fn correspondent(conn: &Connection, client_id: ClientId) -> Result<Option<Contact>, AppError> {
+    conn.query_row(
+        "SELECT * FROM contacts WHERE client_id = ?1 AND correspondent = 1",
+        [client_id.to_string()],
+        row_to_contact,
+    )
+    .optional()
+    .map_err(AppError::from)
 }
 
 /// # Errors
@@ -926,6 +949,89 @@ mod tests {
     }
 
     #[test]
+    fn the_correspondent_stays_put_when_renamed_and_is_not_replaced() {
+        let mut store = test_store("correspondent-stable");
+        let client_id = create(&mut store, "Atelier Nord");
+        let Outcome::Applied(first) = Executor::new(&mut store)
+            .execute(
+                &CreateContact {
+                    client_id,
+                    name: "Marie".into(),
+                    email: Some("marie@exemple.fr".into()),
+                    phone: None,
+                    role: None,
+                },
+                &human_ctx(),
+            )
+            .unwrap()
+        else {
+            panic!("premier contact");
+        };
+        let Outcome::Applied(second) = Executor::new(&mut store)
+            .execute(
+                &CreateContact {
+                    client_id,
+                    name: "Aaron".into(),
+                    email: Some("aaron@exemple.fr".into()),
+                    phone: None,
+                    role: None,
+                },
+                &human_ctx(),
+            )
+            .unwrap()
+        else {
+            panic!("second contact");
+        };
+        let kept = correspondent(store.connection(), client_id)
+            .unwrap()
+            .expect("correspondant");
+        assert_eq!(kept.id, first);
+        assert!(
+            !contact_by_id(store.connection(), second)
+                .unwrap()
+                .unwrap()
+                .correspondent
+        );
+
+        Executor::new(&mut store)
+            .execute(
+                &UpdateContact {
+                    id: first,
+                    revision: 1,
+                    name: "Aline".into(),
+                    email: Some("aline@exemple.fr".into()),
+                    phone: None,
+                    role: None,
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+        let renamed = correspondent(store.connection(), client_id)
+            .unwrap()
+            .expect("toujours Marie, sous un autre nom");
+        assert_eq!(renamed.id, first);
+        assert_eq!(renamed.email.as_deref(), Some("aline@exemple.fr"));
+
+        Executor::new(&mut store)
+            .execute(
+                &DeleteContact {
+                    id: first,
+                    revision: 2,
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+        assert!(
+            correspondent(store.connection(), client_id)
+                .unwrap()
+                .is_none()
+        );
+        let left = contact_by_id(store.connection(), second).unwrap().unwrap();
+        assert!(!left.correspondent);
+        assert_eq!(left.email.as_deref(), Some("aaron@exemple.fr"));
+    }
+
+    #[test]
     fn creating_a_contact_for_an_unknown_client_fails() {
         let mut store = test_store("contact-unknown-client");
         let err = Executor::new(&mut store)
@@ -1035,6 +1141,7 @@ mod tests {
             email: None,
             phone: Some("0327444444".into()),
             role: None,
+            correspondent: false,
             revision: 1,
         };
         insert_contact(store.connection(), &contact).unwrap();

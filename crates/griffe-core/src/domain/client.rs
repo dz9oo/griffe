@@ -43,5 +43,8 @@ pub struct Contact {
     pub email: Option<String>,
     pub phone: Option<String>,
     pub role: Option<String>,
+    /// Vrai pour le seul contact qui reçoit les lettres de cette fiche.
+    #[serde(default)]
+    pub correspondent: bool,
     pub revision: i64,
 }

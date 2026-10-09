@@ -7,8 +7,9 @@ use uuid::Uuid;
 
 use super::error::MailError;
 use super::model::{
-    HOURLY_CAP, MailPreset, MailProbeStatus, MailProfile, OutboundMessage, OutboundStatus,
-    OutboundView, ProbeMaterial, ReadyLetter, SmtpEndpoint, SubmissionBatch, TlsMode,
+    HOURLY_CAP, MISSING_ADDRESS, MailPreset, MailProbeStatus, MailProfile, MailTick,
+    OutboundMessage, OutboundStatus, OutboundView, ProbeMaterial, ReadyLetter, SmtpEndpoint,
+    SubmissionBatch, TlsMode,
 };
 use super::secret::MailSecret;
 use crate::app::AppError;
@@ -20,7 +21,7 @@ pub(super) fn profile(conn: &Connection) -> Result<MailProfile, AppError> {
         .query_row(
             "SELECT from_name, from_address, smtp_host, smtp_port, smtp_tls, smtp_username,
                     secret IS NOT NULL AND length(secret) > 0, preset, auto_send, signature,
-                    probe_ok, probe_detail
+                    probe_ok, probe_detail, imap_host, imap_port, imap_username
              FROM mail_account WHERE id = 1",
             [],
             |row| {
@@ -37,6 +38,9 @@ pub(super) fn profile(conn: &Connection) -> Result<MailProfile, AppError> {
                     row.get::<_, Option<String>>(9)?,
                     row.get::<_, Option<i64>>(10)?,
                     row.get::<_, Option<String>>(11)?,
+                    row.get::<_, Option<String>>(12)?,
+                    row.get::<_, Option<i64>>(13)?,
+                    row.get::<_, Option<String>>(14)?,
                 ))
             },
         )
@@ -54,6 +58,9 @@ pub(super) fn profile(conn: &Connection) -> Result<MailProfile, AppError> {
         signature,
         probe_ok,
         probe_detail,
+        imap_host,
+        imap_port,
+        imap_username,
     )) = row
     else {
         return Ok(MailProfile::default());
@@ -77,6 +84,10 @@ pub(super) fn profile(conn: &Connection) -> Result<MailProfile, AppError> {
         ready,
         signature: signature.unwrap_or_default(),
         probe: probe_status(probe_ok, probe_detail),
+        imap_host: imap_host.unwrap_or_default(),
+        imap_port: u16::try_from(imap_port.unwrap_or(i64::from(super::model::IMAP_PORT)))
+            .unwrap_or(super::model::IMAP_PORT),
+        imap_username: imap_username.unwrap_or_default(),
     })
 }
 
@@ -121,13 +132,15 @@ pub(super) fn save_account(
     tls: TlsMode,
     username: &str,
     preset: MailPreset,
+    imap_host: Option<&str>,
+    imap_port: Option<u16>,
     now: &str,
 ) -> Result<(), AppError> {
     conn.execute(
         "INSERT INTO mail_account (
             id, from_name, from_address, smtp_host, smtp_port, smtp_tls, smtp_username,
-            preset, auto_send, updated_at
-         ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, ?8)
+            preset, auto_send, imap_host, imap_port, updated_at
+         ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, ?8, ?9, ?10)
          ON CONFLICT(id) DO UPDATE SET
             from_name = excluded.from_name,
             from_address = excluded.from_address,
@@ -136,6 +149,9 @@ pub(super) fn save_account(
             smtp_tls = excluded.smtp_tls,
             smtp_username = excluded.smtp_username,
             preset = excluded.preset,
+            imap_host = excluded.imap_host,
+            imap_port = excluded.imap_port,
+            imap_username = NULL,
             probe_ok = NULL,
             probe_detail = NULL,
             probe_at = NULL,
@@ -148,6 +164,8 @@ pub(super) fn save_account(
             tls.as_str(),
             username,
             preset.as_str(),
+            imap_host,
+            imap_port.map(i64::from),
             now
         ],
     )?;
@@ -218,6 +236,7 @@ pub(super) fn probe_material(conn: &Connection) -> Result<Option<ProbeMaterial>,
     let Some(secret) = load_secret(conn)? else {
         return Ok(None);
     };
+    let copy = current.copy_target();
     Ok(Some(ProbeMaterial {
         endpoint: SmtpEndpoint {
             host: current.host,
@@ -225,8 +244,17 @@ pub(super) fn probe_material(conn: &Connection) -> Result<Option<ProbeMaterial>,
             tls: current.tls,
             username: current.username,
         },
+        copy,
         secret,
     }))
+}
+
+pub(super) fn remember_username(conn: &Connection, username: &str) -> Result<(), AppError> {
+    conn.execute(
+        "UPDATE mail_account SET imap_username = ?1 WHERE id = 1",
+        [username],
+    )?;
+    Ok(())
 }
 
 pub(super) fn load_secret(conn: &Connection) -> Result<Option<MailSecret>, AppError> {
@@ -251,6 +279,7 @@ pub(super) struct NewLetter {
     pub(super) follow_subject_id: Option<String>,
     pub(super) follow_cycle: Option<String>,
     pub(super) follow_step: Option<String>,
+    pub(super) client_id: Option<String>,
 }
 
 pub(super) fn insert_letter(
@@ -268,9 +297,9 @@ pub(super) fn insert_letter(
         "INSERT INTO outbound_mail (
             id, kind, status, anchor, from_address, from_name, to_address, subject, body,
             message_id, send_after, session_token, follow_subject, follow_subject_id,
-            follow_cycle, follow_step, created_at, updated_at
+            follow_cycle, follow_step, client_id, created_at, updated_at
          ) VALUES (
-            ?1, ?2, 'armed', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?16
+            ?1, ?2, 'armed', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?17
          )",
         params![
             id,
@@ -288,6 +317,7 @@ pub(super) fn insert_letter(
             letter.follow_subject_id,
             letter.follow_cycle,
             letter.follow_step,
+            letter.client_id,
             now,
         ],
     )?;
@@ -369,8 +399,12 @@ pub(super) fn claim(
         .collect::<Result<_, _>>()?;
     let mut claimed = Vec::new();
     for id in ids {
+        if !refresh_destination(conn, &id, now)? {
+            continue;
+        }
         let updated = conn.execute(
-            "UPDATE outbound_mail SET status = 'sending', updated_at = ?2
+            "UPDATE outbound_mail
+             SET status = 'sending', copy_at = ?2, updated_at = ?2
              WHERE id = ?1 AND status = 'armed'",
             params![id, now],
         )?;
@@ -379,6 +413,47 @@ pub(super) fn claim(
         }
     }
     Ok(claimed)
+}
+
+/// Relit le courriel de la fiche pour une relance. Une lettre sans fiche garde
+/// l'adresse saisie. `false` : la lettre est marquée échouée, elle ne part pas.
+fn refresh_destination(conn: &Connection, id: &str, now: &str) -> Result<bool, AppError> {
+    let row: Option<(Option<String>,)> = conn
+        .query_row(
+            "SELECT client_id FROM outbound_mail WHERE id = ?1 AND status = 'armed'",
+            [id],
+            |row| Ok((row.get(0)?,)),
+        )
+        .optional()?;
+    let Some((client_id,)) = row else {
+        return Ok(false);
+    };
+    let Some(client_id) = client_id.filter(|value| !value.is_empty()) else {
+        return Ok(true);
+    };
+    let Some(email) = client_email(conn, &client_id)? else {
+        mark_failed(conn, id, MISSING_ADDRESS, now)?;
+        return Ok(false);
+    };
+    conn.execute(
+        "UPDATE outbound_mail SET to_address = ?2 WHERE id = ?1 AND status = 'armed'",
+        params![id, email],
+    )?;
+    Ok(true)
+}
+
+fn client_email(conn: &Connection, client_id: &str) -> Result<Option<String>, AppError> {
+    use crate::domain::parse_email;
+    let Ok(id) = client_id.parse() else {
+        return Ok(None);
+    };
+    let Some(contact) = crate::clients::correspondent(conn, id)? else {
+        return Ok(None);
+    };
+    Ok(contact
+        .email
+        .as_deref()
+        .and_then(|email| parse_email(email).ok()))
 }
 
 pub(super) fn load_batch(
@@ -401,6 +476,7 @@ pub(super) fn load_batch(
     if letters.is_empty() {
         return Ok(None);
     }
+    let imap = current.copy_target();
     Ok(Some(SubmissionBatch {
         endpoint: SmtpEndpoint {
             host: current.host,
@@ -409,31 +485,55 @@ pub(super) fn load_batch(
             username: current.username,
         },
         secret,
+        imap,
         letters,
     }))
 }
 
 fn load_ready(conn: &Connection, id: &str) -> Result<Option<ReadyLetter>, AppError> {
-    conn.query_row(
-        "SELECT id, from_name, from_address, to_address, subject, body, message_id
-         FROM outbound_mail WHERE id = ?1 AND status = 'sending'",
-        [id],
-        |row| {
-            Ok(ReadyLetter {
-                id: row.get(0)?,
-                message: OutboundMessage {
-                    from_name: row.get(1)?,
-                    from_address: row.get(2)?,
-                    to_address: row.get(3)?,
-                    subject: row.get(4)?,
-                    text: row.get(5)?,
-                    message_id: row.get(6)?,
-                },
-            })
+    load_letter(conn, id, "sending")
+}
+
+fn load_letter(conn: &Connection, id: &str, status: &str) -> Result<Option<ReadyLetter>, AppError> {
+    let row = conn
+        .query_row(
+            "SELECT id, from_name, from_address, to_address, subject, body, message_id, copy_at
+             FROM outbound_mail WHERE id = ?1 AND status = ?2",
+            params![id, status],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((id, from_name, from_address, to_address, subject, text, message_id, copy_at)) = row
+    else {
+        return Ok(None);
+    };
+    let at = copy_at
+        .as_deref()
+        .and_then(|value| OffsetDateTime::parse(value, &Rfc3339).ok())
+        .unwrap_or_else(OffsetDateTime::now_utc);
+    Ok(Some(ReadyLetter {
+        id,
+        message: OutboundMessage {
+            from_name,
+            from_address,
+            to_address,
+            subject,
+            text,
+            message_id,
+            at,
         },
-    )
-    .optional()
-    .map_err(AppError::from)
+    }))
 }
 
 pub(super) struct FollowLink {
@@ -543,6 +643,7 @@ struct StoredLetter {
     follow_subject_id: Option<String>,
     follow_cycle: Option<String>,
     follow_step: Option<String>,
+    client_id: Option<String>,
     status: String,
 }
 
@@ -556,7 +657,7 @@ pub(super) fn retry(
     let row = conn
         .query_row(
             "SELECT kind, anchor, to_address, session_token, subject, body,
-                follow_subject, follow_subject_id, follow_cycle, follow_step, status
+                follow_subject, follow_subject_id, follow_cycle, follow_step, client_id, status
          FROM outbound_mail WHERE id = ?1",
             [id],
             |row| {
@@ -571,7 +672,8 @@ pub(super) fn retry(
                     follow_subject_id: row.get(7)?,
                     follow_cycle: row.get(8)?,
                     follow_step: row.get(9)?,
-                    status: row.get(10)?,
+                    client_id: row.get(10)?,
+                    status: row.get(11)?,
                 })
             },
         )
@@ -582,6 +684,15 @@ pub(super) fn retry(
     if letter.status != "failed" && letter.status != "uncertain" {
         return Err(MailError::NotWaiting.into());
     }
+    let to_address = if let Some(client_id) = letter
+        .client_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        client_email(conn, client_id)?.ok_or(MailError::MissingAddress)?
+    } else {
+        letter.to_address
+    };
     conn.execute(
         "UPDATE outbound_mail SET status = 'failed', updated_at = ?2
          WHERE id = ?1 AND status = 'uncertain'",
@@ -595,7 +706,7 @@ pub(super) fn retry(
         &NewLetter {
             kind: letter.kind,
             anchor: letter.anchor,
-            to_address: letter.to_address,
+            to_address,
             subject: letter.subject,
             body: letter.body,
             send_after: send_after.to_string(),
@@ -604,6 +715,7 @@ pub(super) fn retry(
             follow_subject_id: letter.follow_subject_id,
             follow_cycle: letter.follow_cycle,
             follow_step: letter.follow_step,
+            client_id: letter.client_id,
         },
         now,
     )
@@ -648,6 +760,7 @@ pub(super) fn enroll(
         if follow_open(conn, follow_subject, &follow_id, &cycle, &step)? {
             continue;
         }
+        let client_id = follow_client_id(conn, card.subject)?;
         match insert_letter(
             conn,
             &NewLetter {
@@ -662,6 +775,7 @@ pub(super) fn enroll(
                 follow_subject_id: Some(follow_id),
                 follow_cycle: Some(cycle),
                 follow_step: Some(step),
+                client_id,
             },
             now,
         ) {
@@ -679,6 +793,103 @@ fn duplicate_letter(error: &AppError) -> bool {
         AppError::Sqlite(rusqlite::Error::SqliteFailure(code, _))
             if code.code == rusqlite::ErrorCode::ConstraintViolation
     )
+}
+
+fn follow_client_id(
+    conn: &Connection,
+    subject: FollowUpSubject,
+) -> Result<Option<String>, AppError> {
+    let (sql, id) = match subject {
+        FollowUpSubject::Opportunity(id) => (
+            "SELECT client_id FROM opportunities WHERE id = ?1",
+            id.to_string(),
+        ),
+        FollowUpSubject::Invoice(id) => (
+            "SELECT client_id FROM invoices WHERE id = ?1",
+            id.to_string(),
+        ),
+    };
+    conn.query_row(sql, [id], |row| row.get(0))
+        .optional()
+        .map_err(AppError::from)
+}
+
+/// Attente avant de retenter un dépôt manqué. L'horloge de la fenêtre passe
+/// chaque seconde : sans ce délai, elle frapperait le serveur en boucle.
+const COPY_RETRY: Duration = Duration::seconds(60);
+
+pub(super) fn load_copies(
+    conn: &Connection,
+    now: OffsetDateTime,
+) -> Result<Option<SubmissionBatch>, AppError> {
+    let current = profile(conn)?;
+    if current.copy_target().is_none() || !current.ready {
+        return Ok(None);
+    }
+    let Some(secret) = load_secret(conn)? else {
+        return Ok(None);
+    };
+    let due = stamp(now - COPY_RETRY)?;
+    let mut stmt = conn.prepare(
+        "SELECT id FROM outbound_mail
+         WHERE status = 'sent'
+           AND copy_at IS NOT NULL
+           AND (
+                sent_copy IS NULL
+                OR (sent_copy = 'failed' AND updated_at <= ?1)
+           )
+         ORDER BY updated_at
+         LIMIT 20",
+    )?;
+    let ids: Vec<String> = stmt
+        .query_map(params![due], |row| row.get(0))?
+        .collect::<Result<_, _>>()?;
+    let mut letters = Vec::new();
+    for id in ids {
+        if let Some(letter) = load_letter(conn, &id, "sent")? {
+            letters.push(letter);
+        }
+    }
+    if letters.is_empty() {
+        return Ok(None);
+    }
+    let imap = current.copy_target();
+    Ok(Some(SubmissionBatch {
+        endpoint: SmtpEndpoint {
+            host: current.host,
+            port: current.port,
+            tls: current.tls,
+            username: current.username,
+        },
+        secret,
+        imap,
+        letters,
+    }))
+}
+
+pub(super) fn record_copy(
+    conn: &Connection,
+    id: &str,
+    status: &str,
+    detail: Option<&str>,
+    username: Option<&str>,
+    now: &str,
+) -> Result<(), AppError> {
+    let updated = conn.execute(
+        "UPDATE outbound_mail
+         SET sent_copy = ?2, sent_copy_error = ?3, updated_at = ?4
+         WHERE id = ?1 AND status = 'sent'",
+        params![id, status, detail, now],
+    )?;
+    if updated == 0 {
+        return Err(MailError::Missing.into());
+    }
+    if status == "saved"
+        && let Some(username) = username.filter(|value| !value.is_empty())
+    {
+        remember_username(conn, username)?;
+    }
+    Ok(())
 }
 
 fn follow_open(
@@ -742,15 +953,15 @@ pub(super) fn for_anchor(
     }))
 }
 
-pub(super) fn needs_tick(
+pub(super) fn mail_tick(
     conn: &Connection,
     session_token: &str,
     now: OffsetDateTime,
     today: Date,
     release_stale: bool,
-) -> Result<bool, AppError> {
+) -> Result<MailTick, AppError> {
     let now_stamp = stamp(now)?;
-    let busy: bool = conn.query_row(
+    let send_busy: bool = conn.query_row(
         "SELECT
             EXISTS(SELECT 1 FROM outbound_mail WHERE status = 'sending')
             OR EXISTS(
@@ -767,47 +978,63 @@ pub(super) fn needs_tick(
         params![now_stamp, session_token, release_stale],
         |row| row.get(0),
     )?;
-    if busy {
-        return Ok(true);
-    }
     let account = profile(conn)?;
-    if !account.auto_send || !account.ready {
-        return Ok(false);
+    let copy = if account.copy_target().is_some() {
+        let due = stamp(now - COPY_RETRY)?;
+        conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM outbound_mail
+                WHERE status = 'sent'
+                  AND copy_at IS NOT NULL
+                  AND (
+                        sent_copy IS NULL
+                        OR (sent_copy = 'failed' AND updated_at <= ?1)
+                  )
+            )",
+            [due],
+            |row| row.get(0),
+        )?
+    } else {
+        false
+    };
+    let mut send = send_busy;
+    if !send && account.auto_send && account.ready {
+        for card in follow_up_queue(conn, today)? {
+            if card.status != CardStatus::Due {
+                continue;
+            }
+            if card.contact_email.as_ref().is_none_or(String::is_empty) {
+                continue;
+            }
+            if card
+                .preview_subject
+                .as_ref()
+                .is_none_or(|value| value.trim().is_empty())
+            {
+                continue;
+            }
+            if card
+                .preview_body
+                .as_ref()
+                .is_none_or(|value| value.trim().is_empty())
+            {
+                continue;
+            }
+            let Some(step) = card.step_key.as_deref() else {
+                continue;
+            };
+            let (kind, id) = match card.subject {
+                FollowUpSubject::Opportunity(id) => ("opportunity", id.to_string()),
+                FollowUpSubject::Invoice(id) => ("invoice", id.to_string()),
+            };
+            let cycle = entered_cycle_key(&events_for(conn, card.subject)?);
+            if !follow_open(conn, kind, &id, &cycle, step)? {
+                send = true;
+                break;
+            }
+        }
     }
-    for card in follow_up_queue(conn, today)? {
-        if card.status != CardStatus::Due {
-            continue;
-        }
-        if card.contact_email.as_ref().is_none_or(String::is_empty) {
-            continue;
-        }
-        if card
-            .preview_subject
-            .as_ref()
-            .is_none_or(|value| value.trim().is_empty())
-        {
-            continue;
-        }
-        if card
-            .preview_body
-            .as_ref()
-            .is_none_or(|value| value.trim().is_empty())
-        {
-            continue;
-        }
-        let Some(step) = card.step_key.as_deref() else {
-            continue;
-        };
-        let (kind, id) = match card.subject {
-            FollowUpSubject::Opportunity(id) => ("opportunity", id.to_string()),
-            FollowUpSubject::Invoice(id) => ("invoice", id.to_string()),
-        };
-        let cycle = entered_cycle_key(&events_for(conn, card.subject)?);
-        if !follow_open(conn, kind, &id, &cycle, step)? {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+    Ok(MailTick { send, copy })
 }
 
 pub(super) fn hourly_pause(conn: &Connection, now: OffsetDateTime) -> Result<bool, AppError> {

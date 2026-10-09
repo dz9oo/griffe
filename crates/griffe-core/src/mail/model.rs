@@ -9,6 +9,18 @@ use super::secret::MailSecret;
 /// Hôte iCloud. Le préréglage ne fait que remplir ces valeurs.
 pub const ICLOUD_HOST: &str = "smtp.mail.me.com";
 
+/// Hôte IMAP d'iCloud. Le préréglage n'a pas de champ pour lui.
+pub const ICLOUD_IMAP_HOST: &str = "imap.mail.me.com";
+
+/// Dossier qu'iCloud présente comme Envoyés quand aucun dossier n'est marqué `\Sent`.
+pub const ICLOUD_SENT_MAILBOX: &str = "Sent Messages";
+
+/// Seul port accepté pour déposer la copie. Liaison chiffrée, jamais en clair.
+pub const IMAP_PORT: u16 = 993;
+
+/// La fiche n'a plus d'adresse lisible. La lettre ne part pas.
+pub const MISSING_ADDRESS: &str = "Il manque l'adresse de la personne.";
+
 /// Soumissions acceptées par heure de coffre ouvert.
 pub const HOURLY_CAP: i64 = 30;
 
@@ -140,12 +152,59 @@ pub struct MailProfile {
     pub signature: String,
     /// `None` : la liaison n'a pas été essayée depuis le dernier enregistrement.
     pub probe: Option<MailProbeStatus>,
+    /// Hôte IMAP saisi pour un serveur autre qu'iCloud. Vide : pas de copie.
+    pub imap_host: String,
+    /// Port des copies. 993 dès qu'un hôte est saisi.
+    pub imap_port: u16,
+    /// Identifiant IMAP qui a ouvert la session. Pas un secret.
+    pub imap_username: String,
 }
 
 /// Ce qu'il faut pour essayer la liaison. Le secret s'efface avec cette valeur.
 pub struct ProbeMaterial {
     pub endpoint: SmtpEndpoint,
+    /// `None` : la copie n'est pas demandée.
+    pub copy: Option<ImapEndpoint>,
     pub secret: MailSecret,
+}
+
+/// Où déposer la copie de la lettre partie.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImapEndpoint {
+    pub host: String,
+    pub port: u16,
+    /// Identifiant SMTP, dont on dérive les essais de connexion.
+    pub username: String,
+    /// Identifiant qui a déjà ouvert la session, essayé en premier.
+    pub remembered: Option<String>,
+    pub icloud: bool,
+}
+
+/// Résultat d'un essai de liaison, sans le mot de passe.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProbeVerdict {
+    pub ok: bool,
+    pub detail: String,
+    /// Présent seulement quand la copie a pu être vérifiée.
+    pub imap_username: Option<String>,
+}
+
+/// Travail de l'horloge. L'envoi et la copie sont indépendants :
+/// une copie en retard ne réarme pas une lettre.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MailTick {
+    /// Lettres à réclamer, ou relances du jour à inscrire.
+    pub send: bool,
+    /// Copies à déposer. Le statut d'envoi reste `sent`.
+    pub copy: bool,
+}
+
+impl MailTick {
+    /// Vrai quand l'horloge doit ouvrir le coffre.
+    #[must_use]
+    pub const fn pending(self) -> bool {
+        self.send || self.copy
+    }
 }
 
 impl Default for MailProfile {
@@ -163,6 +222,43 @@ impl Default for MailProfile {
             ready: false,
             signature: String::new(),
             probe: None,
+            imap_host: String::new(),
+            imap_port: IMAP_PORT,
+            imap_username: String::new(),
+        }
+    }
+}
+
+impl MailProfile {
+    /// Destination de la copie. iCloud l'a toujours. Un autre serveur, seulement
+    /// si l'hôte a été saisi.
+    #[must_use]
+    pub fn copy_target(&self) -> Option<ImapEndpoint> {
+        let remembered = {
+            let name = self.imap_username.trim();
+            (!name.is_empty()).then(|| name.to_string())
+        };
+        match self.preset {
+            MailPreset::Icloud => Some(ImapEndpoint {
+                host: ICLOUD_IMAP_HOST.to_string(),
+                port: IMAP_PORT,
+                username: self.username.clone(),
+                remembered,
+                icloud: true,
+            }),
+            MailPreset::Custom => {
+                let host = self.imap_host.trim();
+                if host.is_empty() {
+                    return None;
+                }
+                Some(ImapEndpoint {
+                    host: host.to_string(),
+                    port: IMAP_PORT,
+                    username: self.username.clone(),
+                    remembered,
+                    icloud: false,
+                })
+            }
         }
     }
 }
@@ -194,6 +290,8 @@ pub struct OutboundMessage {
     pub subject: String,
     pub text: String,
     pub message_id: String,
+    /// Instant figé dans l'en-tête `Date`, pour que la copie reprenne les mêmes octets.
+    pub at: time::OffsetDateTime,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -221,13 +319,24 @@ pub struct ReadyLetter {
 pub struct SubmissionBatch {
     pub endpoint: SmtpEndpoint,
     pub secret: MailSecret,
+    /// `None` : pas de copie. L'envoi SMTP n'en dépend pas.
+    pub imap: Option<ImapEndpoint>,
     pub letters: Vec<ReadyLetter>,
+}
+
+/// Dépôt de la copie, après un SMTP réussi. `Skipped` : rien à déposer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SentCopyStatus {
+    Saved { username: String },
+    Failed(String),
+    Skipped,
 }
 
 #[derive(Debug)]
 pub struct DeliveryOutcome {
     pub id: String,
     pub result: Result<SubmissionReceipt, MailSubmitError>,
+    pub copy: SentCopyStatus,
 }
 
 /// Transport d'envoi. Une implémentation par crate, interchangeable.

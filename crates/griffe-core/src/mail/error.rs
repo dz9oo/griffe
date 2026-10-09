@@ -9,6 +9,12 @@ pub enum MailError {
     #[error("l'adresse est illisible")]
     Address,
 
+    #[error("Il manque l'adresse de la personne.")]
+    MissingAddress,
+
+    #[error("Le port des copies est 993.")]
+    CopyPort,
+
     #[error("le serveur d'envoi est incomplet")]
     Incomplete,
 

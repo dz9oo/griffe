@@ -25,15 +25,23 @@ accepte l’identifiant, une croix s’il refuse. Deux ports, tous deux chiffré
 l’adresse complète du compte, et le mot de passe est un mot de passe
 d’application. L’hôte et le port restent lisibles.
 
-Envoyer, sur une lettre, laisse cinq secondes pour se raviser. Le compte
-s’affiche, une seconde après l’autre. Au bout, Annuler s’efface, la ligne dit
-Courrier envoyé, et le bouton revient. Fermer la fenêtre pendant ces cinq
-secondes retient la lettre. C’est parti classe le double dans l’historique
-et ne contacte pas le serveur.
+Envoyer, sur une lettre, laisse cinq secondes pour se raviser. La ligne
+nomme l’adresse qui partira, et le compte s’affiche, une seconde après
+l’autre. Si l’adresse manque, elle dit que la lettre ne partira pas. Au
+bout, Annuler s’efface, la ligne dit Courrier envoyé, et le bouton revient.
+Fermer la fenêtre pendant ces cinq secondes retient la lettre. C’est parti
+classe le double dans l’historique et ne contacte pas le serveur.
+
+Une lettre partie est aussi déposée dans Envoyés du compte qui l’envoie.
+iCloud le fait sans champ de plus. Un autre serveur le fait si l’hôte des
+copies est saisi, sur le port 993. Vide, la lettre part et la copie n’ira
+pas dans Envoyés : l’essai de liaison le dit. Si le dépôt échoue, la lettre
+est quand même partie. Griffe réessaie plus tard. Elle ne lit pas le
+courrier reçu, et ne promet pas la boîte du destinataire.
 
 L’envoi du jour est éteint. L’activer poste, pendant que le coffre est
 ouvert, les lettres dont la date prévue est aujourd’hui. Une lettre de la
-veille reste à envoyer à la main. Griffe ne lit pas la boîte.
+veille reste à envoyer à la main.
 
 La formule, écrite dans ce chapitre, remplace `<signature>` dans les
 lettres et dans les phrases ; vide, elle redevient Bien à vous, le nom,

@@ -1,11 +1,17 @@
-//! Soumission SMTP. Seule crate qui connaît `lettre`.
+//! Soumission SMTP, puis dépôt de la même lettre dans Envoyés.
+//! Seule crate qui connaît `lettre` et IMAP.
 //! Le cœur décide du moment et du texte ; ici on ouvre la liaison et on la referme.
 
-use std::time::Duration;
+mod imap;
+
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use time::OffsetDateTime;
 
 use griffe_core::mail::{
-    DeliveryOutcome, MailSecret, MailSubmitError, OutboundMail, OutboundMessage, SmtpEndpoint,
-    SubmissionBatch, SubmissionReceipt, TlsMode,
+    DeliveryOutcome, ICLOUD_HOST, ImapEndpoint, MailSecret, MailSubmitError, OutboundMail,
+    OutboundMessage, PROBE_OK_SENTENCE, ProbeVerdict, SentCopyStatus, SmtpEndpoint,
+    SubmissionBatch, SubmissionReceipt, TlsMode, french_submit_error,
 };
 use lettre::message::{Mailbox, Message, header::ContentType};
 use lettre::transport::smtp::authentication::Credentials;
@@ -33,17 +39,34 @@ impl LettreMail {
     }
 }
 
-impl OutboundMail for LettreMail {
-    fn submit(&self, message: &OutboundMessage) -> Result<SubmissionReceipt, MailSubmitError> {
-        let email = compose(message)?;
+impl LettreMail {
+    fn secret(&self) -> &MailSecret {
+        &self.secret
+    }
+
+    fn send_bytes(
+        &self,
+        email: &Message,
+        bytes: &[u8],
+    ) -> Result<SubmissionReceipt, MailSubmitError> {
         let transport = open_transport(&self.endpoint, &self.secret)?;
-        match transport.send(&email) {
+        match transport.send_raw(email.envelope(), bytes) {
             Ok(response) => Ok(SubmissionReceipt {
-                message_id: message.message_id.clone(),
+                message_id: String::new(),
                 smtp_response: shorten(&response_text(&response), self.secret.expose()),
             }),
             Err(error) => Err(classify_lettre(&error, self.secret.expose())),
         }
+    }
+}
+
+impl OutboundMail for LettreMail {
+    fn submit(&self, message: &OutboundMessage) -> Result<SubmissionReceipt, MailSubmitError> {
+        let email = compose(message)?;
+        let bytes = email.formatted();
+        let mut receipt = self.send_bytes(&email, &bytes)?;
+        receipt.message_id = message.message_id.clone();
+        Ok(receipt)
     }
 }
 
@@ -64,12 +87,14 @@ pub fn probe(endpoint: &SmtpEndpoint, secret: &MailSecret) -> Result<(), MailSub
     }
 }
 
-/// Soumet le lot puis oublie le secret. Aucune lettre n'est retentée ici.
+/// Soumet le lot puis oublie le secret. La copie suit un SMTP réussi.
+/// Un dépôt manqué ne renvoie pas la lettre.
 #[must_use]
 pub fn submit_batch(batch: SubmissionBatch) -> Vec<DeliveryOutcome> {
     let SubmissionBatch {
         endpoint,
         secret,
+        imap,
         letters,
     } = batch;
     let mail = match LettreMail::new(endpoint, secret) {
@@ -80,25 +105,155 @@ pub fn submit_batch(batch: SubmissionBatch) -> Vec<DeliveryOutcome> {
                 .map(|letter| DeliveryOutcome {
                     id: letter.id,
                     result: Err(error.clone()),
+                    copy: SentCopyStatus::Skipped,
                 })
                 .collect();
         }
     };
     let outcomes = letters
         .into_iter()
-        .map(|letter| DeliveryOutcome {
-            id: letter.id,
-            result: mail.submit(&letter.message),
+        .map(|letter| {
+            let id = letter.id;
+            match compose(&letter.message) {
+                Err(error) => DeliveryOutcome {
+                    id,
+                    result: Err(error),
+                    copy: SentCopyStatus::Skipped,
+                },
+                Ok(email) => {
+                    let bytes = email.formatted();
+                    match mail.send_bytes(&email, &bytes) {
+                        Err(error) => DeliveryOutcome {
+                            id,
+                            result: Err(error),
+                            copy: SentCopyStatus::Skipped,
+                        },
+                        Ok(response) => {
+                            let copy = copy_after_send(
+                                imap.as_ref(),
+                                mail.secret(),
+                                &letter.message.message_id,
+                                &bytes,
+                            );
+                            DeliveryOutcome {
+                                id,
+                                result: Ok(SubmissionReceipt {
+                                    message_id: letter.message.message_id,
+                                    smtp_response: response.smtp_response,
+                                }),
+                                copy,
+                            }
+                        }
+                    }
+                }
+            }
         })
         .collect();
     drop(mail);
     outcomes
 }
 
+/// Dépose des lettres déjà parties. N'ouvre pas de session SMTP.
+#[must_use]
+pub fn file_copies(batch: SubmissionBatch) -> Vec<DeliveryOutcome> {
+    let SubmissionBatch {
+        secret,
+        imap,
+        letters,
+        ..
+    } = batch;
+    let Some(imap) = imap else {
+        return letters
+            .into_iter()
+            .map(|letter| DeliveryOutcome {
+                id: letter.id,
+                result: Ok(SubmissionReceipt {
+                    message_id: letter.message.message_id,
+                    smtp_response: String::new(),
+                }),
+                copy: SentCopyStatus::Skipped,
+            })
+            .collect();
+    };
+    letters
+        .into_iter()
+        .map(|letter| {
+            let id = letter.id;
+            let message_id = letter.message.message_id.clone();
+            let copy = match letter_bytes(&letter.message) {
+                Ok(bytes) => imap::deposit(&imap, &secret, &message_id, &bytes),
+                Err(_) => SentCopyStatus::Failed("La copie n'a pas pu être déposée.".into()),
+            };
+            DeliveryOutcome {
+                id,
+                result: Ok(SubmissionReceipt {
+                    message_id,
+                    smtp_response: String::new(),
+                }),
+                copy,
+            }
+        })
+        .collect()
+}
+
+fn copy_after_send(
+    imap: Option<&ImapEndpoint>,
+    secret: &MailSecret,
+    message_id: &str,
+    bytes: &[u8],
+) -> SentCopyStatus {
+    let Some(imap) = imap else {
+        return SentCopyStatus::Skipped;
+    };
+    imap::deposit(imap, secret, message_id, bytes)
+}
+
+/// Essaie le SMTP, puis la copie. Un SMTP refusé n'ouvre pas IMAP.
+/// Si le SMTP passe et la copie non, le compte reste accepté.
+#[must_use]
+pub fn probe_account(
+    endpoint: &SmtpEndpoint,
+    copy: Option<&ImapEndpoint>,
+    secret: &MailSecret,
+) -> ProbeVerdict {
+    let icloud = endpoint.host == ICLOUD_HOST;
+    match probe(endpoint, secret) {
+        Err(error) => ProbeVerdict {
+            ok: false,
+            detail: french_submit_error(&error, icloud),
+            imap_username: None,
+        },
+        Ok(()) => {
+            let (sentence, username) = match copy {
+                None => ("La copie n'ira pas dans Envoyés.", None),
+                Some(imap) => match imap::probe_copy(imap, secret) {
+                    Ok(username) => ("La copie ira dans Envoyés.", Some(username)),
+                    Err(_) => ("La copie dans Envoyés n'a pas pu être vérifiée.", None),
+                },
+            };
+            ProbeVerdict {
+                ok: true,
+                detail: format!("{PROBE_OK_SENTENCE} {sentence}"),
+                imap_username: username,
+            }
+        }
+    }
+}
+
+/// Les octets de la lettre. Deux appels avec les mêmes champs donnent les mêmes octets.
+///
+/// # Errors
+///
+/// L'adresse est illisible.
+pub fn letter_bytes(message: &OutboundMessage) -> Result<Vec<u8>, MailSubmitError> {
+    Ok(compose(message)?.formatted())
+}
+
 fn compose(message: &OutboundMessage) -> Result<Message, MailSubmitError> {
     let from = mailbox(message.from_name.as_deref(), &message.from_address)?;
     let to = mailbox(None, &message.to_address)?;
     Message::builder()
+        .date(system_time(message.at))
         .from(from)
         .to(to)
         .message_id(Some(message.message_id.clone()))
@@ -106,6 +261,13 @@ fn compose(message: &OutboundMessage) -> Result<Message, MailSubmitError> {
         .header(ContentType::TEXT_PLAIN)
         .body(message.text.clone())
         .map_err(|error| MailSubmitError::Refused(shorten(&error.to_string(), "")))
+}
+
+fn system_time(at: OffsetDateTime) -> SystemTime {
+    match u64::try_from(at.unix_timestamp()) {
+        Ok(seconds) => UNIX_EPOCH + Duration::from_secs(seconds),
+        Err(_) => UNIX_EPOCH,
+    }
 }
 
 fn mailbox(name: Option<&str>, address: &str) -> Result<Mailbox, MailSubmitError> {
@@ -191,7 +353,10 @@ fn shorten(text: &str, secret: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{LettreMail, classify_text, compose, open_transport, probe};
+    use super::{
+        LettreMail, PROBE_OK_SENTENCE, classify_text, compose, letter_bytes, open_transport, probe,
+        probe_account,
+    };
     use griffe_core::mail::{MailSecret, MailSubmitError, OutboundMessage, SmtpEndpoint, TlsMode};
 
     fn endpoint(port: u16, tls: TlsMode) -> SmtpEndpoint {
@@ -200,6 +365,27 @@ mod tests {
             port,
             tls,
             username: "ada@studio.test".into(),
+        }
+    }
+
+    #[test]
+    fn a_refused_smtp_does_not_talk_about_the_sent_folder() {
+        let secret = MailSecret::new("secret-value").unwrap();
+        let verdict = probe_account(&endpoint(465, TlsMode::StartTls), None, &secret);
+        assert!(!verdict.ok);
+        assert!(verdict.imap_username.is_none());
+        assert!(!verdict.detail.contains("Envoyés"));
+    }
+
+    #[test]
+    fn the_copy_sentences_stay_within_the_probe_limit() {
+        for sentence in [
+            "La copie ira dans Envoyés.",
+            "La copie dans Envoyés n'a pas pu être vérifiée.",
+            "La copie n'ira pas dans Envoyés.",
+        ] {
+            let detail = format!("{PROBE_OK_SENTENCE} {sentence}");
+            assert!(detail.chars().count() <= 160, "{detail}");
         }
     }
 
@@ -229,8 +415,13 @@ mod tests {
             subject: "Bonjour".into(),
             text: "Une ligne.".into(),
             message_id: "<lettre@griffe.local>".into(),
+            at: time::OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap(),
         };
         let raw = String::from_utf8(compose(&message).unwrap().formatted()).unwrap();
+        assert_eq!(
+            letter_bytes(&message).unwrap(),
+            letter_bytes(&message).unwrap()
+        );
         assert!(raw.contains("text/plain"));
         assert!(raw.contains("<lettre@griffe.local>"));
         assert!(raw.contains("Une ligne."));

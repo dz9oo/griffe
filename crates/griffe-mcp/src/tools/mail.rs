@@ -102,6 +102,7 @@ impl FreeflowServer {
             follow_subject_id: None,
             follow_cycle: None,
             follow_step: None,
+            client_id: None,
         };
         match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
@@ -166,6 +167,7 @@ impl FreeflowServer {
             follow_subject_id: None,
             follow_cycle: None,
             follow_step: None,
+            client_id: None,
         };
         match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),

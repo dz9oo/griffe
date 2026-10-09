@@ -16,6 +16,8 @@ pub struct CourrierForm {
     pub port: u16,
     pub username: String,
     pub preset: String,
+    pub imap_host: String,
+    pub imap_port: String,
     pub error: Option<String>,
     pub notice: Option<String>,
     /// Texte posté quand l'enregistrement de la formule a échoué.
@@ -52,6 +54,17 @@ fn markup(
     let username = posted.map_or(account.username.as_str(), |item| item.username.as_str());
     let preset = posted.map_or(account.preset, |item| MailPreset::parse(&item.preset));
     let port = posted.map_or(account.port, |item| item.port);
+    let imap_host = posted.map_or(account.imap_host.as_str(), |item| item.imap_host.as_str());
+    let imap_port = posted.map_or_else(
+        || {
+            if account.imap_host.is_empty() {
+                "993".to_string()
+            } else {
+                account.imap_port.to_string()
+            }
+        },
+        |item| item.imap_port.clone(),
+    );
     let icloud = preset == MailPreset::Icloud;
     let signature = form
         .and_then(|item| item.signature.as_deref())
@@ -107,7 +120,7 @@ fn markup(
                     }
                     div class="serveur-icloud" {
                         p class="prose" {
-                            (ICLOUD_HOST) ", port 587, liaison chiffrée. L'identifiant est l'adresse complète du compte, en icloud.com, me.com ou mac.com. Le mot de passe est un mot de passe d'application."
+                            (ICLOUD_HOST) ", port 587, liaison chiffrée. L'identifiant est l'adresse complète du compte, en icloud.com, me.com ou mac.com. Le mot de passe est un mot de passe d'application. La copie de chaque lettre partie est déposée dans Envoyés."
                         }
                         p class="prose" {
                             a href="https://account.apple.com" { "Le compte Apple" }
@@ -131,6 +144,17 @@ fn markup(
                                     "465"
                                 }
                             }
+                        }
+                        div class="field" {
+                            label for="imap_host" { "Hôte des copies" }
+                            input id="imap_host" name="imap_host" type="text" value=(imap_host) autocomplete="off";
+                        }
+                        div class="field" {
+                            label for="imap_port" { "Port des copies" }
+                            input id="imap_port" name="imap_port" type="text" value=(imap_port) autocomplete="off";
+                        }
+                        p class="prose" {
+                            "Vide, la lettre part et la copie n'ira pas dans Envoyés. Le port est 993."
                         }
                     }
                     div class="field" {
@@ -186,7 +210,13 @@ fn markup(
                         label for="to" { "Vers" }
                         input id="to" name="to" type="text" value=(from_address) autocomplete="email";
                     }
-                    (depart_markup("/societe/courrier", depart, None, "Envoyer l'essai"))
+                    (depart_markup(
+                        "/societe/courrier",
+                        depart,
+                        None,
+                        "Envoyer l'essai",
+                        depart.map(|item| item.to_address.as_str()),
+                    ))
                 }
             }
             div class="block" {

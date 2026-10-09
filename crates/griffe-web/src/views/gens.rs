@@ -1394,6 +1394,7 @@ pub struct FicheValues {
 pub struct FicheErrors {
     pub who: Option<String>,
     pub address: Option<String>,
+    pub email: Option<String>,
     pub banner: Option<String>,
 }
 
@@ -1423,7 +1424,7 @@ pub fn fiche_page(
                 (form::text("postal_code", "Code postal", &values.postal_code, None))
                 (form::text("city", "Ville", &values.city, None))
                 (form::text("representative", "Qui répond", &values.representative, None))
-                (form::text("email", "Courriel", &values.email, None))
+                (form::text("email", "Courriel", &values.email, errors.email.as_deref()))
                 (form::text("phone", "Téléphone", &display_phone(&values.phone), None))
                 @if genre.show {
                     (genre_line(genre))
@@ -1801,6 +1802,7 @@ pub fn depart_markup(
     view: Option<&OutboundView>,
     note: Option<&str>,
     send_label: &str,
+    destination: Option<&str>,
 ) -> Markup {
     let poll = format!("{href}/envoi");
     let polling = view.is_some_and(depart_polls);
@@ -1812,7 +1814,7 @@ pub fn depart_markup(
             hx-get=[poll_url]
             hx-trigger=[trigger]
             hx-swap=[swap] {
-            (depart_body(href, view, note, send_label))
+            (depart_body(href, view, note, send_label, destination))
         }
     }
 }
@@ -1824,12 +1826,13 @@ pub fn depart_poll_fragment(
     view: Option<&OutboundView>,
     note: Option<&str>,
     send_label: &str,
+    destination: Option<&str>,
 ) -> (Markup, bool) {
     let polling = view.is_some_and(depart_polls);
     let markup = if polling {
-        depart_body(href, view, note, send_label)
+        depart_body(href, view, note, send_label, destination)
     } else {
-        depart_markup(href, view, note, send_label)
+        depart_markup(href, view, note, send_label, destination)
     };
     (markup, polling)
 }
@@ -1839,6 +1842,7 @@ fn depart_body(
     view: Option<&OutboundView>,
     note: Option<&str>,
     send_label: &str,
+    destination: Option<&str>,
 ) -> Markup {
     let send = format!("{href}/envoyer");
     let left = view.map(|item| item.seconds_left).unwrap_or(0);
@@ -1849,12 +1853,20 @@ fn depart_body(
         @match view.map(|item| item.status) {
             Some(OutboundStatus::Armed) => {
                 p class="depart-line" {
-                    @if left > 0 {
-                        "Elle part dans "
-                        span class="depart-count" { (left) }
-                        "."
+                    @if let Some(address) = destination.filter(|value| !value.is_empty()) {
+                        @if left > 0 {
+                            "Elle part vers "
+                            (address)
+                            " dans "
+                            span class="depart-count" { (left) }
+                            "."
+                        } @else {
+                            "Elle part vers "
+                            (address)
+                            "."
+                        }
                     } @else {
-                        "Elle part."
+                        "Il manque l'adresse. Elle ne partira pas."
                     }
                 }
                 span class="depart-track" data-left=(left) { i {} }
@@ -2084,7 +2096,7 @@ pub fn letter_page(
                     }
                     div class="row-actions" {
                         @if can_send {
-                            (depart_markup(&href, depart.as_ref(), None, "Envoyer"))
+                            (depart_markup(&href, depart.as_ref(), None, "Envoyer", (!recipient.is_empty()).then_some(recipient)))
                         } @else if mail.ready {
                             p class="depart-line" { "Il manque l'adresse de la personne." }
                         }

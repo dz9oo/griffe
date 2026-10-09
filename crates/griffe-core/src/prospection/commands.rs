@@ -118,8 +118,8 @@ fn upsert_prospect_contact(
     if representative.is_none() && email.is_none() && phone.is_none() {
         return Ok(());
     }
-    let existing = crate::clients::list_contacts(conn, client_id)?;
-    if let Some(current) = existing.into_iter().next() {
+    let existing = crate::clients::correspondent(conn, client_id)?;
+    if let Some(current) = existing {
         crate::clients::UpdateContact {
             id: current.id,
             revision: current.revision,
