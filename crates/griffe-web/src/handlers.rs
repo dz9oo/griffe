@@ -111,6 +111,8 @@ pub struct AffairesQuery {
     q: String,
     #[serde(default, rename = "type")]
     kind: String,
+    #[serde(default)]
+    vue: String,
 }
 
 pub async fn gens(
@@ -120,8 +122,9 @@ pub async fn gens(
 ) -> Html<String> {
     let q = form.q;
     let kind = form.kind;
+    let vue = form.vue;
     letter(&state, headers, ViewId::Gens, move |store, today| {
-        views::gens::render_search(store, today, &q, &kind)
+        views::gens::render_search(store, today, &q, &kind, &vue)
     })
     .await
 }

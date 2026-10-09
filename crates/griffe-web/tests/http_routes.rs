@@ -279,7 +279,7 @@ async fn an_htmx_boosted_navigation_returns_only_the_view_fragment() {
         "une navigation boostée ne doit renvoyer que le contenu de #content, pas la coque"
     );
     assert!(
-        body.contains("Les affaires") || body.contains("En conversation"),
+        body.contains("demande un geste") || body.contains("Nouvelle conversation"),
         "l'ancienne route rend Les affaires : {body}"
     );
     assert!(
@@ -329,7 +329,7 @@ async fn the_atelier_chrome_has_three_pieces_and_vendored_fonts() {
     .await;
     assert!(gens.contains("data-view=\"affaires\""), "{gens}");
     assert!(gens.contains("Nouvelle conversation"), "{gens}");
-    assert!(gens.contains("En conversation"), "{gens}");
+    assert!(gens.contains("demande un geste"), "{gens}");
     assert!(
         gens.contains("data-piece=\"affaires\"") && gens.contains("aria-current=\"page\""),
         "Les affaires se soulignent au chargement : {gens}"
@@ -824,15 +824,19 @@ async fn les_affaires_lists_three_chapters_and_opens_a_dossier() {
     )
     .await;
     assert!(list.contains("data-view=\"affaires\""), "{list}");
-    assert!(list.contains("En conversation"), "{list}");
-    assert!(list.contains("En mission"), "{list}");
-    assert!(list.contains("Chez qui ça sort"), "{list}");
+    assert!(list.contains("demande un geste"), "{list}");
+    assert!(list.contains("le livre"), "{list}");
+    assert!(list.contains("les sorties"), "{list}");
     assert!(
         !list.contains("Fournisseurs"),
         "plus un chapitre Fournisseurs : {list}"
     );
-    assert!(list.contains("Camille"), "{list}");
+    assert!(
+        !list.contains("Camille"),
+        "un premier message reste dans le tas : {list}"
+    );
     assert!(list.contains("1 premier message"), "{list}");
+    assert!(list.contains("Rien ne demande un geste."), "{list}");
     assert!(list.contains("Nouvelle conversation"), "{list}");
 
     let filtered = body_text(
@@ -856,7 +860,7 @@ async fn les_affaires_lists_three_chapters_and_opens_a_dossier() {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/affaires?q=cami")
+                    .uri("/affaires?vue=tas&q=cami")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1069,15 +1073,47 @@ async fn les_affaires_qualifies_amounts_and_opens_an_outgoing_dossier() {
             .unwrap(),
     )
     .await;
-    assert!(list.contains("Chez qui ça sort"), "{list}");
+    assert!(list.contains("les sorties"), "{list}");
     assert!(!list.contains("Fournisseurs"), "{list}");
     assert!(
-        list.contains("autour de") && list.contains("Atelier Nord"),
-        "l'enveloppe se dit : {list}"
+        !list.contains("Atelier Nord"),
+        "l'estimation qui n'est pas pour aujourd'hui reste dans le livre : {list}"
     );
+
+    let book = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires?vue=livre")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
     assert!(
-        list.contains("Tiime") && list.contains("versés"),
-        "le versé se dit : {list}"
+        book.contains("autour de") && book.contains("Atelier Nord"),
+        "l'enveloppe se dit : {book}"
+    );
+
+    let outgoing = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires?vue=sorties")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        outgoing.contains("Tiime") && outgoing.contains("versés"),
+        "le versé se dit : {outgoing}"
     );
 
     let tiime = body_text(
@@ -8112,7 +8148,7 @@ async fn engaged_conversations_finish_their_series_and_a_new_one_takes_three_mom
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/affaires")
+                    .uri("/affaires?vue=tout")
                     .header("HX-Request", "true")
                     .body(Body::empty())
                     .unwrap(),
@@ -8224,7 +8260,7 @@ label_close=Derni%C3%A8re+relance&subject_close=Fin&body_close=Le+dernier+mot.&r
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/affaires")
+                    .uri("/affaires?vue=tout")
                     .header("HX-Request", "true")
                     .body(Body::empty())
                     .unwrap(),
@@ -9682,7 +9718,7 @@ async fn two_fiches_with_the_same_respondent_open_under_qui() {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/affaires")
+                    .uri("/affaires?vue=tas")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -9710,7 +9746,7 @@ async fn two_fiches_with_the_same_respondent_open_under_qui() {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/affaires?q=fr%C3%A9d%C3%A9ric")
+                    .uri("/affaires?vue=tas&q=fr%C3%A9d%C3%A9ric")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -9886,7 +9922,7 @@ async fn reporter_unfolds_into_three_days_ten_days_or_a_count() {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/affaires")
+                    .uri("/affaires?vue=livre")
                     .header("HX-Request", "true")
                     .body(Body::empty())
                     .unwrap(),
@@ -9920,7 +9956,7 @@ async fn reporter_unfolds_into_three_days_ten_days_or_a_count() {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/affaires")
+                    .uri("/affaires?vue=livre")
                     .header("HX-Request", "true")
                     .body(Body::empty())
                     .unwrap(),
@@ -9956,7 +9992,7 @@ async fn reporter_unfolds_into_three_days_ten_days_or_a_count() {
         router
             .oneshot(
                 Request::builder()
-                    .uri("/affaires")
+                    .uri("/affaires?vue=livre")
                     .header("HX-Request", "true")
                     .body(Body::empty())
                     .unwrap(),
@@ -10587,7 +10623,7 @@ async fn work_kinds_filter_the_affaires_and_leave_on_the_second_gesture() {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/affaires?type={site_id}"))
+                    .uri(format!("/affaires?vue=tout&type={site_id}"))
                     .header("HX-Request", "true")
                     .body(Body::empty())
                     .unwrap(),
@@ -10643,8 +10679,11 @@ async fn work_kinds_filter_the_affaires_and_leave_on_the_second_gesture() {
             .unwrap(),
     )
     .await;
-    assert!(site_page.contains("Atelier Quai"), "{site_page}");
-    assert!(site_page.contains("Atelier Port"), "{site_page}");
+    assert!(
+        !site_page.contains("Atelier Quai"),
+        "la recherche filtre la vue courante : {site_page}"
+    );
+    assert!(site_page.contains("Aucun nom."), "{site_page}");
     assert!(
         site_page.contains("href=\"/affaires?q=Port\""),
         "{site_page}"
@@ -10679,7 +10718,7 @@ async fn work_kinds_filter_the_affaires_and_leave_on_the_second_gesture() {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/affaires?type={backend_id}"))
+                    .uri(format!("/affaires?vue=tout&type={backend_id}"))
                     .header("HX-Request", "true")
                     .body(Body::empty())
                     .unwrap(),
@@ -10746,7 +10785,7 @@ async fn work_kinds_filter_the_affaires_and_leave_on_the_second_gesture() {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/affaires?type={site_id}"))
+                    .uri(format!("/affaires?vue=tout&type={site_id}"))
                     .header("HX-Request", "true")
                     .body(Body::empty())
                     .unwrap(),
@@ -10781,7 +10820,7 @@ async fn work_kinds_filter_the_affaires_and_leave_on_the_second_gesture() {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/affaires?type={site_id}"))
+                    .uri(format!("/affaires?vue=tout&type={site_id}"))
                     .header("HX-Request", "true")
                     .body(Body::empty())
                     .unwrap(),

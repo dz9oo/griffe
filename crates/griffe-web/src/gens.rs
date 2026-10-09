@@ -50,7 +50,19 @@ fn is_htmx(headers: &HeaderMap) -> bool {
     headers.contains_key("hx-request")
 }
 
+fn hx_target_id(headers: &HeaderMap) -> &str {
+    headers
+        .get("hx-target")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+}
+
 fn page(headers: &HeaderMap, content: Markup) -> Html<String> {
+    let content = if hx_target_id(headers) == "affaire" {
+        gens::panel_chrome(content)
+    } else {
+        content
+    };
     if is_htmx(headers) {
         Html(content.into_string())
     } else {
@@ -87,9 +99,10 @@ pub async fn show(
     Path(reference): Path<String>,
 ) -> Html<String> {
     let today = state.today();
+    let htmx = is_htmx(&headers);
     let content = state
-        .with_store(
-            |store| match resolve_person(store.connection(), &reference) {
+        .with_store(|store| {
+            let dossier = match resolve_person(store.connection(), &reference) {
                 Ok(RefMatch::NotFound) => gens::not_found(&reference, today),
                 Ok(RefMatch::Ambiguous(choices)) => gens::several(&reference, &choices),
                 Ok(RefMatch::Unique(_)) => gens::dossier_page(store, &reference, today)
@@ -101,8 +114,15 @@ pub async fn show(
                         }
                     }),
                 Err(e) => html! { div class="empty-state" { (e.to_string()) } },
-            },
-        )
+            };
+            if htmx {
+                dossier
+            } else {
+                gens::render_with_panel(store, today, dossier).unwrap_or_else(|err| {
+                    html! { div class="empty-state" { (err.to_string()) } }
+                })
+            }
+        })
         .await
         .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
     page(&headers, content)

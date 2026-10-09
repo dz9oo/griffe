@@ -48,7 +48,7 @@ pub fn person_href(name: &str) -> String {
 }
 
 pub fn render(store: &Store, today: Date) -> Result<Markup, AppError> {
-    render_search(store, today, "", "")
+    render_search(store, today, "", "", "")
 }
 
 pub fn render_search(
@@ -56,6 +56,23 @@ pub fn render_search(
     today: Date,
     query: &str,
     type_id: &str,
+    vue: &str,
+) -> Result<Markup, AppError> {
+    lens_page(store, today, query, type_id, vue, None)
+}
+
+/// La liste, avec un dossier déjà ouvert dans le panneau (rechargement direct).
+pub fn render_with_panel(store: &Store, today: Date, panel: Markup) -> Result<Markup, AppError> {
+    lens_page(store, today, "", "", "", Some(panel))
+}
+
+fn lens_page(
+    store: &Store,
+    today: Date,
+    query: &str,
+    type_id: &str,
+    vue: &str,
+    panel: Option<Markup>,
 ) -> Result<Markup, AppError> {
     let list = people_list(store.connection(), today)?;
     let catalog = work_kinds(store.connection())?;
@@ -71,79 +88,297 @@ pub fn render_search(
     } else {
         Some(HashSet::new())
     };
-    Ok(list_markup(
+    Ok(lens_markup(
         &list,
         today,
-        None,
-        query.trim(),
-        &catalog,
-        type_id,
-        allowed.as_ref(),
+        &LensFilter {
+            query: query.trim(),
+            catalog: &catalog,
+            type_id,
+            allowed: allowed.as_ref(),
+            vue: parse_vue(vue),
+        },
+        panel,
     ))
 }
 
-pub fn list_markup(
+#[derive(Clone, Copy)]
+struct LensFilter<'a> {
+    query: &'a str,
+    catalog: &'a [WorkKind],
+    type_id: &'a str,
+    allowed: Option<&'a HashSet<ClientId>>,
+    vue: Vue,
+}
+
+/// Barre du panneau : fermer, ou couvrir la liste. Le fragment htmx la reçoit aussi.
+#[must_use]
+pub fn panel_chrome(inner: Markup) -> Markup {
+    html! {
+        div class="lens-bar" {
+            button class="lens-span" type="button" data-lens-span { "Pleine largeur" }
+            a class="lens-close" href="/affaires"
+              hx-get="/affaires" hx-target="#content" hx-swap="innerHTML" hx-push-url="true" {
+                "Fermer"
+            }
+            span class="lens-hint" { "Échap" }
+        }
+        div class="lens-body" { (inner) }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Vue {
+    Geste,
+    Livre,
+    Tas,
+    Sorties,
+    Tout,
+}
+
+fn parse_vue(raw: &str) -> Vue {
+    match raw {
+        "livre" => Vue::Livre,
+        "tas" => Vue::Tas,
+        "sorties" => Vue::Sorties,
+        "tout" => Vue::Tout,
+        _ => Vue::Geste,
+    }
+}
+
+fn vue_key(vue: Vue) -> &'static str {
+    match vue {
+        Vue::Geste => "",
+        Vue::Livre => "livre",
+        Vue::Tas => "tas",
+        Vue::Sorties => "sorties",
+        Vue::Tout => "tout",
+    }
+}
+
+fn vue_label(vue: Vue) -> &'static str {
+    match vue {
+        Vue::Geste => "ce qui demande un geste",
+        Vue::Livre => "le livre",
+        Vue::Tas => "le tas",
+        Vue::Sorties => "les sorties",
+        Vue::Tout => "tout",
+    }
+}
+
+const VUES: [Vue; 5] = [Vue::Geste, Vue::Livre, Vue::Tas, Vue::Sorties, Vue::Tout];
+
+fn lens_markup(
     list: &PeopleList,
     today: Date,
-    flash: Option<&str>,
-    query: &str,
-    catalog: &[WorkKind],
-    type_id: &str,
-    allowed: Option<&HashSet<ClientId>>,
+    filter: &LensFilter<'_>,
+    panel: Option<Markup>,
 ) -> Markup {
-    let empty = list.is_empty();
-    let conversations = rows_kept(&list.conversations, allowed);
-    let messages = rows_kept(&list.first_messages, allowed);
-    let contacts = rows_kept(&list.first_contacts, allowed);
-    let missions = rows_kept(&list.missions, allowed);
+    let LensFilter {
+        query,
+        catalog,
+        type_id,
+        allowed,
+        vue,
+    } = *filter;
     let filtering = allowed.is_some();
+    let conversations = rows_kept(&list.conversations, allowed, query);
+    let messages = rows_kept(&list.first_messages, allowed, query);
+    let contacts = rows_kept(&list.first_contacts, allowed, query);
+    let missions = rows_kept(&list.missions, allowed, query);
+    let outgoing = rows_kept(&list.outgoing, None, query);
+    let stopped = rows_kept(&list.stopped, allowed, query);
+    let book = matches!(vue, Vue::Livre | Vue::Tout);
+    let conv_empty = book
+        && filtering
+        && query.is_empty()
+        && conversations.is_empty()
+        && messages.is_empty()
+        && contacts.is_empty();
+    let mission_empty = book && filtering && query.is_empty() && missions.is_empty();
+    let rows = match vue {
+        Vue::Geste => {
+            let mut rows = Vec::new();
+            for row in conversations.into_iter().chain(missions).chain(outgoing) {
+                if asks_today(row) {
+                    rows.push(row);
+                }
+            }
+            rows
+        }
+        Vue::Livre => {
+            let mut rows = conversations;
+            rows.extend(missions);
+            rows
+        }
+        Vue::Tas => {
+            let mut rows = messages;
+            rows.extend(contacts);
+            rows
+        }
+        Vue::Sorties => outgoing,
+        Vue::Tout => {
+            let mut rows = conversations;
+            rows.extend(messages);
+            rows.extend(contacts);
+            rows.extend(missions);
+            rows.extend(outgoing);
+            rows.extend(stopped);
+            rows
+        }
+    };
+    let href = affaires_href(vue, query, type_id);
+    let type_label = catalog
+        .iter()
+        .find(|kind| kind.id == type_id)
+        .map_or("tout type", |kind| kind.name.as_str());
     html! {
-        div class="letter" data-view=(ViewId::Gens.slug()) {
-            div class="date" { "Les affaires · " (letter_date(today)) }
-            @if empty {
-                h1 { "Les affaires." }
-                p class="lede" { "Personne pour l'instant. Une conversation commence par un nom et une phrase." }
-            } @else {
-                h1 { (list_title(list)) }
-                p class="lede" { (list_lede(list)) }
-            }
-            @if let Some(msg) = flash {
-                p class="mast-note" role="status" { (msg) }
-            }
-            div class="letter-actions" {
-                a class="seal" href="/affaires/nouvelle"
-                  hx-get="/affaires/nouvelle" hx-target="#content" hx-push-url="true" {
+        div class="lens" data-view=(ViewId::Gens.slug()) data-list=(href) {
+            div class="lens-top" {
+                div class="lens-sentence" {
+                    "Montre "
+                    (vue_menu(vue, query, type_id))
+                    @if !catalog.is_empty() {
+                        ", "
+                        (type_menu(catalog, vue, query, type_id, type_label))
+                    }
+                    " — "
+                    span class="count" { (noms_fr(rows.len())) }
+                }
+                form class="lens-find" action="/affaires" method="get"
+                  hx-get="/affaires" hx-target="#content" hx-swap="innerHTML" hx-push-url="true"
+                  hx-trigger="input changed delay:250ms, submit" {
+                    @if !vue_key(vue).is_empty() {
+                        input type="hidden" name="vue" value=(vue_key(vue));
+                    }
+                    @if !type_id.is_empty() {
+                        input type="hidden" name="type" value=(type_id);
+                    }
+                    input id="q" class="lens-search" type="search" name="q" value=(query)
+                      placeholder="Un nom, une société" aria-label="Un nom, une société" autocomplete="off";
+                }
+                a class="lens-new" href="/affaires/nouvelle"
+                  hx-get="/affaires/nouvelle" hx-target="#affaire" hx-swap="innerHTML" hx-push-url="true" {
                     "Nouvelle conversation"
                 }
-                a class="aside" href="/affaires/types"
+                a class="lens-quiet" href="/affaires/types"
                   hx-get="/affaires/types" hx-target="#content" hx-push-url="true" {
                     "Les types"
                 }
             }
-            (kind_row(catalog, query, type_id))
-            (conversation_chapter(&conversations, &messages, &contacts, query, type_id, filtering))
-            (chapter(
-                "En mission",
-                &missions,
-                if filtering { "Aucune mission de ce type." } else { "Aucune mission en cours." },
-            ))
-            (outgoing_chapter(&list.outgoing))
-            (stopped_chapter(&list.stopped))
+            div class="lens-notes" {
+                @if vue != Vue::Tas && !list.first_messages.is_empty() {
+                    @let pile = affaires_href(Vue::Tas, "", type_id);
+                    a href=(pile) hx-get=(pile) hx-target="#content" hx-push-url="true" {
+                        (pile_count(list.first_messages.len(), "premier message", "premiers messages"))
+                    }
+                }
+                @if vue != Vue::Tas && !list.first_contacts.is_empty() {
+                    @let pile = affaires_href(Vue::Tas, "", type_id);
+                    a href=(pile) hx-get=(pile) hx-target="#content" hx-push-url="true" {
+                        (pile_count(list.first_contacts.len(), "premier contact", "premiers contacts"))
+                    }
+                }
+                @if vue != Vue::Tout && !list.stopped.is_empty() {
+                    @let there = affaires_href(Vue::Tout, "", type_id);
+                    a href=(there) hx-get=(there) hx-target="#content" hx-push-url="true" {
+                        "Arrêtées · " (list.stopped.len())
+                        span class="stopped-hint" { " · voir" }
+                    }
+                }
+            }
+            div class="lens-work" {
+                div class="lens-table" {
+                    @if conv_empty {
+                        p class="empty-state" { "Aucune conversation de ce type." }
+                    }
+                    @if mission_empty {
+                        p class="empty-state" { "Aucune mission de ce type." }
+                    }
+                    @if rows.is_empty() && query.is_empty() && !conv_empty && !mission_empty {
+                        p class="empty-state" { (empty_vue(vue)) }
+                    } @else if rows.is_empty() && !query.is_empty() {
+                        p class="empty-state" { "Aucun nom." }
+                    } @else if !rows.is_empty() {
+                        div class="lens-head" {
+                            span { "Nom" }
+                            span { "Où on en est" }
+                            span { "Prochain pas" }
+                            span class="amt" { "Montant" }
+                        }
+                        @for row in &rows {
+                            (lens_row(row, today))
+                        }
+                    }
+                }
+                aside id="affaire" class="lens-panel" {
+                    @if let Some(inner) = panel {
+                        (panel_chrome(inner))
+                    }
+                }
+            }
         }
     }
 }
 
-fn rows_kept<'a>(rows: &'a [PersonRow], allowed: Option<&HashSet<ClientId>>) -> Vec<&'a PersonRow> {
+fn rows_kept<'a>(
+    rows: &'a [PersonRow],
+    allowed: Option<&HashSet<ClientId>>,
+    query: &str,
+) -> Vec<&'a PersonRow> {
     rows.iter()
         .filter(|row| match allowed {
             None => true,
             Some(ids) => row.client_id.is_some_and(|id| ids.contains(&id)),
         })
+        .filter(|row| name_matches(row, query))
         .collect()
 }
 
-fn affaires_href(query: &str, type_id: &str) -> String {
+fn asks_today(row: &PersonRow) -> bool {
+    row.cues.iter().any(|cue| {
+        matches!(
+            cue,
+            PersonCue::FollowUpDue { today: true, .. }
+                | PersonCue::InvoiceOverdue { .. }
+                | PersonCue::MatchingDebit
+                | PersonCue::DraftReady
+        )
+    })
+}
+
+fn empty_vue(vue: Vue) -> &'static str {
+    match vue {
+        Vue::Geste => "Rien ne demande un geste.",
+        Vue::Livre => "Le livre est vide.",
+        Vue::Tas => "Le tas est vide.",
+        Vue::Sorties => "Un nom apparaît ici quand une dépense le porte.",
+        Vue::Tout => "Personne pour l'instant. Une conversation commence par un nom et une phrase.",
+    }
+}
+
+fn noms_fr(n: usize) -> String {
+    match n {
+        0 => "aucun nom".into(),
+        1 => "un nom".into(),
+        2 => "deux noms".into(),
+        n => format!("{n} noms"),
+    }
+}
+
+fn pile_count(n: usize, one: &str, many: &str) -> String {
+    if n == 1 {
+        format!("1 {one}")
+    } else {
+        format!("{n} {many}")
+    }
+}
+
+fn affaires_href(vue: Vue, query: &str, type_id: &str) -> String {
     let mut parts = Vec::new();
+    if !vue_key(vue).is_empty() {
+        parts.push(format!("vue={}", vue_key(vue)));
+    }
     if !query.is_empty() {
         parts.push(format!("q={}", path_encode(query)));
     }
@@ -157,21 +392,16 @@ fn affaires_href(query: &str, type_id: &str) -> String {
     }
 }
 
-fn kind_row(catalog: &[WorkKind], query: &str, active: &str) -> Markup {
-    if catalog.is_empty() {
-        return html! {};
-    }
+fn vue_menu(vue: Vue, query: &str, type_id: &str) -> Markup {
     html! {
-        div class="word-choice" {
-            div class="word-choice-row" {
-                @for kind in catalog {
-                    @let on = kind.id == active;
-                    @let href = affaires_href(query, if on { "" } else { kind.id.as_str() });
-                    label {
-                        input type="checkbox" checked[on] disabled tabindex="-1" aria-hidden="true";
-                        a href=(href) hx-get=(href) hx-target="#content" hx-push-url="true" {
-                            (kind.name)
-                        }
+        details class="slot" {
+            summary class="seg" { (vue_label(vue)) }
+            div class="menu" {
+                @for item in VUES {
+                    @let href = affaires_href(item, query, type_id);
+                    a href=(href) hx-get=(href) hx-target="#content" hx-push-url="true"
+                      class={ @if item == vue { "on" } } {
+                        (vue_label(item))
                     }
                 }
             }
@@ -179,153 +409,68 @@ fn kind_row(catalog: &[WorkKind], query: &str, active: &str) -> Markup {
     }
 }
 
-fn outgoing_chapter(rows: &[PersonRow]) -> Markup {
+fn type_menu(catalog: &[WorkKind], vue: Vue, query: &str, active: &str, label: &str) -> Markup {
+    let clear = affaires_href(vue, query, "");
     html! {
-        p class="section-label" { "Chez qui ça sort" }
-        @if rows.is_empty() {
-            p class="empty-state" {
-                "Un nom apparaît ici quand une dépense le porte. En rangeant un débit du relevé, ou en notant une sortie."
-            }
-            div class="row-actions" {
-                button class="quiet" type="button"
-                    hx-get="/depenses/new" hx-target="#panel" hx-swap="innerHTML" {
-                    "Noter une sortie"
-                }
-            }
-        } @else {
-            ul class="people" {
-                @for row in rows {
-                    li { (row_link(row)) }
+        details class="slot" {
+            summary class="seg" { (label) }
+            div class="menu" {
+                a href=(clear) hx-get=(clear) hx-target="#content" hx-push-url="true"
+                  class={ @if active.is_empty() { "on" } } { "tout type" }
+                @for kind in catalog {
+                    @let href = affaires_href(vue, query, kind.id.as_str());
+                    a href=(href) hx-get=(href) hx-target="#content" hx-push-url="true"
+                      class={ @if kind.id == active { "on" } } {
+                        (kind.name)
+                    }
                 }
             }
         }
     }
 }
 
-fn stopped_chapter(rows: &[PersonRow]) -> Markup {
-    if rows.is_empty() {
-        return html! {};
-    }
+fn lens_row(row: &PersonRow, today: Date) -> Markup {
+    let href = person_href(&row.name);
+    let alarm = row.cues.iter().any(|cue| {
+        matches!(
+            cue,
+            PersonCue::InvoiceOverdue { .. } | PersonCue::MatchingDebit
+        )
+    });
+    let cue_class = if alarm { "cue alarm" } else { "cue" };
+    let due_class = if alarm { "due alarm" } else { "due" };
+    let amt_class = if alarm { "amt alarm" } else { "amt" };
     html! {
-        details class="stopped" {
-            summary class="section-label" {
-                "Arrêtées · " (rows.len())
-                span class="stopped-hint" { " · voir" }
-            }
-            ul class="people" {
-                @for row in rows {
-                    li { (row_link(row)) }
+        a class="trow" href=(href)
+          hx-get=(href) hx-target="#affaire" hx-swap="innerHTML" hx-push-url="true" {
+            span class="who-cell" {
+                strong { (row.name) }
+                @if !row.party.is_empty() && fold_name(&row.party) != fold_name(&row.name) {
+                    small { (row.party) }
+                }
+                @if !row.work_kinds.is_empty() {
+                    p class="kinds" { (row.work_kinds.join(" · ")) }
                 }
             }
+            span class=(cue_class) { (cues_fr(&row.cues)) }
+            span class=(due_class) { (due_fr(row, today)) }
+            span class=(amt_class) { (row.figure.as_ref().map(figure_fr).unwrap_or_default()) }
         }
     }
 }
 
-fn list_title(list: &PeopleList) -> String {
-    let n = list.open_conversations() + list.missions.len();
-    match n {
-        0 => "Les affaires.".into(),
-        1 => "Un nom.".into(),
-        2 => "Deux noms.".into(),
-        k => format!("{k} noms."),
-    }
-}
-
-fn list_lede(list: &PeopleList) -> String {
-    match list.open_conversations() {
-        0 => "Avec qui j'en suis. Un nom, pas un type de document.".into(),
-        1 => {
-            let name = sole_open(list).map_or("ce nom", |row| row.name.as_str());
-            format!("Derrière {name}, personne. C'est le trou — pas un graphique.")
-        }
-        _ => "Avec qui j'en suis. Un nom, pas un type de document.".into(),
-    }
-}
-
-fn sole_open(list: &PeopleList) -> Option<&PersonRow> {
-    list.conversations
-        .first()
-        .or(list.first_messages.first())
-        .or(list.first_contacts.first())
-}
-
-fn conversation_chapter(
-    conversations: &[&PersonRow],
-    messages: &[&PersonRow],
-    contacts: &[&PersonRow],
-    query: &str,
-    type_id: &str,
-    filtering: bool,
-) -> Markup {
-    let pile = !messages.is_empty() || !contacts.is_empty();
-    let empty = if filtering {
-        "Aucune conversation de ce type."
-    } else {
-        "Aucune conversation ouverte."
-    };
-    html! {
-        p class="section-label" { "En conversation" }
-        @if conversations.is_empty() && !pile {
-            p class="empty-state" { (empty) }
-        } @else if !conversations.is_empty() {
-            (people_items(conversations))
-        }
-        (pile_chapter(messages, query, type_id, "premier message", "premiers messages", "q-messages"))
-        (pile_chapter(contacts, query, type_id, "premier contact", "premiers contacts", "q-contacts"))
-    }
-}
-
-fn people_items(rows: &[&PersonRow]) -> Markup {
-    html! {
-        ul class="people" {
-            @for row in rows {
-                li { (row_link(row)) }
-            }
-        }
-    }
-}
-
-fn pile_chapter(
-    rows: &[&PersonRow],
-    query: &str,
-    type_id: &str,
-    one: &str,
-    many: &str,
-    field_id: &str,
-) -> Markup {
-    if rows.is_empty() {
-        return html! {};
-    }
-    let shown: Vec<&PersonRow> = rows
+fn due_fr(row: &PersonRow, today: Date) -> String {
+    if row
+        .cues
         .iter()
-        .copied()
-        .filter(|row| name_matches(row, query))
-        .collect();
-    let title = if rows.len() == 1 {
-        format!("1 {one}")
-    } else {
-        format!("{} {many}", rows.len())
-    };
-    html! {
-        details class="pile" open[!query.is_empty()] {
-            summary class="section-label" {
-                (title)
-                span class="stopped-hint" { " · voir" }
-            }
-            form class="pile-find" action="/affaires" method="get"
-                hx-get="/affaires" hx-target="#content" hx-push-url="true" {
-                input id=(field_id) type="search" name="q" value=(query)
-                    placeholder="Un nom" aria-label="Un nom";
-                @if !type_id.is_empty() {
-                    input type="hidden" name="type" value=(type_id);
-                }
-            }
-            @if shown.is_empty() {
-                p class="empty-state" { "Aucun nom." }
-            } @else {
-                (people_items(&shown))
-            }
-        }
+        .any(|cue| matches!(cue, PersonCue::InvoiceOverdue { .. }))
+    {
+        return "en retard".into();
+    }
+    match row.due_on {
+        Some(on) if on <= today => "aujourd'hui".into(),
+        Some(on) => format_date_fr(on),
+        None => String::new(),
     }
 }
 
@@ -358,35 +503,6 @@ fn fold_name(value: &str) -> String {
             other => other,
         })
         .collect()
-}
-
-fn chapter(label: &str, rows: &[&PersonRow], empty: &str) -> Markup {
-    html! {
-        p class="section-label" { (label) }
-        @if rows.is_empty() {
-            p class="empty-state" { (empty) }
-        } @else {
-            (people_items(rows))
-        }
-    }
-}
-
-fn row_link(row: &PersonRow) -> Markup {
-    let href = person_href(&row.name);
-    html! {
-        a href=(href) hx-get=(href) hx-target="#content" hx-push-url="true" {
-            div {
-                div class="nm" { (row.name) }
-                @if !row.work_kinds.is_empty() {
-                    p class="kinds" { (row.work_kinds.join(" · ")) }
-                }
-                div class="st" { (cues_fr(&row.cues)) }
-            }
-            @if let Some(fig) = &row.figure {
-                span class="amt" { (figure_fr(fig)) }
-            }
-        }
-    }
 }
 
 fn figure_fr(figure: &PersonFigure) -> String {
@@ -615,63 +731,69 @@ fn dossier_body(
             @for action in &fate {
                 (action_button(action, &href))
             }
-            @if let Some(body) = current_paragraph(&dossier.current, dossier) {
-                div class="block" {
-                    h3 { "En cours" }
-                    p { (body) }
-                    @if !dossier.work.is_empty() {
-                        ul class="hist" {
-                            @for line in &dossier.work {
-                                li {
-                                    span class="when" { (line.amount) }
-                                    span { (line.label) }
+            div class="blocks" {
+                div class="col-main" {
+                    @if let Some(body) = current_paragraph(&dossier.current, dossier) {
+                        div class="block" {
+                            h3 { "En cours" }
+                            p { (body) }
+                            @if !dossier.work.is_empty() {
+                                ul class="hist" {
+                                    @for line in &dossier.work {
+                                        li {
+                                            span class="when" { (line.amount) }
+                                            span { (line.label) }
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
-                }
-            }
-            @if let Some(outgoing) = &dossier.outgoing {
-                div class="block" {
-                    h3 { "Les notes" }
-                    ul class="hist notes" {
-                        @for note in &outgoing.notes {
-                            (note_item(note, &href))
+                    @if let Some(project) = &dossier.project {
+                        div class="block" {
+                            h3 { "Le projet" }
+                            p { (project_paragraph(project, dossier)) }
                         }
                     }
                 }
-            }
-            @if let Some(project) = &dossier.project {
-                div class="block" {
-                    h3 { "Le projet" }
-                    p { (project_paragraph(project, dossier)) }
-                }
-            }
-            @if show_papers_block(dossier) {
-                div class="block" {
-                    h3 { "Les papiers" }
-                    @if !dossier.papers.is_empty() {
-                        ul class="hist" {
-                            @for paper in &dossier.papers {
-                                li {
-                                    span class="when" { (short_date(paper.on)) }
-                                    span { (paper_line(paper)) }
-                                    (paper_write_off_form(paper, &href, today))
+                div class="col-side" {
+                    @if let Some(outgoing) = &dossier.outgoing {
+                        div class="block" {
+                            h3 { "Les notes" }
+                            ul class="hist notes" {
+                                @for note in &outgoing.notes {
+                                    (note_item(note, &href))
                                 }
                             }
                         }
                     }
-                    @if can_import_invoice(dossier) {
-                        (import_invoice_form(dossier, today))
+                    @if show_papers_block(dossier) {
+                        div class="block" {
+                            h3 { "Les papiers" }
+                            @if !dossier.papers.is_empty() {
+                                ul class="hist" {
+                                    @for paper in &dossier.papers {
+                                        li {
+                                            span class="when" { (short_date(paper.on)) }
+                                            span { (paper_line(paper)) }
+                                            (paper_write_off_form(paper, &href, today))
+                                        }
+                                    }
+                                }
+                            }
+                            @if can_import_invoice(dossier) {
+                                (import_invoice_form(dossier, today))
+                            }
+                        }
                     }
-                }
-            }
-            @if !dossier.history.is_empty() {
-                div class="block" {
-                    h3 { "Histoire" }
-                    ul class="hist" {
-                        @for event in &dossier.history {
-                            (history_item(event, look))
+                    @if !dossier.history.is_empty() {
+                        div class="block" {
+                            h3 { "Histoire" }
+                            ul class="hist" {
+                                @for event in &dossier.history {
+                                    (history_item(event, look))
+                                }
+                            }
                         }
                     }
                 }
@@ -2541,6 +2663,24 @@ pub fn not_found(needle: &str, today: Date) -> Markup {
 #[must_use]
 pub fn href_for_party(party: &str) -> String {
     person_href(party)
+}
+
+fn row_link(row: &PersonRow) -> Markup {
+    let href = person_href(&row.name);
+    html! {
+        a href=(href) hx-get=(href) hx-target="#content" hx-push-url="true" {
+            div {
+                div class="nm" { (row.name) }
+                @if !row.work_kinds.is_empty() {
+                    p class="kinds" { (row.work_kinds.join(" · ")) }
+                }
+                div class="st" { (cues_fr(&row.cues)) }
+            }
+            @if let Some(fig) = &row.figure {
+                span class="amt" { (figure_fr(fig)) }
+            }
+        }
+    }
 }
 
 pub(crate) fn person_line(row: &PersonRow) -> Markup {

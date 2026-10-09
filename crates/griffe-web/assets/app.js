@@ -765,3 +765,232 @@ document.body.addEventListener("keydown", (event) => {
     }).catch(() => {});
   });
 })();
+
+// Les affaires, la lentille. Le dossier se charge dans #affaire ; la liste reste.
+(() => {
+  const FULL_KEY = "griffe-lens-full";
+
+  function lensRoot() {
+    return document.querySelector(".lens");
+  }
+
+  function lensField(node) {
+    return node instanceof Element
+      && (node.tagName === "INPUT"
+        || node.tagName === "TEXTAREA"
+        || node.tagName === "SELECT"
+        || node.isContentEditable);
+  }
+
+  function paletteOpen() {
+    const overlay = document.getElementById("palette-overlay");
+    return Boolean(overlay && overlay.classList.contains("open"));
+  }
+
+  function affairePath(url) {
+    if (!url || url.charAt(0) === "#") return false;
+    let path = url;
+    try {
+      path = new URL(url, location.origin).pathname;
+    } catch {
+      return false;
+    }
+    if (path === "/affaires" || path === "/affaires/") return false;
+    if (!path.startsWith("/affaires/")) return false;
+    if (path === "/affaires/types" || path.startsWith("/affaires/types/")) return false;
+    if (path === "/affaires/phrases" || path.startsWith("/affaires/phrases/")) return false;
+    return true;
+  }
+
+  function retargetAffaire(node) {
+    if (!(node instanceof Element) || !document.getElementById("affaire")) return;
+    if (node.matches("form.travaux-ecrire, textarea.travaux-source")) return;
+    if (node.getAttribute("hx-swap") === "none") return;
+    const url = node.getAttribute("hx-get")
+      || node.getAttribute("hx-post")
+      || node.getAttribute("hx-delete")
+      || node.getAttribute("action")
+      || "";
+    if (!affairePath(url)) return;
+    const target = node.getAttribute("hx-target");
+    if (target && target !== "#content") return;
+    node.setAttribute("hx-target", "#affaire");
+    if (!node.getAttribute("hx-swap")) node.setAttribute("hx-swap", "innerHTML");
+  }
+
+  function armLens() {
+    const lens = lensRoot();
+    if (!lens) return;
+    let full = false;
+    try {
+      full = sessionStorage.getItem(FULL_KEY) === "1";
+    } catch {
+      full = false;
+    }
+    lens.classList.toggle("full", full);
+    const span = lens.querySelector("[data-lens-span]");
+    if (span) span.textContent = full ? "Réduire" : "Pleine largeur";
+    const close = lens.querySelector(".lens-close");
+    const list = lens.dataset.list || "/affaires";
+    if (close) {
+      close.setAttribute("href", list);
+      close.setAttribute("hx-get", list);
+    }
+    lens.querySelectorAll(".trow").forEach((row) => {
+      const href = row.getAttribute("href") || "";
+      let open = false;
+      try {
+        open = new URL(href, location.origin).pathname === location.pathname;
+      } catch {
+        open = false;
+      }
+      row.classList.toggle("open", open);
+    });
+  }
+
+  function personBack(lens) {
+    const link = lens.querySelector(".lens-body a.back");
+    if (!link) return null;
+    const href = link.getAttribute("href") || "";
+    return affairePath(href) ? link : null;
+  }
+
+  function closeLens(lens) {
+    const close = lens.querySelector(".lens-close");
+    if (close && lens.querySelector(".lens-bar")) close.click();
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", armLens);
+  } else {
+    armLens();
+  }
+  document.body.addEventListener("htmx:afterSwap", armLens);
+
+  document.addEventListener("click", (event) => {
+    const lens = lensRoot();
+    if (!lens || !(event.target instanceof Element)) return;
+    const span = event.target.closest("[data-lens-span]");
+    if (span && lens.contains(span)) {
+      event.preventDefault();
+      const full = !lens.classList.contains("full");
+      lens.classList.toggle("full", full);
+      try {
+        sessionStorage.setItem(FULL_KEY, full ? "1" : "0");
+      } catch {
+        /* la largeur repart au prochain chargement */
+      }
+      span.textContent = full ? "Réduire" : "Pleine largeur";
+      return;
+    }
+    const row = event.target.closest("a.trow");
+    if (row && lens.contains(row)) {
+      let same = false;
+      try {
+        same = new URL(row.getAttribute("href") || "", location.origin).pathname === location.pathname;
+      } catch {
+        same = false;
+      }
+      if (same && lens.querySelector(".lens-bar")) {
+        event.preventDefault();
+        event.stopPropagation();
+        closeLens(lens);
+        return;
+      }
+    }
+    const table = event.target.closest(".lens-table, .lens-head");
+    if (
+      table
+      && lens.contains(table)
+      && lens.querySelector(".lens-bar")
+      && !event.target.closest("a, button, input, summary, label, textarea, select")
+    ) {
+      event.preventDefault();
+      closeLens(lens);
+      return;
+    }
+    const node = event.target.closest("[hx-get], [hx-post], [hx-delete]");
+    if (node) retargetAffaire(node);
+  }, true);
+
+  document.addEventListener("submit", (event) => {
+    if (event.target instanceof Element) retargetAffaire(event.target);
+  }, true);
+
+  document.addEventListener("change", (event) => {
+    const form = event.target instanceof Element ? event.target.closest("form") : null;
+    if (form) retargetAffaire(form);
+  }, true);
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    const lens = lensRoot();
+    if (!lens) return;
+    if (document.querySelector(".date-pick-pop:not([hidden])")) return;
+    const active = document.activeElement;
+    if (lensField(active) && lens.contains(active)) {
+      active.blur();
+      return;
+    }
+    const back = personBack(lens);
+    if (back) {
+      event.preventDefault();
+      back.click();
+      return;
+    }
+    if (lens.querySelector(".lens-bar")) {
+      event.preventDefault();
+      closeLens(lens);
+      return;
+    }
+    lens.querySelectorAll(".trow.cur").forEach((row) => row.classList.remove("cur"));
+  }, true);
+
+  document.addEventListener("keydown", (event) => {
+    const lens = lensRoot();
+    if (!lens || event.metaKey || event.ctrlKey || event.altKey || paletteOpen()) return;
+    if (lensField(event.target)) return;
+    if (event.key === "/") {
+      const search = document.getElementById("q");
+      if (!search || !lens.contains(search)) return;
+      event.preventDefault();
+      search.focus();
+      return;
+    }
+    if (event.key === "f" || event.key === "F") {
+      const span = lens.querySelector("[data-lens-span]");
+      if (!span) return;
+      event.preventDefault();
+      span.click();
+      return;
+    }
+    if (event.key === "e" || event.key === "E") {
+      const write = lens.querySelector('.lens-body a.seal[href$="/ecrire"]');
+      if (!write) return;
+      event.preventDefault();
+      write.click();
+      return;
+    }
+    const down = event.key === "j" || event.key === "J" || event.key === "ArrowDown";
+    const up = event.key === "k" || event.key === "K" || event.key === "ArrowUp";
+    if (down || up) {
+      const rows = [...lens.querySelectorAll(".trow")];
+      if (!rows.length) return;
+      event.preventDefault();
+      let index = rows.findIndex((row) => row.classList.contains("cur"));
+      if (index < 0) index = rows.findIndex((row) => row.classList.contains("open"));
+      if (index < 0) index = down ? -1 : 0;
+      const next = Math.max(0, Math.min(rows.length - 1, index + (down ? 1 : -1)));
+      rows.forEach((row) => row.classList.remove("cur"));
+      rows[next].classList.add("cur");
+      rows[next].scrollIntoView({ block: "nearest" });
+      return;
+    }
+    if (event.key === "Enter") {
+      const current = lens.querySelector(".trow.cur");
+      if (!current) return;
+      event.preventDefault();
+      current.click();
+    }
+  });
+})();
