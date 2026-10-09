@@ -2002,8 +2002,7 @@ textarea.travaux-source:focus { border-color: var(--ink); }
   .date-pick-toggle, .date-pick-pop { width: 100%; }
 }
 
-/* Les affaires — la lentille. La coque reste Atelier ; la pièce se lit en plein écran. */
-body:has(.lens) { background: #f6f5f2; }
+/* Les affaires — la lentille. Même papier, même encre, même sceau que le reste. */
 body:has(.lens) .chrome,
 body:has(.lens) .foot { max-width: none; }
 .content:has(.lens) {
@@ -2014,10 +2013,10 @@ body:has(.lens) .foot { max-width: none; }
   min-height: 0;
 }
 .content > .lens {
-  --sheet: #fff;
-  --muted: #6f6a63;
-  --line: #e4e0d8;
-  --alarm: #9a3412;
+  --sheet: var(--paper);
+  --muted: var(--ink-2);
+  --line: var(--rule);
+  --alarm: var(--seal);
   max-width: none;
   width: 100%;
   margin: 0;
@@ -2025,27 +2024,33 @@ body:has(.lens) .foot { max-width: none; }
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background: #f6f5f2;
+  background: transparent;
   color: var(--ink);
   font-family: var(--sans);
 }
 .lens-top {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
+  flex-wrap: nowrap;
   gap: 16px 24px;
   padding: 18px 28px 8px;
   flex: none;
 }
 .lens-sentence {
   margin: 0;
-  flex: 1;
+  flex: 1 0 auto;
+  min-width: max-content;
+  white-space: nowrap;
   font-size: 22px;
   letter-spacing: -0.02em;
-  line-height: 1.35;
+  line-height: 1.2;
 }
 .lens-sentence .count { color: var(--muted); font-weight: 400; }
-.lens .slot { position: relative; display: inline; }
+.lens .slot { position: relative; display: inline-block; vertical-align: baseline; }
 .lens .seg {
+  display: inline;
+  white-space: nowrap;
+  list-style: none;
   font: inherit;
   font-weight: 600;
   background: none;
@@ -2054,6 +2059,8 @@ body:has(.lens) .foot { max-width: none; }
   border-bottom: 1px solid var(--ink);
   cursor: pointer;
 }
+.lens .seg::marker { content: none; }
+.lens .seg::-webkit-details-marker { display: none; }
 .lens .menu {
   position: absolute;
   top: calc(100% + 6px);
@@ -2061,8 +2068,9 @@ body:has(.lens) .foot { max-width: none; }
   z-index: 6;
   background: var(--sheet);
   border: 1px solid var(--line);
-  box-shadow: 0 12px 40px rgba(28, 27, 25, .08);
+  width: max-content;
   min-width: 240px;
+  max-width: min(420px, 70vw);
   padding: 6px;
 }
 .lens .menu a {
@@ -2070,9 +2078,20 @@ body:has(.lens) .foot { max-width: none; }
   text-align: left;
   text-decoration: none;
   color: inherit;
-  padding: 8px 10px;
+  padding: 8px 12px;
 }
-.lens .menu a.on, .lens .menu a:hover { background: #f6f5f2; }
+.lens .menu .vue-name { display: block; font-weight: 600; }
+.lens .menu .vue-hint {
+  display: block;
+  margin-top: 1px;
+  color: var(--ink-2);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.35;
+}
+.lens .menu a:hover { background: var(--paper-2); }
+.lens .menu a.on { background: var(--seal-soft); color: var(--seal); }
+.lens .menu a.on .vue-hint { color: var(--ink-2); }
 .lens-find { flex: none; }
 .lens-search {
   background: transparent;
@@ -2089,8 +2108,10 @@ body:has(.lens) .foot { max-width: none; }
   padding: 8px 12px;
   font-size: 14px;
 }
-.lens-new { background: var(--ink); color: #f6f5f2; }
-.lens-quiet { border: 1px solid var(--line); color: var(--ink); }
+.lens-new { background: var(--seal); color: #f8f1ea; }
+.lens-new:hover { filter: brightness(1.08); }
+.lens-quiet { border: 1px solid var(--ink); color: var(--ink); background: transparent; }
+.lens-quiet:hover { background: var(--ink); color: var(--paper); }
 .lens-notes {
   display: flex;
   flex-wrap: wrap;
@@ -2116,7 +2137,7 @@ body:has(.lens) .foot { max-width: none; }
   top: 0;
   z-index: 2;
   min-height: 32px;
-  background: #f6f5f2;
+  background: var(--paper);
   color: var(--muted);
   font-size: 11px;
   letter-spacing: .14em;
@@ -2127,8 +2148,11 @@ body:has(.lens) .foot { max-width: none; }
   min-height: 44px;
   border-bottom: 1px solid var(--line);
 }
-.lens .trow:hover { background: rgba(255, 255, 255, .72); }
-.lens .trow.open, .lens .trow.cur { background: var(--sheet); box-shadow: inset 3px 0 0 var(--ink); }
+.lens .trow:hover { background: var(--paper-2); }
+.lens .trow.open, .lens .trow.cur {
+  background: linear-gradient(90deg, var(--seal-soft), transparent 80%);
+  box-shadow: inset 3px 0 0 var(--seal);
+}
 .lens .who-cell { display: flex; flex-direction: column; min-width: 0; }
 .lens .who-cell strong { font-weight: 600; }
 .lens .who-cell small, .lens .kinds { color: var(--muted); font-size: 12px; margin: 0; }
@@ -2142,7 +2166,6 @@ body:has(.lens) .foot { max-width: none; }
   min-height: 0;
   background: var(--sheet);
   border-left: 1px solid var(--line);
-  box-shadow: -12px 0 40px rgba(28, 27, 25, .06);
 }
 .lens-panel:not(:has(.lens-bar)) { display: none; }
 .lens.full .lens-panel {
@@ -2177,7 +2200,6 @@ body:has(.lens) .foot { max-width: none; }
 .lens-hint { color: var(--muted); font-size: 12px; }
 .lens-body { flex: 1; min-height: 0; overflow: auto; padding: 12px 28px 48px; }
 .lens-body .letter { max-width: none; margin: 0; }
-.lens .seal { background: var(--ink); color: #f6f5f2; }
 .lens-panel .who, .lens-panel h1, .lens-panel h2 {
   font-family: var(--sans);
   font-weight: 600;
@@ -2195,6 +2217,7 @@ body:has(.lens) .foot { max-width: none; }
 .lens.full .field textarea { max-width: 46rem; }
 @media (max-width: 960px) {
   .lens-top { flex-direction: column; align-items: stretch; }
+  .lens-sentence { white-space: normal; flex-wrap: wrap; min-width: 0; }
   .lens-panel, .lens.full .lens-panel {
     position: fixed;
     inset: 72px 0 48px;

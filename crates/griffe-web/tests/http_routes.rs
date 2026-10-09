@@ -828,6 +828,18 @@ async fn les_affaires_lists_three_chapters_and_opens_a_dossier() {
     assert!(list.contains("le livre"), "{list}");
     assert!(list.contains("les sorties"), "{list}");
     assert!(
+        list.contains("Les conversations en cours, et les missions."),
+        "le livre s'explique dans le menu : {list}"
+    );
+    assert!(
+        list.contains("Les premiers messages et les premiers contacts."),
+        "le tas s'explique dans le menu : {list}"
+    );
+    assert!(
+        list.contains("Un nom, dès qu'une dépense le porte."),
+        "les sorties s'expliquent dans le menu : {list}"
+    );
+    assert!(
         !list.contains("Fournisseurs"),
         "plus un chapitre Fournisseurs : {list}"
     );

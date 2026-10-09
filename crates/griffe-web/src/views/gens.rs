@@ -166,6 +166,17 @@ fn vue_label(vue: Vue) -> &'static str {
     }
 }
 
+/// Une ligne, lue seulement quand le menu est ouvert. La phrase fermée ne la montre pas.
+fn vue_hint(vue: Vue) -> &'static str {
+    match vue {
+        Vue::Geste => "À écrire, à reprendre, ou à régler aujourd'hui.",
+        Vue::Livre => "Les conversations en cours, et les missions.",
+        Vue::Tas => "Les premiers messages et les premiers contacts.",
+        Vue::Sorties => "Un nom, dès qu'une dépense le porte.",
+        Vue::Tout => "Le livre, le tas, les sorties, et les arrêtées.",
+    }
+}
+
 const VUES: [Vue; 5] = [Vue::Geste, Vue::Livre, Vue::Tas, Vue::Sorties, Vue::Tout];
 
 fn lens_markup(
@@ -401,7 +412,8 @@ fn vue_menu(vue: Vue, query: &str, type_id: &str) -> Markup {
                     @let href = affaires_href(item, query, type_id);
                     a href=(href) hx-get=(href) hx-target="#content" hx-push-url="true"
                       class={ @if item == vue { "on" } } {
-                        (vue_label(item))
+                        span class="vue-name" { (vue_label(item)) }
+                        span class="vue-hint" { (vue_hint(item)) }
                     }
                 }
             }
