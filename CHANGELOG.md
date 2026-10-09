@@ -4,6 +4,9 @@ Ce qui change pour qui se sert de Griffe. Une section par version publiée.
 
 ## 0.3.10
 
+- Les affaires s'ouvrent sur ce qui demande un geste. On peut montrer le livre, le tas, les sorties, ou tout. Ouvrir ces mots en dit le sens. Le livre réunit les conversations en cours et les missions. Le tas compte les premiers messages et les premiers contacts, sans les étaler. Les sorties nomment ceux qu'une dépense porte.
+- Un nom ouvre le dossier à côté de la liste. Pleine largeur le pose sur toute la pièce. Fermer le retire, Échap aussi.
+- Chercher un nom ne garde que la vue affichée.
 - Sur le dossier, Les travaux se lisent en rendu. Écrire ouvre le markdown, qui se garde seul. Relire revient au rendu. Plusieurs allers et retours laissent la page répondre : on peut revenir en arrière et changer de pièce.
 - Une lettre part en page, et le texte seul reste pour les boîtes qui ne lisent pas la page. Une adresse suivie de ?utm_… reste cliquable en entier. La personne lit l'adresse sans cette partie.
 - Dans Les affaires, Écrire et Relire se succèdent. Relire montre la lettre telle qu'elle part. La zone d'écriture garde le texte.

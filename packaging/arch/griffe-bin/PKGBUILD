@@ -2,7 +2,7 @@
 # Gabarit : ne pas soumettre tant que sha256sums n'est pas celui d'une Release réelle.
 # Le tarball publié est signé : packaging/SIGNATURES.md. Ce gabarit ne vérifie pas encore le .minisig.
 pkgname=griffe-bin
-pkgver=0.3.9
+pkgver=0.3.10
 pkgrel=1
 pkgdesc="Lettre du matin pour un indépendant en SASU à l'IS"
 arch=('x86_64')
