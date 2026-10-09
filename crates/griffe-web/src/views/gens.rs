@@ -12,7 +12,7 @@ use griffe_core::dossier_work::DossierWork;
 use griffe_core::follow_up::{
     FollowUpCard, card_for, follow_up_sender, prospect_genre_for, prospect_genres,
 };
-use griffe_core::mail::{OutboundStatus, OutboundView};
+use griffe_core::mail::{LINK_HINT, OutboundStatus, OutboundView};
 use griffe_core::people::{
     CurrentSituation, HistoryEvent, HistoryKind, MissionShape, OutgoingCadence, OutgoingChapter,
     OutgoingNote, Paper, PaperKind, PaperStatus, PeopleList, PersonAction, PersonChapter,
@@ -1628,7 +1628,9 @@ pub fn phrases_page(view: &PhrasesView) -> Markup {
     let sheet_subject = open
         .map(|moment| moment.reads_subject.as_str())
         .unwrap_or("");
-    let sheet_body = open.map(|moment| moment.reads.as_str()).unwrap_or("");
+    let sheet_body = open
+        .map(|moment| griffe_core::mail::readable_links(&moment.reads))
+        .unwrap_or_default();
     html! {
         div class="phrase-desk" data-view=(ViewId::Gens.slug()) {
             a class="back" href=(view.back_href) hx-get=(view.back_href) hx-target="#content" hx-push-url="true" {
@@ -1756,6 +1758,7 @@ fn phrase_line(id: &str, label: &str, value: &str, letter: bool) -> Markup {
             label for=(id) { (label) }
             @if letter {
                 textarea id=(id) name=(id) rows="8" { (value) }
+                p class="field-help" { (LINK_HINT) }
             } @else {
                 input id=(id) name=(id) type="text" value=(value);
             }
@@ -1851,7 +1854,7 @@ fn depart_body(
             p class="depart-line" { (note) }
         }
         @match view.map(|item| item.status) {
-            Some(OutboundStatus::Armed) => {
+            Some(OutboundStatus::Armed | OutboundStatus::Held) => {
                 p class="depart-line" {
                     @if let Some(address) = destination.filter(|value| !value.is_empty()) {
                         @if left > 0 {
@@ -1900,7 +1903,10 @@ fn depart_body(
 }
 
 fn depart_polls(view: &OutboundView) -> bool {
-    matches!(view.status, OutboundStatus::Armed | OutboundStatus::Sending)
+    matches!(
+        view.status,
+        OutboundStatus::Armed | OutboundStatus::Held | OutboundStatus::Sending
+    )
 }
 
 fn envoyer_button(action: &str, label: &str) -> Markup {
@@ -2068,6 +2074,7 @@ pub fn letter_page(
                     }
                 }
             }
+            div class="letter-compose" {
             div class="letter-draft" {
                 div class="meta" {
                     "De " (from) " · À " (to)
@@ -2076,6 +2083,7 @@ pub fn letter_page(
                 form {
                     (form::text("subject_line", "Sujet", subject, None))
                     (form::textarea("body", "Lettre", body, 12, None))
+                    p class="field-help" { (LINK_HINT) }
                     @if keep.ask {
                         p class="phrase-caption" { "Pour qui ?" }
                         div class="field" {
@@ -2123,6 +2131,14 @@ pub fn letter_page(
                     }
                 }
             }
+            (letter_face(
+                &mail.from_name,
+                &mail.metier,
+                body,
+                &mail.site,
+                mail.link_ink.as_str(),
+            ))
+            }
             @if !previous.is_empty() {
                 div class="block" {
                     h3 { "Déjà classées" }
@@ -2136,6 +2152,35 @@ pub fn letter_page(
             p class="date" { (letter_date(today)) }
         }
     })
+}
+
+pub fn letter_face(name: &str, metier: &str, body: &str, site: &str, ink: &str) -> Markup {
+    let name = name.trim();
+    let metier = metier.trim();
+    let site = site.trim();
+    let ink = match ink {
+        "encre" | "sceau" => ink,
+        _ => "vert",
+    };
+    let body = griffe_core::mail::readable_links(body);
+    let site_label = griffe_core::mail::readable_links(site);
+    html! {
+        aside class=(format!("letter-face letter-ink-{ink}")) {
+            @if !name.is_empty() {
+                p class="letter-face-name" { (name) }
+            }
+            @if !metier.is_empty() {
+                p class="letter-face-metier" { (metier) }
+            }
+            @if !name.is_empty() || !metier.is_empty() {
+                hr class="letter-face-rule";
+            }
+            pre class="letter-face-body" { (body) }
+            @if !site.is_empty() {
+                p class="letter-face-site" { (site_label) }
+            }
+        }
+    }
 }
 
 fn lower_first(value: &str) -> String {

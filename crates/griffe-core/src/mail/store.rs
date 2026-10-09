@@ -7,9 +7,9 @@ use uuid::Uuid;
 
 use super::error::MailError;
 use super::model::{
-    HOURLY_CAP, MISSING_ADDRESS, MailPreset, MailProbeStatus, MailProfile, MailTick,
-    OutboundMessage, OutboundStatus, OutboundView, ProbeMaterial, ReadyLetter, SmtpEndpoint,
-    SubmissionBatch, TlsMode,
+    HOURLY_CAP, LetterChrome, LetterInk, MISSING_ADDRESS, MailPreset, MailProbeStatus, MailProfile,
+    MailTick, OutboundMessage, OutboundStatus, OutboundView, ProbeMaterial, ReadyLetter,
+    SmtpEndpoint, SubmissionBatch, TlsMode,
 };
 use super::secret::MailSecret;
 use crate::app::AppError;
@@ -21,7 +21,8 @@ pub(super) fn profile(conn: &Connection) -> Result<MailProfile, AppError> {
         .query_row(
             "SELECT from_name, from_address, smtp_host, smtp_port, smtp_tls, smtp_username,
                     secret IS NOT NULL AND length(secret) > 0, preset, auto_send, signature,
-                    probe_ok, probe_detail, imap_host, imap_port, imap_username
+                    probe_ok, probe_detail, imap_host, imap_port, imap_username,
+                    link_ink, metier, site
              FROM mail_account WHERE id = 1",
             [],
             |row| {
@@ -41,6 +42,9 @@ pub(super) fn profile(conn: &Connection) -> Result<MailProfile, AppError> {
                     row.get::<_, Option<String>>(12)?,
                     row.get::<_, Option<i64>>(13)?,
                     row.get::<_, Option<String>>(14)?,
+                    row.get::<_, String>(15)?,
+                    row.get::<_, String>(16)?,
+                    row.get::<_, String>(17)?,
                 ))
             },
         )
@@ -61,6 +65,9 @@ pub(super) fn profile(conn: &Connection) -> Result<MailProfile, AppError> {
         imap_host,
         imap_port,
         imap_username,
+        link_ink,
+        metier,
+        site,
     )) = row
     else {
         return Ok(MailProfile::default());
@@ -88,6 +95,9 @@ pub(super) fn profile(conn: &Connection) -> Result<MailProfile, AppError> {
         imap_port: u16::try_from(imap_port.unwrap_or(i64::from(super::model::IMAP_PORT)))
             .unwrap_or(super::model::IMAP_PORT),
         imap_username: imap_username.unwrap_or_default(),
+        link_ink: LetterInk::parse(link_ink.as_str()).unwrap_or(LetterInk::Vert),
+        metier,
+        site,
     })
 }
 
@@ -117,6 +127,30 @@ pub(super) fn save_signature(
             "INSERT INTO mail_account (id, smtp_tls, preset, auto_send, signature, updated_at)
              VALUES (1, 'starttls', 'custom', 0, ?1, ?2)",
             params![signature, now],
+        )?;
+    }
+    Ok(())
+}
+
+pub(super) fn save_letterface(
+    conn: &Connection,
+    ink: &str,
+    metier: &str,
+    site: &str,
+    now: &str,
+) -> Result<(), AppError> {
+    let updated = conn.execute(
+        "UPDATE mail_account
+         SET link_ink = ?1, metier = ?2, site = ?3, updated_at = ?4
+         WHERE id = 1",
+        params![ink, metier, site, now],
+    )?;
+    if updated == 0 {
+        conn.execute(
+            "INSERT INTO mail_account (
+                id, smtp_tls, preset, auto_send, link_ink, metier, site, updated_at
+             ) VALUES (1, 'starttls', 'custom', 0, ?1, ?2, ?3, ?4)",
+            params![ink, metier, site, now],
         )?;
     }
     Ok(())
@@ -327,7 +361,7 @@ pub(super) fn insert_letter(
 pub(super) fn cancel(conn: &Connection, id: &str, now: &str) -> Result<(), AppError> {
     let updated = conn.execute(
         "UPDATE outbound_mail SET status = 'cancelled', updated_at = ?2
-         WHERE id = ?1 AND status = 'armed'",
+         WHERE id = ?1 AND status IN ('armed', 'held')",
         params![id, now],
     )?;
     if updated == 0 {
@@ -404,7 +438,7 @@ pub(super) fn claim(
         }
         let updated = conn.execute(
             "UPDATE outbound_mail
-             SET status = 'sending', copy_at = ?2, updated_at = ?2
+             SET status = 'held', copy_at = ?2, updated_at = ?2
              WHERE id = ?1 AND status = 'armed'",
             params![id, now],
         )?;
@@ -413,6 +447,27 @@ pub(super) fn claim(
         }
     }
     Ok(claimed)
+}
+
+/// Passe une lettre tenue à l'envoi. `false` : elle a été annulée entre-temps.
+pub(super) fn commit_outbound(conn: &Connection, id: &str, now: &str) -> Result<bool, AppError> {
+    let updated = conn.execute(
+        "UPDATE outbound_mail SET status = 'sending', updated_at = ?2
+         WHERE id = ?1 AND status = 'held'",
+        params![id, now],
+    )?;
+    Ok(updated == 1)
+}
+
+/// Une lettre tenue dont le processus a disparu ne repart pas.
+pub(super) fn abandon_held(conn: &Connection, now: &str) -> Result<(), AppError> {
+    conn.execute(
+        "UPDATE outbound_mail
+         SET status = 'cancelled', error = 'restée', updated_at = ?1
+         WHERE status = 'held'",
+        [now],
+    )?;
+    Ok(())
 }
 
 /// Relit le courriel de la fiche pour une relance. Une lettre sans fiche garde
@@ -491,7 +546,7 @@ pub(super) fn load_batch(
 }
 
 fn load_ready(conn: &Connection, id: &str) -> Result<Option<ReadyLetter>, AppError> {
-    load_letter(conn, id, "sending")
+    load_letter(conn, id, "held")
 }
 
 fn load_letter(conn: &Connection, id: &str, status: &str) -> Result<Option<ReadyLetter>, AppError> {
@@ -530,6 +585,7 @@ fn load_letter(conn: &Connection, id: &str, status: &str) -> Result<Option<Ready
             to_address,
             subject,
             text,
+            chrome: LetterChrome::from_profile(&profile(conn)?),
             message_id,
             at,
         },
@@ -608,7 +664,7 @@ pub(super) fn mark_failed(
     conn.execute(
         "UPDATE outbound_mail
          SET status = 'failed', error = ?2, updated_at = ?3
-         WHERE id = ?1 AND status IN ('sending', 'armed', 'uncertain', 'failed')",
+         WHERE id = ?1 AND status IN ('sending', 'held', 'armed', 'uncertain', 'failed')",
         params![id, message, now],
     )?;
     Ok(())
@@ -903,7 +959,7 @@ fn follow_open(
         "SELECT COUNT(*) FROM outbound_mail
          WHERE follow_subject = ?1 AND follow_subject_id = ?2
            AND follow_cycle = ?3 AND follow_step = ?4
-           AND status IN ('armed', 'sending', 'sent', 'uncertain')",
+           AND status IN ('armed', 'held', 'sending', 'sent', 'uncertain')",
         params![kind, id, cycle, step],
         |row| row.get(0),
     )?;
@@ -921,7 +977,7 @@ pub(super) fn for_anchor(
             "SELECT id, status, subject, to_address, error, send_after
              FROM outbound_mail
              WHERE anchor = ?1 AND (
-               status IN ('armed', 'sending', 'failed', 'uncertain')
+               status IN ('armed', 'held', 'sending', 'failed', 'uncertain')
                OR (status = 'sent' AND updated_at >= ?2)
              )
              ORDER BY created_at DESC LIMIT 1",
@@ -964,6 +1020,7 @@ pub(super) fn mail_tick(
     let send_busy: bool = conn.query_row(
         "SELECT
             EXISTS(SELECT 1 FROM outbound_mail WHERE status = 'sending')
+            OR EXISTS(SELECT 1 FROM outbound_mail WHERE status = 'held')
             OR EXISTS(
                 SELECT 1 FROM outbound_mail
                 WHERE status = 'armed' AND send_after <= ?1

@@ -25,12 +25,19 @@ accepte l’identifiant, une croix s’il refuse. Deux ports, tous deux chiffré
 l’adresse complète du compte, et le mot de passe est un mot de passe
 d’application. L’hôte et le port restent lisibles.
 
-Envoyer, sur une lettre, laisse cinq secondes pour se raviser. La ligne
+Envoyer, sur une lettre, laisse cinq secondes pour se raviser. Annuler,
+pendant ces cinq secondes et jusqu’à l’envoi, retient la lettre. La ligne
 nomme l’adresse qui partira, et le compte s’affiche, une seconde après
 l’autre. Si l’adresse manque, elle dit que la lettre ne partira pas. Au
 bout, Annuler s’efface, la ligne dit Courrier envoyé, et le bouton revient.
 Fermer la fenêtre pendant ces cinq secondes retient la lettre. C’est parti
 classe le double dans l’historique et ne contacte pas le serveur.
+
+La lettre part en page, et le texte seul reste pour les boîtes qui ne
+lisent pas la page. Une adresse suivie de ?utm_… reste cliquable en
+entier. La personne lit l’adresse sans cette partie. Dans Le courrier,
+la couleur des liens se choisit en trois mots : vert, encre, sceau. Une
+ligne de métier et un site, facultatifs, se posent sous le nom et en bas.
 
 Une lettre partie est aussi déposée dans Envoyés du compte qui l’envoie.
 iCloud le fait sans champ de plus. Un autre serveur le fait si l’hôte des

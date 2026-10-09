@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use time::{Date, Duration, OffsetDateTime};
 
 use super::error::MailError;
-use super::model::{ICLOUD_HOST, MailPreset, PROBE_OK_SENTENCE, TlsMode, UNDO_SECS};
+use super::model::{ICLOUD_HOST, LetterInk, MailPreset, PROBE_OK_SENTENCE, TlsMode, UNDO_SECS};
 use super::secret::MailSecret;
 use super::store::{self, NewLetter};
 use crate::app::{AppError, Command};
@@ -286,6 +286,48 @@ impl Command for SaveMailSignature {
     }
 }
 
+const METIER_MAX: usize = 80;
+const SITE_MAX: usize = 300;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SaveLetterface {
+    pub ink: String,
+    pub metier: String,
+    pub site: String,
+}
+
+impl Command for SaveLetterface {
+    type Output = ();
+    const NAME: &'static str = "mail.save_letterface";
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        let ink = LetterInk::parse(self.ink.trim()).ok_or(MailError::Ink)?;
+        let metier = checked_metier(&self.metier)?;
+        let site = checked_site(&self.site)?;
+        store::save_letterface(conn, ink.as_str(), &metier, &site, &now_stamp()?)
+    }
+}
+
+fn checked_metier(raw: &str) -> Result<String, AppError> {
+    let text = raw.replace('\r', "").trim().to_string();
+    if text.contains('\n') || text.chars().count() > METIER_MAX {
+        return Err(MailError::Metier.into());
+    }
+    Ok(text)
+}
+
+fn checked_site(raw: &str) -> Result<String, AppError> {
+    let text = raw.trim().to_string();
+    if text.is_empty() {
+        return Ok(text);
+    }
+    let http = text.starts_with("https://") || text.starts_with("http://");
+    if !http || text.chars().count() > SITE_MAX || text.contains(char::is_whitespace) {
+        return Err(MailError::Site.into());
+    }
+    Ok(text)
+}
+
 fn checked_signature(raw: &str) -> Result<String, AppError> {
     let text = raw.replace('\r', "").trim().to_string();
     if text.contains("{{signature}}") || text.contains("<signature>") {
@@ -388,6 +430,32 @@ impl Command for CancelOutbound {
 
     fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
         store::cancel(conn, &self.id, &now_stamp()?)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct CommitOutbound {
+    pub id: String,
+}
+
+impl Command for CommitOutbound {
+    type Output = bool;
+    const NAME: &'static str = "mail.commit";
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        store::commit_outbound(conn, &self.id, &now_stamp()?)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct AbandonHeld;
+
+impl Command for AbandonHeld {
+    type Output = ();
+    const NAME: &'static str = "mail.abandon_held";
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        store::abandon_held(conn, &now_stamp()?)
     }
 }
 

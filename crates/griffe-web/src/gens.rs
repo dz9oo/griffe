@@ -1588,7 +1588,7 @@ fn mail_fragment(headers: &HeaderMap, content: Markup, saved: bool) -> Response 
 fn mail_notice(error: &AppError) -> String {
     let text = error.to_string();
     if text.contains("n'est plus annulable") {
-        return "Elle est déjà partie.".to_string();
+        return "Elle est déjà en route.".to_string();
     }
     if text.contains("UNIQUE") || text.contains("constraint failed") {
         return "Cette lettre est déjà engagée.".to_string();

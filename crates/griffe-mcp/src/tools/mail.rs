@@ -2,7 +2,9 @@
 //! Pas de mot de passe, pas de passage au serveur : la fenêtre ou `griffe courrier flush` poste.
 
 use griffe_core::app::Executor;
-use griffe_core::mail::{ArmOutbound, SaveMailSignature, SetAutomaticSend, profile, trial_letter};
+use griffe_core::mail::{
+    ArmOutbound, SaveLetterface, SaveMailSignature, SetAutomaticSend, profile, trial_letter,
+};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
 use rmcp::{tool, tool_router};
@@ -22,6 +24,18 @@ pub(crate) struct ArmArgs {
     body: String,
     /// Ancre affichée avec la lettre. Absente : aucune.
     anchor: Option<String>,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct LetterfaceArgs {
+    /// `vert`, `encre` ou `sceau`.
+    ink: String,
+    /// Ligne sous le nom. Vide : pas de ligne.
+    metier: String,
+    /// Adresse en bas de la lettre. Vide : pas de ligne.
+    site: String,
     #[serde(default)]
     dry_run: bool,
 }
@@ -72,6 +86,9 @@ impl FreeflowServer {
                 "auto_send": account.auto_send,
                 "ready": account.ready,
                 "signature": account.signature,
+                "link_ink": account.link_ink.as_str(),
+                "metier": account.metier,
+                "site": account.site,
                 "probe_ok": account.probe.as_ref().map(|probe| probe.ok),
                 "probe_detail": account.probe.as_ref().map(|probe| probe.detail.clone()),
             })),
@@ -103,6 +120,31 @@ impl FreeflowServer {
             follow_cycle: None,
             follow_step: None,
             client_id: None,
+        };
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
+            Ok(outcome) => ok_json(outcome_json(&outcome)),
+            Err(error) => err_text(error.to_string()),
+        }
+    }
+
+    #[tool(
+        name = "mail.save_letterface",
+        description = "Enregistre la couleur des liens, le métier et le site de la lettre.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true
+        )
+    )]
+    async fn mail_save_letterface(
+        &self,
+        Parameters(args): Parameters<LetterfaceArgs>,
+    ) -> CallToolResult {
+        let mut store = self.store.lock().await;
+        let cmd = SaveLetterface {
+            ink: args.ink,
+            metier: args.metier,
+            site: args.site,
         };
         match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),

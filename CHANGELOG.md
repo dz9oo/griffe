@@ -2,6 +2,13 @@
 
 Ce qui change pour qui se sert de Griffe. Une section par version publiée.
 
+## 0.3.10
+
+- Une lettre part en page, et le texte seul reste pour les boîtes qui ne lisent pas la page. Une adresse suivie de ?utm_… reste cliquable en entier. La personne lit l'adresse sans cette partie.
+- Dans Le courrier, la couleur des liens se choisit en trois mots : vert, encre, sceau. Une ligne de métier et un site, facultatifs, habillent la lettre.
+- Annuler, pendant les cinq secondes et jusqu'à l'envoi, retient la lettre. Passé l'envoi, la ligne dit qu'elle est en route.
+- Ouvrir un coffre déjà créé avance son schéma. La version précédente ne peut plus l'ouvrir.
+
 ## 0.3.9
 
 - Le courrier réunit le serveur d'envoi sur un seul panneau. L'adresse, l'identifiant, l'hôte et le port restent affichés. Enregistrer essaie la liaison : une coche si le serveur accepte l'identifiant, une croix s'il la refuse. Le mot de passe reste dans le coffre. Une lettre d'essai part vers l'adresse choisie.

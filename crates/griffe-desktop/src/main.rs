@@ -13,9 +13,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use griffe_core::app::{Actor, AppError, ExecutionContext};
+use griffe_core::mail::{DeliveryOutcome, SentCopyStatus, SubmissionBatch};
 use griffe_core::store::Store;
 use griffe_web::AppState;
 use http_body_util::BodyExt;
@@ -65,6 +67,9 @@ async fn post_due(state: &AppState) -> Result<(), String> {
             }
             // La copie ne passe pas par take_due : ces commandes écrivent l'audit
             // même quand elles ne changent rien, et le plafond horaire ne la concerne pas.
+            if tick.send {
+                griffe_core::mail::abandon_held(store, &ctx)?;
+            }
             let sending = if tick.send {
                 griffe_core::mail::take_due(store, &ctx, &token, now, today, true)?
             } else {
@@ -85,17 +90,7 @@ async fn post_due(state: &AppState) -> Result<(), String> {
         return Ok(());
     };
     if let Some(batch) = sending.filter(|batch| !batch.letters.is_empty()) {
-        let outcomes = tokio::task::spawn_blocking(move || griffe_mail::submit_batch(batch))
-            .await
-            .map_err(|error| error.to_string())?;
-        let recorded = state
-            .with_store_mut(|store| {
-                griffe_core::mail::record_deliveries(store, &ctx, today, &outcomes)
-            })
-            .await;
-        if let Some(result) = recorded {
-            result.map_err(|error| error.to_string())?;
-        }
+        post_letters(state, &ctx, today, batch).await?;
     }
     if let Some(batch) = copies.filter(|batch| !batch.letters.is_empty()) {
         let outcomes = tokio::task::spawn_blocking(move || griffe_mail::file_copies(batch))
@@ -107,6 +102,73 @@ async fn post_due(state: &AppState) -> Result<(), String> {
         if let Some(result) = recorded {
             result.map_err(|error| error.to_string())?;
         }
+    }
+    Ok(())
+}
+
+async fn post_letters(
+    state: &AppState,
+    ctx: &ExecutionContext,
+    today: time::Date,
+    batch: SubmissionBatch,
+) -> Result<(), String> {
+    let SubmissionBatch {
+        endpoint,
+        secret,
+        imap,
+        letters,
+    } = batch;
+    let mail = match griffe_mail::LettreMail::new(endpoint, secret) {
+        Ok(mail) => Arc::new(mail),
+        Err(error) => {
+            let outcomes = letters
+                .into_iter()
+                .map(|letter| DeliveryOutcome {
+                    id: letter.id,
+                    result: Err(error.clone()),
+                    copy: SentCopyStatus::Skipped,
+                })
+                .collect::<Vec<_>>();
+            return record_outcomes(state, ctx, today, &outcomes).await;
+        }
+    };
+    for letter in letters {
+        let id = letter.id.clone();
+        let engaged = state
+            .with_store_mut(|store| griffe_core::mail::commit_outbound(store, ctx, &id))
+            .await;
+        let Some(engaged) = engaged else {
+            return Ok(());
+        };
+        if !engaged.map_err(|error| error.to_string())? {
+            continue;
+        }
+        let mail = Arc::clone(&mail);
+        let copy = imap.clone();
+        let outcome = tokio::task::spawn_blocking(move || {
+            griffe_mail::submit_letter(&mail, copy.as_ref(), letter)
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+        record_outcomes(state, ctx, today, &[outcome]).await?;
+    }
+    Ok(())
+}
+
+async fn record_outcomes(
+    state: &AppState,
+    ctx: &ExecutionContext,
+    today: time::Date,
+    outcomes: &[DeliveryOutcome],
+) -> Result<(), String> {
+    if outcomes.is_empty() {
+        return Ok(());
+    }
+    let recorded = state
+        .with_store_mut(|store| griffe_core::mail::record_deliveries(store, ctx, today, outcomes))
+        .await;
+    if let Some(result) = recorded {
+        result.map_err(|error| error.to_string())?;
     }
     Ok(())
 }

@@ -306,6 +306,10 @@ pub fn router(state: AppState) -> Router {
             "/societe/courrier/signature",
             post(courrier::save_signature),
         )
+        .route(
+            "/societe/courrier/apparence",
+            post(courrier::save_apparence),
+        )
         .route("/societe/courrier/envoyer", post(courrier::send_trial))
         .route("/societe/courrier/envoi", get(courrier::trial_status))
         .route(

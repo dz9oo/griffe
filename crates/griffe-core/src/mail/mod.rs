@@ -4,22 +4,24 @@
 mod commands;
 mod error;
 mod model;
+mod present;
 mod secret;
 mod store;
 
 pub use commands::{
     ArmOutbound, CancelOutbound, ClearMailSecret, RecordMailProbe, RememberImapUsername,
-    ResolveUncertain, RetryOutbound, SaveMailAccount, SaveMailSecret, SaveMailSignature,
-    SetAutomaticSend,
+    ResolveUncertain, RetryOutbound, SaveLetterface, SaveMailAccount, SaveMailSecret,
+    SaveMailSignature, SetAutomaticSend,
 };
 pub use error::MailError;
 pub use model::{
     DeliveryOutcome, HOURLY_CAP, ICLOUD_HOST, ICLOUD_IMAP_HOST, ICLOUD_SENT_MAILBOX, IMAP_PORT,
-    ImapEndpoint, MISSING_ADDRESS, MailPreset, MailProbeStatus, MailProfile, MailSubmitError,
-    MailTick, OutboundMail, OutboundMessage, OutboundStatus, OutboundView, PROBE_OK_SENTENCE,
-    ProbeMaterial, ProbeVerdict, RecordingMail, SentCopyStatus, SmtpEndpoint, SubmissionBatch,
-    SubmissionReceipt, TlsMode, UNDO_SECS,
+    ImapEndpoint, LetterChrome, LetterInk, MISSING_ADDRESS, MailPreset, MailProbeStatus,
+    MailProfile, MailSubmitError, MailTick, OutboundMail, OutboundMessage, OutboundStatus,
+    OutboundView, PROBE_OK_SENTENCE, ProbeMaterial, ProbeVerdict, ReadyLetter, RecordingMail,
+    SentCopyStatus, SmtpEndpoint, SubmissionBatch, SubmissionReceipt, TlsMode, UNDO_SECS,
 };
+pub use present::{LINK_HINT, LetterParts, letter_html, readable_links};
 pub use secret::MailSecret;
 
 /// Compte d'envoi, sans le secret.
@@ -155,6 +157,39 @@ pub fn take_due(
         return Ok(None);
     }
     store::load_batch(store.connection(), &claimed)
+}
+
+/// Engage une lettre tenue vers le serveur. `false` : Annuler a gagné, rien ne part.
+///
+/// # Errors
+///
+/// Persistance, ou acteur agent.
+pub fn commit_outbound(
+    store: &mut crate::store::Store,
+    ctx: &ExecutionContext,
+    id: &str,
+) -> Result<bool, AppError> {
+    refuse_agent(ctx)?;
+    match Executor::new(store).execute(&commands::CommitOutbound { id: id.to_string() }, ctx)? {
+        crate::app::Outcome::Applied(engaged) | crate::app::Outcome::AlreadyApplied(engaged) => {
+            Ok(engaged)
+        }
+        crate::app::Outcome::DryRun | crate::app::Outcome::PendingConfirmation(_) => Ok(false),
+    }
+}
+
+/// Annule les lettres tenues dont l'envoi n'a pas abouti. Elles ne repartent pas.
+///
+/// # Errors
+///
+/// Persistance, ou acteur agent.
+pub fn abandon_held(
+    store: &mut crate::store::Store,
+    ctx: &ExecutionContext,
+) -> Result<(), AppError> {
+    refuse_agent(ctx)?;
+    Executor::new(store).execute(&commands::AbandonHeld, ctx)?;
+    Ok(())
 }
 
 /// Inscrit le résultat de chaque soumission. Une réussite avance la relance liée.
@@ -345,10 +380,11 @@ mod tests {
     use time::{Date, Duration, Month, OffsetDateTime, Time};
 
     use super::{
-        ArmOutbound, ClearMailSecret, DeliveryOutcome, MISSING_ADDRESS, MailError, MailSubmitError,
-        PROBE_OK_SENTENCE, RecordMailProbe, RecordingMail, RetryOutbound, SaveMailAccount,
-        SaveMailSecret, SaveMailSignature, SentCopyStatus, SetAutomaticSend, SubmissionReceipt,
-        deliver_with, mail_tick, profile, record_deliveries, take_copies, take_due, trial_letter,
+        ArmOutbound, ClearMailSecret, DeliveryOutcome, LetterInk, MISSING_ADDRESS, MailError,
+        MailSubmitError, PROBE_OK_SENTENCE, RecordMailProbe, RecordingMail, RetryOutbound,
+        SaveLetterface, SaveMailAccount, SaveMailSecret, SaveMailSignature, SentCopyStatus,
+        SetAutomaticSend, SubmissionReceipt, abandon_held, commit_outbound, deliver_with,
+        mail_tick, profile, record_deliveries, take_copies, take_due, trial_letter,
     };
     use crate::app::{Actor, AppError, ExecutionContext, Executor, Outcome, recent_audit_entries};
     use crate::clients::{CreateClient, CreateContact, DeleteContact, UpdateContact};
@@ -360,6 +396,10 @@ mod tests {
 
     fn human() -> ExecutionContext {
         ExecutionContext::new(Actor::Human, false)
+    }
+
+    fn engage(store: &mut crate::store::Store, id: &str) {
+        assert!(commit_outbound(store, &human(), id).unwrap());
     }
 
     fn agent() -> ExecutionContext {
@@ -536,6 +576,90 @@ mod tests {
     }
 
     #[test]
+    fn the_letterface_survives_the_server_and_refuses_a_bad_ink() {
+        let mut store = test_store("letterface");
+        let Outcome::Applied(()) = Executor::new(&mut store)
+            .execute(
+                &SaveLetterface {
+                    ink: "sceau".into(),
+                    metier: "Ingénieur logiciel".into(),
+                    site: "https://atelier.example".into(),
+                },
+                &human(),
+            )
+            .unwrap()
+        else {
+            panic!("face");
+        };
+        let account = profile(store.connection()).unwrap();
+        assert_eq!(account.link_ink, LetterInk::Sceau);
+        assert_eq!(account.metier, "Ingénieur logiciel");
+        assert_eq!(account.site, "https://atelier.example");
+        assert!(!account.ready);
+        assert!(
+            Executor::new(&mut store)
+                .execute(
+                    &SaveLetterface {
+                        ink: "rouge".into(),
+                        metier: String::new(),
+                        site: String::new(),
+                    },
+                    &human(),
+                )
+                .is_err()
+        );
+        assert_eq!(
+            profile(store.connection()).unwrap().link_ink,
+            LetterInk::Sceau
+        );
+        assert!(
+            Executor::new(&mut store)
+                .execute(
+                    &SaveLetterface {
+                        ink: "vert".into(),
+                        metier: "é".repeat(81),
+                        site: String::new(),
+                    },
+                    &human(),
+                )
+                .is_err()
+        );
+        assert!(
+            Executor::new(&mut store)
+                .execute(
+                    &SaveLetterface {
+                        ink: "encre".into(),
+                        metier: "une\nligne".into(),
+                        site: "atelier.example".into(),
+                    },
+                    &human(),
+                )
+                .is_err()
+        );
+        save_ready(&mut store);
+        let account = profile(store.connection()).unwrap();
+        assert_eq!(account.link_ink, LetterInk::Sceau);
+        assert_eq!(account.metier, "Ingénieur logiciel");
+        let Outcome::Applied(()) = Executor::new(&mut store)
+            .execute(
+                &SaveLetterface {
+                    ink: "vert".into(),
+                    metier: "  ".into(),
+                    site: String::new(),
+                },
+                &human(),
+            )
+            .unwrap()
+        else {
+            panic!("retrait");
+        };
+        let account = profile(store.connection()).unwrap();
+        assert!(account.metier.is_empty());
+        assert!(account.site.is_empty());
+        assert_eq!(account.link_ink, LetterInk::Vert);
+    }
+
+    #[test]
     fn the_trial_letter_is_the_first_phrase_for_camille() {
         let mut store = test_store("trial-letter");
         let _ = seed(
@@ -613,6 +737,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn cancel_wins_before_the_claim_and_loses_after() {
         let mut store = test_store("mail-cancel");
         save_ready(&mut store);
@@ -672,15 +797,56 @@ mod tests {
         let later = OffsetDateTime::now_utc() + Duration::seconds(1);
         let batch = take_due(&mut store, &human(), "fenetre", later, later.date(), true)
             .unwrap()
-            .expect("réclamée");
+            .expect("tenue");
         assert_eq!(batch.letters.len(), 1);
+        Executor::new(&mut store)
+            .execute(&super::CancelOutbound { id: id.clone() }, &human())
+            .unwrap();
+        let recorder = RecordingMail::default();
+        assert!(recorder.sent().is_empty());
+        let status: String = store
+            .connection()
+            .query_row(
+                "SELECT status FROM outbound_mail WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "cancelled");
+
+        let id = match Executor::new(&mut store)
+            .execute(
+                &ArmOutbound {
+                    kind: "letter".into(),
+                    anchor: Some("camille".into()),
+                    to_address: "marie@acme.test".into(),
+                    subject: "Encore".into(),
+                    body: "Une ligne.".into(),
+                    delay_secs: 0,
+                    session_token: Some("fenetre".into()),
+                    follow_subject: None,
+                    follow_subject_id: None,
+                    follow_cycle: None,
+                    follow_step: None,
+                    client_id: None,
+                },
+                &human(),
+            )
+            .unwrap()
+        {
+            Outcome::Applied(id) => id,
+            other => panic!("{other:?}"),
+        };
+        let batch = take_due(&mut store, &human(), "fenetre", later, later.date(), true)
+            .unwrap()
+            .expect("réclamée");
+        engage(&mut store, &id);
         let cancel =
             Executor::new(&mut store).execute(&super::CancelOutbound { id: id.clone() }, &human());
         assert!(matches!(
             cancel,
             Err(crate::app::AppError::Domain(message)) if message == MailError::NotArmed.to_string()
         ));
-        let recorder = RecordingMail::default();
         let outcomes = deliver_with(&recorder, batch);
         record_deliveries(&mut store, &human(), later.date(), &outcomes).unwrap();
         assert_eq!(recorder.sent().len(), 1);
@@ -748,6 +914,8 @@ mod tests {
             .expect("la lettre du jour");
         assert_eq!(batch.letters.len(), 1);
         assert_eq!(batch.letters[0].message.to_address, "marie@acme.test");
+        let id = batch.letters[0].id.clone();
+        engage(&mut store, &id);
         let recorder = RecordingMail::default();
         let outcomes = deliver_with(&recorder, batch);
         record_deliveries(&mut store, &human(), today, &outcomes).unwrap();
@@ -807,6 +975,7 @@ mod tests {
             .unwrap()
             .expect("vivante");
         assert_eq!(batch.letters[0].message.subject, "Vive");
+        let id = batch.letters[0].id.clone();
         drop(batch);
         let later = take_due(
             &mut store,
@@ -826,9 +995,80 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
+        assert_eq!(status, "held");
+        engage(&mut store, &id);
+        let frozen = take_due(
+            &mut store,
+            &human(),
+            "nouvelle",
+            now + Duration::seconds(2),
+            now.date(),
+            true,
+        )
+        .unwrap();
+        assert!(frozen.is_none());
+        let status: String = store
+            .connection()
+            .query_row(
+                "SELECT status FROM outbound_mail WHERE subject = 'Vive'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(status, "uncertain");
         let agent_post = take_due(&mut store, &agent(), "nouvelle", now, now.date(), true);
         assert!(agent_post.is_err());
+    }
+
+    #[test]
+    fn a_held_letter_left_behind_is_cancelled() {
+        let mut store = test_store("mail-held-left");
+        save_ready(&mut store);
+        Executor::new(&mut store)
+            .execute(
+                &ArmOutbound {
+                    kind: "letter".into(),
+                    anchor: None,
+                    to_address: "marie@acme.test".into(),
+                    subject: "Tenue".into(),
+                    body: "Pas partie.".into(),
+                    delay_secs: 0,
+                    session_token: Some("fenetre".into()),
+                    follow_subject: None,
+                    follow_subject_id: None,
+                    follow_cycle: None,
+                    follow_step: None,
+                    client_id: None,
+                },
+                &human(),
+            )
+            .unwrap();
+        let now = OffsetDateTime::now_utc() + Duration::seconds(1);
+        let batch = take_due(&mut store, &human(), "fenetre", now, now.date(), true)
+            .unwrap()
+            .expect("tenue");
+        let id = batch.letters[0].id.clone();
+        drop(batch);
+        let pending = mail_tick(store.connection(), "fenetre", now, now.date(), true).unwrap();
+        assert!(pending.send);
+        abandon_held(&mut store, &human()).unwrap();
+        let quiet = mail_tick(store.connection(), "fenetre", now, now.date(), true).unwrap();
+        assert!(!quiet.send);
+        let (status, error): (String, String) = store
+            .connection()
+            .query_row(
+                "SELECT status, error FROM outbound_mail WHERE id = ?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "cancelled");
+        assert_eq!(error, "restée");
+        assert!(
+            take_due(&mut store, &human(), "fenetre", now, now.date(), true)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -912,6 +1152,8 @@ mod tests {
         let batch = take_due(&mut store, &human(), "fenetre", now, now.date(), true)
             .unwrap()
             .unwrap();
+        let id = batch.letters[0].id.clone();
+        engage(&mut store, &id);
         let recorder = RecordingMail::failing(MailSubmitError::Auth);
         let outcomes = deliver_with(&recorder, batch);
         record_deliveries(&mut store, &human(), now.date(), &outcomes).unwrap();
@@ -1300,6 +1542,7 @@ mod tests {
             .expect("réclamée");
         let id = batch.letters[0].id.clone();
         drop(batch);
+        engage(&mut store, &id);
         let outcomes = vec![DeliveryOutcome {
             id,
             result: Ok(SubmissionReceipt {

@@ -22,6 +22,10 @@ pub struct CourrierForm {
     pub notice: Option<String>,
     /// Texte posté quand l'enregistrement de la formule a échoué.
     pub signature: Option<String>,
+    /// Couleur, métier, site repris d'un envoi refusé. `None` : ceux du compte.
+    pub ink: Option<String>,
+    pub metier: Option<String>,
+    pub site: Option<String>,
     /// Vrai quand les champs du serveur viennent d'un envoi refusé.
     pub redisplay: bool,
 }
@@ -69,6 +73,15 @@ fn markup(
     let signature = form
         .and_then(|item| item.signature.as_deref())
         .unwrap_or(account.signature.as_str());
+    let ink = form
+        .and_then(|item| item.ink.as_deref())
+        .unwrap_or(account.link_ink.as_str());
+    let metier = form
+        .and_then(|item| item.metier.as_deref())
+        .unwrap_or(account.metier.as_str());
+    let site = form
+        .and_then(|item| item.site.as_deref())
+        .unwrap_or(account.site.as_str());
 
     html! {
         div class="letter" data-view=(ViewId::Societe.slug()) {
@@ -196,6 +209,42 @@ fn markup(
                     }
                 }
             }
+            form hx-post="/societe/courrier/apparence" hx-target="#content" hx-push-url="true" {
+                div class="block" {
+                    h3 { "L'allure de la lettre" }
+                    p class="prose" {
+                        "La couleur des liens. Vert se lit sur la feuille. Encre reste dans le texte. Sceau reprend l'accent de la fenêtre."
+                    }
+                    fieldset class="word-choice" {
+                        legend { "Couleur" }
+                        div class="word-choice-row" {
+                            label {
+                                input type="radio" name="ink" value="vert" checked[ink == "vert"];
+                                "vert"
+                            }
+                            label {
+                                input type="radio" name="ink" value="encre" checked[ink == "encre"];
+                                "encre"
+                            }
+                            label {
+                                input type="radio" name="ink" value="sceau" checked[ink == "sceau"];
+                                "sceau"
+                            }
+                        }
+                    }
+                    div class="field" {
+                        label for="metier" { "Métier" }
+                        input id="metier" name="metier" type="text" value=(metier) autocomplete="off";
+                    }
+                    div class="field" {
+                        label for="site" { "Site" }
+                        input id="site" name="site" type="text" value=(site) autocomplete="off";
+                    }
+                    div class="row-actions" {
+                        button class="seal" type="submit" { "Enregistrer l'allure" }
+                    }
+                }
+            }
             div class="block" {
                 h3 { "Une lettre d'essai" }
                 p class="prose" {
@@ -203,7 +252,7 @@ fn markup(
                 }
                 div class="essai-sheet" {
                     p class="phrase-sheet-subject" { (letter.subject) }
-                    pre class="phrase-sheet-body" { (letter.body) }
+                    (crate::views::gens::letter_face(from_name, metier, &letter.body, site, ink))
                 }
                 form {
                     div class="field" {

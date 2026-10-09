@@ -41,6 +41,15 @@ pub enum MailError {
 
     #[error("la formule contient <signature>")]
     SignatureToken,
+
+    #[error("la couleur est vert, encre ou sceau")]
+    Ink,
+
+    #[error("le métier tient sur une ligne, 80 caractères au plus")]
+    Metier,
+
+    #[error("le site commence par https:// ou http://")]
+    Site,
 }
 
 impl From<MailError> for AppError {

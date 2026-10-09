@@ -7,10 +7,11 @@ use std::path::PathBuf;
 use clap::{ArgGroup, Subcommand};
 use griffe_core::app::{ExecutionContext, Executor};
 use griffe_core::mail::{
-    ArmOutbound, CancelOutbound, ClearMailSecret, MailPreset, MailSecret, RecordMailProbe,
-    RememberImapUsername, SaveMailAccount, SaveMailSecret, SaveMailSignature, SentCopyStatus,
-    SetAutomaticSend, UNDO_SECS, french_submit_error, hourly_pause, probe_material, profile,
-    record_copies, record_deliveries, take_copies, take_due, trial_letter,
+    ArmOutbound, CancelOutbound, ClearMailSecret, DeliveryOutcome, MailPreset, MailSecret,
+    RecordMailProbe, RememberImapUsername, SaveLetterface, SaveMailAccount, SaveMailSecret,
+    SaveMailSignature, SentCopyStatus, SetAutomaticSend, SubmissionBatch, UNDO_SECS, abandon_held,
+    commit_outbound, french_submit_error, hourly_pause, probe_material, profile, record_copies,
+    record_deliveries, take_copies, take_due, trial_letter,
 };
 use griffe_core::store::Store;
 use time::OffsetDateTime;
@@ -65,6 +66,18 @@ pub enum MailCommand {
         #[arg(long)]
         off: bool,
     },
+    /// Couleur, métier et site de la lettre. Sans drapeau, montre l'allure.
+    Apparence {
+        /// `vert`, `encre` ou `sceau`. Absent : inchangé.
+        #[arg(long)]
+        encre: Option<String>,
+        /// Ligne sous le nom. Chaîne vide : retire la ligne.
+        #[arg(long)]
+        metier: Option<String>,
+        /// Adresse en bas de la lettre. Chaîne vide : retire la ligne.
+        #[arg(long)]
+        site: Option<String>,
+    },
     /// Montre la formule, ou la pose depuis l'entrée standard.
     Signature {
         /// Lit la formule sur l'entrée standard, retours à la ligne compris.
@@ -105,6 +118,11 @@ pub fn run(
 ) -> Result<String, CliError> {
     match command {
         MailCommand::Show => show(store, json),
+        MailCommand::Apparence {
+            encre,
+            metier,
+            site,
+        } => apparence(store, ctx, json, encre, metier, site),
         MailCommand::Save {
             from_address,
             username,
@@ -211,6 +229,9 @@ fn show(store: &Store, json: bool) -> Result<String, CliError> {
             },
         ),
         ("liaison", liaison_line(&account)),
+        ("encre", account.link_ink.as_str().to_string()),
+        ("métier", or_empty(account.metier.clone())),
+        ("site", or_empty(account.site.clone())),
     ]);
     if account.signature.is_empty() {
         text.push_str("\nformule : vide");
@@ -360,6 +381,9 @@ fn account_json(account: &griffe_core::mail::MailProfile) -> serde_json::Value {
         "auto_send": account.auto_send,
         "ready": account.ready,
         "signature": account.signature,
+        "link_ink": account.link_ink.as_str(),
+        "metier": account.metier,
+        "site": account.site,
         "probe_ok": account.probe.as_ref().map(|probe| probe.ok),
         "probe_detail": account.probe.as_ref().map(|probe| probe.detail.clone()),
         "copy_host": account.copy_target().as_ref().map(|target| target.host.clone()),
@@ -483,39 +507,104 @@ fn envoyer(
     }))
 }
 
+fn apparence(
+    store: &mut Store,
+    ctx: &ExecutionContext,
+    json: bool,
+    encre: Option<String>,
+    metier: Option<String>,
+    site: Option<String>,
+) -> Result<String, CliError> {
+    let account = profile(store.connection())?;
+    if encre.is_none() && metier.is_none() && site.is_none() {
+        let text = key_values(&[
+            ("encre", account.link_ink.as_str().to_string()),
+            ("métier", or_empty(account.metier.clone())),
+            ("site", or_empty(account.site.clone())),
+        ]);
+        return Ok(format_json_or(
+            json,
+            &serde_json::json!({
+                "link_ink": account.link_ink.as_str(),
+                "metier": account.metier,
+                "site": account.site,
+            }),
+            text,
+        ));
+    }
+    let outcome = Executor::new(store).execute(
+        &SaveLetterface {
+            ink: encre.unwrap_or_else(|| account.link_ink.as_str().to_string()),
+            metier: metier.unwrap_or(account.metier),
+            site: site.unwrap_or(account.site),
+        },
+        ctx,
+    )?;
+    Ok(format_outcome_as(&outcome, json, |_| {
+        "L'allure est enregistrée.".to_string()
+    }))
+}
+
 fn flush(store: &mut Store, ctx: &ExecutionContext, json: bool) -> Result<String, CliError> {
     let now = OffsetDateTime::now_utc();
     let today = crate::today();
+    abandon_held(store, ctx)?;
     let batch = take_due(store, ctx, "cli", now, today, false)?;
     let mut lines = Vec::new();
     let mut posted = 0;
     if let Some(batch) = batch {
         let icloud = profile(store.connection())?.preset == MailPreset::Icloud;
-        let subjects: Vec<(String, String)> = batch
-            .letters
-            .iter()
-            .map(|letter| (letter.id.clone(), letter.message.subject.clone()))
-            .collect();
-        let outcomes = griffe_mail::submit_batch(batch);
-        posted = outcomes
-            .iter()
-            .filter(|outcome| outcome.result.is_ok())
-            .count();
-        lines.extend(outcomes.iter().map(|outcome| {
-            let subject = subjects
-                .iter()
-                .find(|(id, _)| id == &outcome.id)
-                .map(|(_, subject)| subject.as_str())
-                .unwrap_or("Une lettre");
-            match &outcome.result {
-                Ok(_) => format!("« {subject} » est partie."),
-                Err(error) => format!(
-                    "« {subject} » n'est pas partie. {}",
-                    french_submit_error(error, icloud)
-                ),
+        let SubmissionBatch {
+            endpoint,
+            secret,
+            imap,
+            letters,
+        } = batch;
+        match griffe_mail::LettreMail::new(endpoint, secret) {
+            Err(error) => {
+                let outcomes = letters
+                    .into_iter()
+                    .map(|letter| {
+                        lines.push(format!(
+                            "« {} » n'est pas partie. {}",
+                            letter.message.subject,
+                            french_submit_error(&error, icloud)
+                        ));
+                        DeliveryOutcome {
+                            id: letter.id,
+                            result: Err(error.clone()),
+                            copy: SentCopyStatus::Skipped,
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                record_deliveries(store, ctx, today, &outcomes)?;
             }
-        }));
-        record_deliveries(store, ctx, today, &outcomes)?;
+            Ok(mail) => {
+                let mut outcomes = Vec::new();
+                for letter in letters {
+                    let id = letter.id.clone();
+                    let subject = letter.message.subject.clone();
+                    if !commit_outbound(store, ctx, &id)? {
+                        continue;
+                    }
+                    let outcome = griffe_mail::submit_letter(&mail, imap.as_ref(), letter);
+                    lines.push(match &outcome.result {
+                        Ok(_) => {
+                            posted += 1;
+                            format!("« {subject} » est partie.")
+                        }
+                        Err(error) => format!(
+                            "« {subject} » n'est pas partie. {}",
+                            french_submit_error(error, icloud)
+                        ),
+                    });
+                    outcomes.push(outcome);
+                }
+                if !outcomes.is_empty() {
+                    record_deliveries(store, ctx, today, &outcomes)?;
+                }
+            }
+        }
     }
     let copy_lines = file_pending_copies(store, ctx)?;
     if lines.is_empty() && copy_lines.is_empty() {

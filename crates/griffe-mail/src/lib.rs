@@ -9,11 +9,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use time::OffsetDateTime;
 
 use griffe_core::mail::{
-    DeliveryOutcome, ICLOUD_HOST, ImapEndpoint, MailSecret, MailSubmitError, OutboundMail,
-    OutboundMessage, PROBE_OK_SENTENCE, ProbeVerdict, SentCopyStatus, SmtpEndpoint,
-    SubmissionBatch, SubmissionReceipt, TlsMode, french_submit_error,
+    DeliveryOutcome, ICLOUD_HOST, ImapEndpoint, LetterParts, MailSecret, MailSubmitError,
+    OutboundMail, OutboundMessage, PROBE_OK_SENTENCE, ProbeVerdict, ReadyLetter, SentCopyStatus,
+    SmtpEndpoint, SubmissionBatch, SubmissionReceipt, TlsMode, french_submit_error, letter_html,
 };
-use lettre::message::{Mailbox, Message, header::ContentType};
+use lettre::message::{Mailbox, Message, MultiPart, SinglePart};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::transport::smtp::response::Response;
 use lettre::{SmtpTransport, Transport};
@@ -112,45 +112,49 @@ pub fn submit_batch(batch: SubmissionBatch) -> Vec<DeliveryOutcome> {
     };
     let outcomes = letters
         .into_iter()
-        .map(|letter| {
-            let id = letter.id;
-            match compose(&letter.message) {
+        .map(|letter| submit_letter(&mail, imap.as_ref(), letter))
+        .collect();
+    drop(mail);
+    outcomes
+}
+
+/// Soumet une lettre déjà engagée. Le secret reste dans `mail`.
+#[must_use]
+pub fn submit_letter(
+    mail: &LettreMail,
+    imap: Option<&ImapEndpoint>,
+    letter: ReadyLetter,
+) -> DeliveryOutcome {
+    let id = letter.id;
+    match compose(&letter.message) {
+        Err(error) => DeliveryOutcome {
+            id,
+            result: Err(error),
+            copy: SentCopyStatus::Skipped,
+        },
+        Ok(email) => {
+            let bytes = email.formatted();
+            match mail.send_bytes(&email, &bytes) {
                 Err(error) => DeliveryOutcome {
                     id,
                     result: Err(error),
                     copy: SentCopyStatus::Skipped,
                 },
-                Ok(email) => {
-                    let bytes = email.formatted();
-                    match mail.send_bytes(&email, &bytes) {
-                        Err(error) => DeliveryOutcome {
-                            id,
-                            result: Err(error),
-                            copy: SentCopyStatus::Skipped,
-                        },
-                        Ok(response) => {
-                            let copy = copy_after_send(
-                                imap.as_ref(),
-                                mail.secret(),
-                                &letter.message.message_id,
-                                &bytes,
-                            );
-                            DeliveryOutcome {
-                                id,
-                                result: Ok(SubmissionReceipt {
-                                    message_id: letter.message.message_id,
-                                    smtp_response: response.smtp_response,
-                                }),
-                                copy,
-                            }
-                        }
+                Ok(response) => {
+                    let copy =
+                        copy_after_send(imap, mail.secret(), &letter.message.message_id, &bytes);
+                    DeliveryOutcome {
+                        id,
+                        result: Ok(SubmissionReceipt {
+                            message_id: letter.message.message_id,
+                            smtp_response: response.smtp_response,
+                        }),
+                        copy,
                     }
                 }
             }
-        })
-        .collect();
-    drop(mail);
-    outcomes
+        }
+    }
 }
 
 /// Dépose des lettres déjà parties. N'ouvre pas de session SMTP.
@@ -252,15 +256,39 @@ pub fn letter_bytes(message: &OutboundMessage) -> Result<Vec<u8>, MailSubmitErro
 fn compose(message: &OutboundMessage) -> Result<Message, MailSubmitError> {
     let from = mailbox(message.from_name.as_deref(), &message.from_address)?;
     let to = mailbox(None, &message.to_address)?;
+    let html = letter_html(&LetterParts {
+        from_name: message.from_name.as_deref().unwrap_or(""),
+        subject: &message.subject,
+        body: &message.text,
+        chrome: &message.chrome,
+    });
+    let plain = SinglePart::plain(message.text.clone());
+    let rich = SinglePart::html(html);
     Message::builder()
         .date(system_time(message.at))
         .from(from)
         .to(to)
         .message_id(Some(message.message_id.clone()))
         .subject(message.subject.clone())
-        .header(ContentType::TEXT_PLAIN)
-        .body(message.text.clone())
+        .multipart(
+            MultiPart::alternative()
+                .boundary(letter_boundary(&message.message_id))
+                .singlepart(plain)
+                .singlepart(rich),
+        )
         .map_err(|error| MailSubmitError::Refused(shorten(&error.to_string(), "")))
+}
+
+/// Frontière MIME stable. `lettre` en tire une au hasard, ce qui changerait
+/// les octets d'une même lettre d'un appel à l'autre.
+fn letter_boundary(message_id: &str) -> String {
+    let mut boundary = String::from("griffe");
+    for ch in message_id.chars() {
+        if ch.is_ascii_alphanumeric() {
+            boundary.push(ch);
+        }
+    }
+    boundary
 }
 
 fn system_time(at: OffsetDateTime) -> SystemTime {
@@ -357,7 +385,9 @@ mod tests {
         LettreMail, PROBE_OK_SENTENCE, classify_text, compose, letter_bytes, open_transport, probe,
         probe_account,
     };
-    use griffe_core::mail::{MailSecret, MailSubmitError, OutboundMessage, SmtpEndpoint, TlsMode};
+    use griffe_core::mail::{
+        LetterChrome, MailSecret, MailSubmitError, OutboundMessage, SmtpEndpoint, TlsMode,
+    };
 
     fn endpoint(port: u16, tls: TlsMode) -> SmtpEndpoint {
         SmtpEndpoint {
@@ -405,7 +435,7 @@ mod tests {
     }
 
     #[test]
-    fn the_letter_is_plain_text_and_keeps_its_message_id() {
+    fn the_letter_is_html_with_a_plain_fallback() {
         let secret = MailSecret::new("secret-value").unwrap();
         assert!(LettreMail::new(endpoint(587, TlsMode::StartTls), secret).is_ok());
         let message = OutboundMessage {
@@ -414,6 +444,7 @@ mod tests {
             to_address: "marie@acme.test".into(),
             subject: "Bonjour".into(),
             text: "Une ligne.".into(),
+            chrome: LetterChrome::default(),
             message_id: "<lettre@griffe.local>".into(),
             at: time::OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap(),
         };
@@ -422,11 +453,15 @@ mod tests {
             letter_bytes(&message).unwrap(),
             letter_bytes(&message).unwrap()
         );
+        assert!(raw.contains("multipart/alternative"));
         assert!(raw.contains("text/plain"));
+        assert!(raw.contains("text/html"));
         assert!(raw.contains("<lettre@griffe.local>"));
         assert!(raw.contains("Une ligne."));
         assert!(!raw.contains("secret-value"));
-        assert!(!raw.to_ascii_lowercase().contains("text/html"));
+        assert!(!raw.contains("<img"));
+        assert!(!raw.contains("@import"));
+        assert!(!raw.contains("url("));
     }
 
     #[test]

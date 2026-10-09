@@ -118,6 +118,8 @@ document.body.addEventListener("click", (event) => {
 });
 
 document.body.addEventListener("input", (event) => {
+  const compose = event.target.closest?.(".letter-compose");
+  if (compose && event.target.id === "body") fillLetter(compose);
   const desk = event.target.closest?.(".phrase-desk");
   if (!desk) return;
   const field = event.target;
@@ -138,6 +140,7 @@ document.body.addEventListener("htmx:afterSwap", (event) => {
   const slug = viewSlugFrom(event.detail.target);
   if (slug) markNav(slug);
   bootPhrases(event.detail.target);
+  bootLetter(event.detail.target);
 });
 
 const JOUR_MOTS = [
@@ -160,6 +163,19 @@ function bootPhrases(root) {
   const desk = root?.querySelector?.(".phrase-desk");
   if (!desk) return;
   placePlayhead(desk, true);
+  fillSheet(desk);
+}
+
+function bootLetter(root) {
+  const compose = root?.querySelector?.(".letter-compose");
+  if (!compose) return;
+  fillLetter(compose);
+}
+
+function fillLetter(compose) {
+  const body = compose.querySelector("textarea#body");
+  const out = compose.querySelector(".letter-face-body");
+  if (body && out) out.textContent = readableText(body.value);
 }
 
 function placePlayhead(desk, instant) {
@@ -190,7 +206,7 @@ function fillSheet(desk) {
   const subjectOut = sheet.querySelector(".phrase-sheet-subject");
   const bodyOut = sheet.querySelector(".phrase-sheet-body");
   if (subjectOut && subject) subjectOut.textContent = applyTags(subject.value, sheet);
-  if (bodyOut && body) bodyOut.textContent = applyTags(body.value, sheet);
+  if (bodyOut && body) bodyOut.textContent = readableText(applyTags(body.value, sheet));
 }
 
 function signatureOf(sheet) {
@@ -258,7 +274,70 @@ function lowerFirst(value) {
   return value.charAt(0).toLowerCase() + value.slice(1);
 }
 
+function readableText(text) {
+  const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const chars = [...normalized];
+  let out = "";
+  let index = 0;
+  let gapAt = 0;
+  while (index < chars.length) {
+    if (urlAt(chars, index)) {
+      out += chars.slice(gapAt, index).join("");
+      const taken = takeUrl(chars, index);
+      out += withoutUtm(taken.url);
+      index = taken.next;
+      gapAt = index;
+    } else {
+      index += 1;
+    }
+  }
+  out += chars.slice(gapAt).join("");
+  return out;
+}
+
+function urlAt(chars, index) {
+  const scheme = startsAt(chars, index, "https://") || startsAt(chars, index, "http://");
+  if (!scheme) return false;
+  if (index === 0) return true;
+  const prev = chars[index - 1];
+  return /\s/u.test(prev) || !/[A-Za-z0-9]/.test(prev);
+}
+
+function startsAt(chars, index, prefix) {
+  for (let offset = 0; offset < prefix.length; offset += 1) {
+    if (chars[index + offset] !== prefix[offset]) return false;
+  }
+  return true;
+}
+
+function takeUrl(chars, index) {
+  let end = index;
+  while (end < chars.length) {
+    const ch = chars[end];
+    if (/\s/u.test(ch) || ch === "<" || ch === ">" || ch === "\"" || ch === "'") break;
+    end += 1;
+  }
+  while (end > index && ".,;:!?)]".includes(chars[end - 1])) end -= 1;
+  return { url: chars.slice(index, end).join(""), next: end };
+}
+
+function withoutUtm(url) {
+  const hash = url.indexOf("#");
+  const main = hash === -1 ? url : url.slice(0, hash);
+  const fragment = hash === -1 ? "" : url.slice(hash);
+  const queryAt = main.indexOf("?");
+  if (queryAt === -1) return url;
+  const path = main.slice(0, queryAt);
+  const kept = main.slice(queryAt + 1).split("&").filter((part) => {
+    if (!part) return false;
+    const name = part.split("=")[0];
+    return !name.toLowerCase().startsWith("utm_");
+  });
+  return path + (kept.length ? `?${kept.join("&")}` : "") + fragment;
+}
+
 bootPhrases(document);
+bootLetter(document);
 
 const paletteOverlay = document.getElementById("palette-overlay");
 const paletteInput = document.getElementById("palette-input");

@@ -8160,6 +8160,8 @@ async fn engaged_conversations_finish_their_series_and_a_new_one_takes_three_mom
     assert!(phrases.contains("value=\"7\""), "{phrases}");
     assert!(phrases.contains("value=\"14\""), "{phrases}");
     assert!(!phrases.contains("step="), "{phrases}");
+    assert!(phrases.contains("?utm_"), "{phrases}");
+    assert!(phrases.contains("sans cette partie"), "{phrases}");
     let shown = without_formula_holder(&phrases);
     for forbidden in [
         "template", "cadence", "step", "campagne", "workflow", "pipeline",
@@ -10830,7 +10832,7 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
         .unwrap();
     assert_eq!(trial.headers().get("HX-Trigger").unwrap(), "griffe:saved");
     let trial_body = body_text(trial).await;
-    assert!(trial_body.contains("Elle part dans"), "{trial_body}");
+    assert!(trial_body.contains("Elle part vers"), "{trial_body}");
     assert!(trial_body.contains("every 1s"), "{trial_body}");
     assert!(trial_body.contains("depart-track"), "{trial_body}");
     assert!(trial_body.contains("Annuler"), "{trial_body}");
@@ -10862,7 +10864,7 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
     assert!(trial_cache.contains("no-store"), "{trial_cache}");
     let trial_poll_body = body_text(trial_poll).await;
     assert!(
-        trial_poll_body.contains("Elle part dans"),
+        trial_poll_body.contains("Elle part vers"),
         "{trial_poll_body}"
     );
     assert!(
@@ -10911,6 +10913,8 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
     assert!(letter.contains("Une lettre"), "{letter}");
     assert!(letter.contains("Envoyer"), "{letter}");
     assert!(letter.contains("C'est parti"), "{letter}");
+    assert!(letter.contains("?utm_"), "{letter}");
+    assert!(letter.contains("sans cette partie"), "{letter}");
     assert!(!letter.contains(secret), "{letter}");
 
     let armed = router
@@ -10928,7 +10932,7 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
         .unwrap();
     assert_eq!(armed.headers().get("HX-Trigger").unwrap(), "griffe:saved");
     let armed_body = body_text(armed).await;
-    assert!(armed_body.contains("Elle part dans"), "{armed_body}");
+    assert!(armed_body.contains("Elle part vers"), "{armed_body}");
     assert!(armed_body.contains("every 1s"), "{armed_body}");
     assert!(armed_body.contains("Annuler"), "{armed_body}");
     assert!(!armed_body.contains(secret), "{armed_body}");
@@ -10958,7 +10962,7 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
         .unwrap_or("");
     assert!(poll_cache.contains("no-store"), "{poll_cache}");
     let poll_body = body_text(poll).await;
-    assert!(poll_body.contains("Elle part dans"), "{poll_body}");
+    assert!(poll_body.contains("Elle part vers"), "{poll_body}");
 
     let kept = body_text(
         router
@@ -10979,6 +10983,38 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
     assert!(kept.contains("Envoyer"), "{kept}");
     assert!(!kept.contains("Elle part"), "{kept}");
     assert!(!kept.contains("every 1s"), "{kept}");
+
+    let mut store = Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    let due = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap();
+    store
+        .connection_mut()
+        .execute(
+            "UPDATE outbound_mail SET send_after = ?1 WHERE id = ?2",
+            (due.as_str(), id),
+        )
+        .unwrap();
+    let batch = griffe_core::mail::take_due(
+        &mut store,
+        &human_ctx(),
+        "fenetre",
+        time::OffsetDateTime::now_utc(),
+        time::OffsetDateTime::now_utc().date(),
+        false,
+    )
+    .unwrap();
+    assert!(batch.is_none());
+    let status: String = store
+        .connection()
+        .query_row(
+            "SELECT status FROM outbound_mail WHERE id = ?1",
+            [id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(status, "cancelled");
+    drop(store);
 
     let again = router
         .clone()

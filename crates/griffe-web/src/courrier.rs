@@ -8,8 +8,8 @@ use axum::response::{Html, IntoResponse, Response};
 use griffe_core::app::{AppError, Executor};
 use griffe_core::mail::{
     ArmOutbound, CancelOutbound, ClearMailSecret, MailSecret, RecordMailProbe, ResolveUncertain,
-    RetryOutbound, SaveMailAccount, SaveMailSecret, SaveMailSignature, SetAutomaticSend, UNDO_SECS,
-    probe_material,
+    RetryOutbound, SaveLetterface, SaveMailAccount, SaveMailSecret, SaveMailSignature,
+    SetAutomaticSend, UNDO_SECS, probe_material,
 };
 use maud::Markup;
 use serde::Deserialize;
@@ -368,6 +368,63 @@ pub struct SignatureForm {
     signature: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct LetterfaceForm {
+    #[serde(default)]
+    ink: String,
+    #[serde(default)]
+    metier: String,
+    #[serde(default)]
+    site: String,
+}
+
+pub async fn save_apparence(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(form): Form<LetterfaceForm>,
+) -> Response {
+    let result = state
+        .with_store_mut(|store| {
+            Executor::new(store).execute(
+                &SaveLetterface {
+                    ink: form.ink.clone(),
+                    metier: form.metier.clone(),
+                    site: form.site.clone(),
+                },
+                &AppState::human_ctx(),
+            )
+        })
+        .await;
+    match result {
+        None => locked(&headers),
+        Some(Err(error)) => saved(
+            &headers,
+            courrier_markup(
+                &state,
+                Some(&CourrierForm {
+                    error: Some(french(&error)),
+                    ink: Some(form.ink),
+                    metier: Some(form.metier),
+                    site: Some(form.site),
+                    ..CourrierForm::blank()
+                }),
+            )
+            .await,
+        ),
+        Some(Ok(_)) => saved(
+            &headers,
+            courrier_markup(
+                &state,
+                Some(&CourrierForm {
+                    notice: Some("L'allure est enregistrée.".into()),
+                    ..CourrierForm::blank()
+                }),
+            )
+            .await,
+        ),
+    }
+}
+
 pub async fn save_signature(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -658,6 +715,9 @@ impl CourrierForm {
             error: None,
             notice: None,
             signature: None,
+            ink: None,
+            metier: None,
+            site: None,
             redisplay: false,
         }
     }
@@ -681,6 +741,9 @@ fn posted_from(form: &AccountForm) -> CourrierForm {
         error: None,
         notice: None,
         signature: None,
+        ink: None,
+        metier: None,
+        site: None,
         redisplay: true,
     }
 }
@@ -698,6 +761,9 @@ fn posted_from_command(command: &SaveMailAccount) -> CourrierForm {
         error: None,
         notice: None,
         signature: None,
+        ink: None,
+        metier: None,
+        site: None,
         redisplay: true,
     }
 }
