@@ -146,7 +146,11 @@ impl FreeflowServer {
         Parameters(args): Parameters<KindNameArgs>,
     ) -> CallToolResult {
         let mut store = self.store.lock().await;
-        let cmd = CreateWorkKind { name: args.name };
+        let cmd = CreateWorkKind {
+            name: args.name,
+            note: String::new(),
+            tint: String::new(),
+        };
         match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
             Err(e) => err_text(e.to_string()),

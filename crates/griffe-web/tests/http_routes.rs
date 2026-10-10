@@ -10512,24 +10512,26 @@ async fn travaux_is_read_as_prose_and_written_as_markdown_that_saves_itself() {
     );
 }
 
-fn kind_forms(html: &str) -> Vec<(String, String)> {
-    let marker = "hx-post=\"/affaires/types/";
-    let word = "class=\"kind-word\">";
+fn kind_links(html: &str) -> Vec<(String, String)> {
+    let marker = "/affaires/types?ouvert=";
     let mut rest = html;
     let mut found = Vec::new();
     while let Some(at) = rest.find(marker) {
         let after = &rest[at + marker.len()..];
         let end = after.find('"').unwrap_or(0);
         let id = after[..end].to_string();
-        let name = after
-            .find(word)
-            .map(|pos| {
-                let start = pos + word.len();
-                let stop = after[start..].find('<').unwrap_or(0);
-                after[start..start + stop].trim().to_string()
-            })
-            .unwrap_or_default();
-        found.push((id, name));
+        if id != "nouveau" && found.iter().all(|(seen, _)| seen != &id) {
+            let name = after
+                .find("class=\"pastille")
+                .and_then(|pos| {
+                    let gt = after[pos..].find('>')?;
+                    let start = pos + gt + 1;
+                    let stop = after[start..].find('<')?;
+                    Some(after[start..start + stop].trim().to_string())
+                })
+                .unwrap_or_default();
+            found.push((id, name));
+        }
         rest = &after[end..];
     }
     found
@@ -10650,27 +10652,35 @@ async fn work_kinds_filter_the_affaires_and_leave_on_the_second_gesture() {
     let quai_uri = "/affaires/Atelier%20Quai";
     let port_uri = "/affaires/Atelier%20Port";
 
-    let naming = posted(
-        &router,
-        &format!("{quai_uri}/types"),
-        &[("kind_other_on", "1"), ("kind_other", "")],
+    let bare = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(quai_uri)
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
     )
     .await;
-    assert_eq!(naming.status(), StatusCode::OK);
-    assert!(naming.headers().get("HX-Trigger").is_none());
-    let naming_body = body_text(naming).await;
-    assert!(naming_body.contains("Nomme le type."), "{naming_body}");
-    assert!(
-        naming_body.contains("hx-trigger=\"change, submit\""),
-        "{naming_body}"
-    );
-    assert!(!naming_body.contains(">Enregistrer<"), "{naming_body}");
-    assert!(!naming_body.contains("hx-on"), "{naming_body}");
+    assert!(bare.contains("Ajouter un type"), "{bare}");
+    assert!(bare.contains("hx-trigger=\"change\""), "{bare}");
+    assert!(!bare.contains("un autre"), "{bare}");
+    assert!(!bare.contains("Nouveau nom"), "{bare}");
+    assert!(!bare.contains("hx-on"), "{bare}");
 
     let created = posted(
         &router,
-        &format!("{quai_uri}/types"),
-        &[("kind_other_on", "1"), ("kind_other", "site web")],
+        "/affaires/types",
+        &[
+            ("name", "site web"),
+            ("note", "le site, la page"),
+            ("tint", "mousse"),
+            ("geste", "garder"),
+        ],
     )
     .await;
     assert_eq!(
@@ -10681,17 +10691,23 @@ async fn work_kinds_filter_the_affaires_and_leave_on_the_second_gesture() {
         Some("griffe:saved")
     );
     let created_body = body_text(created).await;
-    assert!(
-        created_body.contains("value=\"site web\""),
-        "{created_body}"
-    );
+    assert!(created_body.contains("Les types."), "{created_body}");
+    assert!(created_body.contains("le site, la page"), "{created_body}");
+    assert!(created_body.contains("+ un type"), "{created_body}");
+    assert!(!created_body.contains("Nouveau nom"), "{created_body}");
+    let forms = kind_links(&created_body);
+    let site_id = forms
+        .iter()
+        .find(|(_, name)| name == "site web")
+        .map(|(id, _)| id.clone())
+        .unwrap_or_else(|| panic!("site web absent du catalogue : {created_body}"));
 
-    let catalog = body_text(
+    let editor = body_text(
         router
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/affaires/types")
+                    .uri(format!("/affaires/types?ouvert={site_id}"))
                     .header("HX-Request", "true")
                     .body(Body::empty())
                     .unwrap(),
@@ -10700,13 +10716,30 @@ async fn work_kinds_filter_the_affaires_and_leave_on_the_second_gesture() {
             .unwrap(),
     )
     .await;
-    assert!(catalog.contains("Les types."), "{catalog}");
-    let forms = kind_forms(&catalog);
-    let site_id = forms
-        .iter()
-        .find(|(_, name)| name == "site web")
-        .map(|(id, _)| id.clone())
-        .unwrap_or_else(|| panic!("site web absent du catalogue : {catalog}"));
+    assert!(editor.contains("Ce qu'on y range"), "{editor}");
+    assert!(editor.contains("value=\"le site, la page\""), "{editor}");
+    assert!(editor.contains("value=\"mousse\""), "{editor}");
+    assert!(!editor.contains("Nouveau nom"), "{editor}");
+
+    let worn = posted(
+        &router,
+        &format!("{quai_uri}/types"),
+        &[("kind", "site web")],
+    )
+    .await;
+    assert_eq!(
+        worn.headers()
+            .get("HX-Trigger")
+            .and_then(|value| value.to_str().ok()),
+        Some("griffe:saved")
+    );
+    let worn_body = body_text(worn).await;
+    let reading = worn_body
+        .split_once("<details class=\"kind-add\"")
+        .map(|(head, _)| head)
+        .unwrap_or(&worn_body);
+    assert!(reading.contains("site web"), "{worn_body}");
+    assert!(worn_body.contains("value=\"site web\""), "{worn_body}");
 
     let filtered = body_text(
         router
@@ -10731,18 +10764,26 @@ async fn work_kinds_filter_the_affaires_and_leave_on_the_second_gesture() {
     assert!(!filtered.contains("Atelier Port"), "{filtered}");
     assert!(filtered.contains("Les types"), "{filtered}");
     assert!(
-        filtered.contains("<p class=\"kinds\">site web</p>"),
+        filtered.contains("class=\"pastille wash-mousse\">site web"),
         "{filtered}"
     );
+    assert!(
+        filtered.contains("class=\"tint-dot wash-mousse\""),
+        "{filtered}"
+    );
+
+    let made_backend = posted(
+        &router,
+        "/affaires/types",
+        &[("name", "backend"), ("tint", "encre"), ("geste", "garder")],
+    )
+    .await;
+    assert_eq!(made_backend.status(), StatusCode::OK);
 
     let both = posted(
         &router,
         &format!("{port_uri}/types"),
-        &[
-            ("kind", "site web"),
-            ("kind_other_on", "1"),
-            ("kind_other", "backend"),
-        ],
+        &[("kind", "site web"), ("kind", "backend")],
     )
     .await;
     assert_eq!(
@@ -10797,12 +10838,30 @@ async fn work_kinds_filter_the_affaires_and_leave_on_the_second_gesture() {
             .unwrap(),
     )
     .await;
-    let forms = kind_forms(&catalog);
+    let forms = kind_links(&catalog);
     let backend_id = forms
         .iter()
         .find(|(_, name)| name == "backend")
         .map(|(id, _)| id.clone())
         .unwrap_or_else(|| panic!("backend absent : {catalog}"));
+    let made_third = posted(
+        &router,
+        "/affaires/types",
+        &[("name", "reliure"), ("tint", "sable"), ("geste", "garder")],
+    )
+    .await;
+    assert_eq!(made_third.status(), StatusCode::OK);
+    let piled = posted(
+        &router,
+        &format!("{port_uri}/types"),
+        &[
+            ("kind", "site web"),
+            ("kind", "backend"),
+            ("kind", "reliure"),
+        ],
+    )
+    .await;
+    assert_eq!(piled.status(), StatusCode::OK);
     let backend_page = body_text(
         router
             .clone()
@@ -10823,6 +10882,10 @@ async fn work_kinds_filter_the_affaires_and_leave_on_the_second_gesture() {
     );
     assert!(backend_page.contains("Atelier Port"), "{backend_page}");
     assert!(
+        backend_page.contains("class=\"kind-more\">+1"),
+        "{backend_page}"
+    );
+    assert!(
         !backend_page.contains("href=\"/affaires/Atelier%20Quai\""),
         "{backend_page}"
     );
@@ -10830,7 +10893,12 @@ async fn work_kinds_filter_the_affaires_and_leave_on_the_second_gesture() {
     let renamed = posted(
         &router,
         &format!("/affaires/types/{site_id}"),
-        &[("name", "site"), ("geste", "renommer")],
+        &[
+            ("name", "site"),
+            ("note", ""),
+            ("tint", "ardoise"),
+            ("geste", "garder"),
+        ],
     )
     .await;
     assert_eq!(
@@ -10841,8 +10909,12 @@ async fn work_kinds_filter_the_affaires_and_leave_on_the_second_gesture() {
         Some("griffe:saved")
     );
     let renamed_body = body_text(renamed).await;
-    assert!(renamed_body.contains("value=\"site\""), "{renamed_body}");
+    assert!(
+        renamed_body.contains("class=\"pastille wash-ardoise\">site"),
+        "{renamed_body}"
+    );
     assert!(!renamed_body.contains("site web"), "{renamed_body}");
+    assert!(!renamed_body.contains("Nouveau nom"), "{renamed_body}");
 
     let followed = body_text(
         router
@@ -10902,8 +10974,11 @@ async fn work_kinds_filter_the_affaires_and_leave_on_the_second_gesture() {
         Some("griffe:saved")
     );
     let removed_body = body_text(removed).await;
-    assert!(!removed_body.contains("value=\"site\""), "{removed_body}");
-    assert!(removed_body.contains("value=\"backend\""), "{removed_body}");
+    assert!(!removed_body.contains(">site<"), "{removed_body}");
+    assert!(
+        removed_body.contains("class=\"pastille wash-encre\">backend"),
+        "{removed_body}"
+    );
 
     let after = body_text(
         router

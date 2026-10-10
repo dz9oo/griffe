@@ -34,7 +34,7 @@ use griffe_core::prospection::{
 };
 use griffe_core::reference::RefMatch;
 use griffe_core::work_kinds::{
-    CreateWorkKind, DeleteWorkKind, RenameWorkKind, SetDossierWorkKinds, work_kinds,
+    CreateWorkKind, DeleteWorkKind, ReviseWorkKind, SetDossierWorkKinds, work_kinds,
 };
 use maud::{Markup, html};
 use serde::Deserialize;
@@ -3599,16 +3599,16 @@ async fn load_travaux(
 struct DossierTypesForm {
     #[serde(default)]
     kind: Vec<String>,
-    #[serde(default)]
-    kind_other_on: String,
-    #[serde(default)]
-    kind_other: String,
 }
 
 #[derive(Debug, Deserialize, Default)]
 pub(crate) struct TypeNameForm {
     #[serde(default)]
     name: String,
+    #[serde(default)]
+    note: String,
+    #[serde(default)]
+    tint: String,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -3616,17 +3616,24 @@ pub(crate) struct TypeGesteForm {
     #[serde(default)]
     name: String,
     #[serde(default)]
+    note: String,
+    #[serde(default)]
+    tint: String,
+    #[serde(default)]
     geste: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(crate) struct TypesQuery {
+    #[serde(default)]
+    ouvert: String,
 }
 
 fn dossier_types_form(pairs: &[(String, String)]) -> DossierTypesForm {
     let mut form = DossierTypesForm::default();
     for (key, value) in pairs {
-        match key.as_str() {
-            "kind" => form.kind.push(value.clone()),
-            "kind_other_on" => form.kind_other_on.clone_from(value),
-            "kind_other" => form.kind_other.clone_from(value),
-            _ => {}
+        if key == "kind" {
+            form.kind.push(value.clone());
         }
     }
     form
@@ -3660,31 +3667,9 @@ pub async fn dossier_types(
         )
         .into_response();
     };
-    let other = form.kind_other.trim().to_string();
-    let toggle_on = form.kind_other_on == "1";
-    // « un autre » coché et vide : la sélection postée reste, rien n'est écrit.
-    if toggle_on && other.is_empty() {
-        let posted = gens::KindFormState {
-            selected: form.kind,
-            other_open: true,
-            other: String::new(),
-            naming: true,
-        };
-        return page(
-            &headers,
-            gens::dossier_with_kinds(&dossier, today, None, &posted),
-        )
-        .into_response();
-    }
-    let mut names = form.kind;
-    if !other.is_empty() {
-        names.push(other.clone());
-    }
+    let names = form.kind;
     let posted = gens::KindFormState {
         selected: names.clone(),
-        other_open: toggle_on,
-        other: other.clone(),
-        naming: false,
     };
     let cmd = SetDossierWorkKinds { client: id, names };
     let result = state
@@ -3712,8 +3697,12 @@ pub async fn dossier_types(
     }
 }
 
-pub async fn types_get(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
-    match types_markup(&state, "", None, None).await {
+pub async fn types_get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<TypesQuery>,
+) -> Html<String> {
+    match types_markup(&state, &query.ouvert, None, None, None).await {
         None => locked(&headers),
         Some(Err(error)) => page(
             &headers,
@@ -3730,6 +3719,8 @@ pub async fn types_create(
 ) -> Response {
     let cmd = CreateWorkKind {
         name: form.name.clone(),
+        note: form.note.clone(),
+        tint: form.tint.clone(),
     };
     let result = state
         .with_store_mut(|store| Executor::new(store).execute(&cmd, &AppState::human_ctx()))
@@ -3738,9 +3729,18 @@ pub async fn types_create(
         None => locked(&headers).into_response(),
         Some(Err(error)) => {
             let message = error.to_string();
-            types_response(&state, &headers, &form.name, Some(&message), None, false).await
+            types_response(
+                &state,
+                &headers,
+                "nouveau",
+                Some((form.name.as_str(), form.note.as_str(), form.tint.as_str())),
+                Some(&message),
+                None,
+                false,
+            )
+            .await
         }
-        Some(Ok(_)) => types_response(&state, &headers, "", None, None, true).await,
+        Some(Ok(_)) => types_response(&state, &headers, "", None, None, None, true).await,
     }
 }
 
@@ -3763,12 +3763,15 @@ pub async fn types_geste(
                 html! { div class="empty-state" { (error.to_string()) } },
             )
             .into_response(),
-            Some(Ok(true)) => types_response(&state, &headers, "", None, Some(&id), false).await,
+            Some(Ok(true)) => {
+                types_response(&state, &headers, &id, None, None, Some(&id), false).await
+            }
             Some(Ok(false)) => {
                 types_response(
                     &state,
                     &headers,
                     "",
+                    None,
                     Some("Ce type n'existe pas."),
                     None,
                     false,
@@ -3786,14 +3789,16 @@ pub async fn types_geste(
             None => locked(&headers).into_response(),
             Some(Err(error)) => {
                 let message = error.to_string();
-                types_response(&state, &headers, "", Some(&message), None, false).await
+                types_response(&state, &headers, "", None, Some(&message), None, false).await
             }
-            Some(Ok(_)) => types_response(&state, &headers, "", None, None, true).await,
+            Some(Ok(_)) => types_response(&state, &headers, "", None, None, None, true).await,
         };
     }
-    let cmd = RenameWorkKind {
-        id,
-        name: form.name,
+    let cmd = ReviseWorkKind {
+        id: id.clone(),
+        name: form.name.clone(),
+        note: form.note.clone(),
+        tint: form.tint.clone(),
     };
     let result = state
         .with_store_mut(|store| Executor::new(store).execute(&cmd, &AppState::human_ctx()))
@@ -3802,22 +3807,32 @@ pub async fn types_geste(
         None => locked(&headers).into_response(),
         Some(Err(error)) => {
             let message = error.to_string();
-            types_response(&state, &headers, "", Some(&message), None, false).await
+            types_response(
+                &state,
+                &headers,
+                &id,
+                Some((form.name.as_str(), form.note.as_str(), form.tint.as_str())),
+                Some(&message),
+                None,
+                false,
+            )
+            .await
         }
-        Some(Ok(_)) => types_response(&state, &headers, "", None, None, true).await,
+        Some(Ok(_)) => types_response(&state, &headers, "", None, None, None, true).await,
     }
 }
 
 async fn types_markup(
     state: &AppState,
-    draft: &str,
+    open: &str,
+    draft: Option<(&str, &str, &str)>,
     banner: Option<&str>,
     confirming: Option<&str>,
 ) -> Option<Result<Markup, AppError>> {
     state
         .with_store(|store| {
             let kinds = work_kinds(store.connection())?;
-            Ok(gens::types_page(&kinds, draft, banner, confirming))
+            Ok(gens::types_page(&kinds, open, draft, banner, confirming))
         })
         .await
 }
@@ -3825,12 +3840,13 @@ async fn types_markup(
 async fn types_response(
     state: &AppState,
     headers: &HeaderMap,
-    draft: &str,
+    open: &str,
+    draft: Option<(&str, &str, &str)>,
     banner: Option<&str>,
     confirming: Option<&str>,
     saved: bool,
 ) -> Response {
-    match types_markup(state, draft, banner, confirming).await {
+    match types_markup(state, open, draft, banner, confirming).await {
         None => locked(headers).into_response(),
         Some(Err(error)) => page(
             headers,
@@ -3839,7 +3855,11 @@ async fn types_response(
         .into_response(),
         Some(Ok(markup)) => {
             if saved {
-                saved_page(headers, markup)
+                let mut response = saved_page(headers, markup);
+                if let Ok(value) = HeaderValue::from_str("/affaires/types") {
+                    response.headers_mut().insert("HX-Push-Url", value);
+                }
+                response
             } else {
                 page(headers, markup).into_response()
             }

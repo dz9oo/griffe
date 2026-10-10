@@ -116,5 +116,7 @@ pub fn migrations() -> Migrations<'static> {
             .down(include_str!("migrations/0048_sent_copy_down.sql")),
         M::up(include_str!("migrations/0049_letterface_up.sql"))
             .down(include_str!("migrations/0049_letterface_down.sql")),
+        M::up(include_str!("migrations/0050_work_kind_wash_up.sql"))
+            .down(include_str!("migrations/0050_work_kind_wash_down.sql")),
     ])
 }

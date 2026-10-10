@@ -21,7 +21,7 @@ use griffe_core::people::{
     PersonCue, PersonDossier, PersonFigure, PersonKey, PersonRow, people_list, person,
 };
 use griffe_core::store::Store;
-use griffe_core::work_kinds::{WorkKind, dossiers_of_work_kind, work_kinds};
+use griffe_core::work_kinds::{WorkKind, WorkKindTint, dossiers_of_work_kind, work_kinds};
 use maud::{Markup, PreEscaped, html};
 use time::Date;
 
@@ -316,7 +316,7 @@ fn lens_markup(
                             span class="amt" { "Montant" }
                         }
                         @for row in &rows {
-                            (lens_row(row, today))
+                            (lens_row(row, today, catalog))
                         }
                     }
                 }
@@ -428,7 +428,8 @@ fn type_menu(catalog: &[WorkKind], vue: Vue, query: &str, active: &str, label: &
                 @for kind in catalog {
                     @let href = affaires_href(vue, query, kind.id.as_str());
                     a href=(href) hx-get=(href) hx-target="#content" hx-push-url="true"
-                      class={ @if kind.id == active { "on" } } {
+                      class={ @if kind.id == active { "type-link on" } @else { "type-link" } } {
+                        span class=(format!("tint-dot wash-{}", kind.tint.slug())) {}
                         (kind.name)
                     }
                 }
@@ -437,7 +438,7 @@ fn type_menu(catalog: &[WorkKind], vue: Vue, query: &str, active: &str, label: &
     }
 }
 
-fn lens_row(row: &PersonRow, today: Date) -> Markup {
+fn lens_row(row: &PersonRow, today: Date, catalog: &[WorkKind]) -> Markup {
     let href = person_href(&row.name);
     let alarm = row.cues.iter().any(|cue| {
         matches!(
@@ -457,7 +458,7 @@ fn lens_row(row: &PersonRow, today: Date) -> Markup {
                     small { (row.party) }
                 }
                 @if !row.work_kinds.is_empty() {
-                    p class="kinds" { (row.work_kinds.join(" · ")) }
+                    p class="kinds" { (row_pastilles(&row.work_kinds, catalog)) }
                 }
             }
             span class=(cue_class) { (cues_fr(&row.cues)) }
@@ -630,12 +631,9 @@ pub fn letter_stage(
     }
 }
 
-/// Saisie des types sur le dossier. `naming` affiche « Nomme le type. » sans écrire.
+/// Types cochés dans le panneau, quand l'écriture a été refusée.
 pub struct KindFormState {
     pub selected: Vec<String>,
-    pub other_open: bool,
-    pub other: String,
-    pub naming: bool,
 }
 
 pub fn dossier_markup(dossier: &PersonDossier, today: Date, flash: Option<&str>) -> Markup {
@@ -657,34 +655,78 @@ fn kinds_form(dossier: &PersonDossier, href: &str, posted: Option<&KindFormState
     let selected = posted.map_or(dossier.work_kinds.as_slice(), |state| {
         state.selected.as_slice()
     });
-    let other_open = posted.is_some_and(|state| state.other_open);
-    let other = posted.map_or("", |state| state.other.as_str());
-    let naming = posted.is_some_and(|state| state.naming);
     let action = format!("{href}/types");
+    let worn: Vec<&WorkKind> = dossier
+        .work_kind_catalog
+        .iter()
+        .filter(|kind| selected.iter().any(|name| name == &kind.name))
+        .collect();
     html! {
-        form hx-post=(action) hx-target="#content" hx-trigger="change, submit" {
-            fieldset class="word-choice" {
-                legend { "Types" }
-                div class="word-choice-row" {
-                    @for name in &dossier.work_kind_catalog {
-                        label {
-                            input type="checkbox" name="kind" value=(name)
-                                checked[selected.iter().any(|item| item == name)];
-                            (name)
+        div class="kind-block" {
+            p class="kind-label" { "Types" }
+            div class="kind-row" {
+                @for kind in &worn {
+                    (read_pastille(kind))
+                }
+                details class="kind-add" {
+                    summary class="pastille ghost" aria-label="Ajouter un type" { "+" }
+                    div class="kind-picker" {
+                        form hx-post=(action) hx-target="#content" hx-trigger="change" {
+                            @for kind in &dossier.work_kind_catalog {
+                                label class=(picker_class(kind)) {
+                                    input type="checkbox" name="kind" value=(kind.name)
+                                        checked[selected.iter().any(|name| name == &kind.name)];
+                                    span { (kind.name) }
+                                }
+                            }
+                            a class="kind-manage" href="/affaires/types"
+                              hx-get="/affaires/types" hx-target="#content" hx-push-url="true" {
+                                "Les types"
+                            }
                         }
                     }
-                    label {
-                        input class="word-other-toggle" type="checkbox" name="kind_other_on" value="1"
-                            checked[other_open];
-                        "un autre"
-                    }
                 }
-                input class="word-other" name="kind_other" type="text" value=(other)
-                    aria-label="Nom du type" aria-invalid[naming];
             }
-            @if naming {
-                div class="field-error" { "Nomme le type." }
+        }
+    }
+}
+
+fn read_pastille(kind: &WorkKind) -> Markup {
+    html! {
+        span class=(pastille_class(kind)) tabindex="0" {
+            (kind.name)
+            @if !kind.note.is_empty() {
+                span class="pastille-note" { (kind.note) }
             }
+        }
+    }
+}
+
+fn pastille_class(kind: &WorkKind) -> String {
+    let mut class = format!("pastille wash-{}", kind.tint.slug());
+    if kind.tint.needs_paper_text() {
+        class.push_str(" on-paper");
+    }
+    class
+}
+
+fn picker_class(kind: &WorkKind) -> String {
+    format!("{} pick", pastille_class(kind))
+}
+
+/// Deux pastilles au plus, puis le reste en « +N ».
+fn row_pastilles(names: &[String], catalog: &[WorkKind]) -> Markup {
+    let marks: Vec<&WorkKind> = catalog
+        .iter()
+        .filter(|kind| names.iter().any(|name| name == &kind.name))
+        .collect();
+    let rest = marks.len().saturating_sub(2);
+    html! {
+        @for kind in marks.iter().take(2) {
+            span class=(pastille_class(kind)) { (kind.name) }
+        }
+        @if rest > 0 {
+            span class="kind-more" { "+" (rest) }
         }
     }
 }
@@ -2700,7 +2742,8 @@ pub fn load_card(
 
 pub fn types_page(
     kinds: &[WorkKind],
-    draft: &str,
+    open: &str,
+    draft: Option<(&str, &str, &str)>,
     banner: Option<&str>,
     confirming: Option<&str>,
 ) -> Markup {
@@ -2714,40 +2757,102 @@ pub fn types_page(
             @if let Some(msg) = banner {
                 p class="mast-note" role="alert" { (msg) }
             }
-            @for kind in kinds {
-                div class="kind-line" {
-                    @if confirming == Some(kind.id.as_str()) {
-                        form hx-post=(format!("/affaires/types/{}", kind.id)) hx-target="#content" {
-                            p class="kind-word" { (kind.name) }
-                            div class="row-actions" {
-                                button class="btn danger" type="submit" name="geste" value="confirmer" {
-                                    "Oui, le retirer"
+            ul class="kind-list" {
+                @for kind in kinds {
+                    li class={ @if confirming == Some(kind.id.as_str()) || open == kind.id { "editing" } } {
+                        @if confirming == Some(kind.id.as_str()) {
+                            (kind_confirm(kind))
+                        } @else if open == kind.id {
+                            (kind_editor(
+                                &format!("/affaires/types/{}", kind.id),
+                                draft_or(kind, draft).0,
+                                draft_or(kind, draft).1,
+                                draft_or(kind, draft).2,
+                                true,
+                            ))
+                        } @else {
+                            @let href = format!("/affaires/types?ouvert={}", kind.id);
+                            a class="kind-open" href=(href)
+                              hx-get=(href) hx-target="#content" hx-push-url="true" {
+                                span class=(pastille_class(kind)) { (kind.name) }
+                                @if !kind.note.is_empty() {
+                                    span class="kind-aside" { (kind.note) }
                                 }
-                                a class="quiet" href="/affaires/types"
-                                  hx-get="/affaires/types" hx-target="#content" hx-push-url="true" {
-                                    "Garder"
-                                }
-                            }
-                        }
-                    } @else {
-                        form hx-post=(format!("/affaires/types/{}", kind.id)) hx-target="#content" {
-                            p class="kind-word" { (kind.name) }
-                            div class="field" {
-                                label for=(format!("rename-{}", kind.id)) { "Nouveau nom" }
-                                input id=(format!("rename-{}", kind.id)) name="name" type="text" value=(kind.name);
-                            }
-                            div class="row-actions" {
-                                button class="quiet" type="submit" name="geste" value="renommer" { "Renommer" }
-                                button class="quiet" type="submit" name="geste" value="retirer" { "Retirer" }
                             }
                         }
                     }
                 }
+                li class={ @if open == "nouveau" { "editing" } } {
+                    @if open == "nouveau" {
+                        (kind_editor(
+                            "/affaires/types",
+                            draft.map(|(name, _, _)| name).unwrap_or(""),
+                            draft.map(|(_, note, _)| note).unwrap_or(""),
+                            draft.map(|(_, _, tint)| tint).unwrap_or("encre"),
+                            false,
+                        ))
+                    } @else {
+                        a class="kind-open" href="/affaires/types?ouvert=nouveau"
+                          hx-get="/affaires/types?ouvert=nouveau" hx-target="#content" hx-push-url="true" {
+                            span class="pastille ghost" { "+ un type" }
+                        }
+                    }
+                }
             }
-            form hx-post="/affaires/types" hx-target="#content" {
-                (form::text("name", "Un type", draft, None))
-                div class="row-actions" {
-                    button class="seal" type="submit" { "Enregistrer" }
+        }
+    }
+}
+
+fn draft_or<'a>(
+    kind: &'a WorkKind,
+    draft: Option<(&'a str, &'a str, &'a str)>,
+) -> (&'a str, &'a str, &'a str) {
+    draft.unwrap_or((kind.name.as_str(), kind.note.as_str(), kind.tint.slug()))
+}
+
+fn kind_confirm(kind: &WorkKind) -> Markup {
+    html! {
+        form hx-post=(format!("/affaires/types/{}", kind.id)) hx-target="#content" {
+            span class=(pastille_class(kind)) { (kind.name) }
+            div class="row-actions" {
+                button class="btn danger" type="submit" name="geste" value="confirmer" {
+                    "Oui, le retirer"
+                }
+                a class="quiet" href="/affaires/types"
+                  hx-get="/affaires/types" hx-target="#content" hx-push-url="true" {
+                    "Garder"
+                }
+            }
+        }
+    }
+}
+
+fn kind_editor(action: &str, name: &str, note: &str, tint: &str, existing: bool) -> Markup {
+    let chosen = WorkKindTint::parse(tint).unwrap_or(WorkKindTint::Encre);
+    html! {
+        form class="kind-editor" hx-post=(action) hx-target="#content" {
+            input name="name" type="text" value=(name) aria-label="Nom" autocomplete="off";
+            label {
+                span { "Ce qu'on y range" }
+                input name="note" type="text" value=(note) autocomplete="off";
+            }
+            div class="swatches" {
+                @for wash in WorkKindTint::ALL {
+                    label class=(format!("swatch wash-{}", wash.slug())) {
+                        input type="radio" name="tint" value=(wash.slug())
+                            aria-label=(wash.label())
+                            checked[wash == chosen];
+                    }
+                }
+            }
+            div class="row-actions" {
+                button class="seal" type="submit" name="geste" value="garder" { "Garder" }
+                @if existing {
+                    button class="quiet" type="submit" name="geste" value="retirer" { "Retirer" }
+                }
+                a class="quiet" href="/affaires/types"
+                  hx-get="/affaires/types" hx-target="#content" hx-push-url="true" {
+                    "Fermer"
                 }
             }
         }

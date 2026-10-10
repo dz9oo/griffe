@@ -421,7 +421,7 @@ pub struct PersonDossier {
     pub work_kinds: Vec<String>,
     /// Catalogue, pour le formulaire du dossier. Absent du JSON.
     #[serde(skip)]
-    pub work_kind_catalog: Vec<String>,
+    pub work_kind_catalog: Vec<crate::work_kinds::WorkKind>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -728,12 +728,12 @@ struct Snapshot {
     touches: HashMap<OpportunityId, Touch>,
     stopped: Vec<Opportunity>,
     work_kinds: HashMap<ClientId, Vec<String>>,
-    work_kind_catalog: Vec<String>,
+    work_kind_catalog: Vec<crate::work_kinds::WorkKind>,
 }
 
 struct KindIndex {
     by_client: HashMap<ClientId, Vec<String>>,
-    catalog: Vec<String>,
+    catalog: Vec<crate::work_kinds::WorkKind>,
 }
 
 fn load_kind_index(conn: &Connection) -> Result<KindIndex, AppError> {
@@ -741,10 +741,7 @@ fn load_kind_index(conn: &Connection) -> Result<KindIndex, AppError> {
     for (client, name) in crate::work_kinds::attached_kind_names(conn)? {
         by_client.entry(client).or_default().push(name);
     }
-    let catalog = crate::work_kinds::work_kinds(conn)?
-        .into_iter()
-        .map(|kind| kind.name)
-        .collect();
+    let catalog = crate::work_kinds::work_kinds(conn)?;
     Ok(KindIndex { by_client, catalog })
 }
 

@@ -8,6 +8,7 @@ Ce qui change pour qui se sert de Griffe. Une section par version publiée.
 - Un nom ouvre le dossier à côté de la liste. Pleine largeur le pose sur toute la pièce. Fermer le retire, Échap aussi.
 - Chercher un nom ne garde que la vue affichée.
 - Sur le dossier, Les travaux se lisent en rendu. Écrire ouvre le markdown, qui se garde seul. Relire revient au rendu. Plusieurs allers et retours laissent la page répondre : on peut revenir en arrière et changer de pièce.
+- Les types se portent en pastilles. On leur choisit une teinte, et si on veut une note sur ce qu'on y range. Sur la fiche, seuls les types qu'elle porte sont là. Le « + » ouvre ceux du coffre. La liste en montre deux, puis le reste.
 - Une lettre part en page, et le texte seul reste pour les boîtes qui ne lisent pas la page. Le nom affiché reste celui de l'expéditeur. Il n'ouvre plus le message. Une adresse suivie de ?utm_… reste cliquable en entier. La personne lit l'adresse sans cette partie.
 - Dans Les affaires, Écrire et Relire se succèdent. Relire montre la lettre telle qu'elle part. La zone d'écriture garde le texte.
 - Le courrier montre la lettre, et la formule à côté. D'où elles partent tient sur une ligne une fois le serveur connu. L'essai est cette lettre. L'envoi du jour reste à part.
