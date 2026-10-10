@@ -13,12 +13,9 @@ const SERIF: &str =
 const PAPER: &str = "#f6f1e7";
 const MARGIN: &str = "#efe8dc";
 const INK: &str = "#1c1814";
-const RULE: &str = "#e3d9c8";
 
 /// Ce qu'il faut pour habiller une lettre. Le corps est le texte écrit, formule comprise.
 pub struct LetterParts<'a> {
-    /// Nom en tête. Vide : pas de nom.
-    pub from_name: &'a str,
     /// Sujet, repris dans le titre du document.
     pub subject: &'a str,
     /// Texte de la lettre, tel qu'il part aussi en `text/plain`.
@@ -70,8 +67,7 @@ pub fn letter_card(letter: &LetterParts<'_>) -> String {
     );
     html.push_str(PAPER);
     html.push_str(";border-collapse:collapse;\"><tr><td style=\"padding:32px 28px;\">");
-    header(&mut html, letter.from_name);
-    html.push_str("<div style=\"margin:20px 0 0;\">");
+    html.push_str("<div style=\"margin:0;\">");
     prose_blocks(&mut html, prose, INK, INK);
     html.push_str("</div>");
     if let Some(signature) = signature {
@@ -109,23 +105,6 @@ pub fn readable_links(text: &str) -> String {
         }
     }
     out
-}
-
-fn header(html: &mut String, from_name: &str) {
-    let name = from_name.trim();
-    if name.is_empty() {
-        return;
-    }
-    html.push_str("<p style=\"margin:0;font-family:");
-    html.push_str(SERIF);
-    html.push_str(";font-size:22px;line-height:1.2;letter-spacing:-0.02em;color:");
-    html.push_str(INK);
-    html.push_str(";\">");
-    html.push_str(&escape(name));
-    html.push_str("</p>");
-    html.push_str("<p style=\"margin:16px 0 0;border-top:1px solid ");
-    html.push_str(RULE);
-    html.push_str(";font-size:0;line-height:0;\">&nbsp;</p>");
 }
 
 /// La formule, dans la même encre et le même serif que la lettre. Un mail, un
@@ -423,7 +402,6 @@ mod tests {
             "Bonjour,\n\nLe dossier : {TRACKED}.\n\n<script>alert(1)</script>\n\nBien à vous,\nCamille"
         );
         let html = letter_html(&LetterParts {
-            from_name: "Camille",
             subject: "Conformité",
             body: &body,
             chrome: &chrome,
@@ -439,6 +417,8 @@ mod tests {
         assert!(!html.contains("https://atelier.example</a>"));
         assert!(html.contains("text-decoration:none"));
         assert!(!html.contains("text-decoration:underline"));
+        assert!(!html.contains("font-size:22px"));
+        assert_eq!(html.matches("Camille").count(), 1);
         assert_eq!(html.matches("Bien à vous").count(), 1);
         assert!(html.contains("Bonjour"));
     }
@@ -463,11 +443,12 @@ https://atelier.example/conformite?utm_source=mairie&utm_medium=email&utm_campai
             signature: signature.into(),
         };
         let html = letter_html(&LetterParts {
-            from_name: "Nicolas Collier",
             subject: "Essai",
             body: &closed,
             chrome: &chrome,
         });
+        assert_eq!(html.matches("Nicolas COLLIER").count(), 1);
+        assert!(!html.contains("font-size:22px"));
         assert_eq!(html.matches("Ingénieur logiciel indépendant").count(), 1);
         assert_eq!(
             html.matches("https://atelier.example/conformite").count(),

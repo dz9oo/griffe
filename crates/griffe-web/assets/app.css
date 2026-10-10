@@ -2112,15 +2112,6 @@ body:has(.lens) .foot { max-width: none; }
 .lens-new:hover { filter: brightness(1.08); }
 .lens-quiet { border: 1px solid var(--ink); color: var(--ink); background: transparent; }
 .lens-quiet:hover { background: var(--ink); color: var(--paper); }
-.lens-notes {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 18px;
-  padding: 0 28px 8px;
-  color: var(--muted);
-  font-size: 14px;
-}
-.lens-notes a { color: inherit; }
 .lens-work { flex: 1; min-height: 0; display: flex; position: relative; }
 .lens-table { flex: 1; min-width: 0; overflow: auto; }
 .lens-head, .lens .trow {

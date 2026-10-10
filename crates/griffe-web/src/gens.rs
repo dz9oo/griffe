@@ -756,7 +756,6 @@ fn assemble_phrases(
         moments,
         chronicle,
         read_caption: reading.caption,
-        from_name: reading.from_name,
         chrome: reading.chrome,
         banner,
         status,
@@ -842,7 +841,6 @@ fn neighbor_after_drop(
 struct PhraseReading {
     caption: String,
     ctx: TemplateContext,
-    from_name: String,
     chrome: LetterChrome,
     back_href: String,
     back_label: String,
@@ -858,14 +856,12 @@ fn phrase_reading(
     let (moi, societe) = speaker(store);
     let account = griffe_core::mail::profile(store.connection()).unwrap_or_default();
     let raw_signature = account.signature.clone();
-    let from_name = account.from_name.clone();
     let chrome = LetterChrome::from_profile(&account);
     let pour = query.pour.trim();
     let depuis = query.depuis.trim();
     let action = gens::phrases_href(depuis, pour, genre);
     let example = PhraseReading {
         caption: "Exemple, pour voir.".to_string(),
-        from_name: from_name.clone(),
         chrome: chrome.clone(),
         ctx: TemplateContext {
             prenom: "Camille".into(),
@@ -905,7 +901,6 @@ fn phrase_reading(
     };
     PhraseReading {
         caption,
-        from_name,
         chrome,
         ctx: TemplateContext {
             prenom,

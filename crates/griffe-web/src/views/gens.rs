@@ -133,6 +133,7 @@ enum Vue {
     Livre,
     Tas,
     Sorties,
+    Arretes,
     Tout,
 }
 
@@ -141,6 +142,7 @@ fn parse_vue(raw: &str) -> Vue {
         "livre" => Vue::Livre,
         "tas" => Vue::Tas,
         "sorties" => Vue::Sorties,
+        "arretes" => Vue::Arretes,
         "tout" => Vue::Tout,
         _ => Vue::Geste,
     }
@@ -152,6 +154,7 @@ fn vue_key(vue: Vue) -> &'static str {
         Vue::Livre => "livre",
         Vue::Tas => "tas",
         Vue::Sorties => "sorties",
+        Vue::Arretes => "arretes",
         Vue::Tout => "tout",
     }
 }
@@ -162,6 +165,7 @@ fn vue_label(vue: Vue) -> &'static str {
         Vue::Livre => "le livre",
         Vue::Tas => "le tas",
         Vue::Sorties => "les sorties",
+        Vue::Arretes => "les arrêtés",
         Vue::Tout => "tout",
     }
 }
@@ -173,11 +177,19 @@ fn vue_hint(vue: Vue) -> &'static str {
         Vue::Livre => "Les conversations en cours, et les missions.",
         Vue::Tas => "Les premiers messages et les premiers contacts.",
         Vue::Sorties => "Un nom, dès qu'une dépense le porte.",
-        Vue::Tout => "Le livre, le tas, les sorties, et les arrêtées.",
+        Vue::Arretes => "Les conversations qu'on a arrêtées.",
+        Vue::Tout => "Le livre, le tas, les sorties, et les arrêtés.",
     }
 }
 
-const VUES: [Vue; 5] = [Vue::Geste, Vue::Livre, Vue::Tas, Vue::Sorties, Vue::Tout];
+const VUES: [Vue; 6] = [
+    Vue::Geste,
+    Vue::Livre,
+    Vue::Tas,
+    Vue::Sorties,
+    Vue::Arretes,
+    Vue::Tout,
+];
 
 fn lens_markup(
     list: &PeopleList,
@@ -210,8 +222,14 @@ fn lens_markup(
     let rows = match vue {
         Vue::Geste => {
             let mut rows = Vec::new();
-            for row in conversations.into_iter().chain(missions).chain(outgoing) {
-                if asks_today(row) {
+            for row in conversations
+                .into_iter()
+                .chain(messages)
+                .chain(contacts)
+                .chain(missions)
+                .chain(outgoing)
+            {
+                if asks_today(row, today) {
                     rows.push(row);
                 }
             }
@@ -228,6 +246,7 @@ fn lens_markup(
             rows
         }
         Vue::Sorties => outgoing,
+        Vue::Arretes => stopped,
         Vue::Tout => {
             let mut rows = conversations;
             rows.extend(messages);
@@ -275,27 +294,6 @@ fn lens_markup(
                 a class="lens-quiet" href="/affaires/types"
                   hx-get="/affaires/types" hx-target="#content" hx-push-url="true" {
                     "Les types"
-                }
-            }
-            div class="lens-notes" {
-                @if vue != Vue::Tas && !list.first_messages.is_empty() {
-                    @let pile = affaires_href(Vue::Tas, "", type_id);
-                    a href=(pile) hx-get=(pile) hx-target="#content" hx-push-url="true" {
-                        (pile_count(list.first_messages.len(), "premier message", "premiers messages"))
-                    }
-                }
-                @if vue != Vue::Tas && !list.first_contacts.is_empty() {
-                    @let pile = affaires_href(Vue::Tas, "", type_id);
-                    a href=(pile) hx-get=(pile) hx-target="#content" hx-push-url="true" {
-                        (pile_count(list.first_contacts.len(), "premier contact", "premiers contacts"))
-                    }
-                }
-                @if vue != Vue::Tout && !list.stopped.is_empty() {
-                    @let there = affaires_href(Vue::Tout, "", type_id);
-                    a href=(there) hx-get=(there) hx-target="#content" hx-push-url="true" {
-                        "Arrêtées · " (list.stopped.len())
-                        span class="stopped-hint" { " · voir" }
-                    }
                 }
             }
             div class="lens-work" {
@@ -346,16 +344,21 @@ fn rows_kept<'a>(
         .collect()
 }
 
-fn asks_today(row: &PersonRow) -> bool {
-    row.cues.iter().any(|cue| {
-        matches!(
-            cue,
-            PersonCue::FollowUpDue { today: true, .. }
-                | PersonCue::InvoiceOverdue { .. }
-                | PersonCue::MatchingDebit
-                | PersonCue::DraftReady
-        )
-    })
+/// Un prochain pas déjà dû, même quand la phrase du stade avale la relance
+/// (premier message). Une facture en retard, un débit qui correspond, ou un
+/// brouillon prêt, demandent aussi un geste.
+fn asks_today(row: &PersonRow, today: Date) -> bool {
+    let step_is_due = row.due_on.is_some_and(|on| on <= today);
+    step_is_due
+        || row.cues.iter().any(|cue| {
+            matches!(
+                cue,
+                PersonCue::FollowUpDue { today: true, .. }
+                    | PersonCue::InvoiceOverdue { .. }
+                    | PersonCue::MatchingDebit
+                    | PersonCue::DraftReady
+            )
+        })
 }
 
 fn empty_vue(vue: Vue) -> &'static str {
@@ -364,6 +367,7 @@ fn empty_vue(vue: Vue) -> &'static str {
         Vue::Livre => "Le livre est vide.",
         Vue::Tas => "Le tas est vide.",
         Vue::Sorties => "Un nom apparaît ici quand une dépense le porte.",
+        Vue::Arretes => "Personne n'est arrêté.",
         Vue::Tout => "Personne pour l'instant. Une conversation commence par un nom et une phrase.",
     }
 }
@@ -374,14 +378,6 @@ fn noms_fr(n: usize) -> String {
         1 => "un nom".into(),
         2 => "deux noms".into(),
         n => format!("{n} noms"),
-    }
-}
-
-fn pile_count(n: usize, one: &str, many: &str) -> String {
-    if n == 1 {
-        format!("1 {one}")
-    } else {
-        format!("{n} {many}")
     }
 }
 
@@ -587,14 +583,12 @@ pub fn dossier_page(store: &Store, needle: &str, today: Date) -> Result<Markup, 
 /// Habit de la lettre sur cet écran. Le dossier ne le porte pas : une relecture
 /// d'erreur, sans coffre sous la main, reste sur l'habit neutre.
 struct LetterLook {
-    from_name: String,
     chrome: LetterChrome,
 }
 
 impl LetterLook {
     fn plain() -> Self {
         Self {
-            from_name: String::new(),
             chrome: LetterChrome::default(),
         }
     }
@@ -602,7 +596,6 @@ impl LetterLook {
     fn from_store(store: &Store) -> Self {
         let account = griffe_core::mail::profile(store.connection()).unwrap_or_default();
         Self {
-            from_name: account.from_name.clone(),
             chrome: LetterChrome::from_profile(&account),
         }
     }
@@ -611,7 +604,6 @@ impl LetterLook {
 /// La carte telle qu'elle part. `close` ajoute la formule sans l'écrire dans le champ.
 /// `heading` pose le sujet au-dessus, quand la page ne l'a pas déjà.
 pub fn letter_stage(
-    from_name: &str,
     subject: &str,
     body: &str,
     chrome: &LetterChrome,
@@ -624,7 +616,6 @@ pub fn letter_stage(
         body.to_string()
     };
     let card = letter_card(&LetterParts {
-        from_name,
         subject,
         body: &text,
         chrome,
@@ -1279,7 +1270,7 @@ fn history_body(event: &HistoryEvent, look: &LetterLook) -> Markup {
                         span class="preview" { (title) }
                         span class="fold-mark" aria-hidden="true" {}
                     }
-                    (letter_stage(&look.from_name, subject, body, &look.chrome, false, false))
+                    (letter_stage(subject, body, &look.chrome, false, false))
                 }
             }
         }
@@ -1853,8 +1844,6 @@ pub struct PhrasesView {
     pub moments: Vec<PhraseMoment>,
     pub chronicle: String,
     pub read_caption: String,
-    /// Nom en tête de la carte.
-    pub from_name: String,
     /// Couleur, métier, site, formule brute.
     pub chrome: LetterChrome,
     pub banner: Option<String>,
@@ -2031,7 +2020,7 @@ pub fn phrase_sheet_inner(view: &PhrasesView) -> Markup {
     html! {
         p class="phrase-caption" { (view.read_caption) }
         p class="phrase-sheet-subject" { (subject) }
-        (letter_stage(&view.from_name, subject, body, &view.chrome, true, false))
+        (letter_stage(subject, body, &view.chrome, true, false))
     }
 }
 
@@ -2335,7 +2324,6 @@ pub fn letter_page(
         .filter(|e| matches!(e.kind, HistoryKind::Letter { .. }))
         .collect();
     let look = LetterLook {
-        from_name: mail.from_name.clone(),
         chrome: LetterChrome::from_profile(&mail),
     };
     let relire = format!("{href}/relire");
@@ -2421,7 +2409,7 @@ pub fn letter_page(
                     }
                 }
                 @if keep.reading {
-                    (letter_stage(&look.from_name, subject, body, &look.chrome, true, true))
+                    (letter_stage(subject, body, &look.chrome, true, true))
                 }
                 div class="letter-under" {
                     div class="meta" {

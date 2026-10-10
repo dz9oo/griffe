@@ -101,7 +101,7 @@ fn markup(
                 div class="courrier-letter-col" {
                     p class="courrier-kicker" { "Une lettre d'essai. Le prénom est fictif." }
                     div id="letter-card" {
-                        (card_column(from_name, &letter.subject, &letter.body, &chrome))
+                        (card_column(&letter.subject, &letter.body, &chrome))
                     }
                     form class="courrier-send" {
                         div class="field" {
@@ -275,18 +275,13 @@ pub fn preview_card(store: &Store, signature: &str) -> Result<Markup, AppError> 
     let letter = griffe_core::mail::trial_with_closing(store.connection(), signature)?;
     let mut chrome = LetterChrome::from_profile(&account);
     chrome.signature = signature.to_string();
-    Ok(card_column(
-        &account.from_name,
-        &letter.subject,
-        &letter.body,
-        &chrome,
-    ))
+    Ok(card_column(&letter.subject, &letter.body, &chrome))
 }
 
-fn card_column(from_name: &str, subject: &str, body: &str, chrome: &LetterChrome) -> Markup {
+fn card_column(subject: &str, body: &str, chrome: &LetterChrome) -> Markup {
     html! {
         p class="phrase-sheet-subject" { (subject) }
-        (letter_stage(from_name, subject, body, chrome, true, false))
+        (letter_stage(subject, body, chrome, true, false))
     }
 }
 

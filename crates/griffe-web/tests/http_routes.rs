@@ -810,6 +810,28 @@ async fn les_affaires_lists_three_chapters_and_opens_a_dossier() {
         "pas de commande CLI dans la lettre : {created_body}"
     );
 
+    {
+        let mut store =
+            Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+        Executor::new(&mut store)
+            .execute(
+                &CreateProspect {
+                    prospect_name: "Plus tard".into(),
+                    address: None,
+                    representative: None,
+                    email: None,
+                    phone: None,
+                    name: "un jour".into(),
+                    amount: Money::ZERO,
+                    probability: Probability::new(10).unwrap(),
+                    next_action_at: time::macros::date!(2026 - 10 - 01),
+                    source: None,
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+    }
+
     let list = body_text(
         router
             .clone()
@@ -827,6 +849,11 @@ async fn les_affaires_lists_three_chapters_and_opens_a_dossier() {
     assert!(list.contains("demande un geste"), "{list}");
     assert!(list.contains("le livre"), "{list}");
     assert!(list.contains("les sorties"), "{list}");
+    assert!(list.contains("les arrêtés"), "{list}");
+    assert!(
+        !list.contains("les arrêtées"),
+        "le filtre dit les arrêtés : {list}"
+    );
     assert!(
         list.contains("Les conversations en cours, et les missions."),
         "le livre s'explique dans le menu : {list}"
@@ -840,15 +867,23 @@ async fn les_affaires_lists_three_chapters_and_opens_a_dossier() {
         "les sorties s'expliquent dans le menu : {list}"
     );
     assert!(
+        list.contains("Les conversations qu'on a arrêtées."),
+        "les arrêtés s'expliquent dans le menu : {list}"
+    );
+    assert!(
         !list.contains("Fournisseurs"),
         "plus un chapitre Fournisseurs : {list}"
     );
     assert!(
-        !list.contains("Camille"),
-        "un premier message reste dans le tas : {list}"
+        list.contains("Camille") && list.contains("aujourd'hui"),
+        "un premier message dont le pas est aujourd'hui demande un geste : {list}"
     );
-    assert!(list.contains("1 premier message"), "{list}");
-    assert!(list.contains("Rien ne demande un geste."), "{list}");
+    assert!(
+        !list.contains("Plus tard"),
+        "un pas plus loin reste dans le tas : {list}"
+    );
+    assert!(!list.contains("1 premier message"), "{list}");
+    assert!(!list.contains("Rien ne demande un geste."), "{list}");
     assert!(list.contains("Nouvelle conversation"), "{list}");
 
     let filtered = body_text(
@@ -864,7 +899,8 @@ async fn les_affaires_lists_three_chapters_and_opens_a_dossier() {
             .unwrap(),
     )
     .await;
-    assert!(filtered.contains("1 premier message"), "{filtered}");
+    assert!(!filtered.contains("Camille"), "{filtered}");
+    assert!(!filtered.contains("1 premier message"), "{filtered}");
     assert!(filtered.contains("Aucun nom."), "{filtered}");
 
     let found = body_text(
@@ -881,7 +917,24 @@ async fn les_affaires_lists_three_chapters_and_opens_a_dossier() {
     )
     .await;
     assert!(found.contains("Camille"), "{found}");
+    assert!(!found.contains("Plus tard"), "{found}");
     assert!(!found.contains("Aucun nom."), "{found}");
+
+    let pile = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires?vue=tas")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(pile.contains("Plus tard"), "{pile}");
+    assert!(pile.contains("Camille"), "{pile}");
     assert!(!list.contains("freeflow "), "{list}");
     assert!(
         !list.contains("impayé") && !list.contains("pipeline"),
@@ -9382,9 +9435,34 @@ async fn a_stopped_conversation_is_visible_and_the_stop_gesture_looks_final() {
             .unwrap(),
     )
     .await;
-    assert!(list.contains("Arrêtées · 1"), "{list}");
-    assert!(list.contains("voir"), "{list}");
-    assert!(list.contains("stopped-hint"), "{list}");
+    assert!(list.contains("les arrêtés"), "{list}");
+    assert!(!list.contains("Arrêtées · "), "{list}");
+    assert!(!list.contains("stopped-hint"), "{list}");
+    assert!(
+        !list.contains("Ancien"),
+        "un arrêté n'est pas un geste du jour : {list}"
+    );
+
+    let arretes = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires?vue=arretes")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(arretes.contains("Ancien"), "{arretes}");
+    assert!(arretes.contains("pas le bon moment"), "{arretes}");
+    assert!(
+        !arretes.contains("Atelier"),
+        "une conversation ouverte reste hors des arrêtés : {arretes}"
+    );
 
     let dossier = body_text(
         router
