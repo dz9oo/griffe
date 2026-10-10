@@ -64,9 +64,28 @@ pub fn display_phone(raw: &str) -> String {
     national_digits(&compact).map_or_else(|| trimmed.to_string(), |digits| pair_digits(&digits))
 }
 
+/// Lien `tel:` quand la ligne n'est qu'un numéro. Huit chiffres au moins.
+/// Un numéro français devient `tel:+33` suivi des neuf chiffres. Un autre garde son `+` et ses chiffres.
+#[must_use]
+pub fn tel_href(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let compact: String = trimmed.chars().filter(|c| !is_separator(*c)).collect();
+    let digits = compact.strip_prefix('+').unwrap_or(compact.as_str());
+    if digits.len() < 8 || !digits.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    if let Some(national) = national_digits(&compact) {
+        return Some(format!("tel:+33{}", &national[1..]));
+    }
+    Some(format!("tel:{compact}"))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::display_phone;
+    use super::{display_phone, tel_href};
 
     #[test]
     fn a_french_number_is_paired_and_any_other_stays_as_typed() {
@@ -91,5 +110,21 @@ mod tests {
         for (raw, expected) in cases {
             assert_eq!(display_phone(raw), expected, "{raw:?}");
         }
+    }
+
+    #[test]
+    fn a_line_that_is_only_a_number_becomes_a_tel_link() {
+        assert_eq!(
+            tel_href("06 70 12 32 60"),
+            Some("tel:+33670123260".to_string())
+        );
+        assert_eq!(tel_href("0670123260"), Some("tel:+33670123260".to_string()));
+        assert_eq!(
+            tel_href("+1 415 555 0100"),
+            Some("tel:+14155550100".to_string())
+        );
+        assert_eq!(tel_href("2026"), None);
+        assert_eq!(tel_href("03 27 44 44 44 poste 12"), None);
+        assert_eq!(tel_href("bonjour"), None);
     }
 }

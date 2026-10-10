@@ -76,6 +76,7 @@ fn people_routes() -> Router<AppState> {
         .route("/types/{id}", post(gens::types_geste))
         .route("/nouvelle", get(gens::new_get).post(gens::new_post))
         .route("/phrases", get(gens::phrases_get).post(gens::phrases_post))
+        .route("/phrases/apercu", post(gens::phrases_preview))
         .route(
             "/phrases/nouveau",
             get(gens::genre_new_get).post(gens::genre_new_post),
@@ -85,6 +86,7 @@ fn people_routes() -> Router<AppState> {
             "/{reference}/ecrire",
             get(gens::write_get).post(gens::write),
         )
+        .route("/{reference}/relire", post(gens::relire))
         .route("/{reference}/envoye", post(gens::sent))
         .route("/{reference}/envoyer", post(gens::send_letter))
         .route("/{reference}/envoi", get(gens::send_status))
@@ -108,8 +110,8 @@ fn people_routes() -> Router<AppState> {
             "/{reference}/travaux",
             get(gens::travaux_get).post(gens::travaux_post),
         )
+        .route("/{reference}/travaux/ecrire", get(gens::travaux_edit_get))
         .route("/{reference}/types", post(gens::dossier_types))
-        .route("/{reference}/travaux/apercu", post(gens::travaux_preview))
         .route("/{reference}/reporter", post(gens::snooze))
         .route(
             "/{reference}/arreter",
@@ -306,6 +308,12 @@ pub fn router(state: AppState) -> Router {
             "/societe/courrier/signature",
             post(courrier::save_signature),
         )
+        .route(
+            "/societe/courrier/apparence",
+            post(courrier::save_apparence),
+        )
+        .route("/societe/courrier/lire", post(courrier::save_lire))
+        .route("/societe/courrier/apercu", post(courrier::letter_preview))
         .route("/societe/courrier/envoyer", post(courrier::send_trial))
         .route("/societe/courrier/envoi", get(courrier::trial_status))
         .route(

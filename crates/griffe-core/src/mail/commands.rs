@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 use time::{Date, Duration, OffsetDateTime};
 
 use super::error::MailError;
-use super::model::{ICLOUD_HOST, MailPreset, PROBE_OK_SENTENCE, TlsMode, UNDO_SECS};
+use super::model::{ICLOUD_HOST, LetterInk, MailPreset, PROBE_OK_SENTENCE, TlsMode, UNDO_SECS};
+use super::present::close_letter;
 use super::secret::MailSecret;
 use super::store::{self, NewLetter};
 use crate::app::{AppError, Command};
@@ -52,6 +53,37 @@ pub struct SaveMailAccount {
     pub tls: String,
     pub username: String,
     pub preset: String,
+    /// Hôte des copies. Ignoré pour iCloud. Vide : pas de copie.
+    #[serde(default)]
+    pub imap_host: String,
+    /// Port des copies. 993, ou ignoré quand l'hôte est vide.
+    #[serde(default = "default_imap_port")]
+    pub imap_port: u16,
+}
+
+fn default_imap_port() -> u16 {
+    super::model::IMAP_PORT
+}
+
+fn checked_copy(
+    preset: MailPreset,
+    host: &str,
+    port: u16,
+) -> Result<(Option<String>, Option<u16>), AppError> {
+    if preset == MailPreset::Icloud {
+        return Ok((None, None));
+    }
+    let host = host.trim();
+    if host.is_empty() {
+        return Ok((None, None));
+    }
+    if host.contains("://") || host.contains(char::is_whitespace) {
+        return Err(MailError::Incomplete.into());
+    }
+    if port != super::model::IMAP_PORT {
+        return Err(MailError::CopyPort.into());
+    }
+    Ok((Some(host.to_string()), Some(super::model::IMAP_PORT)))
 }
 
 impl Command for SaveMailAccount {
@@ -67,6 +99,7 @@ impl Command for SaveMailAccount {
             &self.username,
             &self.preset,
         )?;
+        let (imap_host, imap_port) = checked_copy(preset, &self.imap_host, self.imap_port)?;
         let name = self
             .from_name
             .as_deref()
@@ -83,6 +116,8 @@ impl Command for SaveMailAccount {
             tls,
             &username,
             preset,
+            imap_host.as_deref(),
+            imap_port,
             &now,
         )?;
         SetFollowUpSender {
@@ -142,6 +177,77 @@ impl Command for RecordMailProbe {
     }
 }
 
+/// Retient l'identifiant IMAP qui a ouvert la session. Pas un secret.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RememberImapUsername {
+    pub username: String,
+}
+
+impl Command for RememberImapUsername {
+    type Output = ();
+    const NAME: &'static str = "mail.remember_imap_username";
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        let Some(username) = checked_imap_username(&self.username) else {
+            return Ok(());
+        };
+        store::remember_username(conn, &username)
+    }
+}
+
+fn checked_imap_username(raw: &str) -> Option<String> {
+    let text = raw.trim();
+    if text.is_empty()
+        || text.chars().count() > 200
+        || text.chars().any(|ch| ch.is_whitespace() || ch.is_control())
+    {
+        return None;
+    }
+    Some(text.to_string())
+}
+
+/// Résultat du dépôt dans Envoyés. La lettre est déjà partie.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct RecordSentCopy {
+    pub id: String,
+    pub status: String,
+    pub detail: String,
+    pub imap_username: Option<String>,
+}
+
+impl Command for RecordSentCopy {
+    type Output = ();
+    const NAME: &'static str = "mail.record_copy";
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        if !matches!(self.status.as_str(), "saved" | "failed" | "skipped") {
+            return Err(MailError::Missing.into());
+        }
+        let detail = {
+            let text: String = self
+                .detail
+                .chars()
+                .filter(|ch| !ch.is_control())
+                .take(160)
+                .collect();
+            let text = text.trim();
+            (!text.is_empty()).then(|| text.to_string())
+        };
+        let username = self
+            .imap_username
+            .as_deref()
+            .and_then(checked_imap_username);
+        store::record_copy(
+            conn,
+            &self.id,
+            &self.status,
+            detail.as_deref(),
+            username.as_deref(),
+            &now_stamp()?,
+        )
+    }
+}
+
 fn checked_detail(ok: bool, raw: &str) -> String {
     let text: String = raw
         .chars()
@@ -179,6 +285,48 @@ impl Command for SaveMailSignature {
         };
         store::save_signature(conn, stored, &now_stamp()?)
     }
+}
+
+const METIER_MAX: usize = 80;
+const SITE_MAX: usize = 300;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SaveLetterface {
+    pub ink: String,
+    pub metier: String,
+    pub site: String,
+}
+
+impl Command for SaveLetterface {
+    type Output = ();
+    const NAME: &'static str = "mail.save_letterface";
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        let ink = LetterInk::parse(self.ink.trim()).ok_or(MailError::Ink)?;
+        let metier = checked_metier(&self.metier)?;
+        let site = checked_site(&self.site)?;
+        store::save_letterface(conn, ink.as_str(), &metier, &site, &now_stamp()?)
+    }
+}
+
+fn checked_metier(raw: &str) -> Result<String, AppError> {
+    let text = raw.replace('\r', "").trim().to_string();
+    if text.contains('\n') || text.chars().count() > METIER_MAX {
+        return Err(MailError::Metier.into());
+    }
+    Ok(text)
+}
+
+fn checked_site(raw: &str) -> Result<String, AppError> {
+    let text = raw.trim().to_string();
+    if text.is_empty() {
+        return Ok(text);
+    }
+    let http = text.starts_with("https://") || text.starts_with("http://");
+    if !http || text.chars().count() > SITE_MAX || text.contains(char::is_whitespace) {
+        return Err(MailError::Site.into());
+    }
+    Ok(text)
 }
 
 fn checked_signature(raw: &str) -> Result<String, AppError> {
@@ -223,6 +371,10 @@ pub struct ArmOutbound {
     pub follow_subject_id: Option<String>,
     pub follow_cycle: Option<String>,
     pub follow_step: Option<String>,
+    /// Fiche dont le courriel est relu au moment de l'envoi. `None` : lettre d'essai
+    /// ou lettre sans fiche, l'adresse saisie reste.
+    #[serde(default)]
+    pub client_id: Option<String>,
 }
 
 impl Command for ArmOutbound {
@@ -236,7 +388,8 @@ impl Command for ArmOutbound {
     fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
         let to_address = parse_email(self.to_address.trim()).map_err(|_| MailError::Address)?;
         let subject = self.subject.trim().to_string();
-        let body = self.body.trim().to_string();
+        let signature = store::profile(conn)?.signature;
+        let body = close_letter(self.body.trim(), &signature);
         if subject.is_empty() || body.is_empty() {
             return Err(MailError::Incomplete.into());
         }
@@ -257,6 +410,7 @@ impl Command for ArmOutbound {
                 follow_subject_id: self.follow_subject_id.clone(),
                 follow_cycle: self.follow_cycle.clone(),
                 follow_step: self.follow_step.clone(),
+                client_id: self.client_id.clone(),
             },
             &now,
         )
@@ -278,6 +432,32 @@ impl Command for CancelOutbound {
 
     fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
         store::cancel(conn, &self.id, &now_stamp()?)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct CommitOutbound {
+    pub id: String,
+}
+
+impl Command for CommitOutbound {
+    type Output = bool;
+    const NAME: &'static str = "mail.commit";
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        store::commit_outbound(conn, &self.id, &now_stamp()?)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct AbandonHeld;
+
+impl Command for AbandonHeld {
+    type Output = ();
+    const NAME: &'static str = "mail.abandon_held";
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        store::abandon_held(conn, &now_stamp()?)
     }
 }
 

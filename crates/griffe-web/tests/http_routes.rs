@@ -279,7 +279,7 @@ async fn an_htmx_boosted_navigation_returns_only_the_view_fragment() {
         "une navigation boostée ne doit renvoyer que le contenu de #content, pas la coque"
     );
     assert!(
-        body.contains("Les affaires") || body.contains("En conversation"),
+        body.contains("demande un geste") || body.contains("Nouvelle conversation"),
         "l'ancienne route rend Les affaires : {body}"
     );
     assert!(
@@ -329,7 +329,7 @@ async fn the_atelier_chrome_has_three_pieces_and_vendored_fonts() {
     .await;
     assert!(gens.contains("data-view=\"affaires\""), "{gens}");
     assert!(gens.contains("Nouvelle conversation"), "{gens}");
-    assert!(gens.contains("En conversation"), "{gens}");
+    assert!(gens.contains("demande un geste"), "{gens}");
     assert!(
         gens.contains("data-piece=\"affaires\"") && gens.contains("aria-current=\"page\""),
         "Les affaires se soulignent au chargement : {gens}"
@@ -824,15 +824,31 @@ async fn les_affaires_lists_three_chapters_and_opens_a_dossier() {
     )
     .await;
     assert!(list.contains("data-view=\"affaires\""), "{list}");
-    assert!(list.contains("En conversation"), "{list}");
-    assert!(list.contains("En mission"), "{list}");
-    assert!(list.contains("Chez qui ça sort"), "{list}");
+    assert!(list.contains("demande un geste"), "{list}");
+    assert!(list.contains("le livre"), "{list}");
+    assert!(list.contains("les sorties"), "{list}");
+    assert!(
+        list.contains("Les conversations en cours, et les missions."),
+        "le livre s'explique dans le menu : {list}"
+    );
+    assert!(
+        list.contains("Les premiers messages et les premiers contacts."),
+        "le tas s'explique dans le menu : {list}"
+    );
+    assert!(
+        list.contains("Un nom, dès qu'une dépense le porte."),
+        "les sorties s'expliquent dans le menu : {list}"
+    );
     assert!(
         !list.contains("Fournisseurs"),
         "plus un chapitre Fournisseurs : {list}"
     );
-    assert!(list.contains("Camille"), "{list}");
+    assert!(
+        !list.contains("Camille"),
+        "un premier message reste dans le tas : {list}"
+    );
     assert!(list.contains("1 premier message"), "{list}");
+    assert!(list.contains("Rien ne demande un geste."), "{list}");
     assert!(list.contains("Nouvelle conversation"), "{list}");
 
     let filtered = body_text(
@@ -856,7 +872,7 @@ async fn les_affaires_lists_three_chapters_and_opens_a_dossier() {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/affaires?q=cami")
+                    .uri("/affaires?vue=tas&q=cami")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1069,15 +1085,47 @@ async fn les_affaires_qualifies_amounts_and_opens_an_outgoing_dossier() {
             .unwrap(),
     )
     .await;
-    assert!(list.contains("Chez qui ça sort"), "{list}");
+    assert!(list.contains("les sorties"), "{list}");
     assert!(!list.contains("Fournisseurs"), "{list}");
     assert!(
-        list.contains("autour de") && list.contains("Atelier Nord"),
-        "l'enveloppe se dit : {list}"
+        !list.contains("Atelier Nord"),
+        "l'estimation qui n'est pas pour aujourd'hui reste dans le livre : {list}"
     );
+
+    let book = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires?vue=livre")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
     assert!(
-        list.contains("Tiime") && list.contains("versés"),
-        "le versé se dit : {list}"
+        book.contains("autour de") && book.contains("Atelier Nord"),
+        "l'enveloppe se dit : {book}"
+    );
+
+    let outgoing = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires?vue=sorties")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        outgoing.contains("Tiime") && outgoing.contains("versés"),
+        "le versé se dit : {outgoing}"
     );
 
     let tiime = body_text(
@@ -8112,7 +8160,7 @@ async fn engaged_conversations_finish_their_series_and_a_new_one_takes_three_mom
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/affaires")
+                    .uri("/affaires?vue=tout")
                     .header("HX-Request", "true")
                     .body(Body::empty())
                     .unwrap(),
@@ -8144,7 +8192,11 @@ async fn engaged_conversations_finish_their_series_and_a_new_one_takes_three_mom
     .await;
     assert!(phrases.contains("class=\"phrase-desk\""), "{phrases}");
     assert!(!phrases.contains("letter spread"), "{phrases}");
-    assert!(!phrases.contains("<table"), "{phrases}");
+    assert!(phrases.contains("class=\"letter-stage\""), "{phrases}");
+    let tables = phrases.matches("<table").count();
+    let presented = phrases.matches("role=\"presentation\"").count();
+    assert_eq!(tables, presented, "{phrases}");
+    assert!(tables >= 1, "{phrases}");
     assert!(phrases.contains("class=\"phrase-frise\""), "{phrases}");
     assert!(
         phrases.contains("Premier message le jour du dossier."),
@@ -8160,6 +8212,8 @@ async fn engaged_conversations_finish_their_series_and_a_new_one_takes_three_mom
     assert!(phrases.contains("value=\"7\""), "{phrases}");
     assert!(phrases.contains("value=\"14\""), "{phrases}");
     assert!(!phrases.contains("step="), "{phrases}");
+    assert!(phrases.contains("?utm_"), "{phrases}");
+    assert!(phrases.contains("sans cette partie"), "{phrases}");
     let shown = without_formula_holder(&phrases);
     for forbidden in [
         "template", "cadence", "step", "campagne", "workflow", "pipeline",
@@ -8218,7 +8272,7 @@ label_close=Derni%C3%A8re+relance&subject_close=Fin&body_close=Le+dernier+mot.&r
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/affaires")
+                    .uri("/affaires?vue=tout")
                     .header("HX-Request", "true")
                     .body(Body::empty())
                     .unwrap(),
@@ -8537,12 +8591,14 @@ async fn the_genre_changes_only_the_words() {
             "{forbidden} : {camille_fiche}"
         );
     }
-    let revision = hidden_value(&camille_fiche, "client_revision");
     post_form(
         &router,
         "/affaires/Camille/fiche",
-        &format!(
-            "who=Camille&client_revision={revision}&email=camille@exemple.fr&genre=Services+publics"
+        &fiche_post_body(
+            &camille_fiche,
+            "Camille",
+            "camille@exemple.fr",
+            "genre=Services+publics",
         ),
     )
     .await;
@@ -8560,11 +8616,10 @@ async fn the_genre_changes_only_the_words() {
             .unwrap(),
     )
     .await;
-    let nina_revision = hidden_value(&nina_fiche, "client_revision");
     post_form(
         &router,
         "/affaires/Nina/fiche",
-        &format!("who=Nina&client_revision={nina_revision}&email=nina@exemple.fr&genre=Commerces"),
+        &fiche_post_body(&nina_fiche, "Nina", "nina@exemple.fr", "genre=Commerces"),
     )
     .await;
 
@@ -8745,7 +8800,6 @@ async fn the_genre_changes_only_the_words() {
             .unwrap(),
     )
     .await;
-    let revision = hidden_value(&camille_fiche, "client_revision");
     assert!(camille_fiche.contains(">aucun<"), "{camille_fiche}");
     assert!(
         camille_fiche.contains("value=\"Services publics\" checked"),
@@ -8761,7 +8815,12 @@ async fn the_genre_changes_only_the_words() {
     post_form(
         &router,
         "/affaires/Camille/fiche",
-        &format!("who=Camille&client_revision={revision}&email=camille@exemple.fr&genre=Commerces"),
+        &fiche_post_body(
+            &camille_fiche,
+            "Camille",
+            "camille@exemple.fr",
+            "genre=Commerces",
+        ),
     )
     .await;
     assert_eq!(opportunity_due(&db_path, "accompagnement"), due_on_bump);
@@ -8801,12 +8860,14 @@ async fn the_genre_changes_only_the_words() {
             .unwrap(),
     )
     .await;
-    let leo_revision = hidden_value(&leo_fiche, "client_revision");
     let created = post_form(
         &router,
         "/affaires/L%C3%A9o/fiche",
-        &format!(
-            "who=L%C3%A9o&client_revision={leo_revision}&email=leo@exemple.fr&genre_other=Ateliers"
+        &fiche_post_body(
+            &leo_fiche,
+            "L%C3%A9o",
+            "leo@exemple.fr",
+            "genre_other=Ateliers",
         ),
     )
     .await;
@@ -8875,12 +8936,11 @@ async fn the_genre_changes_only_the_words() {
             .unwrap(),
     )
     .await;
-    let nina_revision = hidden_value(&nina_fiche, "client_revision");
     assert!(nina_fiche.contains(">aucun<"), "{nina_fiche}");
     let unnamed = post_form(
         &router,
         "/affaires/Nina/fiche",
-        &format!("who=Nina&client_revision={nina_revision}&email=nina@exemple.fr&genre=autre"),
+        &fiche_post_body(&nina_fiche, "Nina", "nina@exemple.fr", "genre=autre"),
     )
     .await;
     assert!(unnamed.contains("Nomme le genre."), "{unnamed}");
@@ -8904,11 +8964,10 @@ async fn the_genre_changes_only_the_words() {
         "{nina_kept}"
     );
     assert!(nina_kept.contains("Brouillon figé"), "{nina_kept}");
-    let nina_revision = hidden_value(&unnamed, "client_revision");
     post_form(
         &router,
         "/affaires/Nina/fiche",
-        &format!("who=Nina&client_revision={nina_revision}&email=nina@exemple.fr&genre="),
+        &fiche_post_body(&unnamed, "Nina", "nina@exemple.fr", "genre="),
     )
     .await;
     let nina_plain = body_text(
@@ -9018,6 +9077,17 @@ fn hidden_value(page: &str, name: &str) -> String {
         .and_then(|rest| rest.split('"').next())
         .unwrap_or("")
         .to_string()
+}
+
+/// Rejoue l'envoi du formulaire de fiche, jeton de contact compris.
+/// Sans ce jeton, le coffre refuse : la fiche a un correspondant.
+fn fiche_post_body(page: &str, who: &str, email: &str, extra: &str) -> String {
+    format!(
+        "who={who}&client_revision={}&contact_id={}&contact_revision={}&email={email}&{extra}",
+        hidden_value(page, "client_revision"),
+        hidden_value(page, "contact_id"),
+        hidden_value(page, "contact_revision"),
+    )
 }
 
 fn genre_id_from(page: &str) -> String {
@@ -9660,7 +9730,7 @@ async fn two_fiches_with_the_same_respondent_open_under_qui() {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/affaires")
+                    .uri("/affaires?vue=tas")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -9688,7 +9758,7 @@ async fn two_fiches_with_the_same_respondent_open_under_qui() {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/affaires?q=fr%C3%A9d%C3%A9ric")
+                    .uri("/affaires?vue=tas&q=fr%C3%A9d%C3%A9ric")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -9864,7 +9934,7 @@ async fn reporter_unfolds_into_three_days_ten_days_or_a_count() {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/affaires")
+                    .uri("/affaires?vue=livre")
                     .header("HX-Request", "true")
                     .body(Body::empty())
                     .unwrap(),
@@ -9898,7 +9968,7 @@ async fn reporter_unfolds_into_three_days_ten_days_or_a_count() {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/affaires")
+                    .uri("/affaires?vue=livre")
                     .header("HX-Request", "true")
                     .body(Body::empty())
                     .unwrap(),
@@ -9934,7 +10004,7 @@ async fn reporter_unfolds_into_three_days_ten_days_or_a_count() {
         router
             .oneshot(
                 Request::builder()
-                    .uri("/affaires")
+                    .uri("/affaires?vue=livre")
                     .header("HX-Request", "true")
                     .body(Body::empty())
                     .unwrap(),
@@ -9972,7 +10042,7 @@ fn form_escape(value: &str) -> String {
 }
 
 #[tokio::test]
-async fn travaux_page_previews_without_saving_and_keeps_the_rendered_note() {
+async fn travaux_is_read_as_prose_and_written_as_markdown_that_saves_itself() {
     let db = test_db_path("travaux");
     let mut store = Store::create(&db, &Passphrase::from(PASSPHRASE)).unwrap();
     let client_id = match Executor::new(&mut store)
@@ -10053,52 +10123,18 @@ async fn travaux_page_previews_without_saving_and_keeps_the_rendered_note() {
     assert!(empty.contains("Les travaux."), "{empty}");
     assert!(empty.contains("Rien d'écrit."), "{empty}");
     assert!(empty.contains("Où on en est."), "{empty}");
-    assert!(empty.contains("keyup changed delay:400ms"), "{empty}");
-    assert!(empty.contains("/travaux/apercu"), "{empty}");
+    assert!(empty.contains("/travaux/ecrire"), "{empty}");
+    assert!(empty.contains("Écrire"), "{empty}");
+    assert!(!empty.contains("<textarea"), "{empty}");
+    assert!(!empty.contains("/travaux/apercu"), "{empty}");
+    assert!(!empty.contains("keyup"), "{empty}");
 
-    let source = "# Le chantier\n\nUne *ligne*.\n\n- un\n\n> dit\n\n`code`\n\n[voir](https://exemple.fr/page)\n\n![plan](https://exemple.fr/plan.png)\n\n<script>alert(1)</script>\n";
-    let preview = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("{dossier_uri}/travaux/apercu"))
-                .header("content-type", "application/x-www-form-urlencoded")
-                .header("HX-Request", "true")
-                .body(Body::from(form_encode(&[("body", source)])))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert!(preview.headers().get("HX-Trigger").is_none());
-    let preview_body = body_text(preview).await;
-    assert!(
-        preview_body.contains("<h1>Le chantier</h1>"),
-        "{preview_body}"
-    );
-    assert!(preview_body.contains("<em>ligne</em>"), "{preview_body}");
-    assert!(preview_body.contains("<li>un</li>"), "{preview_body}");
-    assert!(preview_body.contains("<blockquote>"), "{preview_body}");
-    assert!(preview_body.contains("<code>code</code>"), "{preview_body}");
-    assert!(
-        preview_body.contains("voir (https://exemple.fr/page)"),
-        "{preview_body}"
-    );
-    assert!(!preview_body.contains("<a"), "{preview_body}");
-    assert!(!preview_body.contains("<img"), "{preview_body}");
-    assert!(!preview_body.contains("plan.png"), "{preview_body}");
-    assert!(
-        !preview_body.to_ascii_lowercase().contains("<script"),
-        "{preview_body}"
-    );
-    assert!(preview_body.contains("&lt;script&gt;"), "{preview_body}");
-
-    let still_empty = body_text(
+    let editing = body_text(
         router
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("{dossier_uri}/travaux"))
+                    .uri(format!("{dossier_uri}/travaux/ecrire"))
                     .header("HX-Request", "true")
                     .body(Body::empty())
                     .unwrap(),
@@ -10107,12 +10143,16 @@ async fn travaux_page_previews_without_saving_and_keeps_the_rendered_note() {
             .unwrap(),
     )
     .await;
-    assert!(still_empty.contains("Rien d'écrit."), "{still_empty}");
-    assert!(
-        !still_empty.contains("Le chantier"),
-        "l'aperçu n'écrit pas : {still_empty}"
-    );
+    assert!(editing.contains("Il se garde tout seul."), "{editing}");
+    assert!(editing.contains("Relire"), "{editing}");
+    assert!(editing.contains("input changed delay:600ms"), "{editing}");
+    assert!(editing.contains("hx-swap=\"none\""), "{editing}");
+    assert!(editing.contains("hx-push-url=\"false\""), "{editing}");
+    assert!(editing.contains("hx-history=\"false\""), "{editing}");
+    assert!(!editing.contains("work-prose"), "{editing}");
+    assert!(!editing.contains("/travaux/apercu"), "{editing}");
 
+    let source = "# Le chantier\n\nUne *ligne*.\n\n- un\n\n> dit\n\n`code`\n\n[voir](https://exemple.fr/page)\n\n![plan](https://exemple.fr/plan.png)\n\n<script>alert(1)</script>\n";
     let saved = router
         .clone()
         .oneshot(
@@ -10132,17 +10172,140 @@ async fn travaux_page_previews_without_saving_and_keeps_the_rendered_note() {
     assert_eq!(
         saved
             .headers()
+            .get("X-Griffe-Travaux")
+            .and_then(|v| v.to_str().ok()),
+        Some("ok")
+    );
+    assert_eq!(
+        saved
+            .headers()
+            .get("X-Griffe-Travaux-Revision")
+            .and_then(|v| v.to_str().ok()),
+        Some("1")
+    );
+    assert_eq!(
+        saved
+            .headers()
             .get("HX-Trigger")
             .and_then(|v| v.to_str().ok()),
         Some("griffe:saved")
     );
     let saved_body = body_text(saved).await;
-    assert!(saved_body.contains("<h1>Le chantier</h1>"), "{saved_body}");
+    assert!(saved_body.contains("Gardé."), "{saved_body}");
+    assert!(saved_body.contains("value=\"1\""), "{saved_body}");
+    assert!(!saved_body.contains("<h1>Le chantier</h1>"), "{saved_body}");
+    assert!(!saved_body.contains("work-prose"), "{saved_body}");
+
+    let read = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("{dossier_uri}/travaux"))
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(read.contains("<h1>Le chantier</h1>"), "{read}");
+    assert!(read.contains("<em>ligne</em>"), "{read}");
+    assert!(read.contains("<li>un</li>"), "{read}");
+    assert!(read.contains("<blockquote>"), "{read}");
+    assert!(read.contains("<code>code</code>"), "{read}");
+    assert!(read.contains("voir (https://exemple.fr/page)"), "{read}");
+    assert!(!read.contains("<a href=\"https://exemple.fr"), "{read}");
+    assert!(!read.contains("<img"), "{read}");
+    assert!(!read.contains("plan.png"), "{read}");
+    assert!(!read.to_ascii_lowercase().contains("<script"), "{read}");
+    assert!(read.contains("&lt;script&gt;"), "{read}");
+    assert!(!read.contains("<textarea"), "{read}");
+
+    let source_page = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("{dossier_uri}/travaux/ecrire"))
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(source_page.contains("textarea"), "{source_page}");
+    assert!(source_page.contains("# Le chantier"), "{source_page}");
+    assert!(!source_page.contains("work-prose"), "{source_page}");
     assert!(
-        !saved_body.to_ascii_lowercase().contains("<script"),
-        "{saved_body}"
+        !source_page.to_ascii_lowercase().contains("<script"),
+        "{source_page}"
     );
-    assert!(saved_body.contains("&lt;script&gt;"), "{saved_body}");
+
+    let same = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("{dossier_uri}/travaux"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from(form_encode(&[
+                    ("body", source),
+                    ("revision", "0"),
+                ])))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        same.headers()
+            .get("X-Griffe-Travaux-Revision")
+            .and_then(|v| v.to_str().ok()),
+        Some("1")
+    );
+    assert!(same.headers().get("HX-Trigger").is_none());
+
+    let reread = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("{dossier_uri}/travaux"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from(form_encode(&[
+                    ("body", source),
+                    ("revision", "1"),
+                    ("intent", "relire"),
+                ])))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        reread
+            .headers()
+            .get("HX-Trigger")
+            .and_then(|v| v.to_str().ok()),
+        Some("griffe:saved")
+    );
+    let push = reread
+        .headers()
+        .get("HX-Push-Url")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(push.ends_with("/travaux"), "{push}");
+    assert!(!push.contains("/ecrire"), "{push}");
+    let reread_body = body_text(reread).await;
+    assert!(
+        reread_body.contains("<h1>Le chantier</h1>"),
+        "{reread_body}"
+    );
+    assert!(!reread_body.contains("<textarea"), "{reread_body}");
 
     let stale = router
         .clone()
@@ -10155,22 +10318,84 @@ async fn travaux_page_previews_without_saving_and_keeps_the_rendered_note() {
                 .body(Body::from(form_encode(&[
                     ("body", "Un texte périmé.\n"),
                     ("revision", "0"),
+                    ("intent", "relire"),
                 ])))
                 .unwrap(),
         )
         .await
         .unwrap();
+    assert_eq!(
+        stale
+            .headers()
+            .get("X-Griffe-Travaux")
+            .and_then(|v| v.to_str().ok()),
+        Some("conflit")
+    );
     assert!(stale.headers().get("HX-Trigger").is_none());
     let stale_body = body_text(stale).await;
     assert!(
         stale_body.contains("Ce récit a changé. Voici celui du coffre."),
         "{stale_body}"
     );
-    assert!(stale_body.contains("Le chantier"), "{stale_body}");
-    assert!(!stale_body.contains("Un texte périmé"), "{stale_body}");
+    assert!(stale_body.contains("Un texte périmé."), "{stale_body}");
+    assert!(stale_body.contains("<textarea"), "{stale_body}");
+    assert!(
+        stale_body.contains("Reprendre le récit du coffre"),
+        "{stale_body}"
+    );
+    assert!(stale_body.contains("data-travaux-discard"), "{stale_body}");
+
+    let kept = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("{dossier_uri}/travaux"))
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(kept.contains("<h1>Le chantier</h1>"), "{kept}");
+    assert!(!kept.contains("Un texte périmé"), "{kept}");
+
+    let over = "b".repeat(griffe_core::dossier_work::MAX_BODY_BYTES + 1);
+    let too_long = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("{dossier_uri}/travaux"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from(form_encode(&[
+                    ("body", &over),
+                    ("revision", "1"),
+                ])))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        too_long
+            .headers()
+            .get("X-Griffe-Travaux")
+            .and_then(|v| v.to_str().ok()),
+        Some("refuse")
+    );
+    let too_long_body = body_text(too_long).await;
+    assert!(
+        too_long_body.contains("Ce récit dépasse 64 Kio."),
+        "{too_long_body}"
+    );
+    assert!(!too_long_body.contains("<textarea"), "{too_long_body}");
 
     let estimation = body_text(
         router
+            .clone()
             .oneshot(
                 Request::builder()
                     .uri(format!("{dossier_uri}/estimation"))
@@ -10185,6 +10410,27 @@ async fn travaux_page_previews_without_saving_and_keeps_the_rendered_note() {
     assert!(
         estimation.contains("Ce que chaque ligne vaut."),
         "{estimation}"
+    );
+
+    // Relire remplace #content avant htmx:afterRequest. Le compteur qui
+    // bloque la navigation doit suivre le XHR, pas le formulaire déjà retiré.
+    let js = body_text(
+        router
+            .oneshot(
+                Request::builder()
+                    .uri("/assets/app.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        js.contains("const travauxRequests = new Set()")
+            && js.contains("travauxRequests.delete(xhr)")
+            && js.contains("htmx:onLoadError"),
+        "plusieurs Relire ne doivent pas laisser le compteur de sauvegarde coincé : {js}"
     );
 }
 
@@ -10389,7 +10635,7 @@ async fn work_kinds_filter_the_affaires_and_leave_on_the_second_gesture() {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/affaires?type={site_id}"))
+                    .uri(format!("/affaires?vue=tout&type={site_id}"))
                     .header("HX-Request", "true")
                     .body(Body::empty())
                     .unwrap(),
@@ -10445,8 +10691,11 @@ async fn work_kinds_filter_the_affaires_and_leave_on_the_second_gesture() {
             .unwrap(),
     )
     .await;
-    assert!(site_page.contains("Atelier Quai"), "{site_page}");
-    assert!(site_page.contains("Atelier Port"), "{site_page}");
+    assert!(
+        !site_page.contains("Atelier Quai"),
+        "la recherche filtre la vue courante : {site_page}"
+    );
+    assert!(site_page.contains("Aucun nom."), "{site_page}");
     assert!(
         site_page.contains("href=\"/affaires?q=Port\""),
         "{site_page}"
@@ -10481,7 +10730,7 @@ async fn work_kinds_filter_the_affaires_and_leave_on_the_second_gesture() {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/affaires?type={backend_id}"))
+                    .uri(format!("/affaires?vue=tout&type={backend_id}"))
                     .header("HX-Request", "true")
                     .body(Body::empty())
                     .unwrap(),
@@ -10548,7 +10797,7 @@ async fn work_kinds_filter_the_affaires_and_leave_on_the_second_gesture() {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/affaires?type={site_id}"))
+                    .uri(format!("/affaires?vue=tout&type={site_id}"))
                     .header("HX-Request", "true")
                     .body(Body::empty())
                     .unwrap(),
@@ -10583,7 +10832,7 @@ async fn work_kinds_filter_the_affaires_and_leave_on_the_second_gesture() {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/affaires?type={site_id}"))
+                    .uri(format!("/affaires?vue=tout&type={site_id}"))
                     .header("HX-Request", "true")
                     .body(Body::empty())
                     .unwrap(),
@@ -10696,6 +10945,37 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
     .await;
     assert!(chapter.contains("Le courrier."), "{chapter}");
     assert!(
+        chapter.contains("D'où elles partent") || chapter.contains("D&#x27;où elles partent"),
+        "{chapter}"
+    );
+    assert!(chapter.contains("Ce qui ferme la lettre"), "{chapter}");
+    assert!(!chapter.contains("Sous le nom"), "{chapter}");
+    assert!(!chapter.contains("En bas de la lettre"), "{chapter}");
+    assert!(!chapter.contains("Comment on les lit"), "{chapter}");
+    assert!(chapter.contains("ferment chaque lettre"), "{chapter}");
+    assert!(
+        chapter.contains("Ingénieur logiciel indépendant"),
+        "{chapter}"
+    );
+    assert!(chapter.contains("courrier-desk"), "{chapter}");
+    assert!(chapter.contains("courrier-read"), "{chapter}");
+    assert!(chapter.contains("class=\"letter-stage\""), "{chapter}");
+    assert!(
+        chapter.contains("hx-post=\"/societe/courrier/apercu\""),
+        "{chapter}"
+    );
+    assert!(
+        chapter.contains("hx-post=\"/societe/courrier/signature\""),
+        "{chapter}"
+    );
+    assert!(!chapter.contains(">Métier<"), "{chapter}");
+    assert!(!chapter.contains(">Site<"), "{chapter}");
+    assert!(!chapter.contains("Enregistrer la formule"), "{chapter}");
+    assert!(
+        !chapter.contains("Enregistrer l'allure") && !chapter.contains("Enregistrer l&#x27;allure"),
+        "{chapter}"
+    );
+    assert!(
         chapter.contains("Une lettre d'essai") || chapter.contains("Une lettre d&#x27;essai"),
         "{chapter}"
     );
@@ -10743,6 +11023,70 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
         formula_body.contains("Envoyer l'essai") || formula_body.contains("Envoyer l&#x27;essai"),
         "{formula_body}"
     );
+
+    let preview = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/societe/courrier/apercu")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from(
+                    "signature=Atelier+Nord%0Ahttps%3A%2F%2Fatelier.example%2Fpage%3Futm_source%3Dessai",
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(preview.headers().get("HX-Trigger").is_none());
+    let preview_body = body_text(preview).await;
+    assert!(preview_body.contains("Atelier Nord"), "{preview_body}");
+    assert!(
+        preview_body.contains("https://atelier.example/page?utm_source=essai"),
+        "{preview_body}"
+    );
+    assert!(
+        preview_body.contains(">https://atelier.example/page<"),
+        "{preview_body}"
+    );
+    assert!(
+        preview_body.contains("text-decoration:none"),
+        "{preview_body}"
+    );
+    assert!(
+        !preview_body.contains("text-decoration:underline"),
+        "{preview_body}"
+    );
+
+    let lire = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/societe/courrier/lire")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from(
+                    "ink=sceau&metier=Atelier&site=https%3A%2F%2Fatelier.example&signature=Atelier+Nord",
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(lire.headers().get("HX-Trigger").unwrap(), "griffe:saved");
+    let lire_body = body_text(lire).await;
+    assert!(
+        lire_body.contains("La lettre est enregistrée."),
+        "{lire_body}"
+    );
+    assert!(!lire_body.contains("#9f3218"), "{lire_body}");
+    assert!(
+        !lire_body.contains("text-decoration:underline"),
+        "{lire_body}"
+    );
+    assert!(lire_body.contains("class=\"letter-stage\""), "{lire_body}");
+    assert!(lire_body.contains("Atelier Nord"), "{lire_body}");
 
     let saved = router
         .clone()
@@ -10830,7 +11174,7 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
         .unwrap();
     assert_eq!(trial.headers().get("HX-Trigger").unwrap(), "griffe:saved");
     let trial_body = body_text(trial).await;
-    assert!(trial_body.contains("Elle part dans"), "{trial_body}");
+    assert!(trial_body.contains("Elle part vers"), "{trial_body}");
     assert!(trial_body.contains("every 1s"), "{trial_body}");
     assert!(trial_body.contains("depart-track"), "{trial_body}");
     assert!(trial_body.contains("Annuler"), "{trial_body}");
@@ -10862,7 +11206,7 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
     assert!(trial_cache.contains("no-store"), "{trial_cache}");
     let trial_poll_body = body_text(trial_poll).await;
     assert!(
-        trial_poll_body.contains("Elle part dans"),
+        trial_poll_body.contains("Elle part vers"),
         "{trial_poll_body}"
     );
     assert!(
@@ -10911,7 +11255,54 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
     assert!(letter.contains("Une lettre"), "{letter}");
     assert!(letter.contains("Envoyer"), "{letter}");
     assert!(letter.contains("C'est parti"), "{letter}");
+    assert!(letter.contains("?utm_"), "{letter}");
+    assert!(letter.contains("sans cette partie"), "{letter}");
+    assert!(letter.contains("letter-desk"), "{letter}");
+    assert!(
+        letter.contains("id=\"face-write\" value=\"ecrire\" checked"),
+        "{letter}"
+    );
+    assert!(letter.contains(">Relire<"), "{letter}");
+    assert!(letter.contains("/relire"), "{letter}");
+    assert!(!letter.contains("letter-stage"), "{letter}");
+    assert!(!letter.contains("letter-face-body"), "{letter}");
     assert!(!letter.contains(secret), "{letter}");
+
+    let reread = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/affaires/Atelier%20Nord/relire")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from(
+                    "subject_line=Sujet+relu&body=Une+ligne.%0A%0Ahttps%3A%2F%2Fatelier.example%2Fconformite%3Futm_source%3Dmairie%26utm_medium%3Demail%26utm_campaign%3Dautomne-2026",
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(!reread.headers().contains_key("HX-Trigger"));
+    let reread_body = body_text(reread).await;
+    assert!(
+        reread_body.contains("class=\"letter-stage\""),
+        "{reread_body}"
+    );
+    assert!(
+        reread_body.contains("id=\"face-read\" value=\"relire\" checked"),
+        "{reread_body}"
+    );
+    assert!(
+        reread_body.contains("https://atelier.example/conformite?utm_source=mairie&amp;utm_medium=email&amp;utm_campaign=automne-2026"),
+        "{reread_body}"
+    );
+    assert!(
+        reread_body.contains(">https://atelier.example/conformite<"),
+        "{reread_body}"
+    );
+    assert!(reread_body.contains("Une ligne."), "{reread_body}");
+    assert!(!reread_body.contains(secret), "{reread_body}");
 
     let armed = router
         .clone()
@@ -10928,7 +11319,7 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
         .unwrap();
     assert_eq!(armed.headers().get("HX-Trigger").unwrap(), "griffe:saved");
     let armed_body = body_text(armed).await;
-    assert!(armed_body.contains("Elle part dans"), "{armed_body}");
+    assert!(armed_body.contains("Elle part vers"), "{armed_body}");
     assert!(armed_body.contains("every 1s"), "{armed_body}");
     assert!(armed_body.contains("Annuler"), "{armed_body}");
     assert!(!armed_body.contains(secret), "{armed_body}");
@@ -10958,7 +11349,7 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
         .unwrap_or("");
     assert!(poll_cache.contains("no-store"), "{poll_cache}");
     let poll_body = body_text(poll).await;
-    assert!(poll_body.contains("Elle part dans"), "{poll_body}");
+    assert!(poll_body.contains("Elle part vers"), "{poll_body}");
 
     let kept = body_text(
         router
@@ -10979,6 +11370,38 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
     assert!(kept.contains("Envoyer"), "{kept}");
     assert!(!kept.contains("Elle part"), "{kept}");
     assert!(!kept.contains("every 1s"), "{kept}");
+
+    let mut store = Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    let due = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap();
+    store
+        .connection_mut()
+        .execute(
+            "UPDATE outbound_mail SET send_after = ?1 WHERE id = ?2",
+            (due.as_str(), id),
+        )
+        .unwrap();
+    let batch = griffe_core::mail::take_due(
+        &mut store,
+        &human_ctx(),
+        "fenetre",
+        time::OffsetDateTime::now_utc(),
+        time::OffsetDateTime::now_utc().date(),
+        false,
+    )
+    .unwrap();
+    assert!(batch.is_none());
+    let status: String = store
+        .connection()
+        .query_row(
+            "SELECT status FROM outbound_mail WHERE id = ?1",
+            [id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(status, "cancelled");
+    drop(store);
 
     let again = router
         .clone()
@@ -11106,7 +11529,14 @@ async fn la_liaison_affiche_la_coche_ou_le_refus_sans_effacer_les_champs() {
         .unlock(&Passphrase::from(PASSPHRASE), false)
         .await
         .unwrap();
-    state.set_mail_probe(|_, _| Ok(()));
+    state.set_mail_probe(|_, _, _| griffe_core::mail::ProbeVerdict {
+        ok: true,
+        detail: format!(
+            "{} La copie n'ira pas dans Envoyés.",
+            griffe_core::mail::PROBE_OK_SENTENCE
+        ),
+        imap_username: None,
+    });
     let router = griffe_web::router(state.clone());
     let secret = "mot-de-passe-application-xyz";
     let body = format!(
@@ -11152,7 +11582,11 @@ async fn la_liaison_affiche_la_coche_ou_le_refus_sans_effacer_les_champs() {
         "{held_body}"
     );
 
-    state.set_mail_probe(|_, _| Err(griffe_core::mail::MailSubmitError::Auth));
+    state.set_mail_probe(|_, _, _| griffe_core::mail::ProbeVerdict {
+        ok: false,
+        detail: "Le serveur a refusé le mot de passe.".to_string(),
+        imap_username: None,
+    });
     let refused = router
         .oneshot(
             Request::builder()
@@ -11180,4 +11614,144 @@ async fn la_liaison_affiche_la_coche_ou_le_refus_sans_effacer_les_champs() {
         "{refused_body}"
     );
     assert!(!refused_body.contains(secret), "{refused_body}");
+}
+
+#[tokio::test]
+async fn la_fiche_refuse_une_adresse_illisible_et_ecrire_prend_la_nouvelle() {
+    let db_path = test_db_path("fiche-courriel");
+    let state = unlocked_state(&db_path).await;
+    let router = griffe_web::router(state);
+    let created = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/affaires/nouvelle")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from("who=Atelier+Copie&phrase=signaletique"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::OK);
+
+    let client_id = client_id_by_name(&db_path, "Atelier Copie");
+    let revision = {
+        let store = Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+        griffe_core::clients::client_by_id(store.connection(), client_id)
+            .unwrap()
+            .unwrap()
+            .revision
+    };
+    let first = format!(
+        "who=Atelier+Copie&representative=Ada&email=ada.ancienne%40exemple.fr&phone=&client_revision={revision}&contact_id=&contact_revision=&street=&postal_code=&city="
+    );
+    let saved = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/affaires/Atelier%20Copie/fiche")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .header("HX-Request", "true")
+                    .body(Body::from(first))
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(saved.contains("Fiche à jour"), "{saved}");
+
+    let (client_revision, contact_id, contact_revision) = {
+        let store = Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+        let client = griffe_core::clients::client_by_id(store.connection(), client_id)
+            .unwrap()
+            .unwrap();
+        let contact = griffe_core::clients::correspondent(store.connection(), client_id)
+            .unwrap()
+            .expect("correspondant");
+        assert_eq!(contact.email.as_deref(), Some("ada.ancienne@exemple.fr"));
+        (client.revision, contact.id.to_string(), contact.revision)
+    };
+    let bad = format!(
+        "who=Atelier+Copie&representative=Ada&email=ada+sans+arobase&phone=&client_revision={client_revision}&contact_id={contact_id}&contact_revision={contact_revision}&street=&postal_code=&city="
+    );
+    let refused = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/affaires/Atelier%20Copie/fiche")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .header("HX-Request", "true")
+                    .body(Body::from(bad))
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        refused.contains("Cette adresse est illisible."),
+        "{refused}"
+    );
+    assert!(refused.contains("value=\"ada sans arobase\""), "{refused}");
+
+    let kept = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Atelier%20Copie/fiche")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(kept.contains("value=\"ada.ancienne@exemple.fr\""), "{kept}");
+    assert!(!kept.contains("ada sans arobase"), "{kept}");
+
+    let next = format!(
+        "who=Atelier+Copie&representative=Ada&email=ada.nouvelle%40exemple.fr&phone=&client_revision={client_revision}&contact_id={contact_id}&contact_revision={contact_revision}&street=&postal_code=&city="
+    );
+    let updated = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/affaires/Atelier%20Copie/fiche")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .header("HX-Request", "true")
+                    .body(Body::from(next))
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(updated.contains("Fiche à jour"), "{updated}");
+
+    let letter = body_text(
+        router
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Atelier%20Copie/ecrire")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(letter.contains("À ada.nouvelle@exemple.fr"), "{letter}");
+    assert!(!letter.contains("ada.ancienne@exemple.fr"), "{letter}");
 }

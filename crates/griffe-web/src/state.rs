@@ -15,13 +15,13 @@ use std::time::{Duration, Instant};
 
 use griffe_core::app::{Actor, ExecutionContext};
 use griffe_core::domain::parse_date;
-use griffe_core::mail::{MailSecret, MailSubmitError, SmtpEndpoint};
+use griffe_core::mail::{ImapEndpoint, MailSecret, ProbeVerdict, SmtpEndpoint};
 use griffe_core::store::{AUTO_BACKUP_MAX_AGE, Passphrase, Store, StoreError, VaultStatus};
 use tokio::sync::Mutex;
 
 /// Essai de liaison fourni par la fenêtre. `griffe-web` n'ouvre pas de socket.
 pub type MailProbe =
-    Arc<dyn Fn(SmtpEndpoint, MailSecret) -> Result<(), MailSubmitError> + Send + Sync>;
+    Arc<dyn Fn(SmtpEndpoint, Option<ImapEndpoint>, MailSecret) -> ProbeVerdict + Send + Sync>;
 
 /// Lit `GRIFFE_TODAY` (`AAAA-MM-JJ`). `None` ou une chaîne vide : horloge locale. Une valeur
 /// illisible est une erreur — le binaire de dev refuse de démarrer plutôt que de photographier
@@ -186,10 +186,13 @@ impl AppState {
         }
     }
 
-    /// Installe l'essai de liaison. La fenêtre passe `griffe_mail::probe`.
+    /// Installe l'essai de liaison. La fenêtre passe `griffe_mail::probe_account`.
     pub fn set_mail_probe(
         &self,
-        probe: impl Fn(SmtpEndpoint, MailSecret) -> Result<(), MailSubmitError> + Send + Sync + 'static,
+        probe: impl Fn(SmtpEndpoint, Option<ImapEndpoint>, MailSecret) -> ProbeVerdict
+        + Send
+        + Sync
+        + 'static,
     ) {
         if let Ok(mut slot) = self.mail_probe.lock() {
             *slot = Some(Arc::new(probe));

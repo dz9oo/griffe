@@ -872,11 +872,14 @@ impl Snapshot {
     }
 
     fn contact_name(&self, id: ClientId) -> Option<String> {
-        self.contacts
-            .get(&id)
-            .and_then(|cs| cs.first())
-            .map(|c| c.name.clone())
-            .filter(|n| !n.is_empty())
+        let contacts = self.contacts.get(&id)?;
+        let chosen = contacts
+            .iter()
+            .find(|contact| contact.correspondent)
+            .or_else(|| contacts.first());
+        chosen
+            .map(|contact| contact.name.clone())
+            .filter(|name| !name.is_empty())
     }
 
     /// Le nom de la ligne est « Qui ». « Qui répond » reste sur la fiche et dans la recherche :

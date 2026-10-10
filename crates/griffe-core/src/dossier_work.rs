@@ -39,8 +39,9 @@ pub struct DossierWork {
 
 /// Remplace le récit du dossier.
 ///
-/// Même texte et même révision : rien n'est réécrit. Une révision différente de celle
-/// du coffre est refusée. Le corps est gardé tel quel, espaces compris.
+/// Même texte que le coffre : rien n'est réécrit, même si la révision est en retard.
+/// Une révision différente et un autre texte : refus. Le corps est gardé tel quel,
+/// espaces compris.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SaveDossierWork {
     pub client: ClientId,
@@ -60,14 +61,14 @@ impl Command for SaveDossierWork {
             return Err(DossierWorkError::TooLong.into());
         }
         let current = dossier_work(conn, self.client)?;
+        if self.body == current.body {
+            return Ok(current);
+        }
         if self.revision != current.revision {
             return Err(AppError::Conflict {
                 entity: ENTITY,
                 id: self.client.to_string(),
             });
-        }
-        if self.body == current.body {
-            return Ok(current);
         }
         let revision = current.revision + 1;
         let updated_at = OffsetDateTime::now_utc().format(&Rfc3339)?;
@@ -203,6 +204,21 @@ mod tests {
         let read = dossier_work(store.connection(), id).unwrap();
         assert_eq!(read.body, "Le texte du coffre.\n");
         assert_eq!(read.revision, 1);
+    }
+
+    #[test]
+    fn the_same_text_is_kept_when_the_revision_is_behind() {
+        let mut store = test_store("travaux-same-stale");
+        let id = client(&mut store, "Pressoir du récit");
+        let body = "Déjà le même.\n";
+        save(&mut store, id, body, 0).unwrap();
+        let before = stamp(&store, id).unwrap();
+
+        let again = save(&mut store, id, body, 0).unwrap();
+        assert_eq!(again.revision, 1);
+        assert_eq!(again.body, body);
+        assert_eq!(stamp(&store, id).as_deref(), Some(before.as_str()));
+        assert_eq!(dossier_work(store.connection(), id).unwrap().revision, 1);
     }
 
     #[test]

@@ -967,9 +967,13 @@ fn append_advancing(
     }
     let (rendered_subject, rendered_body) = if fact == FollowUpFact::MarkedSent {
         let draft = last_draft_letter(&loaded.events, &loaded.cursor);
+        let body = body_override.or_else(|| draft.as_ref().map(|(_, b)| b.clone()));
+        let signature = crate::mail::profile(conn)
+            .map(|account| account.signature)
+            .unwrap_or_default();
         (
             subject_override.or_else(|| draft.as_ref().map(|(s, _)| s.clone())),
-            body_override.or_else(|| draft.as_ref().map(|(_, b)| b.clone())),
+            body.map(|text| crate::mail::close_letter(&text, &signature)),
         )
     } else {
         (None, None)

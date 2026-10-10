@@ -17,7 +17,7 @@ La phrase du produit, pour l’administration : on recopie, rien n’est télét
 ## Le courrier
 
 Le courrier est le chapitre de La société qui dit d’où partent les lettres.
-Un seul panneau réunit l’adresse qui signe, l’identifiant du serveur, l’hôte,
+D’où elles partent réunit l’adresse qui signe, l’identifiant du serveur, l’hôte,
 le port et le mot de passe. Le mot de passe reste dans le coffre et la page
 ne le réécrit pas. Enregistrer essaie la liaison : une coche si le serveur
 accepte l’identifiant, une croix s’il refuse. Deux ports, tous deux chiffrés :
@@ -25,21 +25,49 @@ accepte l’identifiant, une croix s’il refuse. Deux ports, tous deux chiffré
 l’adresse complète du compte, et le mot de passe est un mot de passe
 d’application. L’hôte et le port restent lisibles.
 
-Envoyer, sur une lettre, laisse cinq secondes pour se raviser. Le compte
-s’affiche, une seconde après l’autre. Au bout, Annuler s’efface, la ligne dit
-Courrier envoyé, et le bouton revient. Fermer la fenêtre pendant ces cinq
-secondes retient la lettre. C’est parti classe le double dans l’historique
-et ne contacte pas le serveur.
+Envoyer, sur une lettre, laisse cinq secondes pour se raviser. Annuler,
+pendant ces cinq secondes et jusqu’à l’envoi, retient la lettre. La ligne
+nomme l’adresse qui partira, et le compte s’affiche, une seconde après
+l’autre. Si l’adresse manque, elle dit que la lettre ne partira pas. Au
+bout, Annuler s’efface, la ligne dit Courrier envoyé, et le bouton revient.
+Fermer la fenêtre pendant ces cinq secondes retient la lettre. C’est parti
+classe le double dans l’historique et ne contacte pas le serveur.
+
+La lettre part en page, et le texte seul reste pour les boîtes qui ne
+lisent pas la page. Une adresse suivie de ?utm_… reste cliquable en
+entier. La personne lit l’adresse sans cette partie.
+
+Dans Les affaires, on écrit, puis on relit. Relire montre la lettre
+telle qu’elle part. La zone d’écriture reprend le texte sans le perdre.
+Une lettre déjà classée s’ouvre sur ce qui a été gardé : la formule
+d’aujourd’hui ne s’y ajoute pas.
+
+Le courrier s’ouvre sur la lettre d’essai, pour un prénom fictif. La
+formule est à côté, et la carte suit la frappe. Enregistrer l’écrit dans
+le coffre. D’où elles partent tient sur une ligne une fois le serveur
+connu : le nom, l’adresse, le serveur, et si la liaison répond. Modifier
+ouvre la feuille. L’identifiant du serveur n’apparaît que lorsqu’il
+diffère de l’adresse. L’envoi du jour reste à part.
+
+Une lettre partie est aussi déposée dans Envoyés du compte qui l’envoie.
+iCloud le fait sans champ de plus. Un autre serveur le fait si l’hôte des
+copies est saisi, sur le port 993. Vide, la lettre part et la copie n’ira
+pas dans Envoyés : l’essai de liaison le dit. Si le dépôt échoue, la lettre
+est quand même partie. Griffe réessaie plus tard. Elle ne lit pas le
+courrier reçu, et ne promet pas la boîte du destinataire.
 
 L’envoi du jour est éteint. L’activer poste, pendant que le coffre est
 ouvert, les lettres dont la date prévue est aujourd’hui. Une lettre de la
-veille reste à envoyer à la main. Griffe ne lit pas la boîte.
+veille reste à envoyer à la main.
 
-La formule, écrite dans ce chapitre, remplace `<signature>` dans les
-lettres et dans les phrases ; vide, elle redevient Bien à vous, le nom,
-la société. Une lettre d’essai montre le premier message, pour un prénom
-fictif, et part vers l’adresse choisie. La fenêtre dit Courrier envoyé.
-Cela ne promet pas la boîte du destinataire.
+La formule, écrite dans ce chapitre, ferme chaque lettre à la relecture
+et à l’envoi. Elle n’est pas recopiée dans la zone d’écriture. Vide, la
+lettre se termine par Bien à vous, le nom, la société. Un mail, un
+numéro ou une adresse, seuls sur leur ligne, restent cliquables, dans
+l’encre de la lettre, sans soulignement. L’adresse se lit sans ?utm_….
+Le lien garde cette partie. La lettre d’essai part vers l’adresse
+choisie. La fenêtre dit Courrier envoyé. Cela ne promet pas la boîte du
+destinataire.
 
 ## Les mots
 

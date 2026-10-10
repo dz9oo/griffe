@@ -15,7 +15,9 @@ use crate::views::form;
 
 mod courrier;
 mod letter;
-pub use courrier::{CourrierForm, page as courrier_page, subtitle as courrier_subtitle};
+pub use courrier::{
+    CourrierForm, page as courrier_page, preview_card, subtitle as courrier_subtitle,
+};
 pub use letter::{
     ReleveFragment, ReleveQuery, VatCreditForm, closing, duties, duty, duty_with_vat_form,
     identity, pay, piece, statement,

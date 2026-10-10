@@ -7,10 +7,11 @@ use std::path::PathBuf;
 use clap::{ArgGroup, Subcommand};
 use griffe_core::app::{ExecutionContext, Executor};
 use griffe_core::mail::{
-    ArmOutbound, CancelOutbound, ClearMailSecret, MailPreset, MailSecret, PROBE_OK_SENTENCE,
-    RecordMailProbe, SaveMailAccount, SaveMailSecret, SaveMailSignature, SetAutomaticSend,
-    UNDO_SECS, french_submit_error, hourly_pause, probe_material, profile, record_deliveries,
-    take_due, trial_letter,
+    ArmOutbound, CancelOutbound, ClearMailSecret, DeliveryOutcome, MailPreset, MailSecret,
+    RecordMailProbe, RememberImapUsername, SaveLetterface, SaveMailAccount, SaveMailSecret,
+    SaveMailSignature, SentCopyStatus, SetAutomaticSend, SubmissionBatch, UNDO_SECS, abandon_held,
+    commit_outbound, french_submit_error, hourly_pause, probe_material, profile, record_copies,
+    record_deliveries, take_copies, take_due, trial_letter,
 };
 use griffe_core::store::Store;
 use time::OffsetDateTime;
@@ -38,6 +39,12 @@ pub enum MailCommand {
         /// 587 ou 465. Ignoré pour le préréglage iCloud.
         #[arg(long)]
         port: Option<u16>,
+        /// Hôte IMAP des copies. Ignoré pour iCloud. Vide : pas de copie.
+        #[arg(long)]
+        imap_host: Option<String>,
+        /// Port des copies. 993. Ignoré pour iCloud, et quand l'hôte est vide.
+        #[arg(long, default_value_t = 993)]
+        imap_port: u16,
         /// `icloud` ou `custom`.
         #[arg(long, default_value = "custom")]
         preset: String,
@@ -58,6 +65,18 @@ pub enum MailCommand {
         on: bool,
         #[arg(long)]
         off: bool,
+    },
+    /// Couleur, métier et site de la lettre. Sans drapeau, montre l'allure.
+    Apparence {
+        /// `vert`, `encre` ou `sceau`. Absent : inchangé.
+        #[arg(long)]
+        encre: Option<String>,
+        /// Ligne sous le nom. Chaîne vide : retire la ligne.
+        #[arg(long)]
+        metier: Option<String>,
+        /// Adresse en bas de la lettre. Chaîne vide : retire la ligne.
+        #[arg(long)]
+        site: Option<String>,
     },
     /// Montre la formule, ou la pose depuis l'entrée standard.
     Signature {
@@ -99,12 +118,19 @@ pub fn run(
 ) -> Result<String, CliError> {
     match command {
         MailCommand::Show => show(store, json),
+        MailCommand::Apparence {
+            encre,
+            metier,
+            site,
+        } => apparence(store, ctx, json, encre, metier, site),
         MailCommand::Save {
             from_address,
             username,
             from_name,
             host,
             port,
+            imap_host,
+            imap_port,
             preset,
         } => save(
             store,
@@ -116,6 +142,8 @@ pub fn run(
                 from_name,
                 host,
                 port,
+                imap_host,
+                imap_port,
                 preset,
             },
         ),
@@ -183,6 +211,7 @@ fn show(store: &Store, json: bool) -> Result<String, CliError> {
         ("chiffrement", account.tls.as_str().to_string()),
         ("identifiant", account.username.clone()),
         ("préréglage", account.preset.as_str().to_string()),
+        ("copie", copy_line(&account)),
         (
             "mot de passe",
             if account.has_secret {
@@ -200,6 +229,9 @@ fn show(store: &Store, json: bool) -> Result<String, CliError> {
             },
         ),
         ("liaison", liaison_line(&account)),
+        ("encre", account.link_ink.as_str().to_string()),
+        ("métier", or_empty(account.metier.clone())),
+        ("site", or_empty(account.site.clone())),
     ]);
     if account.signature.is_empty() {
         text.push_str("\nformule : vide");
@@ -216,6 +248,8 @@ struct SaveFields {
     from_name: Option<String>,
     host: Option<String>,
     port: Option<u16>,
+    imap_host: Option<String>,
+    imap_port: u16,
     preset: String,
 }
 
@@ -231,6 +265,8 @@ fn save(
         from_name,
         host,
         port,
+        imap_host,
+        imap_port,
         preset,
     } = fields;
     let icloud = preset == "icloud";
@@ -257,6 +293,8 @@ fn save(
             tls: tls.to_string(),
             username,
             preset,
+            imap_host: imap_host.unwrap_or_default(),
+            imap_port,
         },
         ctx,
     )?;
@@ -321,6 +359,7 @@ fn essai(
             follow_subject_id: None,
             follow_cycle: None,
             follow_step: None,
+            client_id: None,
         },
         ctx,
     )?;
@@ -342,9 +381,23 @@ fn account_json(account: &griffe_core::mail::MailProfile) -> serde_json::Value {
         "auto_send": account.auto_send,
         "ready": account.ready,
         "signature": account.signature,
+        "link_ink": account.link_ink.as_str(),
+        "metier": account.metier,
+        "site": account.site,
         "probe_ok": account.probe.as_ref().map(|probe| probe.ok),
         "probe_detail": account.probe.as_ref().map(|probe| probe.detail.clone()),
+        "copy_host": account.copy_target().as_ref().map(|target| target.host.clone()),
+        "copy_port": account.copy_target().map(|target| target.port),
+        "imap_username": account.imap_username.clone(),
     })
+}
+
+fn copy_line(account: &griffe_core::mail::MailProfile) -> String {
+    match account.copy_target() {
+        Some(target) if target.icloud => "Envoyés, via iCloud".to_string(),
+        Some(target) => format!("Envoyés, via {}:{}", target.host, target.port),
+        None => "pas de copie".to_string(),
+    }
 }
 
 fn liaison_line(account: &griffe_core::mail::MailProfile) -> String {
@@ -369,15 +422,16 @@ fn essayer(store: &mut Store, ctx: &ExecutionContext, json: bool) -> Result<Stri
             "Le courrier n'est pas encore branché.".into(),
         ));
     };
-    let icloud = account.preset == MailPreset::Icloud;
-    let (ok, detail) = match griffe_mail::probe(&material.endpoint, &material.secret) {
-        Ok(()) => (true, PROBE_OK_SENTENCE.to_string()),
-        Err(error) => (false, french_submit_error(&error, icloud)),
-    };
+    let verdict =
+        griffe_mail::probe_account(&material.endpoint, material.copy.as_ref(), &material.secret);
     drop(material);
+    if let Some(username) = verdict.imap_username.clone() {
+        Executor::new(store).execute(&RememberImapUsername { username }, ctx)?;
+    }
+    let detail = verdict.detail.clone();
     let outcome = Executor::new(store).execute(
         &RecordMailProbe {
-            ok,
+            ok: verdict.ok,
             detail: detail.clone(),
         },
         ctx,
@@ -444,6 +498,7 @@ fn envoyer(
             follow_subject_id: None,
             follow_cycle: None,
             follow_step: None,
+            client_id: None,
         },
         ctx,
     )?;
@@ -452,10 +507,107 @@ fn envoyer(
     }))
 }
 
+fn apparence(
+    store: &mut Store,
+    ctx: &ExecutionContext,
+    json: bool,
+    encre: Option<String>,
+    metier: Option<String>,
+    site: Option<String>,
+) -> Result<String, CliError> {
+    let account = profile(store.connection())?;
+    if encre.is_none() && metier.is_none() && site.is_none() {
+        let text = key_values(&[
+            ("encre", account.link_ink.as_str().to_string()),
+            ("métier", or_empty(account.metier.clone())),
+            ("site", or_empty(account.site.clone())),
+        ]);
+        return Ok(format_json_or(
+            json,
+            &serde_json::json!({
+                "link_ink": account.link_ink.as_str(),
+                "metier": account.metier,
+                "site": account.site,
+            }),
+            text,
+        ));
+    }
+    let outcome = Executor::new(store).execute(
+        &SaveLetterface {
+            ink: encre.unwrap_or_else(|| account.link_ink.as_str().to_string()),
+            metier: metier.unwrap_or(account.metier),
+            site: site.unwrap_or(account.site),
+        },
+        ctx,
+    )?;
+    Ok(format_outcome_as(&outcome, json, |_| {
+        "L'allure est enregistrée.".to_string()
+    }))
+}
+
 fn flush(store: &mut Store, ctx: &ExecutionContext, json: bool) -> Result<String, CliError> {
     let now = OffsetDateTime::now_utc();
     let today = crate::today();
-    let Some(batch) = take_due(store, ctx, "cli", now, today, false)? else {
+    abandon_held(store, ctx)?;
+    let batch = take_due(store, ctx, "cli", now, today, false)?;
+    let mut lines = Vec::new();
+    let mut posted = 0;
+    if let Some(batch) = batch {
+        let icloud = profile(store.connection())?.preset == MailPreset::Icloud;
+        let SubmissionBatch {
+            endpoint,
+            secret,
+            imap,
+            letters,
+        } = batch;
+        match griffe_mail::LettreMail::new(endpoint, secret) {
+            Err(error) => {
+                let outcomes = letters
+                    .into_iter()
+                    .map(|letter| {
+                        lines.push(format!(
+                            "« {} » n'est pas partie. {}",
+                            letter.message.subject,
+                            french_submit_error(&error, icloud)
+                        ));
+                        DeliveryOutcome {
+                            id: letter.id,
+                            result: Err(error.clone()),
+                            copy: SentCopyStatus::Skipped,
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                record_deliveries(store, ctx, today, &outcomes)?;
+            }
+            Ok(mail) => {
+                let mut outcomes = Vec::new();
+                for letter in letters {
+                    let id = letter.id.clone();
+                    let subject = letter.message.subject.clone();
+                    if !commit_outbound(store, ctx, &id)? {
+                        continue;
+                    }
+                    let outcome = griffe_mail::submit_letter(&mail, imap.as_ref(), letter);
+                    lines.push(match &outcome.result {
+                        Ok(_) => {
+                            posted += 1;
+                            format!("« {subject} » est partie.")
+                        }
+                        Err(error) => format!(
+                            "« {subject} » n'est pas partie. {}",
+                            french_submit_error(error, icloud)
+                        ),
+                    });
+                    outcomes.push(outcome);
+                }
+                if !outcomes.is_empty() {
+                    record_deliveries(store, ctx, today, &outcomes)?;
+                }
+            }
+        }
+    }
+    let copy_lines = file_pending_copies(store, ctx)?;
+    if lines.is_empty() && copy_lines.is_empty() {
         if hourly_pause(store.connection(), now)? {
             return Ok(done(
                 json,
@@ -468,15 +620,43 @@ fn flush(store: &mut Store, ctx: &ExecutionContext, json: bool) -> Result<String
             "Rien à poster.",
             &serde_json::json!({ "posted": 0 }),
         ));
+    }
+    let mut text = String::new();
+    if !lines.is_empty() {
+        text.push_str(&format!("{posted} lettre(s) postée(s)."));
+        if hourly_pause(store.connection(), now)? && posted == 0 {
+            text.push_str(" Trop de lettres cette heure. Celles qui restent attendent.");
+        }
+        text.push('\n');
+        text.push_str(&lines.join("\n"));
+    } else if hourly_pause(store.connection(), now)? {
+        text.push_str("Trop de lettres cette heure. Celles qui restent attendent.");
+    }
+    if !copy_lines.is_empty() {
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text.push_str(&copy_lines.join("\n"));
+    }
+    lines.extend(copy_lines.iter().cloned());
+    Ok(done(
+        json,
+        &text,
+        &serde_json::json!({ "posted": posted, "lines": lines }),
+    ))
+}
+
+fn file_pending_copies(store: &mut Store, ctx: &ExecutionContext) -> Result<Vec<String>, CliError> {
+    let Some(batch) = take_copies(store, ctx, OffsetDateTime::now_utc())? else {
+        return Ok(Vec::new());
     };
-    let icloud = profile(store.connection())?.preset == griffe_core::mail::MailPreset::Icloud;
     let subjects: Vec<(String, String)> = batch
         .letters
         .iter()
         .map(|letter| (letter.id.clone(), letter.message.subject.clone()))
         .collect();
-    let outcomes = griffe_mail::submit_batch(batch);
-    let lines: Vec<String> = outcomes
+    let outcomes = griffe_mail::file_copies(batch);
+    let lines = outcomes
         .iter()
         .map(|outcome| {
             let subject = subjects
@@ -484,26 +664,17 @@ fn flush(store: &mut Store, ctx: &ExecutionContext, json: bool) -> Result<String
                 .find(|(id, _)| id == &outcome.id)
                 .map(|(_, subject)| subject.as_str())
                 .unwrap_or("Une lettre");
-            match &outcome.result {
-                Ok(_) => format!("« {subject} » est partie."),
-                Err(error) => format!(
-                    "« {subject} » n'est pas partie. {}",
-                    french_submit_error(error, icloud)
-                ),
+            match &outcome.copy {
+                SentCopyStatus::Saved { .. } => format!("« {subject} » est dans Envoyés."),
+                SentCopyStatus::Failed(message) => format!("« {subject} » est partie. {message}"),
+                SentCopyStatus::Skipped => {
+                    format!("« {subject} » est partie. La copie n'ira pas dans Envoyés.")
+                }
             }
         })
         .collect();
-    let posted = outcomes
-        .iter()
-        .filter(|outcome| outcome.result.is_ok())
-        .count();
-    record_deliveries(store, ctx, today, &outcomes)?;
-    let text = format!("{posted} lettre(s) postée(s).\n{}", lines.join("\n"));
-    Ok(done(
-        json,
-        &text,
-        &serde_json::json!({ "posted": posted, "lines": lines }),
-    ))
+    record_copies(store, ctx, &outcomes)?;
+    Ok(lines)
 }
 
 fn done(json: bool, text: &str, value: &serde_json::Value) -> String {

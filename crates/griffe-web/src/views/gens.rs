@@ -12,7 +12,9 @@ use griffe_core::dossier_work::DossierWork;
 use griffe_core::follow_up::{
     FollowUpCard, card_for, follow_up_sender, prospect_genre_for, prospect_genres,
 };
-use griffe_core::mail::{OutboundStatus, OutboundView};
+use griffe_core::mail::{
+    LINK_HINT, LetterChrome, LetterParts, OutboundStatus, OutboundView, close_letter, letter_card,
+};
 use griffe_core::people::{
     CurrentSituation, HistoryEvent, HistoryKind, MissionShape, OutgoingCadence, OutgoingChapter,
     OutgoingNote, Paper, PaperKind, PaperStatus, PeopleList, PersonAction, PersonChapter,
@@ -46,7 +48,7 @@ pub fn person_href(name: &str) -> String {
 }
 
 pub fn render(store: &Store, today: Date) -> Result<Markup, AppError> {
-    render_search(store, today, "", "")
+    render_search(store, today, "", "", "")
 }
 
 pub fn render_search(
@@ -54,6 +56,23 @@ pub fn render_search(
     today: Date,
     query: &str,
     type_id: &str,
+    vue: &str,
+) -> Result<Markup, AppError> {
+    lens_page(store, today, query, type_id, vue, None)
+}
+
+/// La liste, avec un dossier déjà ouvert dans le panneau (rechargement direct).
+pub fn render_with_panel(store: &Store, today: Date, panel: Markup) -> Result<Markup, AppError> {
+    lens_page(store, today, "", "", "", Some(panel))
+}
+
+fn lens_page(
+    store: &Store,
+    today: Date,
+    query: &str,
+    type_id: &str,
+    vue: &str,
+    panel: Option<Markup>,
 ) -> Result<Markup, AppError> {
     let list = people_list(store.connection(), today)?;
     let catalog = work_kinds(store.connection())?;
@@ -69,79 +88,308 @@ pub fn render_search(
     } else {
         Some(HashSet::new())
     };
-    Ok(list_markup(
+    Ok(lens_markup(
         &list,
         today,
-        None,
-        query.trim(),
-        &catalog,
-        type_id,
-        allowed.as_ref(),
+        &LensFilter {
+            query: query.trim(),
+            catalog: &catalog,
+            type_id,
+            allowed: allowed.as_ref(),
+            vue: parse_vue(vue),
+        },
+        panel,
     ))
 }
 
-pub fn list_markup(
+#[derive(Clone, Copy)]
+struct LensFilter<'a> {
+    query: &'a str,
+    catalog: &'a [WorkKind],
+    type_id: &'a str,
+    allowed: Option<&'a HashSet<ClientId>>,
+    vue: Vue,
+}
+
+/// Barre du panneau : fermer, ou couvrir la liste. Le fragment htmx la reçoit aussi.
+#[must_use]
+pub fn panel_chrome(inner: Markup) -> Markup {
+    html! {
+        div class="lens-bar" {
+            button class="lens-span" type="button" data-lens-span { "Pleine largeur" }
+            a class="lens-close" href="/affaires"
+              hx-get="/affaires" hx-target="#content" hx-swap="innerHTML" hx-push-url="true" {
+                "Fermer"
+            }
+            span class="lens-hint" { "Échap" }
+        }
+        div class="lens-body" { (inner) }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Vue {
+    Geste,
+    Livre,
+    Tas,
+    Sorties,
+    Tout,
+}
+
+fn parse_vue(raw: &str) -> Vue {
+    match raw {
+        "livre" => Vue::Livre,
+        "tas" => Vue::Tas,
+        "sorties" => Vue::Sorties,
+        "tout" => Vue::Tout,
+        _ => Vue::Geste,
+    }
+}
+
+fn vue_key(vue: Vue) -> &'static str {
+    match vue {
+        Vue::Geste => "",
+        Vue::Livre => "livre",
+        Vue::Tas => "tas",
+        Vue::Sorties => "sorties",
+        Vue::Tout => "tout",
+    }
+}
+
+fn vue_label(vue: Vue) -> &'static str {
+    match vue {
+        Vue::Geste => "ce qui demande un geste",
+        Vue::Livre => "le livre",
+        Vue::Tas => "le tas",
+        Vue::Sorties => "les sorties",
+        Vue::Tout => "tout",
+    }
+}
+
+/// Une ligne, lue seulement quand le menu est ouvert. La phrase fermée ne la montre pas.
+fn vue_hint(vue: Vue) -> &'static str {
+    match vue {
+        Vue::Geste => "À écrire, à reprendre, ou à régler aujourd'hui.",
+        Vue::Livre => "Les conversations en cours, et les missions.",
+        Vue::Tas => "Les premiers messages et les premiers contacts.",
+        Vue::Sorties => "Un nom, dès qu'une dépense le porte.",
+        Vue::Tout => "Le livre, le tas, les sorties, et les arrêtées.",
+    }
+}
+
+const VUES: [Vue; 5] = [Vue::Geste, Vue::Livre, Vue::Tas, Vue::Sorties, Vue::Tout];
+
+fn lens_markup(
     list: &PeopleList,
     today: Date,
-    flash: Option<&str>,
-    query: &str,
-    catalog: &[WorkKind],
-    type_id: &str,
-    allowed: Option<&HashSet<ClientId>>,
+    filter: &LensFilter<'_>,
+    panel: Option<Markup>,
 ) -> Markup {
-    let empty = list.is_empty();
-    let conversations = rows_kept(&list.conversations, allowed);
-    let messages = rows_kept(&list.first_messages, allowed);
-    let contacts = rows_kept(&list.first_contacts, allowed);
-    let missions = rows_kept(&list.missions, allowed);
+    let LensFilter {
+        query,
+        catalog,
+        type_id,
+        allowed,
+        vue,
+    } = *filter;
     let filtering = allowed.is_some();
+    let conversations = rows_kept(&list.conversations, allowed, query);
+    let messages = rows_kept(&list.first_messages, allowed, query);
+    let contacts = rows_kept(&list.first_contacts, allowed, query);
+    let missions = rows_kept(&list.missions, allowed, query);
+    let outgoing = rows_kept(&list.outgoing, None, query);
+    let stopped = rows_kept(&list.stopped, allowed, query);
+    let book = matches!(vue, Vue::Livre | Vue::Tout);
+    let conv_empty = book
+        && filtering
+        && query.is_empty()
+        && conversations.is_empty()
+        && messages.is_empty()
+        && contacts.is_empty();
+    let mission_empty = book && filtering && query.is_empty() && missions.is_empty();
+    let rows = match vue {
+        Vue::Geste => {
+            let mut rows = Vec::new();
+            for row in conversations.into_iter().chain(missions).chain(outgoing) {
+                if asks_today(row) {
+                    rows.push(row);
+                }
+            }
+            rows
+        }
+        Vue::Livre => {
+            let mut rows = conversations;
+            rows.extend(missions);
+            rows
+        }
+        Vue::Tas => {
+            let mut rows = messages;
+            rows.extend(contacts);
+            rows
+        }
+        Vue::Sorties => outgoing,
+        Vue::Tout => {
+            let mut rows = conversations;
+            rows.extend(messages);
+            rows.extend(contacts);
+            rows.extend(missions);
+            rows.extend(outgoing);
+            rows.extend(stopped);
+            rows
+        }
+    };
+    let href = affaires_href(vue, query, type_id);
+    let type_label = catalog
+        .iter()
+        .find(|kind| kind.id == type_id)
+        .map_or("tout type", |kind| kind.name.as_str());
     html! {
-        div class="letter" data-view=(ViewId::Gens.slug()) {
-            div class="date" { "Les affaires · " (letter_date(today)) }
-            @if empty {
-                h1 { "Les affaires." }
-                p class="lede" { "Personne pour l'instant. Une conversation commence par un nom et une phrase." }
-            } @else {
-                h1 { (list_title(list)) }
-                p class="lede" { (list_lede(list)) }
-            }
-            @if let Some(msg) = flash {
-                p class="mast-note" role="status" { (msg) }
-            }
-            div class="letter-actions" {
-                a class="seal" href="/affaires/nouvelle"
-                  hx-get="/affaires/nouvelle" hx-target="#content" hx-push-url="true" {
+        div class="lens" data-view=(ViewId::Gens.slug()) data-list=(href) {
+            div class="lens-top" {
+                div class="lens-sentence" {
+                    "Montre "
+                    (vue_menu(vue, query, type_id))
+                    @if !catalog.is_empty() {
+                        ", "
+                        (type_menu(catalog, vue, query, type_id, type_label))
+                    }
+                    " — "
+                    span class="count" { (noms_fr(rows.len())) }
+                }
+                form class="lens-find" action="/affaires" method="get"
+                  hx-get="/affaires" hx-target="#content" hx-swap="innerHTML" hx-push-url="true"
+                  hx-trigger="input changed delay:250ms, submit" {
+                    @if !vue_key(vue).is_empty() {
+                        input type="hidden" name="vue" value=(vue_key(vue));
+                    }
+                    @if !type_id.is_empty() {
+                        input type="hidden" name="type" value=(type_id);
+                    }
+                    input id="q" class="lens-search" type="search" name="q" value=(query)
+                      placeholder="Un nom, une société" aria-label="Un nom, une société" autocomplete="off";
+                }
+                a class="lens-new" href="/affaires/nouvelle"
+                  hx-get="/affaires/nouvelle" hx-target="#affaire" hx-swap="innerHTML" hx-push-url="true" {
                     "Nouvelle conversation"
                 }
-                a class="aside" href="/affaires/types"
+                a class="lens-quiet" href="/affaires/types"
                   hx-get="/affaires/types" hx-target="#content" hx-push-url="true" {
                     "Les types"
                 }
             }
-            (kind_row(catalog, query, type_id))
-            (conversation_chapter(&conversations, &messages, &contacts, query, type_id, filtering))
-            (chapter(
-                "En mission",
-                &missions,
-                if filtering { "Aucune mission de ce type." } else { "Aucune mission en cours." },
-            ))
-            (outgoing_chapter(&list.outgoing))
-            (stopped_chapter(&list.stopped))
+            div class="lens-notes" {
+                @if vue != Vue::Tas && !list.first_messages.is_empty() {
+                    @let pile = affaires_href(Vue::Tas, "", type_id);
+                    a href=(pile) hx-get=(pile) hx-target="#content" hx-push-url="true" {
+                        (pile_count(list.first_messages.len(), "premier message", "premiers messages"))
+                    }
+                }
+                @if vue != Vue::Tas && !list.first_contacts.is_empty() {
+                    @let pile = affaires_href(Vue::Tas, "", type_id);
+                    a href=(pile) hx-get=(pile) hx-target="#content" hx-push-url="true" {
+                        (pile_count(list.first_contacts.len(), "premier contact", "premiers contacts"))
+                    }
+                }
+                @if vue != Vue::Tout && !list.stopped.is_empty() {
+                    @let there = affaires_href(Vue::Tout, "", type_id);
+                    a href=(there) hx-get=(there) hx-target="#content" hx-push-url="true" {
+                        "Arrêtées · " (list.stopped.len())
+                        span class="stopped-hint" { " · voir" }
+                    }
+                }
+            }
+            div class="lens-work" {
+                div class="lens-table" {
+                    @if conv_empty {
+                        p class="empty-state" { "Aucune conversation de ce type." }
+                    }
+                    @if mission_empty {
+                        p class="empty-state" { "Aucune mission de ce type." }
+                    }
+                    @if rows.is_empty() && query.is_empty() && !conv_empty && !mission_empty {
+                        p class="empty-state" { (empty_vue(vue)) }
+                    } @else if rows.is_empty() && !query.is_empty() {
+                        p class="empty-state" { "Aucun nom." }
+                    } @else if !rows.is_empty() {
+                        div class="lens-head" {
+                            span { "Nom" }
+                            span { "Où on en est" }
+                            span { "Prochain pas" }
+                            span class="amt" { "Montant" }
+                        }
+                        @for row in &rows {
+                            (lens_row(row, today))
+                        }
+                    }
+                }
+                aside id="affaire" class="lens-panel" {
+                    @if let Some(inner) = panel {
+                        (panel_chrome(inner))
+                    }
+                }
+            }
         }
     }
 }
 
-fn rows_kept<'a>(rows: &'a [PersonRow], allowed: Option<&HashSet<ClientId>>) -> Vec<&'a PersonRow> {
+fn rows_kept<'a>(
+    rows: &'a [PersonRow],
+    allowed: Option<&HashSet<ClientId>>,
+    query: &str,
+) -> Vec<&'a PersonRow> {
     rows.iter()
         .filter(|row| match allowed {
             None => true,
             Some(ids) => row.client_id.is_some_and(|id| ids.contains(&id)),
         })
+        .filter(|row| name_matches(row, query))
         .collect()
 }
 
-fn affaires_href(query: &str, type_id: &str) -> String {
+fn asks_today(row: &PersonRow) -> bool {
+    row.cues.iter().any(|cue| {
+        matches!(
+            cue,
+            PersonCue::FollowUpDue { today: true, .. }
+                | PersonCue::InvoiceOverdue { .. }
+                | PersonCue::MatchingDebit
+                | PersonCue::DraftReady
+        )
+    })
+}
+
+fn empty_vue(vue: Vue) -> &'static str {
+    match vue {
+        Vue::Geste => "Rien ne demande un geste.",
+        Vue::Livre => "Le livre est vide.",
+        Vue::Tas => "Le tas est vide.",
+        Vue::Sorties => "Un nom apparaît ici quand une dépense le porte.",
+        Vue::Tout => "Personne pour l'instant. Une conversation commence par un nom et une phrase.",
+    }
+}
+
+fn noms_fr(n: usize) -> String {
+    match n {
+        0 => "aucun nom".into(),
+        1 => "un nom".into(),
+        2 => "deux noms".into(),
+        n => format!("{n} noms"),
+    }
+}
+
+fn pile_count(n: usize, one: &str, many: &str) -> String {
+    if n == 1 {
+        format!("1 {one}")
+    } else {
+        format!("{n} {many}")
+    }
+}
+
+fn affaires_href(vue: Vue, query: &str, type_id: &str) -> String {
     let mut parts = Vec::new();
+    if !vue_key(vue).is_empty() {
+        parts.push(format!("vue={}", vue_key(vue)));
+    }
     if !query.is_empty() {
         parts.push(format!("q={}", path_encode(query)));
     }
@@ -155,21 +403,17 @@ fn affaires_href(query: &str, type_id: &str) -> String {
     }
 }
 
-fn kind_row(catalog: &[WorkKind], query: &str, active: &str) -> Markup {
-    if catalog.is_empty() {
-        return html! {};
-    }
+fn vue_menu(vue: Vue, query: &str, type_id: &str) -> Markup {
     html! {
-        div class="word-choice" {
-            div class="word-choice-row" {
-                @for kind in catalog {
-                    @let on = kind.id == active;
-                    @let href = affaires_href(query, if on { "" } else { kind.id.as_str() });
-                    label {
-                        input type="checkbox" checked[on] disabled tabindex="-1" aria-hidden="true";
-                        a href=(href) hx-get=(href) hx-target="#content" hx-push-url="true" {
-                            (kind.name)
-                        }
+        details class="slot" {
+            summary class="seg" { (vue_label(vue)) }
+            div class="menu" {
+                @for item in VUES {
+                    @let href = affaires_href(item, query, type_id);
+                    a href=(href) hx-get=(href) hx-target="#content" hx-push-url="true"
+                      class={ @if item == vue { "on" } } {
+                        span class="vue-name" { (vue_label(item)) }
+                        span class="vue-hint" { (vue_hint(item)) }
                     }
                 }
             }
@@ -177,153 +421,68 @@ fn kind_row(catalog: &[WorkKind], query: &str, active: &str) -> Markup {
     }
 }
 
-fn outgoing_chapter(rows: &[PersonRow]) -> Markup {
+fn type_menu(catalog: &[WorkKind], vue: Vue, query: &str, active: &str, label: &str) -> Markup {
+    let clear = affaires_href(vue, query, "");
     html! {
-        p class="section-label" { "Chez qui ça sort" }
-        @if rows.is_empty() {
-            p class="empty-state" {
-                "Un nom apparaît ici quand une dépense le porte. En rangeant un débit du relevé, ou en notant une sortie."
-            }
-            div class="row-actions" {
-                button class="quiet" type="button"
-                    hx-get="/depenses/new" hx-target="#panel" hx-swap="innerHTML" {
-                    "Noter une sortie"
-                }
-            }
-        } @else {
-            ul class="people" {
-                @for row in rows {
-                    li { (row_link(row)) }
+        details class="slot" {
+            summary class="seg" { (label) }
+            div class="menu" {
+                a href=(clear) hx-get=(clear) hx-target="#content" hx-push-url="true"
+                  class={ @if active.is_empty() { "on" } } { "tout type" }
+                @for kind in catalog {
+                    @let href = affaires_href(vue, query, kind.id.as_str());
+                    a href=(href) hx-get=(href) hx-target="#content" hx-push-url="true"
+                      class={ @if kind.id == active { "on" } } {
+                        (kind.name)
+                    }
                 }
             }
         }
     }
 }
 
-fn stopped_chapter(rows: &[PersonRow]) -> Markup {
-    if rows.is_empty() {
-        return html! {};
-    }
+fn lens_row(row: &PersonRow, today: Date) -> Markup {
+    let href = person_href(&row.name);
+    let alarm = row.cues.iter().any(|cue| {
+        matches!(
+            cue,
+            PersonCue::InvoiceOverdue { .. } | PersonCue::MatchingDebit
+        )
+    });
+    let cue_class = if alarm { "cue alarm" } else { "cue" };
+    let due_class = if alarm { "due alarm" } else { "due" };
+    let amt_class = if alarm { "amt alarm" } else { "amt" };
     html! {
-        details class="stopped" {
-            summary class="section-label" {
-                "Arrêtées · " (rows.len())
-                span class="stopped-hint" { " · voir" }
-            }
-            ul class="people" {
-                @for row in rows {
-                    li { (row_link(row)) }
+        a class="trow" href=(href)
+          hx-get=(href) hx-target="#affaire" hx-swap="innerHTML" hx-push-url="true" {
+            span class="who-cell" {
+                strong { (row.name) }
+                @if !row.party.is_empty() && fold_name(&row.party) != fold_name(&row.name) {
+                    small { (row.party) }
+                }
+                @if !row.work_kinds.is_empty() {
+                    p class="kinds" { (row.work_kinds.join(" · ")) }
                 }
             }
+            span class=(cue_class) { (cues_fr(&row.cues)) }
+            span class=(due_class) { (due_fr(row, today)) }
+            span class=(amt_class) { (row.figure.as_ref().map(figure_fr).unwrap_or_default()) }
         }
     }
 }
 
-fn list_title(list: &PeopleList) -> String {
-    let n = list.open_conversations() + list.missions.len();
-    match n {
-        0 => "Les affaires.".into(),
-        1 => "Un nom.".into(),
-        2 => "Deux noms.".into(),
-        k => format!("{k} noms."),
-    }
-}
-
-fn list_lede(list: &PeopleList) -> String {
-    match list.open_conversations() {
-        0 => "Avec qui j'en suis. Un nom, pas un type de document.".into(),
-        1 => {
-            let name = sole_open(list).map_or("ce nom", |row| row.name.as_str());
-            format!("Derrière {name}, personne. C'est le trou — pas un graphique.")
-        }
-        _ => "Avec qui j'en suis. Un nom, pas un type de document.".into(),
-    }
-}
-
-fn sole_open(list: &PeopleList) -> Option<&PersonRow> {
-    list.conversations
-        .first()
-        .or(list.first_messages.first())
-        .or(list.first_contacts.first())
-}
-
-fn conversation_chapter(
-    conversations: &[&PersonRow],
-    messages: &[&PersonRow],
-    contacts: &[&PersonRow],
-    query: &str,
-    type_id: &str,
-    filtering: bool,
-) -> Markup {
-    let pile = !messages.is_empty() || !contacts.is_empty();
-    let empty = if filtering {
-        "Aucune conversation de ce type."
-    } else {
-        "Aucune conversation ouverte."
-    };
-    html! {
-        p class="section-label" { "En conversation" }
-        @if conversations.is_empty() && !pile {
-            p class="empty-state" { (empty) }
-        } @else if !conversations.is_empty() {
-            (people_items(conversations))
-        }
-        (pile_chapter(messages, query, type_id, "premier message", "premiers messages", "q-messages"))
-        (pile_chapter(contacts, query, type_id, "premier contact", "premiers contacts", "q-contacts"))
-    }
-}
-
-fn people_items(rows: &[&PersonRow]) -> Markup {
-    html! {
-        ul class="people" {
-            @for row in rows {
-                li { (row_link(row)) }
-            }
-        }
-    }
-}
-
-fn pile_chapter(
-    rows: &[&PersonRow],
-    query: &str,
-    type_id: &str,
-    one: &str,
-    many: &str,
-    field_id: &str,
-) -> Markup {
-    if rows.is_empty() {
-        return html! {};
-    }
-    let shown: Vec<&PersonRow> = rows
+fn due_fr(row: &PersonRow, today: Date) -> String {
+    if row
+        .cues
         .iter()
-        .copied()
-        .filter(|row| name_matches(row, query))
-        .collect();
-    let title = if rows.len() == 1 {
-        format!("1 {one}")
-    } else {
-        format!("{} {many}", rows.len())
-    };
-    html! {
-        details class="pile" open[!query.is_empty()] {
-            summary class="section-label" {
-                (title)
-                span class="stopped-hint" { " · voir" }
-            }
-            form class="pile-find" action="/affaires" method="get"
-                hx-get="/affaires" hx-target="#content" hx-push-url="true" {
-                input id=(field_id) type="search" name="q" value=(query)
-                    placeholder="Un nom" aria-label="Un nom";
-                @if !type_id.is_empty() {
-                    input type="hidden" name="type" value=(type_id);
-                }
-            }
-            @if shown.is_empty() {
-                p class="empty-state" { "Aucun nom." }
-            } @else {
-                (people_items(&shown))
-            }
-        }
+        .any(|cue| matches!(cue, PersonCue::InvoiceOverdue { .. }))
+    {
+        return "en retard".into();
+    }
+    match row.due_on {
+        Some(on) if on <= today => "aujourd'hui".into(),
+        Some(on) => format_date_fr(on),
+        None => String::new(),
     }
 }
 
@@ -356,35 +515,6 @@ fn fold_name(value: &str) -> String {
             other => other,
         })
         .collect()
-}
-
-fn chapter(label: &str, rows: &[&PersonRow], empty: &str) -> Markup {
-    html! {
-        p class="section-label" { (label) }
-        @if rows.is_empty() {
-            p class="empty-state" { (empty) }
-        } @else {
-            (people_items(rows))
-        }
-    }
-}
-
-fn row_link(row: &PersonRow) -> Markup {
-    let href = person_href(&row.name);
-    html! {
-        a href=(href) hx-get=(href) hx-target="#content" hx-push-url="true" {
-            div {
-                div class="nm" { (row.name) }
-                @if !row.work_kinds.is_empty() {
-                    p class="kinds" { (row.work_kinds.join(" · ")) }
-                }
-                div class="st" { (cues_fr(&row.cues)) }
-            }
-            @if let Some(fig) = &row.figure {
-                span class="amt" { (figure_fr(fig)) }
-            }
-        }
-    }
 }
 
 fn figure_fr(figure: &PersonFigure) -> String {
@@ -450,7 +580,63 @@ fn cue_fr(cue: &PersonCue) -> String {
 
 pub fn dossier_page(store: &Store, needle: &str, today: Date) -> Result<Markup, AppError> {
     let dossier = person(store.connection(), needle, today)?;
-    Ok(dossier_markup(&dossier, today, None))
+    let look = LetterLook::from_store(store);
+    Ok(dossier_body(&dossier, today, None, None, &look))
+}
+
+/// Habit de la lettre sur cet écran. Le dossier ne le porte pas : une relecture
+/// d'erreur, sans coffre sous la main, reste sur l'habit neutre.
+struct LetterLook {
+    from_name: String,
+    chrome: LetterChrome,
+}
+
+impl LetterLook {
+    fn plain() -> Self {
+        Self {
+            from_name: String::new(),
+            chrome: LetterChrome::default(),
+        }
+    }
+
+    fn from_store(store: &Store) -> Self {
+        let account = griffe_core::mail::profile(store.connection()).unwrap_or_default();
+        Self {
+            from_name: account.from_name.clone(),
+            chrome: LetterChrome::from_profile(&account),
+        }
+    }
+}
+
+/// La carte telle qu'elle part. `close` ajoute la formule sans l'écrire dans le champ.
+/// `heading` pose le sujet au-dessus, quand la page ne l'a pas déjà.
+pub fn letter_stage(
+    from_name: &str,
+    subject: &str,
+    body: &str,
+    chrome: &LetterChrome,
+    close: bool,
+    heading: bool,
+) -> Markup {
+    let text = if close {
+        close_letter(body, &chrome.signature)
+    } else {
+        body.to_string()
+    };
+    let card = letter_card(&LetterParts {
+        from_name,
+        subject,
+        body: &text,
+        chrome,
+    });
+    html! {
+        div class="letter-stage" {
+            @if heading && !subject.trim().is_empty() {
+                p class="letter-stage-subject" { (subject) }
+            }
+            (PreEscaped(card))
+        }
+    }
 }
 
 /// Saisie des types sur le dossier. `naming` affiche « Nomme le type. » sans écrire.
@@ -462,7 +648,8 @@ pub struct KindFormState {
 }
 
 pub fn dossier_markup(dossier: &PersonDossier, today: Date, flash: Option<&str>) -> Markup {
-    dossier_body(dossier, today, flash, None)
+    let look = LetterLook::plain();
+    dossier_body(dossier, today, flash, None, &look)
 }
 
 pub fn dossier_with_kinds(
@@ -471,7 +658,8 @@ pub fn dossier_with_kinds(
     flash: Option<&str>,
     kinds: &KindFormState,
 ) -> Markup {
-    dossier_body(dossier, today, flash, Some(kinds))
+    let look = LetterLook::plain();
+    dossier_body(dossier, today, flash, Some(kinds), &look)
 }
 
 fn kinds_form(dossier: &PersonDossier, href: &str, posted: Option<&KindFormState>) -> Markup {
@@ -515,6 +703,7 @@ fn dossier_body(
     today: Date,
     flash: Option<&str>,
     posted: Option<&KindFormState>,
+    look: &LetterLook,
 ) -> Markup {
     let href = person_href(&dossier.name);
     let client_fiche = matches!(dossier.key, PersonKey::Client { .. });
@@ -554,63 +743,69 @@ fn dossier_body(
             @for action in &fate {
                 (action_button(action, &href))
             }
-            @if let Some(body) = current_paragraph(&dossier.current, dossier) {
-                div class="block" {
-                    h3 { "En cours" }
-                    p { (body) }
-                    @if !dossier.work.is_empty() {
-                        ul class="hist" {
-                            @for line in &dossier.work {
-                                li {
-                                    span class="when" { (line.amount) }
-                                    span { (line.label) }
+            div class="blocks" {
+                div class="col-main" {
+                    @if let Some(body) = current_paragraph(&dossier.current, dossier) {
+                        div class="block" {
+                            h3 { "En cours" }
+                            p { (body) }
+                            @if !dossier.work.is_empty() {
+                                ul class="hist" {
+                                    @for line in &dossier.work {
+                                        li {
+                                            span class="when" { (line.amount) }
+                                            span { (line.label) }
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
-                }
-            }
-            @if let Some(outgoing) = &dossier.outgoing {
-                div class="block" {
-                    h3 { "Les notes" }
-                    ul class="hist notes" {
-                        @for note in &outgoing.notes {
-                            (note_item(note, &href))
+                    @if let Some(project) = &dossier.project {
+                        div class="block" {
+                            h3 { "Le projet" }
+                            p { (project_paragraph(project, dossier)) }
                         }
                     }
                 }
-            }
-            @if let Some(project) = &dossier.project {
-                div class="block" {
-                    h3 { "Le projet" }
-                    p { (project_paragraph(project, dossier)) }
-                }
-            }
-            @if show_papers_block(dossier) {
-                div class="block" {
-                    h3 { "Les papiers" }
-                    @if !dossier.papers.is_empty() {
-                        ul class="hist" {
-                            @for paper in &dossier.papers {
-                                li {
-                                    span class="when" { (short_date(paper.on)) }
-                                    span { (paper_line(paper)) }
-                                    (paper_write_off_form(paper, &href, today))
+                div class="col-side" {
+                    @if let Some(outgoing) = &dossier.outgoing {
+                        div class="block" {
+                            h3 { "Les notes" }
+                            ul class="hist notes" {
+                                @for note in &outgoing.notes {
+                                    (note_item(note, &href))
                                 }
                             }
                         }
                     }
-                    @if can_import_invoice(dossier) {
-                        (import_invoice_form(dossier, today))
+                    @if show_papers_block(dossier) {
+                        div class="block" {
+                            h3 { "Les papiers" }
+                            @if !dossier.papers.is_empty() {
+                                ul class="hist" {
+                                    @for paper in &dossier.papers {
+                                        li {
+                                            span class="when" { (short_date(paper.on)) }
+                                            span { (paper_line(paper)) }
+                                            (paper_write_off_form(paper, &href, today))
+                                        }
+                                    }
+                                }
+                            }
+                            @if can_import_invoice(dossier) {
+                                (import_invoice_form(dossier, today))
+                            }
+                        }
                     }
-                }
-            }
-            @if !dossier.history.is_empty() {
-                div class="block" {
-                    h3 { "Histoire" }
-                    ul class="hist" {
-                        @for event in &dossier.history {
-                            (history_item(event))
+                    @if !dossier.history.is_empty() {
+                        div class="block" {
+                            h3 { "Histoire" }
+                            ul class="hist" {
+                                @for event in &dossier.history {
+                                    (history_item(event, look))
+                                }
+                            }
                         }
                     }
                 }
@@ -1024,11 +1219,11 @@ fn paper_line(paper: &Paper) -> String {
     }
 }
 
-fn history_item(event: &HistoryEvent) -> Markup {
+fn history_item(event: &HistoryEvent, look: &LetterLook) -> Markup {
     html! {
         li {
             time { (format_date_fr(event.on)) }
-            (history_body(event))
+            (history_body(event, look))
         }
     }
 }
@@ -1069,7 +1264,7 @@ fn fold(summary: Markup, body: &str) -> Markup {
     }
 }
 
-fn history_body(event: &HistoryEvent) -> Markup {
+fn history_body(event: &HistoryEvent, look: &LetterLook) -> Markup {
     match &event.kind {
         HistoryKind::Letter { subject, body } => {
             let title = if subject.is_empty() {
@@ -1077,7 +1272,16 @@ fn history_body(event: &HistoryEvent) -> Markup {
             } else {
                 subject.clone()
             };
-            fold(html! { span class="preview" { (title) } }, body)
+            // Le texte classé, tel quel. La formule d'aujourd'hui ne s'y ajoute pas.
+            html! {
+                details class="letter-fold" {
+                    summary {
+                        span class="preview" { (title) }
+                        span class="fold-mark" aria-hidden="true" {}
+                    }
+                    (letter_stage(&look.from_name, subject, body, &look.chrome, false, false))
+                }
+            }
         }
         HistoryKind::Interaction { interaction } => {
             let nature = nature_fr(*interaction);
@@ -1394,6 +1598,7 @@ pub struct FicheValues {
 pub struct FicheErrors {
     pub who: Option<String>,
     pub address: Option<String>,
+    pub email: Option<String>,
     pub banner: Option<String>,
 }
 
@@ -1423,7 +1628,7 @@ pub fn fiche_page(
                 (form::text("postal_code", "Code postal", &values.postal_code, None))
                 (form::text("city", "Ville", &values.city, None))
                 (form::text("representative", "Qui répond", &values.representative, None))
-                (form::text("email", "Courriel", &values.email, None))
+                (form::text("email", "Courriel", &values.email, errors.email.as_deref()))
                 (form::text("phone", "Téléphone", &display_phone(&values.phone), None))
                 @if genre.show {
                     (genre_line(genre))
@@ -1487,8 +1692,7 @@ pub fn estimate_page(
     }
 }
 
-/// Fragment rendu du récit, cible de l'aperçu. Une page vide dit « Rien d'écrit. »
-pub fn travaux_fragment(body: &str) -> Markup {
+fn travaux_prose(body: &str) -> Markup {
     if body.is_empty() {
         html! { p class="work-empty" { "Rien d'écrit." } }
     } else {
@@ -1496,40 +1700,121 @@ pub fn travaux_fragment(body: &str) -> Markup {
     }
 }
 
-pub fn travaux_page(dossier: &PersonDossier, note: &DossierWork, error: Option<&str>) -> Markup {
-    let href = person_href(&dossier.name);
-    let action = format!("{href}/travaux");
-    let preview = format!("{href}/travaux/apercu");
+fn travaux_back(href: &str, name: &str) -> Markup {
     html! {
-        div class="letter spread" data-view=(ViewId::Gens.slug()) {
-            a class="back" href=(href) hx-get=(href) hx-target="#content" hx-push-url="true" {
-                "← " (dossier.name)
-            }
+        a class="back" href=(href) hx-get=(href) hx-target="#content" hx-push-url="true" {
+            "← " (name)
+        }
+    }
+}
+
+/// Lecture du récit. Le markdown n'est pas là : « Écrire » ouvre la source.
+pub fn travaux_page(dossier: &PersonDossier, note: &DossierWork) -> Markup {
+    let href = person_href(&dossier.name);
+    let edit = format!("{href}/travaux/ecrire");
+    html! {
+        div class="letter spread" data-view=(ViewId::Gens.slug()) hx-history="false" {
+            (travaux_back(&href, &dossier.name))
             h1 { "Les travaux." }
             p class="lede" {
                 "Où on en est. L'estimation, à côté, dit ce que chaque ligne vaut."
             }
-            @if let Some(msg) = error {
-                p class="mast-note" role="alert" { (msg) }
+            a class="quiet" href=(edit) hx-get=(edit) hx-target="#content" hx-push-url="true" {
+                "Écrire"
             }
-            div id="travaux-rendu" class="work-prose" {
-                (travaux_fragment(&note.body))
+            div class="work-prose" {
+                (travaux_prose(&note.body))
             }
-            form hx-post=(action) hx-target="#content" hx-push-url="true" {
-                input type="hidden" name="revision" value=(note.revision);
-                div class="field" {
-                    label for="body" { "Le récit" }
-                    textarea id="body" name="body" rows="14"
-                      hx-post=(preview)
-                      hx-trigger="keyup changed delay:400ms"
-                      hx-target="#travaux-rendu"
-                      hx-swap="innerHTML" {
-                        (note.body)
+        }
+    }
+}
+
+/// Source markdown. `saved` est le texte du coffre : s'il diffère du champ, la page est sale.
+/// `alert` s'affiche au-dessus. `offer_vault` propose de jeter le brouillon et de relire le coffre.
+pub fn travaux_edit(
+    dossier: &PersonDossier,
+    draft: &DossierWork,
+    saved: &str,
+    alert: Option<&str>,
+    offer_vault: bool,
+) -> Markup {
+    let href = person_href(&dossier.name);
+    let action = format!("{href}/travaux");
+    let edit = format!("{href}/travaux/ecrire");
+    html! {
+        div class="letter spread" data-view=(ViewId::Gens.slug()) hx-history="false" {
+            (travaux_back(&href, &dossier.name))
+            h1 { "Les travaux." }
+            p class="travaux-hint" { "Il se garde tout seul." }
+            form class="travaux-ecrire" method="post" action=(action)
+              data-saved=(saved) data-edit=(edit) hx-sync="this:queue last" {
+                input id="travaux-revision" type="hidden" name="revision" value=(draft.revision);
+                (travaux_alert(alert, offer_vault.then_some(edit.as_str())))
+                div class="row-actions travaux-bar" {
+                    span id="travaux-etat" class="travaux-etat" {}
+                    button class="seal" type="submit" name="intent" value="relire"
+                      hx-post=(action) hx-target="#content" hx-swap="innerHTML"
+                      hx-include="closest form" hx-push-url="false" {
+                        "Relire"
                     }
                 }
-                div class="row-actions" {
-                    button class="seal" type="submit" { "Garder" }
+                textarea id="body" class="travaux-source" name="body" aria-label="Le récit"
+                  autofocus
+                  hx-post=(action)
+                  hx-trigger="input changed delay:600ms"
+                  hx-swap="none"
+                  hx-push-url="false"
+                  hx-include="#travaux-revision" {
+                    (draft.body)
                 }
+            }
+        }
+    }
+}
+
+/// Réponse d'une sauvegarde qui laisse le champ en place : révision, « Gardé. », alerte vide.
+pub fn travaux_kept(revision: i64) -> Markup {
+    html! {
+        input id="travaux-revision" type="hidden" name="revision" value=(revision) hx-swap-oob="true";
+        span id="travaux-etat" class="travaux-etat" hx-swap-oob="true" { "Gardé." }
+        div id="travaux-alerte" hx-swap-oob="true" {}
+    }
+}
+
+/// Alerte hors bande, sans toucher au champ. `reload` est le lien qui reprend le coffre.
+pub fn travaux_notice(message: &str, reload: Option<&str>) -> Markup {
+    html! {
+        (travaux_alert_oob(message, reload))
+        span id="travaux-etat" class="travaux-etat" hx-swap-oob="true" {}
+    }
+}
+
+fn travaux_alert(message: Option<&str>, reload: Option<&str>) -> Markup {
+    html! {
+        div id="travaux-alerte" {
+            @if let Some(message) = message {
+                (travaux_alert_body(message, reload))
+            }
+        }
+    }
+}
+
+fn travaux_alert_oob(message: &str, reload: Option<&str>) -> Markup {
+    html! {
+        div id="travaux-alerte" hx-swap-oob="true" {
+            (travaux_alert_body(message, reload))
+        }
+    }
+}
+
+fn travaux_alert_body(message: &str, reload: Option<&str>) -> Markup {
+    html! {
+        p class="mast-note" role="alert" { (message) }
+        @if let Some(href) = reload {
+            a class="quiet" href=(href)
+              hx-get=(href) hx-target="#content" hx-push-url="true"
+              data-travaux-discard="true" {
+                "Reprendre le récit du coffre"
             }
         }
     }
@@ -1568,13 +1853,10 @@ pub struct PhrasesView {
     pub moments: Vec<PhraseMoment>,
     pub chronicle: String,
     pub read_caption: String,
-    pub prenom: String,
-    pub sujet: String,
-    pub montant: String,
-    pub moi: String,
-    pub societe: String,
-    /// Formule déjà résolue, pour l'aperçu à côté de la frise.
-    pub signature: String,
+    /// Nom en tête de la carte.
+    pub from_name: String,
+    /// Couleur, métier, site, formule brute.
+    pub chrome: LetterChrome,
     pub banner: Option<String>,
     pub status: Option<String>,
 }
@@ -1614,6 +1896,8 @@ pub struct KeepUi {
     /// Texte encore dans la lettre, quand le geste n'est pas terminé.
     pub subject: Option<String>,
     pub body: Option<String>,
+    /// Relire est ouvert : la carte remplace la zone d'écriture.
+    pub reading: bool,
 }
 
 pub fn phrases_page(view: &PhrasesView) -> Markup {
@@ -1623,11 +1907,7 @@ pub fn phrases_page(view: &PhrasesView) -> Markup {
         .map(|moment| moment.key.as_str())
         .collect::<Vec<_>>()
         .join(",");
-    let open = view.moments.iter().find(|moment| moment.open);
-    let sheet_subject = open
-        .map(|moment| moment.reads_subject.as_str())
-        .unwrap_or("");
-    let sheet_body = open.map(|moment| moment.reads.as_str()).unwrap_or("");
+    let preview = phrase_preview_href(&view.action);
     html! {
         div class="phrase-desk" data-view=(ViewId::Gens.slug()) {
             a class="back" href=(view.back_href) hx-get=(view.back_href) hx-target="#content" hx-push-url="true" {
@@ -1692,9 +1972,9 @@ pub fn phrases_page(view: &PhrasesView) -> Markup {
                                     }
                                 }
                                 div class="phrase-panel" {
-                                    (phrase_line(&format!("label_{}", moment.key), "Ce moment", &moment.label, false))
-                                    (phrase_line(&format!("subject_{}", moment.key), "Sujet", &moment.subject, false))
-                                    (phrase_line(&format!("body_{}", moment.key), "Lettre", &moment.body, true))
+                                    (phrase_line(&format!("label_{}", moment.key), "Ce moment", &moment.label, false, ""))
+                                    (phrase_line(&format!("subject_{}", moment.key), "Sujet", &moment.subject, false, &preview))
+                                    (phrase_line(&format!("body_{}", moment.key), "Lettre", &moment.body, true, &preview))
                                     input type="hidden" name=(format!("revision_{}", moment.key)) value=(moment.revision);
                                     div class="token-row" {
                                         @for (name, insert) in PHRASE_TOKENS {
@@ -1716,16 +1996,8 @@ pub fn phrases_page(view: &PhrasesView) -> Markup {
                             }
                         }
                     }
-                    aside class="phrase-sheet"
-                          data-prenom=(view.prenom)
-                          data-sujet=(view.sujet)
-                          data-montant=(view.montant)
-                          data-moi=(view.moi)
-                          data-societe=(view.societe) {
-                        template class="signature-source" { (view.signature) }
-                        p class="phrase-caption" { (view.read_caption) }
-                        p class="phrase-sheet-subject" { (sheet_subject) }
-                        pre class="phrase-sheet-body" { (sheet_body) }
+                    aside class="phrase-sheet" id="phrase-sheet" {
+                        (phrase_sheet_inner(view))
                     }
                 }
                 div class="row-actions" {
@@ -1749,12 +2021,46 @@ const PHRASE_TOKENS: &[(&str, &str)] = &[
     ("<signature>", "<signature>"),
 ];
 
-fn phrase_line(id: &str, label: &str, value: &str, letter: bool) -> Markup {
+/// L'intérieur de la feuille, seul. L'aperçu le remplace sans réécrire la frise.
+pub fn phrase_sheet_inner(view: &PhrasesView) -> Markup {
+    let open = view.moments.iter().find(|moment| moment.open);
+    let subject = open
+        .map(|moment| moment.reads_subject.as_str())
+        .unwrap_or("");
+    let body = open.map(|moment| moment.reads.as_str()).unwrap_or("");
+    html! {
+        p class="phrase-caption" { (view.read_caption) }
+        p class="phrase-sheet-subject" { (subject) }
+        (letter_stage(&view.from_name, subject, body, &view.chrome, true, false))
+    }
+}
+
+fn phrase_preview_href(action: &str) -> String {
+    action.replacen("/affaires/phrases", "/affaires/phrases/apercu", 1)
+}
+
+fn phrase_line(id: &str, label: &str, value: &str, letter: bool, preview: &str) -> Markup {
+    let watch = letter || id.starts_with("subject_");
     html! {
         div class="field" {
             label for=(id) { (label) }
             @if letter {
-                textarea id=(id) name=(id) rows="8" { (value) }
+                textarea id=(id) name=(id) rows="8"
+                    hx-post=(preview)
+                    hx-trigger="input changed delay:600ms, preview"
+                    hx-include="closest form"
+                    hx-target="#phrase-sheet"
+                    hx-swap="innerHTML"
+                    hx-push-url="false" { (value) }
+                p class="field-help" { (LINK_HINT) }
+            } @else if watch {
+                input id=(id) name=(id) type="text" value=(value)
+                    hx-post=(preview)
+                    hx-trigger="input changed delay:600ms, preview"
+                    hx-include="closest form"
+                    hx-target="#phrase-sheet"
+                    hx-swap="innerHTML"
+                    hx-push-url="false";
             } @else {
                 input id=(id) name=(id) type="text" value=(value);
             }
@@ -1801,6 +2107,7 @@ pub fn depart_markup(
     view: Option<&OutboundView>,
     note: Option<&str>,
     send_label: &str,
+    destination: Option<&str>,
 ) -> Markup {
     let poll = format!("{href}/envoi");
     let polling = view.is_some_and(depart_polls);
@@ -1812,7 +2119,7 @@ pub fn depart_markup(
             hx-get=[poll_url]
             hx-trigger=[trigger]
             hx-swap=[swap] {
-            (depart_body(href, view, note, send_label))
+            (depart_body(href, view, note, send_label, destination))
         }
     }
 }
@@ -1824,12 +2131,13 @@ pub fn depart_poll_fragment(
     view: Option<&OutboundView>,
     note: Option<&str>,
     send_label: &str,
+    destination: Option<&str>,
 ) -> (Markup, bool) {
     let polling = view.is_some_and(depart_polls);
     let markup = if polling {
-        depart_body(href, view, note, send_label)
+        depart_body(href, view, note, send_label, destination)
     } else {
-        depart_markup(href, view, note, send_label)
+        depart_markup(href, view, note, send_label, destination)
     };
     (markup, polling)
 }
@@ -1839,6 +2147,7 @@ fn depart_body(
     view: Option<&OutboundView>,
     note: Option<&str>,
     send_label: &str,
+    destination: Option<&str>,
 ) -> Markup {
     let send = format!("{href}/envoyer");
     let left = view.map(|item| item.seconds_left).unwrap_or(0);
@@ -1847,14 +2156,22 @@ fn depart_body(
             p class="depart-line" { (note) }
         }
         @match view.map(|item| item.status) {
-            Some(OutboundStatus::Armed) => {
+            Some(OutboundStatus::Armed | OutboundStatus::Held) => {
                 p class="depart-line" {
-                    @if left > 0 {
-                        "Elle part dans "
-                        span class="depart-count" { (left) }
-                        "."
+                    @if let Some(address) = destination.filter(|value| !value.is_empty()) {
+                        @if left > 0 {
+                            "Elle part vers "
+                            (address)
+                            " dans "
+                            span class="depart-count" { (left) }
+                            "."
+                        } @else {
+                            "Elle part vers "
+                            (address)
+                            "."
+                        }
                     } @else {
-                        "Elle part."
+                        "Il manque l'adresse. Elle ne partira pas."
                     }
                 }
                 span class="depart-track" data-left=(left) { i {} }
@@ -1888,7 +2205,10 @@ fn depart_body(
 }
 
 fn depart_polls(view: &OutboundView) -> bool {
-    matches!(view.status, OutboundStatus::Armed | OutboundStatus::Sending)
+    matches!(
+        view.status,
+        OutboundStatus::Armed | OutboundStatus::Held | OutboundStatus::Sending
+    )
 }
 
 fn envoyer_button(action: &str, label: &str) -> Markup {
@@ -2014,8 +2334,13 @@ pub fn letter_page(
         .iter()
         .filter(|e| matches!(e.kind, HistoryKind::Letter { .. }))
         .collect();
+    let look = LetterLook {
+        from_name: mail.from_name.clone(),
+        chrome: LetterChrome::from_profile(&mail),
+    };
+    let relire = format!("{href}/relire");
     Ok(html! {
-        div class="letter spread" data-view=(ViewId::Gens.slug()) {
+        div class="letter spread letter-desk" data-view=(ViewId::Gens.slug()) {
             a class="back" href=(href) hx-get=(href) hx-target="#content" hx-push-url="true" {
                 "← " (dossier.name)
             }
@@ -2056,14 +2381,23 @@ pub fn letter_page(
                     }
                 }
             }
-            div class="letter-draft" {
-                div class="meta" {
-                    "De " (from) " · À " (to)
-                    @if !mail.ready { " · ne sera pas envoyé par Griffe" }
+            form class="letter-compose" {
+                input class="letter-face-pick" type="radio" name="face" id="face-write" value="ecrire" checked[!keep.reading];
+                input class="letter-face-pick" type="radio" name="face" id="face-read" value="relire" checked[keep.reading];
+                div class="letter-faces" {
+                    label class="quiet" for="face-write" { "Écrire" }
+                    button class="quiet letter-relire" type="submit"
+                           formaction=(relire)
+                           formmethod="post"
+                           hx-post=(relire)
+                           hx-target="#content" {
+                        "Relire"
+                    }
                 }
-                form {
+                div class="letter-draft" {
                     (form::text("subject_line", "Sujet", subject, None))
                     (form::textarea("body", "Lettre", body, 12, None))
+                    p class="field-help" { (LINK_HINT) }
                     @if keep.ask {
                         p class="phrase-caption" { "Pour qui ?" }
                         div class="field" {
@@ -2082,9 +2416,21 @@ pub fn letter_page(
                     @if keep.confirm && genre.is_none() {
                         input type="hidden" name="genre_name" value=(keep.proposed_name);
                     }
+                    @if !keep.ask && !(keep.confirm && genre.is_none()) && !keep.proposed_name.is_empty() {
+                        input type="hidden" name="genre_name" value=(keep.proposed_name);
+                    }
+                }
+                @if keep.reading {
+                    (letter_stage(&look.from_name, subject, body, &look.chrome, true, true))
+                }
+                div class="letter-under" {
+                    div class="meta" {
+                        "De " (from) " · À " (to)
+                        @if !mail.ready { " · ne sera pas envoyé par Griffe" }
+                    }
                     div class="row-actions" {
                         @if can_send {
-                            (depart_markup(&href, depart.as_ref(), None, "Envoyer"))
+                            (depart_markup(&href, depart.as_ref(), None, "Envoyer", (!recipient.is_empty()).then_some(recipient)))
                         } @else if mail.ready {
                             p class="depart-line" { "Il manque l'adresse de la personne." }
                         }
@@ -2116,7 +2462,7 @@ pub fn letter_page(
                     h3 { "Déjà classées" }
                     ul class="hist" {
                         @for event in previous {
-                            (history_item(event))
+                            (history_item(event, &look))
                         }
                     }
                 }
@@ -2329,6 +2675,24 @@ pub fn not_found(needle: &str, today: Date) -> Markup {
 #[must_use]
 pub fn href_for_party(party: &str) -> String {
     person_href(party)
+}
+
+fn row_link(row: &PersonRow) -> Markup {
+    let href = person_href(&row.name);
+    html! {
+        a href=(href) hx-get=(href) hx-target="#content" hx-push-url="true" {
+            div {
+                div class="nm" { (row.name) }
+                @if !row.work_kinds.is_empty() {
+                    p class="kinds" { (row.work_kinds.join(" · ")) }
+                }
+                div class="st" { (cues_fr(&row.cues)) }
+            }
+            @if let Some(fig) = &row.figure {
+                span class="amt" { (figure_fr(fig)) }
+            }
+        }
+    }
 }
 
 pub(crate) fn person_line(row: &PersonRow) -> Markup {
