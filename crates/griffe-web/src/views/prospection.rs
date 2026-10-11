@@ -63,11 +63,11 @@ pub fn party_form_values(
             values.city = address.city;
             values.country = address.country;
         }
+        values.email = party.switchboard_email.unwrap_or_default();
+        values.phone = party.switchboard_phone.unwrap_or_default();
     }
     if let Some(contact) = contact {
         values.representative = contact.name;
-        values.email = contact.email.unwrap_or_default();
-        values.phone = contact.phone.unwrap_or_default();
     }
     values
 }
@@ -226,10 +226,15 @@ pub fn detail_panel(
                 @if !contact.name.is_empty() {
                     dt { "représentant" } dd { (contact.name) }
                 }
-                @if let Some(email) = &contact.email {
+            }
+            @if let Some(party) = list_clients(store.connection())
+                .ok()
+                .and_then(|clients| clients.into_iter().find(|c| c.id == opportunity.client_id))
+            {
+                @if let Some(email) = &party.switchboard_email {
                     dt { "email" } dd { (email) }
                 }
-                @if let Some(phone) = &contact.phone {
+                @if let Some(phone) = &party.switchboard_phone {
                     dt { "téléphone" } dd { (display_phone(phone)) }
                 }
             }

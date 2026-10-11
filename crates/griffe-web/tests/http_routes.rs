@@ -1012,6 +1012,10 @@ async fn les_affaires_lists_three_chapters_and_opens_a_dossier() {
                     email: Some("camille@exemple.fr".into()),
                     phone: None,
                     role: None,
+                    given_name: String::new(),
+                    family_name: String::new(),
+                    civility: None,
+                    structured: false,
                 },
                 &human_ctx(),
             )
@@ -7987,6 +7991,9 @@ async fn phrases_are_a_letter_and_the_next_unopened_mail_uses_them() {
         "{page}"
     );
     assert!(page.contains("&lt;prénom&gt;"), "{page}");
+    assert!(page.contains("&lt;nom&gt;"), "{page}");
+    assert!(page.contains("&lt;genre&gt;"), "{page}");
+    assert!(page.contains("les deux côtés restent"), "{page}");
     assert!(page.contains("class=\"phrase-frise\""), "{page}");
     assert!(!page.contains("class=\"phrase-moment\""), "{page}");
     assert!(
@@ -8154,6 +8161,10 @@ async fn engaged_conversations_finish_their_series_and_a_new_one_takes_three_mom
                         email: Some("camille@exemple.fr".into()),
                         phone: None,
                         role: None,
+                        given_name: String::new(),
+                        family_name: String::new(),
+                        civility: None,
+                        structured: false,
                     },
                     &human_ctx(),
                 )
@@ -8223,9 +8234,7 @@ async fn engaged_conversations_finish_their_series_and_a_new_one_takes_three_mom
     )
     .await;
     assert!(
-        listed.contains("1 premier contact")
-            && listed.contains("Camille")
-            && listed.contains("à reprendre aujourd'hui"),
+        listed.contains("premier contact · à reprendre aujourd'hui") && listed.contains("Camille"),
         "{listed}"
     );
 
@@ -8335,9 +8344,8 @@ label_close=Derni%C3%A8re+relance&subject_close=Fin&body_close=Le+dernier+mot.&r
     )
     .await;
     assert!(
-        listed.contains("1 premier contact")
+        listed.contains("premier contact · à reprendre aujourd'hui")
             && listed.contains("Camille")
-            && listed.contains("à reprendre aujourd'hui")
             && !listed.contains("12 septembre"),
         "{listed}"
     );
@@ -8483,6 +8491,10 @@ async fn the_genre_changes_only_the_words() {
                         email: Some(email.into()),
                         phone: None,
                         role: None,
+                        given_name: String::new(),
+                        family_name: String::new(),
+                        civility: None,
+                        structured: false,
                     },
                     &human_ctx(),
                 )
@@ -8534,9 +8546,10 @@ async fn the_genre_changes_only_the_words() {
         "{bare}"
     );
     assert!(bare.contains("name=\"genre_other\""), "{bare}");
-    assert!(!bare.contains("word-choice"), "{bare}");
+    assert!(bare.contains("name=\"civility\""), "{bare}");
     assert!(!bare.contains("<select"), "{bare}");
     assert!(!bare.contains("name=\"genre\" type=\"text\""), "{bare}");
+    assert!(!bare.contains("name=\"genre\" value="), "{bare}");
 
     let services = create_genre(&router, "Services publics").await;
     let shops = create_genre(&router, "Commerces").await;
@@ -9130,6 +9143,165 @@ fn hidden_value(page: &str, name: &str) -> String {
         .and_then(|rest| rest.split('"').next())
         .unwrap_or("")
         .to_string()
+}
+
+#[tokio::test]
+async fn the_fiche_names_the_matter_and_who_answers() {
+    let db_path = test_db_path("fiche-quoi");
+    let state = unlocked_state(&db_path).await;
+    let router = griffe_web::router(state);
+    router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/affaires/nouvelle")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from("who=Mairie&phrase=Le+porche"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let fiche = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Mairie/fiche")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    for needle in [
+        "Quoi",
+        "Qui répond",
+        "Prénom",
+        "Nom",
+        "Monsieur",
+        "non dit",
+        "Courriel",
+        "Téléphone",
+        "Le standard, ou l'accueil.",
+        "Le porche",
+    ] {
+        assert!(fiche.contains(needle), "{needle} manque : {fiche}");
+    }
+    let dossier = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Mairie")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        !dossier.contains("← Les affaires"),
+        "le panneau n'a plus de retour : {dossier}"
+    );
+
+    let refused = post_form(
+        &router,
+        "/affaires/Mairie/fiche",
+        &format!(
+            "who=Mairie&matter=&matter_open=1&opportunity_revision={}&client_revision={}&contact_id={}&contact_revision={}",
+            hidden_value(&fiche, "opportunity_revision"),
+            hidden_value(&fiche, "client_revision"),
+            hidden_value(&fiche, "contact_id"),
+            hidden_value(&fiche, "contact_revision"),
+        ),
+    )
+    .await;
+    assert!(refused.contains("ce dont il s'agit"), "{refused}");
+
+    let saved = post_form(
+        &router,
+        "/affaires/Mairie/fiche",
+        &format!(
+            "who=Mairie&matter=Le+portail&matter_open=1&opportunity_revision={}&client_revision={}&contact_id={}&contact_revision={}&email=accueil@mairie.example&given_name=Camille&family_name=Riviere&civility=madame&correspondent_email=camille@mairie.example",
+            hidden_value(&fiche, "opportunity_revision"),
+            hidden_value(&fiche, "client_revision"),
+            hidden_value(&fiche, "contact_id"),
+            hidden_value(&fiche, "contact_revision"),
+        ),
+    )
+    .await;
+    assert!(saved.contains("Fiche à jour."), "{saved}");
+
+    let estimation = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Mairie/estimation")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(estimation.contains("Le portail"), "{estimation}");
+    assert!(estimation.contains("Ce dont il s'agit"), "{estimation}");
+
+    let again = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Mairie/fiche")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(again.contains("value=\"Camille\""), "{again}");
+    assert!(again.contains("value=\"Riviere\""), "{again}");
+    assert!(
+        again.contains("value=\"madame\" checked") || again.contains("checked value=\"madame\""),
+        "{again}"
+    );
+    assert!(again.contains("accueil@mairie.example"), "{again}");
+    assert!(again.contains("camille@mairie.example"), "{again}");
+
+    let letter = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Mairie/ecrire")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(letter.contains("Le standard"), "{letter}");
+    assert!(letter.contains("Qui répond"), "{letter}");
+    assert!(letter.contains("accueil@mairie.example"), "{letter}");
+    assert!(letter.contains("camille@mairie.example"), "{letter}");
+    assert!(
+        letter.contains("value=\"switchboard\" checked")
+            || letter.contains("checked value=\"switchboard\""),
+        "{letter}"
+    );
 }
 
 /// Rejoue l'envoi du formulaire de fiche, jeton de contact compris.
@@ -11056,6 +11228,10 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
                     email: Some("ada@atelier.test".into()),
                     phone: None,
                     role: None,
+                    given_name: String::new(),
+                    family_name: String::new(),
+                    civility: None,
+                    structured: false,
                 },
                 &human_ctx(),
             )
@@ -11798,7 +11974,7 @@ async fn la_fiche_refuse_une_adresse_illisible_et_ecrire_prend_la_nouvelle() {
             .revision
     };
     let first = format!(
-        "who=Atelier+Copie&representative=Ada&email=ada.ancienne%40exemple.fr&phone=&client_revision={revision}&contact_id=&contact_revision=&street=&postal_code=&city="
+        "who=Atelier+Copie&given_name=Ada&email=ada.ancienne%40exemple.fr&phone=&client_revision={revision}&contact_id=&contact_revision=&street=&postal_code=&city="
     );
     let saved = body_text(
         router
@@ -11823,14 +11999,19 @@ async fn la_fiche_refuse_une_adresse_illisible_et_ecrire_prend_la_nouvelle() {
         let client = griffe_core::clients::client_by_id(store.connection(), client_id)
             .unwrap()
             .unwrap();
+        assert_eq!(
+            client.switchboard_email.as_deref(),
+            Some("ada.ancienne@exemple.fr")
+        );
         let contact = griffe_core::clients::correspondent(store.connection(), client_id)
             .unwrap()
             .expect("correspondant");
-        assert_eq!(contact.email.as_deref(), Some("ada.ancienne@exemple.fr"));
+        assert_eq!(contact.name, "Ada");
+        assert_eq!(contact.email, None);
         (client.revision, contact.id.to_string(), contact.revision)
     };
     let bad = format!(
-        "who=Atelier+Copie&representative=Ada&email=ada+sans+arobase&phone=&client_revision={client_revision}&contact_id={contact_id}&contact_revision={contact_revision}&street=&postal_code=&city="
+        "who=Atelier+Copie&given_name=Ada&email=ada+sans+arobase&phone=&client_revision={client_revision}&contact_id={contact_id}&contact_revision={contact_revision}&street=&postal_code=&city="
     );
     let refused = body_text(
         router
@@ -11872,7 +12053,7 @@ async fn la_fiche_refuse_une_adresse_illisible_et_ecrire_prend_la_nouvelle() {
     assert!(!kept.contains("ada sans arobase"), "{kept}");
 
     let next = format!(
-        "who=Atelier+Copie&representative=Ada&email=ada.nouvelle%40exemple.fr&phone=&client_revision={client_revision}&contact_id={contact_id}&contact_revision={contact_revision}&street=&postal_code=&city="
+        "who=Atelier+Copie&given_name=Ada&email=ada.nouvelle%40exemple.fr&phone=&client_revision={client_revision}&contact_id={contact_id}&contact_revision={contact_revision}&street=&postal_code=&city="
     );
     let updated = body_text(
         router
@@ -11905,6 +12086,7 @@ async fn la_fiche_refuse_une_adresse_illisible_et_ecrire_prend_la_nouvelle() {
             .unwrap(),
     )
     .await;
-    assert!(letter.contains("À ada.nouvelle@exemple.fr"), "{letter}");
+    assert!(letter.contains("Le standard"), "{letter}");
+    assert!(letter.contains("ada.nouvelle@exemple.fr"), "{letter}");
     assert!(!letter.contains("ada.ancienne@exemple.fr"), "{letter}");
 }

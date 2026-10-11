@@ -411,6 +411,7 @@ impl Command for ArmOutbound {
                 follow_cycle: self.follow_cycle.clone(),
                 follow_step: self.follow_step.clone(),
                 client_id: self.client_id.clone(),
+                recipient: None,
             },
             &now,
         )

@@ -199,6 +199,7 @@ async fn draft(state: &AppState, headers: HeaderMap, subject: FollowUpSubject) -
                 today,
                 subject_line: None,
                 body: None,
+                recipient: None,
             },
             &AppState::human_ctx(),
         )?;

@@ -326,6 +326,12 @@ pub async fn update(
             .into_response();
         }
     };
+    let current = match current_client(&state, id).await {
+        None => return locked_fragment().into_response(),
+        Some(Err(e)) => return message_fragment(&e.to_string()).into_response(),
+        Some(Ok(None)) => return message_fragment("client introuvable").into_response(),
+        Some(Ok(Some(client))) => client,
+    };
     let cmd = clients::UpdateClient {
         id,
         revision,
@@ -333,6 +339,8 @@ pub async fn update(
         siren: parsed.siren,
         vat_number: parsed.vat_number,
         address: parsed.address,
+        switchboard_email: current.switchboard_email,
+        switchboard_phone: current.switchboard_phone,
     };
     match execute(&state, cmd).await {
         None => locked_fragment().into_response(),
@@ -521,6 +529,10 @@ pub async fn create_contact(
         email: opt(&form.email),
         phone: opt(&form.phone),
         role: opt(&form.role),
+        given_name: String::new(),
+        family_name: String::new(),
+        civility: None,
+        structured: false,
     };
     match execute(&state, cmd).await {
         None => locked_fragment().into_response(),
@@ -594,13 +606,27 @@ pub async fn update_contact(
         .as_deref()
         .and_then(|s| s.parse().ok())
         .unwrap_or(current.revision);
+    let name = form.name.trim().to_string();
+    let unchanged = name == current.name;
     let cmd = clients::UpdateContact {
         id,
         revision,
-        name: form.name.trim().to_string(),
+        name,
         email: opt(&form.email),
         phone: opt(&form.phone),
         role: opt(&form.role),
+        given_name: if unchanged {
+            current.given_name.clone()
+        } else {
+            String::new()
+        },
+        family_name: if unchanged {
+            current.family_name.clone()
+        } else {
+            String::new()
+        },
+        civility: if unchanged { current.civility } else { None },
+        structured: unchanged,
     };
     let client_id = current.client_id;
     match execute(&state, cmd).await {

@@ -5,8 +5,8 @@ use std::collections::HashSet;
 
 use griffe_core::app::AppError;
 use griffe_core::domain::{
-    ClientId, ExpensePaidBy, FollowUpSubject, InteractionKind, display_phone, format_date,
-    format_date_fr,
+    ClientId, ExpensePaidBy, FicheChannels, FollowUpSubject, InteractionKind, LetterRecipient,
+    display_phone, fiche_channels, format_date, format_date_fr, letter_address,
 };
 use griffe_core::dossier_work::DossierWork;
 use griffe_core::follow_up::{
@@ -749,9 +749,6 @@ fn dossier_body(
         .any(|action| matches!(action, PersonAction::Snooze { .. }));
     html! {
         div class="letter" data-view=(ViewId::Gens.slug()) data-person=(dossier.name) {
-            a class="back" href="/affaires" hx-get="/affaires" hx-target="#content" hx-push-url="true" {
-                "← Les affaires"
-            }
             div class="who" { (dossier.name) }
             p class="co" { (subtitle(dossier, today)) }
             @if client_fiche {
@@ -1617,21 +1614,35 @@ pub fn meeting_form(
 
 pub struct FicheValues {
     pub who: String,
+    /// Ce dont il s'agit, quand la conversation est ouverte.
+    pub matter: String,
+    pub matter_open: bool,
+    pub opportunity_revision: String,
     pub street: String,
     pub postal_code: String,
     pub city: String,
-    pub representative: String,
+    /// Courriel du standard.
     pub email: String,
+    /// Téléphone du standard.
     pub phone: String,
+    pub given_name: String,
+    pub family_name: String,
+    /// `""`, `monsieur` ou `madame`.
+    pub civility: String,
+    pub correspondent_email: String,
+    pub correspondent_phone: String,
     pub client_revision: i64,
     pub contact_id: String,
     pub contact_revision: String,
 }
 
+#[derive(Default)]
 pub struct FicheErrors {
     pub who: Option<String>,
+    pub matter: Option<String>,
     pub address: Option<String>,
     pub email: Option<String>,
+    pub correspondent_email: Option<String>,
     pub banner: Option<String>,
 }
 
@@ -1657,17 +1668,67 @@ pub fn fiche_page(
                 (form::hidden("contact_id", &values.contact_id))
                 (form::hidden("contact_revision", &values.contact_revision))
                 (form::text("who", "Qui", &values.who, errors.who.as_deref()))
+                @if values.matter_open {
+                    (form::hidden("matter_open", "1"))
+                    (form::hidden("opportunity_revision", &values.opportunity_revision))
+                    (form::text("matter", "Quoi", &values.matter, errors.matter.as_deref()))
+                }
                 (form::text("street", "Rue", &values.street, errors.address.as_deref()))
                 (form::text("postal_code", "Code postal", &values.postal_code, None))
                 (form::text("city", "Ville", &values.city, None))
-                (form::text("representative", "Qui répond", &values.representative, None))
                 (form::text("email", "Courriel", &values.email, errors.email.as_deref()))
                 (form::text("phone", "Téléphone", &display_phone(&values.phone), None))
+                (form::field_help("Le standard, ou l'accueil."))
+                (respondent_fields(values, errors))
                 @if genre.show {
                     (genre_line(genre))
                 }
                 div class="row-actions" {
                     button class="seal" type="submit" { "Enregistrer la fiche" }
+                }
+            }
+        }
+    }
+}
+
+fn respondent_fields(values: &FicheValues, errors: &FicheErrors) -> Markup {
+    html! {
+        fieldset class="respondent" {
+            legend { "Qui répond" }
+            (form::text("given_name", "Prénom", &values.given_name, None))
+            (form::text("family_name", "Nom", &values.family_name, None))
+            (civility_choice(&values.civility))
+            (form::text(
+                "correspondent_email",
+                "Courriel",
+                &values.correspondent_email,
+                errors.correspondent_email.as_deref(),
+            ))
+            (form::text(
+                "correspondent_phone",
+                "Téléphone",
+                &display_phone(&values.correspondent_phone),
+                None,
+            ))
+        }
+    }
+}
+
+fn civility_choice(picked: &str) -> Markup {
+    let options = [
+        ("monsieur", "Monsieur"),
+        ("madame", "Madame"),
+        ("", "non dit"),
+    ];
+    html! {
+        fieldset class="word-choice" {
+            legend { "Genre" }
+            div class="word-choice-row" {
+                @for (value, label) in options {
+                    label {
+                        input type="radio" name="civility" value=(value) checked[*value == *picked];
+                        (label)
+                    }
                 }
             }
         }
@@ -1929,6 +1990,8 @@ pub struct KeepUi {
     pub body: Option<String>,
     /// Relire est ouvert : la carte remplace la zone d'écriture.
     pub reading: bool,
+    /// `switchboard` ou `correspondent`. Vide : le standard, s'il existe.
+    pub recipient: String,
 }
 
 pub fn phrases_page(view: &PhrasesView) -> Markup {
@@ -2012,6 +2075,9 @@ pub fn phrases_page(view: &PhrasesView) -> Markup {
                                             button type="button" data-insert=(insert) { (name) }
                                         }
                                     }
+                                    p class="field-help" {
+                                        "<nom> et <genre> prennent le nom, et Monsieur ou Madame. <Monsieur le Maire/Madame la Maire> suit le genre. Sans genre, les deux côtés restent."
+                                    }
                                     @if !moment.alone {
                                         div class="phrase-moves" {
                                             @if !moment.first {
@@ -2045,6 +2111,8 @@ pub fn phrases_page(view: &PhrasesView) -> Markup {
 
 const PHRASE_TOKENS: &[(&str, &str)] = &[
     ("<prénom>", "<prénom>"),
+    ("<nom>", "<nom>"),
+    ("<genre>", "<genre>"),
     ("<sujet>", "<sujet>"),
     ("<montant>", "<montant>"),
     ("<moi>", "<moi>"),
@@ -2270,6 +2338,85 @@ fn post_button(action: &str, class: &str, name: &str, value: Option<&str>, label
     }
 }
 
+fn fiche_channels_of(store: &Store, dossier: &PersonDossier) -> Result<FicheChannels, AppError> {
+    let PersonKey::Client { id } = dossier.key else {
+        return Ok(FicheChannels::default());
+    };
+    let Some(client) = griffe_core::clients::client_by_id(store.connection(), id)? else {
+        return Ok(FicheChannels::default());
+    };
+    let contact = griffe_core::clients::correspondent(store.connection(), id)?;
+    Ok(fiche_channels(
+        &client.name,
+        client.switchboard_email.as_deref(),
+        contact
+            .as_ref()
+            .map(|person| person.name.as_str())
+            .unwrap_or(""),
+        contact.as_ref().and_then(|person| person.email.as_deref()),
+    ))
+}
+
+fn picked_recipient(channels: &FicheChannels, posted: &str) -> LetterRecipient {
+    if let Some(choice) = LetterRecipient::parse(posted) {
+        return choice;
+    }
+    if channels.switchboard_email.is_some() || channels.correspondent_email.is_none() {
+        LetterRecipient::Switchboard
+    } else {
+        LetterRecipient::Correspondent
+    }
+}
+
+fn letter_destination(
+    from: &str,
+    to: &str,
+    channels: &FicheChannels,
+    picked: LetterRecipient,
+    ready: bool,
+) -> Markup {
+    let standard = channels.switchboard_email.as_deref();
+    let person = channels.correspondent_email.as_deref();
+    html! {
+        div class="meta" {
+            "De " (from)
+            @if let (Some(address), None) = (standard, person) {
+                " · Le standard · " (address)
+            } @else if let (None, Some(address)) = (standard, person) {
+                " · Qui répond · " (address)
+            } @else if to.is_empty() {
+                " · À —"
+            } @else {
+                " · À " (to)
+            }
+            @if !ready { " · ne sera pas envoyé par Griffe" }
+        }
+        @if let (Some(standard), Some(person)) = (standard, person) {
+            fieldset class="word-choice" {
+                legend { "À" }
+                div class="word-choice-row" {
+                    label {
+                        input type="radio" name="recipient" value="switchboard"
+                            checked[picked == LetterRecipient::Switchboard];
+                        "Le standard"
+                        span class="recipient-mail" { (standard) }
+                    }
+                    label {
+                        input type="radio" name="recipient" value="correspondent"
+                            checked[picked == LetterRecipient::Correspondent];
+                        "Qui répond"
+                        span class="recipient-mail" { (person) }
+                    }
+                }
+            }
+        } @else if standard.is_some() {
+            input type="hidden" name="recipient" value="switchboard";
+        } @else if person.is_some() {
+            input type="hidden" name="recipient" value="correspondent";
+        }
+    }
+}
+
 pub fn letter_page(
     store: &Store,
     dossier: &PersonDossier,
@@ -2281,14 +2428,11 @@ pub fn letter_page(
     let href = person_href(&dossier.name);
     let sender = follow_up_sender(store.connection())?;
     let from = sender.sender_email.as_deref().unwrap_or("—");
-    let recipient = card.and_then(|c| c.contact_email.as_deref()).unwrap_or("");
-    let to = if recipient.is_empty() {
-        "—"
-    } else {
-        recipient
-    };
+    let channels = fiche_channels_of(store, dossier)?;
+    let picked = picked_recipient(&channels, &keep.recipient);
+    let to = letter_address(&channels, picked).unwrap_or("");
     let mail = griffe_core::mail::profile(store.connection()).unwrap_or_default();
-    let can_send = mail.ready && recipient.contains('@');
+    let can_send = mail.ready && to.contains('@');
     let depart = if can_send {
         griffe_core::mail::outbound_for_anchor(
             store.connection(),
@@ -2454,13 +2598,10 @@ pub fn letter_page(
                     (letter_stage(subject, body, &look.chrome, true, true))
                 }
                 div class="letter-under" {
-                    div class="meta" {
-                        "De " (from) " · À " (to)
-                        @if !mail.ready { " · ne sera pas envoyé par Griffe" }
-                    }
+                    (letter_destination(from, to, &channels, picked, mail.ready))
                     div class="row-actions" {
                         @if can_send {
-                            (depart_markup(&href, depart.as_ref(), None, "Envoyer", (!recipient.is_empty()).then_some(recipient)))
+                            (depart_markup(&href, depart.as_ref(), None, "Envoyer", (!to.is_empty()).then_some(to)))
                         } @else if mail.ready {
                             p class="depart-line" { "Il manque l'adresse de la personne." }
                         }

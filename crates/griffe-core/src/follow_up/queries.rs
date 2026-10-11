@@ -10,7 +10,7 @@ use crate::clients::{client_by_id, correspondent};
 use crate::company::company_profile;
 use crate::domain::{
     ClientId, FollowUpEvent, FollowUpKind, FollowUpSubject, Money, Opportunity, TemplateContext,
-    derive_cursor_with, parse_email, render_template,
+    default_letter_address, derive_cursor_with, fiche_channels, render_template, respondent_view,
 };
 use crate::prospection::{list_open_opportunities, opportunity_by_id};
 
@@ -71,6 +71,7 @@ pub struct HistoryItem {
 }
 
 pub(super) struct LoadedSubject {
+    pub client_id: ClientId,
     pub title: String,
     pub party: String,
     pub amount: Money,
@@ -123,6 +124,7 @@ pub(super) fn load_subject(
                 today,
             );
             Ok(LoadedSubject {
+                client_id: invoice.client_id,
                 title: invoice.number.clone(),
                 party: client.name,
                 amount: outstanding,
@@ -153,6 +155,7 @@ fn load_opportunity(
     let step_count = steps.len();
     let cursor = derive_cursor_with(FollowUpKind::Prospect, &steps, &events, anchor, today);
     Ok(LoadedSubject {
+        client_id: opportunity.client_id,
         title: opportunity.name.clone(),
         party: client.name,
         amount: opportunity.amount,
@@ -405,10 +408,23 @@ impl LoadedSubject {
     pub(super) fn template_context(&self, conn: &Connection) -> Result<TemplateContext, AppError> {
         let (moi, societe) = letter_speaker(conn)?;
         let signature = crate::mail::profile(conn).unwrap_or_default().signature;
-        let (contact, _) = self
-            .recipient
-            .clone()
-            .unwrap_or_else(|| (self.party.clone(), String::new()));
+        let contact = correspondent(conn, self.client_id)?;
+        let view = contact.as_ref().map_or_else(
+            || respondent_view("", &self.party, "", "", None),
+            |person| {
+                respondent_view(
+                    &person.name,
+                    &self.party,
+                    &person.given_name,
+                    &person.family_name,
+                    person.civility,
+                )
+            },
+        );
+        let display = contact
+            .as_ref()
+            .map(|person| person.name.clone())
+            .unwrap_or_default();
         let mut ctx = TemplateContext {
             sujet: self.title.clone(),
             moi,
@@ -426,7 +442,13 @@ impl LoadedSubject {
             ..TemplateContext::default()
         };
         ctx = ctx
-            .with_names(&contact, &self.party)
+            .with_respondent(
+                &view.given_name,
+                &view.family_name,
+                view.civility.map_or("", crate::domain::Civility::label),
+                &display,
+                &self.party,
+            )
             .with_amount(self.amount);
         if let Some(outstanding) = self.outstanding {
             ctx.solde = outstanding.to_string();
@@ -471,18 +493,29 @@ pub fn events_for(
     row::events_for(conn, subject)
 }
 
-/// Courriel du correspondant, et personne d'autre. Une adresse illisible compte
-/// comme une absence : un autre contact ne la remplace pas.
+/// Adresse par défaut d'une lettre : le standard, sinon la personne.
+/// Le nom reste celui de la personne quand elle existe.
+/// Une adresse illisible compte comme une absence.
 pub(super) fn first_recipient(
     conn: &Connection,
     client_id: ClientId,
 ) -> Result<Option<(String, String)>, AppError> {
-    let Some(contact) = correspondent(conn, client_id)? else {
+    let Some(client) = client_by_id(conn, client_id)? else {
         return Ok(None);
     };
-    Ok(contact
-        .email
-        .as_deref()
-        .and_then(|email| parse_email(email).ok())
-        .map(|email| (contact.name, email)))
+    let contact = correspondent(conn, client_id)?;
+    let channels = fiche_channels(
+        &client.name,
+        client.switchboard_email.as_deref(),
+        contact.as_ref().map_or("", |person| person.name.as_str()),
+        contact.as_ref().and_then(|person| person.email.as_deref()),
+    );
+    let Some(email) = default_letter_address(&channels) else {
+        return Ok(None);
+    };
+    let name = contact
+        .map(|person| person.name)
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or(client.name);
+    Ok(Some((name, email.to_string())))
 }

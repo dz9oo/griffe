@@ -1121,6 +1121,10 @@ mod tests {
                         email: Some(email.into()),
                         phone: None,
                         role: None,
+                        given_name: String::new(),
+                        family_name: String::new(),
+                        civility: None,
+                        structured: false,
                     },
                     &human(),
                 )
@@ -1483,6 +1487,7 @@ mod tests {
                         today,
                         subject_line: Some("Bonjour".into()),
                         body: Some("Le texte est prêt.\n".into()),
+                        recipient: None,
                     },
                     &human(),
                 )

@@ -401,6 +401,8 @@ mod tests {
             created_at: OffsetDateTime::now_utc(),
             revision: 1,
             archived_at: None,
+            switchboard_email: None,
+            switchboard_phone: None,
         }
     }
 

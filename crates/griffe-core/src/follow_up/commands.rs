@@ -10,8 +10,8 @@ use crate::app::{AppError, Command};
 use crate::company::company_profile;
 use crate::domain::{
     self, EmlDraft, FollowUpEvent, FollowUpEventId, FollowUpFact, FollowUpKind, FollowUpSubject,
-    InteractionKind, derive_cursor_with, parse_email, phrase_from_editor, render_eml,
-    render_template,
+    InteractionKind, LetterRecipient, derive_cursor_with, fiche_channels, letter_address,
+    letter_recipient_name, parse_email, phrase_from_editor, render_eml, render_template,
 };
 use crate::prospection::{LogInteraction, opportunity_by_id};
 
@@ -690,6 +690,10 @@ pub struct PrepareFollowUp {
     /// Corps libre. Absent ou vide : le modèle de cadence.
     #[serde(default)]
     pub body: Option<String>,
+    /// `switchboard`, `correspondent`, ou absent.
+    /// Absent : le standard s'il existe, sinon la personne.
+    #[serde(default)]
+    pub recipient: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -711,7 +715,7 @@ impl Command for PrepareFollowUp {
         }
         let step = loaded.cursor.step.clone().ok_or(FollowUpError::Exhausted)?;
         let (from_name, from_email) = sender(conn)?;
-        let (to_name, to_email) = recipient(&loaded)?;
+        let (to_name, to_email) = chosen_recipient(conn, &loaded, self.recipient.as_deref())?;
         let ctx = loaded.template_context(conn)?;
         let subject_line = optional_letter_part(self.subject_line.clone())
             .unwrap_or_else(|| render_template(&step.subject, &ctx));
@@ -1047,9 +1051,38 @@ fn sender(conn: &Connection) -> Result<(String, String), AppError> {
     Ok((name, email))
 }
 
-fn recipient(loaded: &super::queries::LoadedSubject) -> Result<(String, String), FollowUpError> {
-    loaded
-        .recipient
-        .clone()
-        .ok_or(FollowUpError::RecipientMissing)
+fn chosen_recipient(
+    conn: &Connection,
+    loaded: &super::queries::LoadedSubject,
+    posted: Option<&str>,
+) -> Result<(String, String), AppError> {
+    let client = crate::clients::client_by_id(conn, loaded.client_id)?
+        .ok_or(FollowUpError::RecipientMissing)?;
+    let contact = crate::clients::correspondent(conn, loaded.client_id)?;
+    let channels = fiche_channels(
+        &client.name,
+        client.switchboard_email.as_deref(),
+        contact.as_ref().map_or("", |person| person.name.as_str()),
+        contact.as_ref().and_then(|person| person.email.as_deref()),
+    );
+    let explicit = posted.map(str::trim).filter(|value| !value.is_empty());
+    let (choice, email) = if let Some(raw) = explicit {
+        let choice = LetterRecipient::parse(raw).ok_or(FollowUpError::RecipientMissing)?;
+        let email = letter_address(&channels, choice)
+            .ok_or(FollowUpError::RecipientMissing)?
+            .to_string();
+        (choice, email)
+    } else {
+        let email = crate::domain::default_letter_address(&channels)
+            .ok_or(FollowUpError::RecipientMissing)?
+            .to_string();
+        let choice = if channels.switchboard_email.is_some() {
+            LetterRecipient::Switchboard
+        } else {
+            LetterRecipient::Correspondent
+        };
+        (choice, email)
+    };
+    let name = letter_recipient_name(&channels, choice).to_string();
+    Ok((name, email))
 }

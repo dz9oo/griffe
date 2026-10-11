@@ -107,35 +107,48 @@ fn trimmed_opt(value: Option<&str>) -> Option<String> {
 fn upsert_prospect_contact(
     conn: &Connection,
     client_id: ClientId,
-    prospect_name: &str,
     representative: Option<&str>,
-    email: Option<&str>,
-    phone: Option<&str>,
 ) -> Result<(), AppError> {
-    let representative = trimmed_opt(representative);
-    let email = trimmed_opt(email);
-    let phone = trimmed_opt(phone);
-    if representative.is_none() && email.is_none() && phone.is_none() {
+    let Some(representative) = trimmed_opt(representative) else {
         return Ok(());
-    }
+    };
     let existing = crate::clients::correspondent(conn, client_id)?;
     if let Some(current) = existing {
+        // Le texte affiché n'a pas bougé : prénom, nom et genre restent.
+        // Le formulaire prospect n'édite pas le courriel de la personne.
+        let same = representative == current.name;
         crate::clients::UpdateContact {
             id: current.id,
             revision: current.revision,
-            name: representative.unwrap_or(current.name),
-            email: email.or(current.email),
-            phone: phone.or(current.phone),
-            role: current.role,
+            name: representative,
+            email: current.email.clone(),
+            phone: current.phone.clone(),
+            role: current.role.clone(),
+            given_name: if same {
+                current.given_name.clone()
+            } else {
+                String::new()
+            },
+            family_name: if same {
+                current.family_name.clone()
+            } else {
+                String::new()
+            },
+            civility: if same { current.civility } else { None },
+            structured: same,
         }
         .apply(conn)?;
     } else {
         crate::clients::CreateContact {
             client_id,
-            name: representative.unwrap_or_else(|| prospect_name.to_string()),
-            email,
-            phone,
+            name: representative,
+            email: None,
+            phone: None,
             role: None,
+            given_name: String::new(),
+            family_name: String::new(),
+            civility: None,
+            structured: false,
         }
         .apply(conn)?;
     }
@@ -182,19 +195,18 @@ impl Command for CreateProspect {
                     siren: None,
                     vat_number: None,
                     address: self.address.clone(),
+                    switchboard_email: crate::clients::stored_switchboard_email(
+                        self.email.as_deref(),
+                    ),
+                    switchboard_phone: crate::clients::stored_switchboard_phone(
+                        self.phone.as_deref(),
+                    ),
                     created_at: OffsetDateTime::now_utc(),
                     revision: 1,
                     archived_at: None,
                 };
                 crate::clients::insert_client_as(conn, &client, true)?;
-                upsert_prospect_contact(
-                    conn,
-                    client.id,
-                    prospect_name,
-                    self.representative.as_deref(),
-                    self.email.as_deref(),
-                    self.phone.as_deref(),
-                )?;
+                upsert_prospect_contact(conn, client.id, self.representative.as_deref())?;
                 client.id
             }
         };
@@ -257,16 +269,11 @@ impl Command for UpdateProspect {
             siren: current.siren,
             vat_number: current.vat_number,
             address: self.address.clone(),
+            switchboard_email: crate::clients::stored_switchboard_email(self.email.as_deref()),
+            switchboard_phone: crate::clients::stored_switchboard_phone(self.phone.as_deref()),
         }
         .apply(conn)?;
-        upsert_prospect_contact(
-            conn,
-            current.id,
-            prospect_name,
-            self.representative.as_deref(),
-            self.email.as_deref(),
-            self.phone.as_deref(),
-        )?;
+        upsert_prospect_contact(conn, current.id, self.representative.as_deref())?;
         UpdateOpportunity {
             id: self.id,
             revision: self.revision,

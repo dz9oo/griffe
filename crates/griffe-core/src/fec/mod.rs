@@ -351,6 +351,8 @@ mod tests {
             created_at: OffsetDateTime::UNIX_EPOCH,
             revision: 1,
             archived_at: None,
+            switchboard_email: None,
+            switchboard_phone: None,
         }
     }
 

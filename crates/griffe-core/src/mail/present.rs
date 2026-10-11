@@ -112,42 +112,49 @@ pub fn readable_links(text: &str) -> String {
 /// soulignement et sans autre couleur. La première ligne de texte est un peu
 /// plus présente.
 fn signature_block(html: &mut String, signature: &str) {
-    let mut started = false;
+    let lines: Vec<&str> = signature.lines().map(str::trim).collect();
+    let Some(start) = lines.iter().position(|line| !line.is_empty()) else {
+        return;
+    };
+    let end = lines
+        .iter()
+        .rposition(|line| !line.is_empty())
+        .map_or(start, |index| index + 1);
+    let lines = &lines[start..end];
+    html.push_str("<div style=\"margin:20px 0 0;font-family:");
+    html.push_str(SERIF);
+    html.push_str(";font-size:16px;line-height:1.25;color:");
+    html.push_str(INK);
+    html.push_str(";\">");
     let mut named = false;
-    for line in signature.lines() {
-        let line = line.trim();
+    let mut need_break = false;
+    for line in lines {
         if line.is_empty() {
+            html.push_str(
+                "<span style=\"display:block;height:0.35em;line-height:0.35em;\">&nbsp;</span>",
+            );
+            need_break = false;
             continue;
         }
-        if !started {
-            html.push_str("<div style=\"margin:28px 0 0;\">");
-            started = true;
+        if need_break {
+            html.push_str("<br>");
         }
+        need_break = true;
         let strong =
             !named && whole_url(line).is_none() && !whole_email(line) && tel_href(line).is_none();
         if strong {
             named = true;
+            html.push_str("<span style=\"font-weight:600;font-size:17px;\">");
+            signature_content(html, line);
+            html.push_str("</span>");
+        } else {
+            signature_content(html, line);
         }
-        signature_line(html, line, strong);
     }
-    if started {
-        html.push_str("</div>");
-    }
+    html.push_str("</div>");
 }
 
-fn signature_line(html: &mut String, line: &str, strong: bool) {
-    html.push_str("<p style=\"margin:");
-    html.push_str(if strong { "0" } else { "4px 0 0" });
-    html.push_str(";font-family:");
-    html.push_str(SERIF);
-    html.push_str(";font-size:");
-    html.push_str(if strong { "17px" } else { "16px" });
-    html.push_str(";line-height:1.45;color:");
-    html.push_str(INK);
-    if strong {
-        html.push_str(";font-weight:600");
-    }
-    html.push_str(";\">");
+fn signature_content(html: &mut String, line: &str) {
     if let Some(url) = whole_url(line) {
         html.push_str(&anchor(&url, &without_utm(&url), INK));
     } else if whole_email(line) {
@@ -157,7 +164,6 @@ fn signature_line(html: &mut String, line: &str, strong: bool) {
     } else {
         linked_line(html, line, INK);
     }
-    html.push_str("</p>");
 }
 
 fn whole_url(line: &str) -> Option<String> {
@@ -464,6 +470,8 @@ https://atelier.example/conformite?utm_source=mairie&utm_medium=email&utm_campai
         assert!(html.contains("text-decoration:none"));
         assert!(!html.contains("text-decoration:underline"));
         assert!(html.contains("font-weight:600"));
+        assert!(html.contains("line-height:1.25"));
+        assert!(!html.contains("margin:4px 0 0"));
         assert!(!html.contains("color:#0000ee"));
         let middle = format!("Avant.\n\n{signature}\n\nAprès.");
         assert_eq!(close_letter(&middle, signature), middle);

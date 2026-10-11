@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use time::{Date, Duration, OffsetDateTime, Weekday};
 
+use super::client::Civility;
 use super::ids::{FollowUpEventId, InteractionId, InvoiceId, OpportunityId};
 use super::money::Money;
 use super::serde_date;
@@ -391,6 +392,10 @@ pub const NEW_MOMENT_BODY: &str = "Bonjour {{prenom}},\n\n{{sujet}}\n\n{{signatu
 #[derive(Debug, Clone, Default)]
 pub struct TemplateContext {
     pub prenom: String,
+    /// Nom de famille. Vide : la balise `<nom>` disparaît.
+    pub family_name: String,
+    /// « Monsieur », « Madame », ou vide.
+    pub civility: String,
     pub contact: String,
     pub client: String,
     pub sujet: String,
@@ -422,6 +427,26 @@ impl TemplateContext {
         self
     }
 
+    /// Prénom, nom et genre déjà séparés. Un prénom vide retombe sur [`given_name`].
+    #[must_use]
+    pub fn with_respondent(
+        mut self,
+        given: &str,
+        family: &str,
+        civility_label: &str,
+        contact: &str,
+        client: &str,
+    ) -> Self {
+        self = self.with_names(contact, client);
+        let given = given.trim();
+        if !given.is_empty() {
+            self.prenom = given.to_string();
+        }
+        self.family_name = family.trim().to_string();
+        self.civility = civility_label.trim().to_string();
+        self
+    }
+
     #[must_use]
     pub fn with_amount(mut self, amount: Money) -> Self {
         self.montant = amount.to_string();
@@ -433,6 +458,8 @@ impl TemplateContext {
 /// Balises de l'éditeur, dans l'ordre des jetons stockés. `<prénom>`, pas `{{prenom}}`.
 const EDITOR_WORDS: &[(&str, &str)] = &[
     ("{{prenom}}", "<prénom>"),
+    ("{{family_name}}", "<nom>"),
+    ("{{civility}}", "<genre>"),
     ("{{contact}}", "<contact>"),
     ("{{client}}", "<client>"),
     ("{{sujet}}", "<sujet>"),
@@ -574,6 +601,259 @@ fn clean_token(token: &str) -> String {
         .to_string()
 }
 
+/// Prénom, nom et genre lus dans un texte libre (« Qui répond »).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RespondentParts {
+    pub civility: Option<Civility>,
+    pub given_name: String,
+    pub family_name: String,
+}
+
+/// Découpe « Madame Camille Rivière », « Jean-Pierre Martin », un seul mot,
+/// ou une enseigne. `M.` / `Mr` / `Mme` deviennent Monsieur ou Madame.
+/// « Docteur » est sauté, sans être gardé comme genre.
+#[must_use]
+pub fn split_respondent(name: &str) -> RespondentParts {
+    let name = name.trim();
+    if name.is_empty() {
+        return RespondentParts {
+            civility: None,
+            given_name: String::new(),
+            family_name: String::new(),
+        };
+    }
+    if looks_like_organization(name) {
+        return RespondentParts {
+            civility: None,
+            given_name: String::new(),
+            family_name: name.to_string(),
+        };
+    }
+    let tokens: Vec<&str> = name
+        .split_whitespace()
+        .filter(|part| !part.is_empty())
+        .collect();
+    let (civility, rest) = take_civility(&tokens);
+    match rest {
+        [] => RespondentParts {
+            civility,
+            given_name: String::new(),
+            family_name: String::new(),
+        },
+        [only] => RespondentParts {
+            civility,
+            given_name: clean_token(only),
+            family_name: String::new(),
+        },
+        [given, family @ ..] => RespondentParts {
+            civility,
+            given_name: clean_token(given),
+            family_name: family
+                .iter()
+                .copied()
+                .map(clean_token)
+                .collect::<Vec<_>>()
+                .join(" "),
+        },
+    }
+}
+
+fn take_civility<'a>(tokens: &'a [&'a str]) -> (Option<Civility>, &'a [&'a str]) {
+    let Some(first) = tokens.first() else {
+        return (None, tokens);
+    };
+    if let Some(stored) = stored_civility(first) {
+        return (Some(stored), &tokens[1..]);
+    }
+    if is_civility(first) {
+        return (None, &tokens[1..]);
+    }
+    (None, tokens)
+}
+
+fn stored_civility(token: &str) -> Option<Civility> {
+    match token_key(&fold_name(token)).as_str() {
+        "m" | "mr" | "monsieur" => Some(Civility::Monsieur),
+        "mme" | "madame" => Some(Civility::Madame),
+        _ => None,
+    }
+}
+
+/// Prénom puis nom, sans le genre. Les bords vides sont omis.
+#[must_use]
+pub fn compose_respondent_name(given: &str, family: &str) -> String {
+    [given.trim(), family.trim()]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Ce que l'enregistrement retient. `structured` : les parties font foi, même vides.
+/// Sinon le texte libre est découpé.
+#[must_use]
+pub fn settle_respondent(
+    name: &str,
+    given: &str,
+    family: &str,
+    civility: Option<Civility>,
+    structured: bool,
+) -> RespondentParts {
+    let (civility, given_name, family_name) = if structured {
+        (
+            civility,
+            given.trim().to_string(),
+            family.trim().to_string(),
+        )
+    } else {
+        let parts = split_respondent(name);
+        (parts.civility, parts.given_name, parts.family_name)
+    };
+    RespondentParts {
+        civility,
+        given_name,
+        family_name,
+    }
+}
+
+/// Nom affiché : les parties jointes, ou le texte de repli s'il n'y en a pas.
+#[must_use]
+pub fn settled_display_name(parts: &RespondentParts, fallback: &str) -> String {
+    let composed = compose_respondent_name(&parts.given_name, &parts.family_name);
+    if composed.is_empty() {
+        fallback.trim().to_string()
+    } else {
+        composed
+    }
+}
+
+/// Parties montrées tant que les colonnes sont vides et que le contact
+/// n'est pas le nom de la fiche.
+#[must_use]
+pub fn respondent_view(
+    contact_name: &str,
+    client_name: &str,
+    given: &str,
+    family: &str,
+    civility: Option<Civility>,
+) -> RespondentParts {
+    let stored_empty = given.trim().is_empty() && family.trim().is_empty() && civility.is_none();
+    if stored_empty && !same_name(contact_name, client_name) {
+        split_respondent(contact_name)
+    } else {
+        RespondentParts {
+            civility,
+            given_name: given.trim().to_string(),
+            family_name: family.trim().to_string(),
+        }
+    }
+}
+
+/// Où une lettre part : le standard, ou la personne qui répond.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LetterRecipient {
+    #[default]
+    Switchboard,
+    Correspondent,
+}
+
+impl LetterRecipient {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Switchboard => "switchboard",
+            Self::Correspondent => "correspondent",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "switchboard" => Some(Self::Switchboard),
+            "correspondent" => Some(Self::Correspondent),
+            _ => None,
+        }
+    }
+}
+
+/// Adresses connues d'une fiche. Seules les adresses lisibles sont retenues.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FicheChannels {
+    pub switchboard_email: Option<String>,
+    pub correspondent_email: Option<String>,
+    pub correspondent_name: String,
+    pub client_name: String,
+}
+
+#[must_use]
+pub fn fiche_channels(
+    client_name: &str,
+    switchboard_email: Option<&str>,
+    correspondent_name: &str,
+    correspondent_email: Option<&str>,
+) -> FicheChannels {
+    FicheChannels {
+        switchboard_email: switchboard_email.and_then(|email| parse_email(email).ok()),
+        correspondent_email: correspondent_email.and_then(|email| parse_email(email).ok()),
+        correspondent_name: correspondent_name.trim().to_string(),
+        client_name: client_name.trim().to_string(),
+    }
+}
+
+/// Le standard s'il est lisible, sinon l'adresse de la personne.
+#[must_use]
+pub fn default_letter_address(channels: &FicheChannels) -> Option<&str> {
+    channels
+        .switchboard_email
+        .as_deref()
+        .filter(|email| !email.is_empty())
+        .or_else(|| {
+            channels
+                .correspondent_email
+                .as_deref()
+                .filter(|email| !email.is_empty())
+        })
+}
+
+#[must_use]
+pub fn letter_address(channels: &FicheChannels, choice: LetterRecipient) -> Option<&str> {
+    let raw = match choice {
+        LetterRecipient::Switchboard => channels.switchboard_email.as_deref(),
+        LetterRecipient::Correspondent => channels.correspondent_email.as_deref(),
+    };
+    raw.map(str::trim).filter(|email| !email.is_empty())
+}
+
+#[must_use]
+pub fn letter_recipient_name(channels: &FicheChannels, choice: LetterRecipient) -> &str {
+    match choice {
+        LetterRecipient::Switchboard => channels.client_name.as_str(),
+        LetterRecipient::Correspondent => {
+            let name = channels.correspondent_name.trim();
+            if name.is_empty() {
+                channels.client_name.as_str()
+            } else {
+                name
+            }
+        }
+    }
+}
+
+/// Deux adresses identiques restent le standard. Seule l'adresse de la
+/// personne, différente, désigne le correspondant.
+#[must_use]
+pub fn infer_letter_recipient(channels: &FicheChannels, to_address: &str) -> LetterRecipient {
+    let to = to_address.trim();
+    let switchboard = channels.switchboard_email.as_deref() == Some(to);
+    let correspondent = channels.correspondent_email.as_deref() == Some(to);
+    if correspondent && !switchboard {
+        LetterRecipient::Correspondent
+    } else {
+        LetterRecipient::Switchboard
+    }
+}
+
 /// Une phrase, du premier moment au dernier. Le premier est le jour du dossier.
 #[must_use]
 pub fn chronicle(moments: &[(&str, i64)]) -> String {
@@ -672,12 +952,16 @@ pub fn resolve_signature(signature: &str, moi: &str, societe: &str) -> String {
 
 /// Remplace les `{{clés}}` connues. Une clé inconnue reste telle quelle.
 /// Sans prénom, « Bonjour , » et « Cher , » se referment.
-/// `<signature>` est remplacée en dernier : son texte n'est pas relu.
+/// `<Monsieur le Maire/Madame la Maire>` suit le genre. Sans genre, les deux
+/// côtés restent, séparés par « / ».
+/// `<signature>` est remplacée avant ces formes : son texte est relu.
 #[must_use]
 pub fn render_template(template: &str, ctx: &TemplateContext) -> String {
     let signature = resolve_signature(&ctx.signature, &ctx.moi, &ctx.societe);
     let text = template
         .replace("{{prenom}}", &ctx.prenom)
+        .replace("{{family_name}}", &ctx.family_name)
+        .replace("{{civility}}", &ctx.civility)
         .replace("{{contact}}", &ctx.contact)
         .replace("{{client}}", &ctx.client)
         .replace("{{sujet}}", &ctx.sujet)
@@ -689,11 +973,74 @@ pub fn render_template(template: &str, ctx: &TemplateContext) -> String {
         .replace("{{retard}}", &ctx.retard)
         .replace("{{solde}}", &ctx.solde)
         .replace("{{signature}}", &signature);
-    if ctx.prenom.trim().is_empty() {
+    let text = apply_gendered_forms(&text, &ctx.civility);
+    let text = if ctx.prenom.trim().is_empty() {
         collapse_empty_greeting(&text)
     } else {
         text
+    };
+    squeeze_line_spaces(&text)
+}
+
+/// `<gauche/droite>` : Monsieur prend la gauche, Madame la droite.
+/// Une adresse (`://`) ou plus d'une barre reste telle quelle.
+fn apply_gendered_forms(text: &str, civility: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find('<') {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        if let Some(end) = after.find('>')
+            && let Some(rendered) = gendered_choice(&after[..end], civility)
+        {
+            out.push_str(&rendered);
+            rest = &after[end + 1..];
+            continue;
+        }
+        out.push('<');
+        rest = &rest[start + 1..];
     }
+    out.push_str(rest);
+    out
+}
+
+fn gendered_choice(inside: &str, civility: &str) -> Option<String> {
+    if inside.contains("://") || inside.matches('/').count() != 1 {
+        return None;
+    }
+    let (left, right) = inside.split_once('/')?;
+    let left = left.trim();
+    let right = right.trim();
+    if left.is_empty() || right.is_empty() {
+        return None;
+    }
+    match civility.trim() {
+        "Monsieur" => Some(left.to_string()),
+        "Madame" => Some(right.to_string()),
+        _ => Some(format!("{left} / {right}")),
+    }
+}
+
+fn squeeze_line_spaces(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for (index, line) in text.split('\n').enumerate() {
+        if index > 0 {
+            out.push('\n');
+        }
+        let mut previous_space = false;
+        for ch in line.chars() {
+            if ch == ' ' || ch == '\t' {
+                if !previous_space {
+                    out.push(' ');
+                }
+                previous_space = true;
+            } else {
+                previous_space = false;
+                out.push(ch);
+            }
+        }
+    }
+    out
 }
 
 fn collapse_empty_greeting(text: &str) -> String {
@@ -959,6 +1306,7 @@ impl fmt::Display for FollowUpKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::Civility;
     use crate::domain::ids::OpportunityId;
     use time::{Month, UtcOffset};
 
@@ -1325,6 +1673,151 @@ mod tests {
         assert_eq!(
             format_date_fr(date(2026, Month::September, 5)),
             "5 septembre 2026"
+        );
+    }
+
+    #[test]
+    fn a_free_text_name_splits_into_civility_given_and_family() {
+        let madame = split_respondent("Madame Camille Rivière");
+        assert_eq!(madame.civility, Some(Civility::Madame));
+        assert_eq!(madame.given_name, "Camille");
+        assert_eq!(madame.family_name, "Rivière");
+        assert_eq!(
+            settled_display_name(&madame, "Madame Camille Rivière"),
+            "Camille Rivière"
+        );
+
+        let hyphen = split_respondent("Jean-Pierre Martin");
+        assert_eq!(hyphen.civility, None);
+        assert_eq!(hyphen.given_name, "Jean-Pierre");
+        assert_eq!(hyphen.family_name, "Martin");
+
+        let alone = split_respondent("Camille");
+        assert_eq!(alone.given_name, "Camille");
+        assert_eq!(alone.family_name, "");
+
+        let mister = split_respondent("M. Camille Rivière");
+        assert_eq!(mister.civility, Some(Civility::Monsieur));
+        assert_eq!(mister.given_name, "Camille");
+        assert_eq!(
+            split_respondent("Mr Camille").civility,
+            Some(Civility::Monsieur)
+        );
+        assert_eq!(
+            split_respondent("Mme Rivière").civility,
+            Some(Civility::Madame)
+        );
+
+        let doctor = split_respondent("Docteur Camille Rivière");
+        assert_eq!(doctor.civility, None);
+        assert_eq!(doctor.given_name, "Camille");
+        assert_eq!(doctor.family_name, "Rivière");
+    }
+
+    #[test]
+    fn an_enseigne_stays_a_family_name_without_a_given_name() {
+        for name in ["Mairie de Paris", "Le porc du Val de la Sensée"] {
+            let parts = split_respondent(name);
+            assert_eq!(parts.civility, None, "{name}");
+            assert_eq!(parts.given_name, "", "{name}");
+            assert_eq!(parts.family_name, name, "{name}");
+            assert_eq!(settled_display_name(&parts, name), name, "{name}");
+        }
+    }
+
+    #[test]
+    fn structured_parts_win_even_when_they_are_empty() {
+        let empty = settle_respondent("Mairie de Paris", "", "", None, true);
+        assert_eq!(empty.given_name, "");
+        assert_eq!(empty.family_name, "");
+        assert_eq!(
+            settled_display_name(&empty, "Mairie de Paris"),
+            "Mairie de Paris"
+        );
+
+        let kept = settle_respondent("ignoré", "Camille", "Rivière", Some(Civility::Madame), true);
+        assert_eq!(kept.civility, Some(Civility::Madame));
+        assert_eq!(settled_display_name(&kept, "ignoré"), "Camille Rivière");
+    }
+
+    #[test]
+    fn nom_and_genre_tokens_and_a_gendered_formula_follow_the_civility() {
+        let stored = "Bonjour {{civility}} {{family_name}},\n<Monsieur le Maire/Madame la Maire>\n";
+        let shown = phrase_to_editor(stored);
+        assert!(shown.contains("<genre>"));
+        assert!(shown.contains("<nom>"));
+        assert_eq!(phrase_from_editor(&shown), stored);
+
+        let monsieur = TemplateContext {
+            family_name: "Rivière".into(),
+            civility: "Monsieur".into(),
+            ..TemplateContext::default()
+        };
+        assert_eq!(
+            render_template("{{civility}} {{family_name}}", &monsieur),
+            "Monsieur Rivière"
+        );
+        assert_eq!(
+            render_template("<Monsieur le Maire/Madame la Maire>", &monsieur),
+            "Monsieur le Maire"
+        );
+        let madame = TemplateContext {
+            civility: "Madame".into(),
+            ..TemplateContext::default()
+        };
+        assert_eq!(
+            render_template("<Monsieur le président/Madame la présidente>", &madame),
+            "Madame la présidente"
+        );
+        let unset = TemplateContext::default();
+        assert_eq!(
+            render_template("<Monsieur le Maire/Madame la Maire>", &unset),
+            "Monsieur le Maire / Madame la Maire"
+        );
+        assert_eq!(
+            render_template(
+                "Cher {{prenom}} {{family_name}}",
+                &TemplateContext {
+                    family_name: "Rivière".into(),
+                    ..TemplateContext::default()
+                }
+            ),
+            "Cher Rivière"
+        );
+        assert_eq!(
+            render_template("voir <https://atelier.example/maire>", &monsieur),
+            "voir <https://atelier.example/maire>"
+        );
+    }
+
+    #[test]
+    fn a_matching_person_address_is_the_correspondent() {
+        let both = fiche_channels(
+            "Mairie",
+            Some("accueil@mairie.example"),
+            "Camille Rivière",
+            Some("camille@mairie.example"),
+        );
+        assert_eq!(
+            infer_letter_recipient(&both, "camille@mairie.example"),
+            LetterRecipient::Correspondent
+        );
+        assert_eq!(
+            infer_letter_recipient(&both, "accueil@mairie.example"),
+            LetterRecipient::Switchboard
+        );
+        assert_eq!(
+            default_letter_address(&both),
+            Some("accueil@mairie.example")
+        );
+        let person_only = fiche_channels("Acme", None, "Marie Curie", Some("marie@acme.test"));
+        assert_eq!(
+            infer_letter_recipient(&person_only, "marie@acme.test"),
+            LetterRecipient::Correspondent
+        );
+        assert_eq!(
+            default_letter_address(&person_only),
+            Some("marie@acme.test")
         );
     }
 

@@ -8,7 +8,7 @@ use griffe_core::clients::{
     self, ClientFilter, client_by_id, client_references, contact_by_id, list_clients_with,
     list_contacts,
 };
-use griffe_core::domain::{Address, ContactId, Siren, VatNumber};
+use griffe_core::domain::{Address, Civility, ContactId, Siren, VatNumber};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
 use rmcp::{tool, tool_router};
@@ -63,6 +63,10 @@ pub(crate) struct UpdateClientArgs {
     postal_code: Option<String>,
     city: Option<String>,
     country: Option<String>,
+    /// Courriel du standard. Une chaîne vide l'efface.
+    switchboard_email: Option<String>,
+    /// Téléphone du standard. Une chaîne vide l'efface.
+    switchboard_phone: Option<String>,
     #[serde(default)]
     dry_run: bool,
 }
@@ -82,6 +86,10 @@ pub(crate) struct CreateContactArgs {
     email: Option<String>,
     phone: Option<String>,
     role: Option<String>,
+    given_name: Option<String>,
+    family_name: Option<String>,
+    /// `monsieur`, `madame`, ou une chaîne vide pour ne pas le dire.
+    civility: Option<String>,
     #[serde(default)]
     dry_run: bool,
 }
@@ -99,6 +107,10 @@ pub(crate) struct UpdateContactArgs {
     email: Option<String>,
     phone: Option<String>,
     role: Option<String>,
+    given_name: Option<String>,
+    family_name: Option<String>,
+    /// `monsieur`, `madame`, ou une chaîne vide pour ne pas le dire.
+    civility: Option<String>,
     #[serde(default)]
     dry_run: bool,
 }
@@ -108,6 +120,23 @@ pub(crate) struct ContactIdArgs {
     id: String,
     #[serde(default)]
     dry_run: bool,
+}
+
+enum PostedCivility {
+    Omitted,
+    Clear,
+    Set(Civility),
+}
+
+fn posted_civility(value: Option<String>) -> Result<PostedCivility, CallToolResult> {
+    match value {
+        None => Ok(PostedCivility::Omitted),
+        Some(text) if text.trim().is_empty() => Ok(PostedCivility::Clear),
+        Some(text) => match Civility::parse(text.trim()) {
+            Some(civility) => Ok(PostedCivility::Set(civility)),
+            None => Err(err_text("genre : monsieur ou madame")),
+        },
+    }
 }
 
 /// Combine les quatre champs d'adresse optionnels — tous fournis, aucun, ou l'adresse actuelle
@@ -269,6 +298,8 @@ impl FreeflowServer {
             siren: siren.or(current.siren),
             vat_number: vat_number.or(current.vat_number),
             address,
+            switchboard_email: args.switchboard_email.or(current.switchboard_email),
+            switchboard_phone: args.switchboard_phone.or(current.switchboard_phone),
         };
         match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
@@ -385,12 +416,23 @@ impl FreeflowServer {
     ) -> CallToolResult {
         let mut store = self.store.lock().await;
         let client_id = ok_or_return!("client", resolve_client(&store, &args.client));
+        let civility = match posted_civility(args.civility) {
+            Ok(PostedCivility::Set(civility)) => Some(civility),
+            Ok(_) => None,
+            Err(result) => return result,
+        };
+        let structured =
+            args.given_name.is_some() || args.family_name.is_some() || civility.is_some();
         let cmd = clients::CreateContact {
             client_id,
             name: args.name,
             email: args.email,
             phone: args.phone,
             role: args.role,
+            given_name: args.given_name.unwrap_or_default(),
+            family_name: args.family_name.unwrap_or_default(),
+            civility,
+            structured,
         };
         match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),
@@ -435,13 +477,47 @@ impl FreeflowServer {
             Ok(None) => return err_text(format!("contact introuvable : {id}")),
             Err(e) => return err_text(e.to_string()),
         };
+        let name = args.name.unwrap_or_else(|| current.name.clone());
+        let posted = match posted_civility(args.civility) {
+            Ok(value) => value,
+            Err(result) => return result,
+        };
+        let parts_posted = args.given_name.is_some()
+            || args.family_name.is_some()
+            || !matches!(posted, PostedCivility::Omitted);
+        let civility = match posted {
+            PostedCivility::Omitted => current.civility,
+            PostedCivility::Clear => None,
+            PostedCivility::Set(civility) => Some(civility),
+        };
+        let (given_name, family_name, civility, structured) = if parts_posted {
+            (
+                args.given_name.unwrap_or(current.given_name),
+                args.family_name.unwrap_or(current.family_name),
+                civility,
+                true,
+            )
+        } else if name == current.name {
+            (
+                current.given_name,
+                current.family_name,
+                current.civility,
+                true,
+            )
+        } else {
+            (String::new(), String::new(), None, false)
+        };
         let cmd = clients::UpdateContact {
             id,
             revision: current.revision,
-            name: args.name.unwrap_or(current.name),
+            name,
             email: args.email.or(current.email),
             phone: args.phone.or(current.phone),
             role: args.role.or(current.role),
+            given_name,
+            family_name,
+            civility,
+            structured,
         };
         match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),

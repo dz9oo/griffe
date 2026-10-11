@@ -11,10 +11,11 @@ use griffe_core::billing::{ImportIssuedInvoice, RetractWriteOff, WriteOffReceiva
 use griffe_core::clients::{CreateContact, UpdateClient, UpdateContact, client_by_id};
 use griffe_core::company::company_profile;
 use griffe_core::domain::{
-    Address, ExpenseId, FollowUpSubject, InteractionKind, InvoiceId, InvoiceLine, MissionId, Money,
-    Probability, SnoozeDaysError, TemplateContext, VatRate, WriteOffId, chronicle,
-    entered_cycle_key, format_date, given_name, parse_date, phrase_from_editor, phrase_to_editor,
-    render_template, snooze_in_days,
+    Address, Civility, ExpenseId, FollowUpSubject, InteractionKind, InvoiceId, InvoiceLine,
+    LetterRecipient, MissionId, Money, Probability, SnoozeDaysError, TemplateContext, VatRate,
+    WriteOffId, chronicle, default_letter_address, entered_cycle_key, fiche_channels, format_date,
+    given_name, letter_address, parse_date, parse_email, phrase_from_editor, phrase_to_editor,
+    render_template, respondent_view, snooze_in_days,
 };
 use griffe_core::dossier_work::{DossierWork, SaveDossierWork, dossier_work};
 use griffe_core::expenses::{AttachReceipt, expense_by_id};
@@ -25,12 +26,14 @@ use griffe_core::follow_up::{
     prospect_genres, prospect_phrases,
 };
 use griffe_core::mail::{
-    ArmOutbound, CancelOutbound, LetterChrome, ResolveUncertain, RetryOutbound, UNDO_SECS,
+    ArmOutbound, CancelOutbound, LetterChrome, MISSING_ADDRESS, ResolveUncertain, RetryOutbound,
+    UNDO_SECS,
 };
-use griffe_core::people::{PersonKey, person, resolve_person};
+use griffe_core::people::{PersonChapter, PersonKey, person, resolve_person};
 use griffe_core::prospection::{
     CreateOpportunity, CreateProspect, EstimationLineInput, LogInteraction, LoseOpportunity,
-    ReopenOpportunity, SetEstimation, WinOpportunity, estimation_lines, opportunity_by_id,
+    ReopenOpportunity, SetEstimation, UpdateOpportunity, WinOpportunity, estimation_lines,
+    opportunity_by_id,
 };
 use griffe_core::reference::RefMatch;
 use griffe_core::work_kinds::{
@@ -232,6 +235,8 @@ pub struct LetterForm {
     subject_line: String,
     #[serde(default)]
     body: String,
+    #[serde(default)]
+    recipient: String,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -242,6 +247,8 @@ pub struct RelireForm {
     body: String,
     #[serde(default)]
     genre_name: String,
+    #[serde(default)]
+    recipient: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -280,6 +287,8 @@ pub struct KeepForm {
     confirmer: String,
     #[serde(default)]
     genre_name: String,
+    #[serde(default)]
+    recipient: String,
 }
 
 pub async fn phrases_get(
@@ -1020,6 +1029,7 @@ pub async fn relire(
         subject: Some(form.subject_line),
         body: Some(form.body),
         proposed_name: form.genre_name,
+        recipient: form.recipient,
         ..gens::KeepUi::default()
     };
     page(
@@ -1080,6 +1090,7 @@ pub async fn write(
     let db_path = state.db_path().to_path_buf();
     let subject_line = optional_letter_field(form.subject_line);
     let body = optional_letter_field(form.body);
+    let recipient = form.recipient.clone();
     let result = state
         .with_store_mut(|store| {
             let outcome = Executor::new(store).execute(
@@ -1088,6 +1099,7 @@ pub async fn write(
                     today,
                     subject_line,
                     body,
+                    recipient: blank(&recipient),
                 },
                 &AppState::human_ctx(),
             )?;
@@ -1117,7 +1129,10 @@ pub async fn write(
                         card.as_ref(),
                         today,
                         Some("brouillon ouvert dans ton client mail — Griffe n'envoie pas"),
-                        &gens::KeepUi::default(),
+                        &gens::KeepUi {
+                            recipient: recipient.clone(),
+                            ..gens::KeepUi::default()
+                        },
                     )
                     .unwrap_or_else(|err| html! { div class="empty-state" { (err.to_string()) } })
                 })
@@ -1171,6 +1186,7 @@ pub async fn keep_words(
     let written = gens::KeepUi {
         subject: Some(form.subject_line.clone()),
         body: Some(form.body.clone()),
+        recipient: form.recipient.clone(),
         ..gens::KeepUi::default()
     };
     if !confirming {
@@ -1378,6 +1394,7 @@ pub async fn send_letter(
                 &token,
                 today,
                 client_id,
+                &form.recipient,
             )
         })
         .await;
@@ -1510,6 +1527,7 @@ fn arm_letter(
     token: &str,
     today: time::Date,
     client_id: Option<String>,
+    recipient: &str,
 ) -> Result<(), AppError> {
     let profile = griffe_core::mail::profile(store.connection())?;
     if !profile.ready {
@@ -1518,12 +1536,8 @@ fn arm_letter(
         ));
     }
     let card = subject.and_then(|item| gens::load_card(store, item, today).ok().flatten());
-    let Some(to) = card
-        .as_ref()
-        .and_then(|item| item.contact_email.clone())
-        .and_then(|value| griffe_core::domain::parse_email(&value).ok())
-    else {
-        return Err(AppError::Domain(griffe_core::mail::MISSING_ADDRESS.into()));
+    let Some(to) = chosen_letter_address(store, client_id.as_deref(), recipient)? else {
+        return Err(AppError::Domain(MISSING_ADDRESS.into()));
     };
     let kind = match subject {
         Some(FollowUpSubject::Invoice(_)) => "invoice",
@@ -1602,9 +1616,64 @@ fn fiche_courriel(
     let griffe_core::people::PersonKey::Client { id } = dossier.key else {
         return None;
     };
-    let contact = griffe_core::clients::correspondent(store.connection(), id).ok()??;
-    let email = contact.email.as_deref()?;
-    griffe_core::domain::parse_email(email).ok()
+    let client = client_by_id(store.connection(), id).ok()??;
+    let contact = griffe_core::clients::correspondent(store.connection(), id).ok()?;
+    let channels = fiche_channels(
+        &client.name,
+        client.switchboard_email.as_deref(),
+        contact
+            .as_ref()
+            .map(|person| person.name.as_str())
+            .unwrap_or(""),
+        contact.as_ref().and_then(|person| person.email.as_deref()),
+    );
+    default_letter_address(&channels).map(str::to_owned)
+}
+
+fn chosen_letter_address(
+    store: &griffe_core::store::Store,
+    client_id: Option<&str>,
+    recipient: &str,
+) -> Result<Option<String>, AppError> {
+    let Some(raw_id) = client_id.filter(|value| !value.trim().is_empty()) else {
+        return Ok(None);
+    };
+    let Ok(id) = raw_id.parse() else {
+        return Ok(None);
+    };
+    let Some(client) = client_by_id(store.connection(), id)? else {
+        return Ok(None);
+    };
+    let contact = griffe_core::clients::correspondent(store.connection(), id)?;
+    let channels = fiche_channels(
+        &client.name,
+        client.switchboard_email.as_deref(),
+        contact
+            .as_ref()
+            .map(|person| person.name.as_str())
+            .unwrap_or(""),
+        contact.as_ref().and_then(|person| person.email.as_deref()),
+    );
+    let email = if let Some(choice) = LetterRecipient::parse(recipient) {
+        letter_address(&channels, choice)
+    } else if recipient.trim().is_empty() {
+        default_letter_address(&channels)
+    } else {
+        None
+    };
+    Ok(email.map(str::to_owned))
+}
+
+async fn fiche_again(
+    state: &AppState,
+    headers: &HeaderMap,
+    dossier: &griffe_core::people::PersonDossier,
+    values: &gens::FicheValues,
+    errors: &gens::FicheErrors,
+    posted_genre: &gens::GenrePost,
+) -> Response {
+    let genre = load_genre_field(state, dossier, Some(posted_genre), false).await;
+    page(headers, gens::fiche_page(dossier, values, errors, &genre)).into_response()
 }
 
 async fn depart_for(state: &AppState, name: &str, note: Option<&str>) -> Markup {
@@ -1619,7 +1688,11 @@ async fn depart_for(state: &AppState, name: &str, note: Option<&str>) -> Markup 
             )
             .ok()
             .flatten();
-            let destination = fiche_courriel(store, name, today);
+            let destination = view
+                .as_ref()
+                .map(|item| item.to_address.clone())
+                .filter(|value| !value.is_empty())
+                .or_else(|| fiche_courriel(store, name, today));
             gens::depart_markup(
                 &href,
                 view.as_ref(),
@@ -1644,7 +1717,11 @@ async fn depart_poll_for(state: &AppState, name: &str) -> (Markup, bool) {
             )
             .ok()
             .flatten();
-            let destination = fiche_courriel(store, name, today);
+            let destination = view
+                .as_ref()
+                .map(|item| item.to_address.clone())
+                .filter(|value| !value.is_empty())
+                .or_else(|| fiche_courriel(store, name, today));
             gens::depart_poll_fragment(
                 &href,
                 view.as_ref(),
@@ -2083,26 +2160,75 @@ async fn load_genre_field(
         .unwrap_or_default()
 }
 
+struct OpenMatter {
+    name: String,
+    revision: i64,
+}
+
+fn open_matter(
+    store: &griffe_core::store::Store,
+    dossier: &griffe_core::people::PersonDossier,
+) -> Result<Option<OpenMatter>, AppError> {
+    if dossier.chapter != PersonChapter::Conversation {
+        return Ok(None);
+    }
+    let Some(id) = dossier.current.opportunity_id else {
+        return Ok(None);
+    };
+    let Some(opportunity) = opportunity_by_id(store.connection(), id)? else {
+        return Ok(None);
+    };
+    Ok(Some(OpenMatter {
+        name: opportunity.name,
+        revision: opportunity.revision,
+    }))
+}
+
 fn fiche_values_from(
     client: &griffe_core::domain::Client,
     contact: Option<&griffe_core::domain::Contact>,
+    matter: Option<&OpenMatter>,
 ) -> gens::FicheValues {
     let (street, postal_code, city) = client.address.as_ref().map_or_else(
         || (String::new(), String::new(), String::new()),
         |a| (a.street.clone(), a.postal_code.clone(), a.city.clone()),
     );
-    let representative = contact
-        .filter(|c| c.name != client.name)
-        .map(|c| c.name.clone())
-        .unwrap_or_default();
+    let parts = contact.map(|person| {
+        respondent_view(
+            &person.name,
+            &client.name,
+            &person.given_name,
+            &person.family_name,
+            person.civility,
+        )
+    });
     gens::FicheValues {
         who: client.name.clone(),
+        matter: matter.map(|item| item.name.clone()).unwrap_or_default(),
+        matter_open: matter.is_some(),
+        opportunity_revision: matter
+            .map(|item| item.revision.to_string())
+            .unwrap_or_default(),
         street,
         postal_code,
         city,
-        representative,
-        email: contact.and_then(|c| c.email.clone()).unwrap_or_default(),
-        phone: contact.and_then(|c| c.phone.clone()).unwrap_or_default(),
+        email: client.switchboard_email.clone().unwrap_or_default(),
+        phone: client.switchboard_phone.clone().unwrap_or_default(),
+        given_name: parts
+            .as_ref()
+            .map(|part| part.given_name.clone())
+            .unwrap_or_default(),
+        family_name: parts
+            .as_ref()
+            .map(|part| part.family_name.clone())
+            .unwrap_or_default(),
+        civility: parts
+            .as_ref()
+            .and_then(|part| part.civility)
+            .map(|civility| civility.as_str().to_string())
+            .unwrap_or_default(),
+        correspondent_email: contact.and_then(|c| c.email.clone()).unwrap_or_default(),
+        correspondent_phone: contact.and_then(|c| c.phone.clone()).unwrap_or_default(),
         client_revision: client.revision,
         contact_id: contact.map(|c| c.id.to_string()).unwrap_or_default(),
         contact_revision: contact.map(|c| c.revision.to_string()).unwrap_or_default(),
@@ -2129,7 +2255,8 @@ pub async fn fiche_get(
             let client = client_by_id(store.connection(), id)?
                 .ok_or_else(|| AppError::from(griffe_core::clients::ClientError::NotFound(id)))?;
             let contact = griffe_core::clients::correspondent(store.connection(), id)?;
-            Ok((client, contact))
+            let matter = open_matter(store, &dossier)?;
+            Ok((client, contact, matter))
         })
         .await;
     match loaded {
@@ -2138,22 +2265,12 @@ pub async fn fiche_get(
             &headers,
             gens::dossier_markup(&dossier, today, Some(&e.to_string())),
         ),
-        Some(Ok((client, contact))) => {
-            let values = fiche_values_from(&client, contact.as_ref());
+        Some(Ok((client, contact, matter))) => {
+            let values = fiche_values_from(&client, contact.as_ref(), matter.as_ref());
             let genre = load_genre_field(&state, &dossier, None, false).await;
             page(
                 &headers,
-                gens::fiche_page(
-                    &dossier,
-                    &values,
-                    &gens::FicheErrors {
-                        who: None,
-                        address: None,
-                        email: None,
-                        banner: None,
-                    },
-                    &genre,
-                ),
+                gens::fiche_page(&dossier, &values, &gens::FicheErrors::default(), &genre),
             )
         }
     }
@@ -2164,17 +2281,31 @@ pub struct FicheForm {
     #[serde(default)]
     who: String,
     #[serde(default)]
+    matter: String,
+    #[serde(default)]
+    matter_open: String,
+    #[serde(default)]
+    opportunity_revision: String,
+    #[serde(default)]
     street: String,
     #[serde(default)]
     postal_code: String,
     #[serde(default)]
     city: String,
     #[serde(default)]
-    representative: String,
-    #[serde(default)]
     email: String,
     #[serde(default)]
     phone: String,
+    #[serde(default)]
+    given_name: String,
+    #[serde(default)]
+    family_name: String,
+    #[serde(default)]
+    civility: String,
+    #[serde(default)]
+    correspondent_email: String,
+    #[serde(default)]
+    correspondent_phone: String,
     #[serde(default)]
     client_revision: String,
     #[serde(default)]
@@ -2185,6 +2316,28 @@ pub struct FicheForm {
     genre: String,
     #[serde(default)]
     genre_other: String,
+}
+
+fn posted_fiche(form: &FicheForm) -> gens::FicheValues {
+    gens::FicheValues {
+        who: form.who.trim().to_string(),
+        matter: form.matter.clone(),
+        matter_open: form.matter_open.trim() == "1",
+        opportunity_revision: form.opportunity_revision.clone(),
+        street: form.street.clone(),
+        postal_code: form.postal_code.clone(),
+        city: form.city.clone(),
+        email: form.email.clone(),
+        phone: form.phone.clone(),
+        given_name: form.given_name.clone(),
+        family_name: form.family_name.clone(),
+        civility: form.civility.clone(),
+        correspondent_email: form.correspondent_email.clone(),
+        correspondent_phone: form.correspondent_phone.clone(),
+        client_revision: form.client_revision.parse().unwrap_or(0),
+        contact_id: form.contact_id.clone(),
+        contact_revision: form.contact_revision.clone(),
+    }
 }
 
 pub async fn fiche_post(
@@ -2212,97 +2365,65 @@ pub async fn fiche_post(
     let address = match parse_address(&form.street, &form.postal_code, &form.city) {
         Ok(address) => address,
         Err(msg) => {
-            let values = gens::FicheValues {
-                who,
-                street: form.street,
-                postal_code: form.postal_code,
-                city: form.city,
-                representative: form.representative,
-                email: form.email,
-                phone: form.phone,
-                client_revision: form.client_revision.parse().unwrap_or(0),
-                contact_id: form.contact_id,
-                contact_revision: form.contact_revision,
-            };
-            let genre = load_genre_field(&state, &dossier, Some(&posted_genre), false).await;
-            return page(
+            return fiche_again(
+                &state,
                 &headers,
-                gens::fiche_page(
-                    &dossier,
-                    &values,
-                    &gens::FicheErrors {
-                        who: None,
-                        address: Some(msg),
-                        email: None,
-                        banner: None,
-                    },
-                    &genre,
-                ),
+                &dossier,
+                &posted_fiche(&form),
+                &gens::FicheErrors {
+                    address: Some(msg),
+                    ..gens::FicheErrors::default()
+                },
+                &posted_genre,
             )
-            .into_response();
+            .await;
         }
     };
     if who.is_empty() {
-        let values = gens::FicheValues {
-            who,
-            street: form.street,
-            postal_code: form.postal_code,
-            city: form.city,
-            representative: form.representative,
-            email: form.email,
-            phone: form.phone,
-            client_revision: form.client_revision.parse().unwrap_or(0),
-            contact_id: form.contact_id,
-            contact_revision: form.contact_revision,
-        };
-        let genre = load_genre_field(&state, &dossier, Some(&posted_genre), false).await;
-        return page(
+        return fiche_again(
+            &state,
             &headers,
-            gens::fiche_page(
-                &dossier,
-                &values,
-                &gens::FicheErrors {
-                    who: Some("un nom, pour commencer".into()),
-                    address: None,
-                    email: None,
-                    banner: None,
-                },
-                &genre,
-            ),
+            &dossier,
+            &posted_fiche(&form),
+            &gens::FicheErrors {
+                who: Some("un nom, pour commencer".into()),
+                ..gens::FicheErrors::default()
+            },
+            &posted_genre,
         )
-        .into_response();
+        .await;
     }
     if let Some(email) = blank(&form.email)
-        && griffe_core::domain::parse_email(&email).is_err()
+        && parse_email(&email).is_err()
     {
-        let values = gens::FicheValues {
-            who,
-            street: form.street,
-            postal_code: form.postal_code,
-            city: form.city,
-            representative: form.representative,
-            email: form.email,
-            phone: form.phone,
-            client_revision: form.client_revision.parse().unwrap_or(0),
-            contact_id: form.contact_id,
-            contact_revision: form.contact_revision,
-        };
-        let genre = load_genre_field(&state, &dossier, Some(&posted_genre), false).await;
-        return page(
+        return fiche_again(
+            &state,
             &headers,
-            gens::fiche_page(
-                &dossier,
-                &values,
-                &gens::FicheErrors {
-                    who: None,
-                    address: None,
-                    email: Some("Cette adresse est illisible.".into()),
-                    banner: None,
-                },
-                &genre,
-            ),
+            &dossier,
+            &posted_fiche(&form),
+            &gens::FicheErrors {
+                email: Some("Cette adresse est illisible.".into()),
+                ..gens::FicheErrors::default()
+            },
+            &posted_genre,
         )
-        .into_response();
+        .await;
+    }
+    if let Some(email) = blank(&form.correspondent_email)
+        && parse_email(&email).is_err()
+    {
+        return fiche_again(
+            &state,
+            &headers,
+            &dossier,
+            &posted_fiche(&form),
+            &gens::FicheErrors {
+                correspondent_email: Some("Cette adresse est illisible.".into()),
+                ..gens::FicheErrors::default()
+            },
+            &posted_genre,
+        )
+        .await;
     }
     let Some(client_revision) = form.client_revision.parse::<i64>().ok() else {
         return page(
@@ -2313,39 +2434,43 @@ pub async fn fiche_post(
     };
     let Some(posted_genre_name) = applied_genre_name(&posted_genre.checked, &posted_genre.other)
     else {
-        let values = gens::FicheValues {
-            who,
-            street: form.street,
-            postal_code: form.postal_code,
-            city: form.city,
-            representative: form.representative,
-            email: form.email,
-            phone: form.phone,
-            client_revision,
-            contact_id: form.contact_id,
-            contact_revision: form.contact_revision,
-        };
-        let genre = load_genre_field(&state, &dossier, Some(&posted_genre), false).await;
-        return page(
+        return fiche_again(
+            &state,
             &headers,
-            gens::fiche_page(
-                &dossier,
-                &values,
-                &gens::FicheErrors {
-                    who: None,
-                    address: None,
-                    email: None,
-                    banner: None,
-                },
-                &genre,
-            ),
+            &dossier,
+            &posted_fiche(&form),
+            &gens::FicheErrors::default(),
+            &posted_genre,
         )
-        .into_response();
+        .await;
     };
-    let representative = blank(&form.representative);
-    let email = blank(&form.email);
-    let phone = blank(&form.phone);
-    let contact_name = representative.clone().unwrap_or_else(|| who.clone());
+    let matter_open = form.matter_open.trim() == "1"
+        && dossier.chapter == PersonChapter::Conversation
+        && dossier.current.opportunity_id.is_some();
+    if matter_open && form.matter.trim().is_empty() {
+        return fiche_again(
+            &state,
+            &headers,
+            &dossier,
+            &posted_fiche(&form),
+            &gens::FicheErrors {
+                matter: Some("ce dont il s'agit".into()),
+                ..gens::FicheErrors::default()
+            },
+            &posted_genre,
+        )
+        .await;
+    }
+    let given_name = form.given_name.trim().to_string();
+    let family_name = form.family_name.trim().to_string();
+    let civility = Civility::parse(&form.civility);
+    let person_email = blank(&form.correspondent_email);
+    let person_phone = blank(&form.correspondent_phone);
+    let any_person = !given_name.is_empty()
+        || !family_name.is_empty()
+        || civility.is_some()
+        || person_email.is_some()
+        || person_phone.is_some();
     let posted_contact_revision = form.contact_revision.parse::<i64>().ok();
     let result = state
         .with_store_mut(|store| -> Result<bool, AppError> {
@@ -2360,6 +2485,28 @@ pub async fn fiche_post(
             if mismatch {
                 return Err(AppError::Domain("Cette fiche a changé, rechargez.".into()));
             }
+            if matter_open {
+                let Some(opportunity_id) = dossier.current.opportunity_id else {
+                    return Err(AppError::Domain("la fiche a changé, rechargez".into()));
+                };
+                let Some(revision) = form.opportunity_revision.parse::<i64>().ok() else {
+                    return Err(AppError::Domain("la fiche a changé, rechargez".into()));
+                };
+                let opportunity = opportunity_by_id(store.connection(), opportunity_id)?
+                    .ok_or_else(|| AppError::Domain("la fiche a changé, rechargez".into()))?;
+                Executor::new(store).execute(
+                    &UpdateOpportunity {
+                        id: opportunity_id,
+                        revision,
+                        name: form.matter.trim().to_string(),
+                        amount: opportunity.amount,
+                        probability: opportunity.probability,
+                        next_action_at: opportunity.next_action_at,
+                        source: opportunity.source.clone(),
+                    },
+                    &AppState::human_ctx(),
+                )?;
+            }
             Executor::new(store).execute(
                 &UpdateClient {
                     id,
@@ -2368,6 +2515,8 @@ pub async fn fiche_post(
                     siren: client.siren,
                     vat_number: client.vat_number,
                     address: address.clone(),
+                    switchboard_email: blank(&form.email),
+                    switchboard_phone: blank(&form.phone),
                 },
                 &AppState::human_ctx(),
             )?;
@@ -2378,22 +2527,30 @@ pub async fn fiche_post(
                         &UpdateContact {
                             id: current.id,
                             revision,
-                            name: contact_name.clone(),
-                            email: email.clone(),
-                            phone: phone.clone(),
+                            name: who.clone(),
+                            email: person_email.clone(),
+                            phone: person_phone.clone(),
                             role: current.role,
+                            given_name: given_name.clone(),
+                            family_name: family_name.clone(),
+                            civility,
+                            structured: true,
                         },
                         &AppState::human_ctx(),
                     )?;
                 }
-                None if representative.is_some() || email.is_some() || phone.is_some() => {
+                None if any_person => {
                     Executor::new(store).execute(
                         &CreateContact {
                             client_id: id,
-                            name: contact_name.clone(),
-                            email: email.clone(),
-                            phone: phone.clone(),
+                            name: who.clone(),
+                            email: person_email.clone(),
+                            phone: person_phone.clone(),
                             role: None,
+                            given_name: given_name.clone(),
+                            family_name: family_name.clone(),
+                            civility,
+                            structured: true,
                         },
                         &AppState::human_ctx(),
                     )?;
@@ -2416,34 +2573,18 @@ pub async fn fiche_post(
     match result {
         None => locked(&headers).into_response(),
         Some(Err(e)) => {
-            let values = gens::FicheValues {
-                who,
-                street: form.street,
-                postal_code: form.postal_code,
-                city: form.city,
-                representative: form.representative,
-                email: form.email,
-                phone: form.phone,
-                client_revision,
-                contact_id: form.contact_id,
-                contact_revision: form.contact_revision,
-            };
-            let genre = load_genre_field(&state, &dossier, Some(&posted_genre), false).await;
-            page(
+            fiche_again(
+                &state,
                 &headers,
-                gens::fiche_page(
-                    &dossier,
-                    &values,
-                    &gens::FicheErrors {
-                        who: None,
-                        address: None,
-                        email: None,
-                        banner: Some(e.to_string()),
-                    },
-                    &genre,
-                ),
+                &dossier,
+                &posted_fiche(&form),
+                &gens::FicheErrors {
+                    banner: Some(e.to_string()),
+                    ..gens::FicheErrors::default()
+                },
+                &posted_genre,
             )
-            .into_response()
+            .await
         }
         Some(Ok(true)) => {
             let rendered = state
@@ -2453,20 +2594,12 @@ pub async fn fiche_post(
                         AppError::from(griffe_core::clients::ClientError::NotFound(id))
                     })?;
                     let contact = griffe_core::clients::correspondent(store.connection(), id)?;
-                    let values = fiche_values_from(&client, contact.as_ref());
+                    let matter = open_matter(store, &dossier)?;
+                    let values = fiche_values_from(&client, contact.as_ref(), matter.as_ref());
                     let genre = gens::genre_field(store, &dossier, None, true)?;
                     let href = format!("{}/fiche", person_href(&dossier.name));
-                    let markup = gens::fiche_page(
-                        &dossier,
-                        &values,
-                        &gens::FicheErrors {
-                            who: None,
-                            address: None,
-                            email: None,
-                            banner: None,
-                        },
-                        &genre,
-                    );
+                    let markup =
+                        gens::fiche_page(&dossier, &values, &gens::FicheErrors::default(), &genre);
                     Ok((href, markup))
                 })
                 .await;

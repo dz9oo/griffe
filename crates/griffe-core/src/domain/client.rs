@@ -15,6 +15,44 @@ pub struct Address {
     pub country: String,
 }
 
+/// Genre d'une personne, tel qu'une lettre peut l'écrire.
+///
+/// Absent : la fiche ne dit ni Monsieur ni Madame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Civility {
+    Monsieur,
+    Madame,
+}
+
+impl Civility {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Monsieur => "monsieur",
+            Self::Madame => "madame",
+        }
+    }
+
+    /// Mot écrit dans une lettre : « Monsieur » ou « Madame ».
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Monsieur => "Monsieur",
+            Self::Madame => "Madame",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "monsieur" => Some(Self::Monsieur),
+            "madame" => Some(Self::Madame),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Client {
     pub id: ClientId,
@@ -22,6 +60,12 @@ pub struct Client {
     pub siren: Option<Siren>,
     pub vat_number: Option<VatNumber>,
     pub address: Option<Address>,
+    /// Courriel du standard, ou de l'accueil. Pas celui d'une personne.
+    #[serde(default)]
+    pub switchboard_email: Option<String>,
+    /// Téléphone du standard, ou de l'accueil.
+    #[serde(default)]
+    pub switchboard_phone: Option<String>,
     #[serde(with = "crate::domain::serde_date::datetime")]
     pub created_at: OffsetDateTime,
     /// Incrémentée à chaque modification — portée par `UpdateClient`/`ArchiveClient`/
@@ -40,6 +84,15 @@ pub struct Contact {
     pub id: ContactId,
     pub client_id: ClientId,
     pub name: String,
+    /// Prénom, séparé du nom. Vide tant que la fiche n'a pas été enregistrée ainsi.
+    #[serde(default)]
+    pub given_name: String,
+    /// Nom de famille, ou enseigne quand il n'y a pas de prénom.
+    #[serde(default)]
+    pub family_name: String,
+    /// Monsieur ou Madame. Absent : la lettre ne choisit pas.
+    #[serde(default)]
+    pub civility: Option<Civility>,
     pub email: Option<String>,
     pub phone: Option<String>,
     pub role: Option<String>,
