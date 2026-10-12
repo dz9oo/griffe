@@ -448,24 +448,22 @@ async fn the_help_letter_explains_atelier_and_opens_recipes() {
     assert!(!aide.contains("3514"), "{aide}");
     assert!(!aide.contains("2777"), "{aide}");
     assert!(!aide.contains("freeflow "), "{aide}");
-    for slug in [
-        "relancer",
-        "conversation",
-        "devis",
-        "releve",
-        "impots",
-        "cfe",
-        "clore",
-        "papiers",
-        "lexique",
-    ] {
+    for slug in AIDE_SLUGS {
         assert!(
             aide.contains(&format!("href=\"/aide/{slug}\"")),
             "sommaire {slug} : {aide}"
         );
     }
     assert!(aide.contains("href=\"/premiers-pas\""), "{aide}");
-    assert!(aide.contains("href=\"/societe/payer\""), "{aide}");
+    assert!(aide.contains("href=\"/aide/payer\""), "{aide}");
+    assert!(
+        !aide.contains("Les formalités"),
+        "le rayon vide ne s'affiche pas : {aide}"
+    );
+    assert!(
+        aide.contains("data-label=\"se repérer les trois pièces.\""),
+        "la palette reprend le catalogue : {aide}"
+    );
     assert!(
         !aide.contains("aria-current=\"page\""),
         "aucune pièce soulignée : {aide}"
@@ -646,6 +644,10 @@ async fn the_help_letter_explains_atelier_and_opens_recipes() {
     assert!(lexique.contains("Report à nouveau"), "{lexique}");
     assert!(lexique.contains("href=\"/aide\""), "{lexique}");
     assert!(!lexique.contains("class=\"panel\""), "{lexique}");
+    assert!(
+        !lexique.contains("FreeFlow"),
+        "le lexique nomme Griffe : {lexique}"
+    );
 
     let alias = body_text(
         router
@@ -695,6 +697,144 @@ async fn the_help_letter_explains_atelier_and_opens_recipes() {
     .await;
     assert!(js.contains("aide-link"), "{js}");
     assert!(js.contains("event.key !== \"?\""), "{js}");
+}
+
+fn without_urls(html: &str) -> String {
+    let mut out = html.to_string();
+    for marker in ["href=\"", "hx-get=\""] {
+        out = strip_attr(&out, marker);
+    }
+    out
+}
+
+fn strip_attr(html: &str, marker: &str) -> String {
+    let mut out = String::new();
+    let mut rest = html;
+    while let Some(start) = rest.find(marker) {
+        out.push_str(&rest[..start]);
+        rest = &rest[start + marker.len()..];
+        if let Some(end) = rest.find('"') {
+            rest = &rest[end + 1..];
+        } else {
+            break;
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+const AIDE_SLUGS: &[&str] = &[
+    "pieces",
+    "coffre",
+    "lentille",
+    "conversation",
+    "relancer",
+    "courrier",
+    "devis",
+    "travaux",
+    "phrases",
+    "gestes",
+    "jour",
+    "releve",
+    "facture",
+    "payer",
+    "impots",
+    "cfe",
+    "clore",
+    "papiers",
+    "lexique",
+];
+
+#[tokio::test]
+async fn the_help_catalog_covers_each_situation_and_hides_an_empty_shelf() {
+    let state = unlocked_state(&test_db_path("aide-catalog")).await;
+    let router = griffe_web::router(state);
+
+    let index = body_text(
+        router
+            .clone()
+            .oneshot(Request::builder().uri("/aide").body(Body::empty()).unwrap())
+            .await
+            .unwrap(),
+    )
+    .await;
+    for label in [
+        "Se repérer",
+        "Parler aux gens",
+        "Tenir l'argent",
+        "Rendre des comptes",
+    ] {
+        assert!(index.contains(label), "{label} : {index}");
+    }
+
+    let pages: &[(&str, &str, Option<&str>)] = &[
+        ("pieces", "Les trois pièces.", Some("/jour")),
+        (
+            "coffre",
+            "Pendant 12 h, ne pas redemander la passphrase",
+            None,
+        ),
+        ("lentille", "les arrêtés", Some("/affaires")),
+        ("conversation", "fiche déjà là", Some("/affaires/nouvelle")),
+        ("relancer", "cinq secondes", Some("/jour")),
+        (
+            "courrier",
+            "Enregistrer et essayer la liaison",
+            Some("/societe/courrier"),
+        ),
+        ("devis", "Le total est la somme", Some("/affaires")),
+        ("travaux", "Il se garde tout seul", Some("/affaires")),
+        (
+            "phrases",
+            "Les conversations déjà engagées finissent leur série.",
+            Some("/affaires/phrases"),
+        ),
+        ("gestes", "Ils reviennent", Some("/affaires")),
+        ("jour", "mois de piste", Some("/jour")),
+        ("releve", "non traitée", Some("/societe/releve")),
+        ("facture", "quantité négative", Some("/affaires")),
+        ("payer", "Entre toi et la société", Some("/societe/payer")),
+        ("impots", "vous doit de la TVA", Some("/societe/impots")),
+        ("cfe", "cotisation foncière", Some("/societe/impots/cfe")),
+        ("clore", "greffe", Some("/societe/cloture")),
+        ("papiers", "Garder les originaux", Some("/societe/papiers")),
+        ("lexique", "Report à nouveau", None),
+    ];
+    assert_eq!(pages.len(), AIDE_SLUGS.len());
+
+    for (slug, needle, door) in pages {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/aide/{slug}"))
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_text(response).await;
+        assert!(
+            !body.contains("<!DOCTYPE html>") && !body.contains("<body"),
+            "{slug} htmx : {body}"
+        );
+        assert!(body.contains(needle), "{slug} attend « {needle} » : {body}");
+        assert!(body.contains("href=\"/aide\""), "{slug} : {body}");
+        let prose = without_urls(&body);
+        assert!(!prose.contains("CA3"), "{slug} : {prose}");
+        assert!(!prose.contains("3514"), "{slug} : {prose}");
+        assert!(!prose.contains("2777"), "{slug} : {prose}");
+        assert!(!body.contains("Tiime"), "{slug} : {body}");
+        assert!(!body.contains("Les formalités"), "{slug} : {body}");
+        if let Some(href) = door {
+            assert!(
+                body.contains(&format!("href=\"{href}\"")),
+                "{slug} porte {href} : {body}"
+            );
+        }
+    }
 }
 
 #[tokio::test]

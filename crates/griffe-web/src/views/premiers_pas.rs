@@ -9,7 +9,6 @@ use griffe_core::setup::{Prerequisite, SetupStep, setup_status};
 use griffe_core::store::Store;
 use maud::{Markup, html};
 
-use crate::layout::ViewId;
 use crate::views::societe::{ProfileFormErrors, ProfileFormValues, profile_form};
 
 fn glyph(p: &Prerequisite) -> Markup {
@@ -62,7 +61,7 @@ pub fn render(store: &Store) -> Result<Markup, AppError> {
                     button class="btn small" hx-get="/cloture/opening" hx-target="#panel" hx-swap="innerHTML" { "le revoir" }
                 }
                 div class="detail-note" {
-                    "Si votre dernière CA3 portait un crédit (case 27), reprenez-le dans "
+                    "Si votre dernière déclaration de TVA portait un crédit (case 27), reprenez-le dans "
                     a href="/societe/impots" hx-get="/societe/impots" hx-target="#content" hx-push-url="true" { "la lettre de TVA" }
                     " — le bilan ne le contient pas."
                 }
@@ -87,7 +86,7 @@ pub fn render(store: &Store) -> Result<Markup, AppError> {
         div class="panel bordered" {
             h3 { "3. Votre banque " (glyph(&status.bank)) }
             @if status.bank.is_done() {
-                div class="detail-note" { "Relevé importé : les dépenses se saisissent depuis ses lignes (écran dépenses)." }
+                div class="detail-note" { "Relevé importé : les dépenses se saisissent depuis ses lignes, dans le relevé." }
             } @else {
                 div class="detail-note" {
                     "Importez l'export de votre banque tel quel (CSV ou OFX) : c'est lui qui vous \
@@ -109,7 +108,7 @@ pub fn render(store: &Store) -> Result<Markup, AppError> {
                     div class="form-actions" {
                         button class="btn primary" hx-get=(format!("/cloture/checklist?period={last_ended}")) hx-target="#panel" hx-swap="innerHTML" { "ouvrir le parcours de l'exercice " (last_ended) }
                         " "
-                        a class="btn" href=(ViewId::Cloture.path()) hx-get=(ViewId::Cloture.path()) hx-target="#content" hx-push-url="true" { "écran clôture" }
+                        a class="btn" href="/societe/cloture" hx-get="/societe/cloture" hx-target="#content" hx-push-url="true" { "La société, Clore" }
                     }
                 }
                 _ => {
