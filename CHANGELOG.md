@@ -2,6 +2,12 @@
 
 Ce qui change pour qui se sert de Griffe. Une section par version publiée.
 
+## 0.3.12
+
+- Sur La société, chaque ligne se lit en corps de texte, à côté de son montant. La piste, Le relevé, Clore et les autres ouvrent leur chapitre sous les quatre colonnes.
+- Le courrier, Les papiers et Les phrases s'ouvrent dans ce chapitre. Les colonnes restent en place.
+- Le coffre garde la même forme.
+
 ## 0.3.11
 
 - Les affaires nomment les arrêtés : les conversations qu'on a arrêtées. Ce qui demande un geste compte aussi un prochain pas déjà dû, une facture à régler, un débit qui correspond, un brouillon prêt.
