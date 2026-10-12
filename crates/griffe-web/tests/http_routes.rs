@@ -376,10 +376,7 @@ async fn the_atelier_chrome_has_three_pieces_and_vendored_fonts() {
     .await;
     assert!(societe.contains("Te payer"), "{societe}");
     assert!(societe.contains("Le relevé"), "{societe}");
-    assert!(
-        societe.contains("L'identité") || societe.contains("L&#x27;identité"),
-        "{societe}"
-    );
+    assert!(societe.contains("La carte"), "{societe}");
 
     let css = body_text(
         router
@@ -1761,8 +1758,22 @@ async fn la_societe_shows_the_landscape_chapters_and_a_closed_dividend() {
     )
     .await;
     assert!(home.contains("data-view=\"societe\""), "{home}");
+    assert!(home.contains("class=\"bureau\""), "bureau : {home}");
     assert!(home.contains("class=\"landscape\""), "paysage : {home}");
+    assert!(home.contains("Tenir"), "{home}");
     assert!(home.contains("Te payer"), "{home}");
+    assert!(
+        home.contains("L'État") || home.contains("L&#x27;État"),
+        "{home}"
+    );
+    assert!(home.contains("Les réglages"), "{home}");
+    assert!(home.contains("La piste"), "{home}");
+    let piste_at = home.find("La piste").expect("La piste");
+    let piste_tag = &home[piste_at.saturating_sub(500)..piste_at];
+    assert!(
+        piste_tag.contains("aria-current=\"true\""),
+        "la piste est la ligne courante : {piste_tag}"
+    );
     assert!(home.contains("Entre toi et la société"), "{home}");
     assert!(home.contains("/societe/payer"), "{home}");
     assert!(home.contains("Les papiers"), "{home}");
@@ -1836,6 +1847,33 @@ async fn la_societe_shows_the_landscape_chapters_and_a_closed_dividend() {
     )
     .await;
     assert!(old.contains("Le relevé"), "{old}");
+}
+
+#[tokio::test]
+async fn la_societe_bureau_bar_clears_the_word() {
+    let state = unlocked_state(&test_db_path("bureau-css")).await;
+    let css = body_text(
+        griffe_web::router(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/assets/app.css")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        css.contains(".bureau-line") && css.contains("padding: 6px 8px 6px 14px"),
+        "{css}"
+    );
+    assert!(
+        css.contains(".bureau-line[aria-current=\"true\"]")
+            && css.contains("inset 3px 0 0 var(--seal)"),
+        "{css}"
+    );
+    assert!(css.contains("accent-color: var(--ink)"), "{css}");
 }
 
 #[tokio::test]

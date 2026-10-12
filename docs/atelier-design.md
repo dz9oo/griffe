@@ -37,7 +37,7 @@ La console, le journal d’audit, les slugs d’URL peuvent rester. Ils ne sont 
 |---|---|---|
 | **Le jour** | Quoi faire, et où en est le mois ? | Un dashboard |
 | **Les affaires** | Avec qui j’en suis ? | Un CRM + un module devis + un module missions |
-| **La société** | Est-ce que ça tient, et que dois-je à l’État ? | « La maison », ni un écran Paramètres |
+| **La société** | Est-ce que ça tient, et que dois-je à l’État ? | « La maison ». Les réglages sont la quatrième colonne du bureau |
 
 Chrome : `Griffe` (italique, serif) à gauche · les trois mots à droite.
 La pièce active = un soulignement encre, pas un onglet teinté.
@@ -126,7 +126,7 @@ Chiffres d’argent : sans, tabular si disponible. Pas de mono type console sur 
 
 ### Chrome et page
 
-- Le jour et Les affaires prennent toute la largeur du bureau. La société (paysage) reste à **960 px**. Les autres lettres restent à **760 px**.
+- Le jour, Les affaires et l’accueil de La société prennent toute la largeur du bureau. Les autres lettres restent à **760 px**.
 - Padding page ~40 px (20 px sous 700 px).
 - Pas de rail d’audit visible par défaut.
 - Bouton primaire : fond sceau, texte papier.
@@ -144,8 +144,9 @@ on ne remplit pas avec des graphiques. Inversement on ne cache pas un trou
 Le vide vit **autour de la feuille et entre les blocs**, pas à l’intérieur d’une
 phrase. La colonne **est** la mesure.
 
-- Le jour et Les affaires : toute la largeur du bureau. La société : **960 px**. Les autres lettres : **760 px**.
-- Chrome et pied suivent la pièce : pleine largeur sur Le jour et Les affaires, 960 sur le reste.
+- Le jour, Les affaires et l’accueil de La société : toute la largeur du bureau. Les autres lettres : **760 px**.
+- Chrome et pied suivent la pièce : pleine largeur sur Le jour, Les affaires et La société.
+- La société aligne quatre colonnes (Tenir, Te payer, L’État, Les réglages). Les réglages est l’endroit où l’on retrouve la carte, le courrier, les phrases et les papiers. La ligne choisie a une gouttière : la barre de 3 px ne touche pas le mot.
 - Corps, listes, montants, chemins, boutons : 100 % de la colonne. Pas de
   `max-width` en `ch` sous un titre de bloc.
 - Lede ≤ 52ch. Alarme (`.mast-note`) ≤ 46ch.
@@ -244,9 +245,10 @@ Résolution de référence inchangée (nom, préfixe, UUID).
 
 ## 8. La société
 
-Page d’entrée = identité courte + **paysage de trésorerie** (la ligne d’Horizon,
-encre sur papier, pointillés = si l’encaissement prévu arrive) + **conversations
-de l’année** (12 barres, le mois courant en sceau s’il est maigre) + chapitres :
+Page d’entrée = le bureau. Une phrase (banque, piste, prochaine échéance), quatre
+colonnes toujours visibles, et un panneau. La piste montre le **paysage de
+trésorerie** (encre sur papier, pointillés = si l’encaissement prévu arrive).
+Les colonnes :
 
 | Chapitre | Contenu |
 |---|---|
@@ -254,7 +256,7 @@ de l’année** (12 barres, le mois courant en sceau s’il est maigre) + chapit
 | Ce que tu dois à l’État | Dates + montants. Chaque ligne ouvre une **lettre** (chemin sur le site, montant visible, ce que l’écran demandera) avant de partir. On prépare, on ne transmet pas. |
 | Clore l’exercice | Le parcours (lot 34) en phrases, pas seize étapes techniques d’un coup. |
 | Le relevé | Chaque mouvement = une phrase, trois lectures : dépense, règlement d’une dette, *c’est moi que je me paie*. |
-| L’identité | Carte (nom, forme, siège, président, SIREN, clôture, régime de TVA), pas un formulaire de 20 champs. Le coffre se dit ici. |
+| La carte | Carte (nom, forme, siège, président, SIREN, clôture, régime de TVA). Le coffre se dit ici. |
 
 « Te payer » et le paysage demandent des **chiffres déjà dans le domaine**
 (prévisionnel, rémunération du dirigeant, affectation) présentés autrement.

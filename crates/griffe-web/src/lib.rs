@@ -212,6 +212,8 @@ pub fn router(state: AppState) -> Router {
         .route("/view/societe", get(handlers::societe))
         .route("/societe", get(handlers::societe_piece).post(societe::save))
         .route("/societe/payer", get(handlers::societe_pay))
+        .route("/societe/compte", get(handlers::societe_account))
+        .route("/societe/annee", get(handlers::societe_year))
         .route("/societe/impots", get(handlers::societe_duties))
         .route(
             "/societe/impots/catch-up",

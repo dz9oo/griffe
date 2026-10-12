@@ -137,6 +137,14 @@ pub async fn societe_pay(State(state): State<AppState>, headers: HeaderMap) -> H
     letter(&state, headers, ViewId::Societe, views::societe::pay).await
 }
 
+pub async fn societe_account(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
+    letter(&state, headers, ViewId::Societe, views::societe::account).await
+}
+
+pub async fn societe_year(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
+    letter(&state, headers, ViewId::Societe, views::societe::year).await
+}
+
 pub async fn societe_duties(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
     letter(&state, headers, ViewId::Societe, views::societe::duties).await
 }
@@ -883,11 +891,21 @@ pub async fn societe_statement(
         fragment,
     };
     let today = state.today();
+    // La lettre se rafraîchit elle-même (hx-swap outerHTML, sans cible #content).
+    // On ne l'habille du bureau que pour la page et pour un remplacement de #content.
+    let frame = fragment == views::societe::ReleveFragment::Letter
+        && (!is_htmx_request(&headers) || target == "content" || target == "#content");
     let content = state
-        .with_store(|store| {
-            views::societe::statement(store, today, &query)
-                .unwrap_or_else(|e| error_markup(ViewId::Societe, e))
-        })
+        .with_store(
+            |store| match views::societe::statement(store, today, &query) {
+                Ok(inner) if frame => {
+                    views::societe::bureau(store, today, "/societe/releve", inner)
+                        .unwrap_or_else(|e| error_markup(ViewId::Societe, e))
+                }
+                Ok(inner) => inner,
+                Err(e) => error_markup(ViewId::Societe, e),
+            },
+        )
         .await
         .unwrap_or_else(|| locked_markup(ViewId::Societe));
     respond(headers, ViewId::Societe, content).await

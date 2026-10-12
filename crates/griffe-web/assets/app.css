@@ -2456,6 +2456,103 @@ body:has(.pupitre) .foot { max-width: none; }
 }
 .pupitre ol.gestes { margin: 0; padding: 0; font-size: inherit; }
 .pupitre ol.gestes > li { margin-top: 0; }
+
+/* La société — le bureau. Quatre colonnes, un seul panneau qui défile. */
+select,
+input[type="radio"],
+input[type="checkbox"] {
+  accent-color: var(--ink);
+  color: var(--ink);
+  background-color: var(--paper);
+}
+body:has(.bureau) .chrome,
+body:has(.bureau) .foot { max-width: none; }
+.content:has(.bureau) {
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 12px 28px 8px;
+}
+.content > .bureau,
+.content.wide > .bureau {
+  max-width: none;
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+.bureau-head { margin-bottom: 8px; }
+.bureau-head .date { margin: 0 0 4px; }
+.bureau-sentence {
+  margin: 0;
+  font-size: 22px;
+  letter-spacing: -0.02em;
+  line-height: 1.35;
+}
+.bureau-sentence b { font-weight: 600; }
+.bureau-sentence b.bad { color: var(--seal); }
+.bureau-columns {
+  display: grid;
+  grid-template-columns: 1.05fr 0.95fr 1.15fr 1fr;
+  min-height: 0;
+  border-top: 1px solid var(--ink);
+}
+.bureau-col {
+  min-width: 0;
+  padding: 8px 16px 8px 0;
+  border-right: 1px solid var(--rule);
+}
+.bureau-col + .bureau-col { padding-left: 16px; }
+.bureau-col h2 {
+  margin: 0 0 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+.bureau-col.reglages {
+  background: var(--paper-2);
+  border-right: 0;
+  padding-right: 12px;
+}
+.bureau-line {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: 12px;
+  align-items: baseline;
+  width: 100%;
+  text-align: left;
+  padding: 6px 8px 6px 14px;
+  border-top: 1px solid var(--rule);
+  color: inherit;
+  text-decoration: none;
+}
+.bureau-col .bureau-line:last-child { border-bottom: 1px solid var(--rule); }
+.bureau-line[aria-current="true"] {
+  box-shadow: inset 3px 0 0 var(--seal);
+}
+.bureau-line .who { font-weight: 600; }
+.bureau-line .amt {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  color: var(--ink-2);
+}
+.bureau-line[aria-current="true"] .who { color: var(--seal); }
+.bureau-line[aria-current="true"] .amt { color: var(--ink); }
+.bureau-pane {
+  min-height: 0;
+  overflow: auto;
+  border-top: 1px solid var(--ink);
+  padding: 12px 0 10px;
+}
+.bureau-pane .letter { max-width: none; margin: 0; }
+.bureau-pane .letter h1 { font-size: 28px; }
+@media (max-width: 1100px) {
+  .bureau-columns { grid-template-columns: 1fr 1fr; }
+}
 .pupitre .geste {
   min-height: 44px;
   padding: 10px 0;
