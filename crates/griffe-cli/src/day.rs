@@ -88,6 +88,7 @@ fn verb_fr(verb: GestureVerb) -> &'static str {
         GestureVerb::KnowVat => "savoir pour la TVA",
         GestureVerb::KnowDuty => "savoir pour l'État",
         GestureVerb::ReleaseReceivable => "ne plus attendre",
+        GestureVerb::SettleOutgoing => "régler",
     }
 }
 
@@ -118,6 +119,18 @@ fn gesture_detail(g: &DayGesture) -> String {
         }
         GestureSource::ReleaseReceivable { party, amount, .. } => {
             format!("{amount} chez {party}")
+        }
+        GestureSource::Outgoing {
+            party,
+            amount,
+            matching_debit,
+        } => {
+            let why = if *matching_debit {
+                "un débit correspond"
+            } else {
+                "une dette d'ouverture"
+            };
+            format!("{party}, {amount}, {why}")
         }
     }
 }
@@ -186,6 +199,29 @@ impl HumanRender for MonthView {
             }
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use griffe_core::domain::Money;
+
+    #[test]
+    fn settling_an_outgoing_debt_is_said_regler() {
+        let gestes = vec![DayGesture {
+            verb: GestureVerb::SettleOutgoing,
+            source: GestureSource::Outgoing {
+                party: "Cabinet Leroy".into(),
+                amount: Money::from_cents(120_000),
+                matching_debit: true,
+            },
+        }];
+        let text = HumanRender::render_human(&gestes);
+        assert!(text.contains("régler"), "{text}");
+        assert!(text.contains("Cabinet Leroy"), "{text}");
+        assert!(text.contains("un débit correspond"), "{text}");
+        assert!(text.contains("1\u{202f}200,00"), "{text}");
     }
 }
 

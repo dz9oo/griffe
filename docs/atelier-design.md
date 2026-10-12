@@ -126,7 +126,7 @@ Chiffres d’argent : sans, tabular si disponible. Pas de mono type console sur 
 
 ### Chrome et page
 
-- Largeur lettre : **760 px**. La société (paysage) : **960 px**.
+- Le jour et Les affaires prennent toute la largeur du bureau. La société (paysage) reste à **960 px**. Les autres lettres restent à **760 px**.
 - Padding page ~40 px (20 px sous 700 px).
 - Pas de rail d’audit visible par défaut.
 - Bouton primaire : fond sceau, texte papier.
@@ -135,7 +135,7 @@ Chiffres d’argent : sans, tabular si disponible. Pas de mono type console sur 
 
 ### Densité
 
-Le vide est un effet. Une journée claire se *compose* (« Rien aujourd’hui. ») ;
+Le vide est un effet. Une journée claire se *compose* (« Rien n’est dû ce matin. ») ;
 on ne remplit pas avec des graphiques. Inversement on ne cache pas un trou
 (prospection, piste courte) : une phrase sceau suffit.
 
@@ -144,9 +144,8 @@ on ne remplit pas avec des graphiques. Inversement on ne cache pas un trou
 Le vide vit **autour de la feuille et entre les blocs**, pas à l’intérieur d’une
 phrase. La colonne **est** la mesure.
 
-- Colonne Jour / Gens : **760 px**. Colonne Société (paysage et chapitres) : **960 px**.
-- Chrome et pied restent à 960 — c’est le bureau, pas une deuxième feuille plus
-  large que la lettre du Jour.
+- Le jour et Les affaires : toute la largeur du bureau. La société : **960 px**. Les autres lettres : **760 px**.
+- Chrome et pied suivent la pièce : pleine largeur sur Le jour et Les affaires, 960 sur le reste.
 - Corps, listes, montants, chemins, boutons : 100 % de la colonne. Pas de
   `max-width` en `ch` sous un titre de bloc.
 - Lede ≤ 52ch. Alarme (`.mast-note`) ≤ 46ch.
@@ -160,15 +159,18 @@ phrase. La colonne **est** la mesure.
 Ordre de la page, toujours :
 
 1. **Date** (jour de la semaine réel — la maquette a corrigé mercredi → samedi 5 sept. 2026)
-2. **Mât** — faits + alarme éventuelle
-3. **Lettre** — titre en serif (« Trois gestes. ») + lede + liste numérotée
+2. **Mât** — une phrase, puis l'alarme éventuelle
+3. **Gestes** — cinq lignes au plus, la langue de la lentille
 4. **Le mois** — grille, bandes de missions, agenda
+
+Le bureau a la largeur de Les affaires. Le compte « N prospects / M clients » reste dans le livre.
 
 ### Mât
 
-Toujours au-dessus de la lettre, jamais en bas, jamais en tuiles.
+Toujours au-dessus des gestes, jamais en bas, jamais en tuiles.
 
-Trois faits, une ligne : **banque** · **piste en mois** · **à encaisser** (qui + montant).
+Une phrase : **Ce matin, trois gestes — banque · piste en mois · à encaisser** (qui + montant).
+S'il n'y a aucun geste : les trois faits, puis « Rien n'est dû ce matin. »
 Si un fait est alarmant (piste sous le seuil, à encaisser trop vieux), il passe sceau.
 
 Sous les faits, **une phrase** seulement s’il y a un trou :
@@ -192,7 +194,7 @@ File dérivée de ce qui existe déjà, fusionnée, **un verbe par ligne** :
 - relevé non lu (`unmatched_debits` + crédits / règlements)
 - prochaine obligation d’État dans l’horizon court (TVA, pas « CA3 »)
 
-Trois à cinq, pas vingt. Le reste vit dans le mois. Déplier un geste (pas un panneau
+Trois à cinq, pas vingt. Chaque ligne a quatre cellules : le verbe, le qui, le prochain pas, le montant. Le tas froid n'est pas nommé : un lien « et N autres » ouvre Les affaires. Une mission sans geste du matin reste sur sa bande. Un prestataire n'a une ligne que s'il a une dette d'ouverture ou un débit qui correspond. Le reste vit dans le mois. Déplier un geste (pas un panneau
 latéral) : les boutons de la chose (ouvrir le dossier, le brouillon, plus tard).
 
 Le `.eml` ne change pas (lot 47). Griffe n’envoie pas.
@@ -326,7 +328,7 @@ Cœur, lots 49–51 :
 
 Ouvrir `docs/mockups/atelier-app.html`. Parcours minimum avant de coder un lot :
 
-1. Le jour : mât visible sans scroller, trois gestes, septembre sous la lettre.
+1. Le jour (`docs/mockups/jour-pupitre.html`) : phrase du matin, quatre cellules, septembre sous les gestes.
 2. Clic 16 → agenda TVA ; clic la ligne → impôts en français.
 3. Les affaires → Camille → lettre `.eml` (le texte dit qu’on n’envoie pas).
 4. La société → paysage, Te payer (dividende fermé), relevé Leroy = dette.

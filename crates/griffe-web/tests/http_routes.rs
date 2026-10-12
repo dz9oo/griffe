@@ -718,9 +718,22 @@ async fn the_day_letter_shows_the_mast_gestures_and_the_month_grid() {
     .await;
     assert!(jour.contains("data-view=\"jour\""), "{jour}");
     assert!(jour.contains("class=\"mast\""), "mât visible : {jour}");
+    assert!(jour.contains("class=\"pupitre"), "{jour}");
+    assert!(
+        jour.contains("Ce matin, un geste")
+            || jour.contains("Ce matin, deux gestes")
+            || jour.contains("Ce matin, trois gestes")
+            || jour.contains("Ce matin, quatre gestes")
+            || jour.contains("Ce matin, cinq gestes"),
+        "{jour}"
+    );
     assert!(jour.contains("en banque"), "{jour}");
     assert!(jour.contains("de piste"), "{jour}");
-    assert!(jour.contains("0 prospects / 0 clients"), "{jour}");
+    assert!(
+        !jour.contains("prospects"),
+        "le compte du livre n'est plus sur le pupitre : {jour}"
+    );
+    assert!(!jour.contains("class=\"day-split\""), "{jour}");
     assert!(jour.contains("Samedi 5 septembre 2026"), "{jour}");
     assert!(jour.contains("class=\"gestes\""), "{jour}");
     assert!(
@@ -774,6 +787,235 @@ async fn the_day_letter_shows_the_mast_gestures_and_the_month_grid() {
     .await;
     assert!(fragment.contains("data-view=\"jour\""), "{fragment}");
     assert!(fragment.contains("class=\"mast\""), "{fragment}");
+    assert!(fragment.contains("class=\"pupitre"), "{fragment}");
+}
+
+#[tokio::test]
+async fn the_morning_settles_leroy_and_leaves_a_quiet_vendor_off_the_page() {
+    let db_path = test_db_path("jour-leroy");
+    let state = unlocked_state(&db_path)
+        .await
+        .with_today(time::macros::date!(2026 - 09 - 05));
+    {
+        let mut store =
+            Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+        fn applied<T: std::fmt::Debug>(outcome: Outcome<T>) -> T {
+            match outcome {
+                Outcome::Applied(value) => value,
+                other => panic!("expected Applied, got {other:?}"),
+            }
+        }
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &griffe_core::opening_balance::RecordOpeningBalance {
+                        opens_on: time::macros::date!(2025 - 10 - 01),
+                        source: Some("cabinet".into()),
+                        lines: vec![
+                            "512000:Banque:D:15000.00"
+                                .parse::<griffe_core::domain::OpeningBalanceLine>()
+                                .unwrap(),
+                            "401000:Cabinet Leroy:C:1200.00"
+                                .parse::<griffe_core::domain::OpeningBalanceLine>()
+                                .unwrap(),
+                            "101000:Capital:C:13800.00"
+                                .parse::<griffe_core::domain::OpeningBalanceLine>()
+                                .unwrap(),
+                        ],
+                        tax_losses: Money::ZERO,
+                        prior_corporate_tax: None,
+                        prior_vat_due: None,
+                    },
+                    &human_ctx(),
+                )
+                .unwrap(),
+        );
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &griffe_core::billing::ImportBankTransactions {
+                        transactions: vec![griffe_core::billing::ParsedTransaction {
+                            occurred_on: time::macros::date!(2026 - 09 - 04),
+                            amount_cents: -120_000,
+                            description: "VIR LEROY".into(),
+                            fitid: None,
+                        }],
+                    },
+                    &human_ctx(),
+                )
+                .unwrap(),
+        );
+        let mut expense = |label: &str, supplier: &str, cents: i64, on: time::Date| {
+            applied(
+                Executor::new(&mut store)
+                    .execute(
+                        &RecordExpense {
+                            label: label.into(),
+                            category: griffe_core::domain::ExpenseCategory::Fees,
+                            amount: Money::from_cents(cents),
+                            vat_rate: griffe_core::domain::VatRate::Zero,
+                            vat_deductible: Money::ZERO,
+                            incurred_on: on,
+                            receipt_hash: None,
+                            receipt_filename: None,
+                            bank_transaction_id: None,
+                            supplier: Some(supplier.into()),
+                            paid_by: griffe_core::domain::ExpensePaidBy::Company,
+                            reverse_charge: false,
+                        },
+                        &human_ctx(),
+                    )
+                    .unwrap(),
+            );
+        };
+        expense(
+            "honoraires clôture",
+            "Cabinet Leroy",
+            120_000,
+            time::macros::date!(2026 - 09 - 04),
+        );
+        expense(
+            "Abonnement",
+            "Tiime",
+            2_000,
+            time::macros::date!(2026 - 03 - 01),
+        );
+    }
+    let router = griffe_web::router(state);
+    let jour = body_text(
+        router
+            .oneshot(
+                Request::builder()
+                    .uri("/jour")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(jour.contains("Régler"), "{jour}");
+    assert!(jour.contains("Cabinet Leroy"), "{jour}");
+    assert!(jour.contains("un débit correspond"), "{jour}");
+    assert!(jour.contains("1\u{202f}200,00"), "{jour}");
+    assert!(!jour.contains("Tiime"), "{jour}");
+    assert!(
+        jour.contains("href=\"/affaires/Cabinet%20Leroy\""),
+        "{jour}"
+    );
+    let rows = jour.matches("class=\"geste\"").count();
+    assert!(rows <= 5, "{rows} lignes : {jour}");
+    assert!(jour.contains("class=\"pupitre-head\""), "{jour}");
+}
+
+/// Matin sans geste : la phrase du vide, et pas d'en-tête de colonnes.
+/// Le 10 février 2026 est à plus de trente jours de l'acompte d'IS du 15 mars,
+/// et la franchise ne pose pas de déclaration de TVA.
+#[tokio::test]
+async fn a_clear_morning_says_nothing_is_due_and_hides_the_columns() {
+    let db_path = test_db_path("jour-vide");
+    let state = unlocked_state(&db_path)
+        .await
+        .with_today(time::macros::date!(2026 - 02 - 10));
+    {
+        let mut store =
+            Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &griffe_core::company::SetCompanyProfile {
+                        name: "Nova Dev".into(),
+                        legal_form: "SASU".into(),
+                        siren: griffe_core::domain::Siren::parse("889112348").unwrap(),
+                        vat_number: None,
+                        address: griffe_core::domain::Address {
+                            street: "3 allée des Tanneurs".into(),
+                            postal_code: "44000".into(),
+                            city: "Nantes".into(),
+                            country: "FR".into(),
+                        },
+                        share_capital: Some(Money::from_cents(100_000)),
+                        rcs_city: None,
+                        iban: None,
+                        fiscal_year_end: Some(griffe_core::domain::FiscalYearEnd::CALENDAR),
+                        vat_regime: Some(griffe_core::domain::VatRegime::Franchise),
+                        director_monthly_gross: None,
+                        director_charge_ratio_bps: None,
+                        president_name: Some("Nova Martin".into()),
+                        sole_shareholder_name: Some("Nova Martin".into()),
+                        sole_shareholder_address: None,
+                        share_count: Some(100),
+                    },
+                    &human_ctx(),
+                )
+                .unwrap(),
+        );
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &griffe_core::setup::DeclareNewCompany { declared: true },
+                    &human_ctx(),
+                )
+                .unwrap(),
+        );
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &griffe_core::billing::ImportBankTransactions {
+                        transactions: vec![griffe_core::billing::ParsedTransaction {
+                            occurred_on: time::macros::date!(2026 - 02 - 01),
+                            amount_cents: 10_000,
+                            description: "apport".into(),
+                            fitid: None,
+                        }],
+                    },
+                    &human_ctx(),
+                )
+                .unwrap(),
+        );
+        let tx = griffe_core::billing::list_bank_transactions(store.connection())
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &griffe_core::billing::SettleBankTransaction {
+                        transaction_id: tx.id,
+                        account: "455000"
+                            .parse::<griffe_core::domain::SettlementAccount>()
+                            .unwrap(),
+                        label: None,
+                    },
+                    &human_ctx(),
+                )
+                .unwrap(),
+        );
+    }
+    let router = griffe_web::router(state);
+    let jour = body_text(
+        router
+            .oneshot(
+                Request::builder()
+                    .uri("/jour")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        jour.contains("Rien n'est dû ce matin.") || jour.contains("Rien n&#x27;est dû ce matin."),
+        "{jour}"
+    );
+    assert!(
+        !jour.contains("Prochain pas"),
+        "pas d'en-tête sans geste : {jour}"
+    );
 }
 
 #[tokio::test]
@@ -1299,16 +1541,24 @@ async fn le_jour_nomme_les_conversations_et_le_dossier_note_fiche_estimation_ren
     )
     .await;
     assert!(jour.contains("de piste"), "{jour}");
-    assert!(jour.contains("2 prospects / 1 client"), "{jour}");
-    assert!(jour.contains("class=\"day-split\""), "{jour}");
-    assert!(jour.contains("En conversation"), "{jour}");
+    assert!(
+        !jour.contains("prospects"),
+        "le compte du livre n'est plus sur le pupitre : {jour}"
+    );
+    assert!(!jour.contains("class=\"day-split\""), "{jour}");
     assert!(jour.contains("2 autres conversations"), "{jour}");
     assert!(
         !jour.contains("Le porc du Val") && !jour.contains("Ferme du Nord"),
         "le tas froid ne s'écrit pas dans la lettre du matin : {jour}"
     );
-    assert!(jour.contains("En mission"), "{jour}");
-    assert!(jour.contains("Mairie test"), "{jour}");
+    assert!(
+        !jour.contains("En mission") && !jour.contains("En conversation"),
+        "les chapitres ont quitté le matin : {jour}"
+    );
+    assert!(
+        jour.contains("class=\"track\"") && jour.contains("Mairie test"),
+        "la mission reste sur sa bande : {jour}"
+    );
 
     let dossier = body_text(
         router

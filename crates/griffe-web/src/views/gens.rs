@@ -2848,28 +2848,6 @@ pub fn href_for_party(party: &str) -> String {
     person_href(party)
 }
 
-fn row_link(row: &PersonRow) -> Markup {
-    let href = person_href(&row.name);
-    html! {
-        a href=(href) hx-get=(href) hx-target="#content" hx-push-url="true" {
-            div {
-                div class="nm" { (row.name) }
-                @if !row.work_kinds.is_empty() {
-                    p class="kinds" { (row.work_kinds.join(" · ")) }
-                }
-                div class="st" { (cues_fr(&row.cues)) }
-            }
-            @if let Some(fig) = &row.figure {
-                span class="amt" { (figure_fr(fig)) }
-            }
-        }
-    }
-}
-
-pub(crate) fn person_line(row: &PersonRow) -> Markup {
-    row_link(row)
-}
-
 pub fn load_card(
     store: &Store,
     subject: FollowUpSubject,

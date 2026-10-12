@@ -2200,7 +2200,9 @@ textarea.travaux-source:focus { border-color: var(--ink); }
 
 /* Les affaires — la lentille. Même papier, même encre, même sceau que le reste. */
 body:has(.lens) .chrome,
-body:has(.lens) .foot { max-width: none; }
+body:has(.lens) .foot,
+body:has(.pupitre) .chrome,
+body:has(.pupitre) .foot { max-width: none; }
 .content:has(.lens) {
   overflow: hidden;
   padding: 0;
@@ -2420,4 +2422,59 @@ body:has(.lens) .foot { max-width: none; }
   .lens-head, .lens .trow {
     grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) auto;
   }
+}
+
+/* Le jour — le pupitre. Même bureau que la lentille, la question du matin. */
+.content:has(.pupitre) { padding: 18px 28px 48px; }
+.content > .pupitre.letter.spread { max-width: none; width: 100%; }
+.pupitre-sentence {
+  margin: 0;
+  font-size: 22px;
+  letter-spacing: -0.02em;
+  line-height: 1.35;
+}
+.pupitre-sentence b { font-weight: 600; }
+.pupitre-sentence b.bad { color: var(--seal); }
+.pupitre .lede { margin: 10px 0 18px; }
+.pupitre-head, .pupitre .geste {
+  display: grid;
+  grid-template-columns: minmax(140px, 1.1fr) minmax(140px, 1.2fr) minmax(160px, 1.8fr) 140px;
+  gap: 8px 16px;
+  align-items: baseline;
+}
+.pupitre-head {
+  min-height: 32px;
+  color: var(--ink-2);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--rule);
+}
+.pupitre-head .amt, .pupitre .geste .amt {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.pupitre ol.gestes { margin: 0; padding: 0; font-size: inherit; }
+.pupitre ol.gestes > li { margin-top: 0; }
+.pupitre .geste {
+  min-height: 44px;
+  padding: 10px 0;
+}
+.pupitre .geste .verb { font-weight: 600; }
+.pupitre .geste .cue { color: var(--ink-2); }
+.pupitre .geste .amt.alarm { color: var(--seal); }
+.pupitre .geste:hover { background: var(--paper-2); }
+.pupitre .geste:hover .verb { color: var(--seal); }
+.pupitre .month { margin-top: 40px; }
+.pupitre .month h2 { font-size: clamp(26px, 3vw, 32px); }
+.pupitre .cal .d, .pupitre .cal .d.pad { min-height: 36px; padding: 4px 4px 6px; }
+@media (max-width: 960px) {
+  .pupitre-head span:nth-child(3),
+  .pupitre .geste .cue { display: none; }
+  .pupitre-head, .pupitre .geste {
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto;
+  }
+}
+@media (max-width: 700px) {
+  .content:has(.pupitre) { padding-left: 20px; padding-right: 20px; }
 }

@@ -11,7 +11,7 @@ use griffe_core::domain::{
     FiscalYearEnd, FollowUpSubject, Money, Month, SnoozePreset, format_date, format_date_fr,
     parse_date, snooze_date,
 };
-use griffe_core::people::{PeopleList, people_list};
+use griffe_core::people::people_list;
 use griffe_core::setup::setup_status;
 use griffe_core::store::Store;
 use maud::{Markup, html};
@@ -25,7 +25,7 @@ use crate::views::copy::{
     deadline_fr, duty_href, duty_occurrence_fr, event_kind_fr, gestes_title, is_vat, letter_date,
     month_fr, month_title,
 };
-use crate::views::gens::{href_for_party, person_href, person_line};
+use crate::views::gens::{href_for_party, person_href};
 
 pub fn render(store: &Store, today: Date) -> Result<Markup, AppError> {
     let conn = store.connection();
@@ -55,45 +55,18 @@ pub fn render(store: &Store, today: Date) -> Result<Markup, AppError> {
     let lede = letter_lede(gestes.len(), setup.is_done(), today, year_end);
     let note = mast_note(&mast, setup.is_done());
     let alarming = mast.is_alarming();
+    let show_lede = gestes.is_empty() || !setup.is_done() || lede.contains("clôture");
 
-    let roster = roster_label(people.open_conversations(), people.missions.len());
-    let has_people = people.open_conversations() > 0 || !people.missions.is_empty();
+    let pile = people.first_messages.len() + people.first_contacts.len();
+    let bodies = people.conversations.len();
     let courrier = griffe_core::mail::day_notes(conn, today).unwrap_or_default();
     let pause = griffe_core::mail::hourly_pause(conn, OffsetDateTime::now_utc()).unwrap_or(false);
 
     Ok(html! {
-        div class="letter spread" data-view=(ViewId::Jour.slug()) {
+        div class="pupitre letter spread" data-view=(ViewId::Jour.slug()) {
             div class="date" { (letter_date(today)) }
             div class={ "mast" @if alarming { " alarm" } } {
-                div class="mast-facts" {
-                    span {
-                        b { (mast.bank.to_string()) }
-                        " "
-                        span class="dim" { "en banque" }
-                    }
-                    span {
-                        b class={ @if runway_is_bad(&mast) { "bad" } } {
-                            (runway_label(mast.runway_months))
-                        }
-                        " "
-                        span class="dim" { "de piste" }
-                    }
-                    span {
-                        b { (roster) }
-                    }
-                    span {
-                        b class={ @if receivable_is_bad(&mast) { "bad" } } {
-                            (encaisser_label(&mast))
-                        }
-                        @if let Some(r) = mast.receivables.first() {
-                            " "
-                            span class="dim" { "chez " (r.party) }
-                        } @else {
-                            " "
-                            span class="dim" { "à encaisser" }
-                        }
-                    }
-                }
+                p class="pupitre-sentence" { (morning_sentence(gestes.len(), title, &mast)) }
                 @if let Some(text) = note {
                     p class="mast-note" id="next-step" { (text) }
                 } @else if !setup.is_done() {
@@ -110,75 +83,31 @@ pub fn render(store: &Store, today: Date) -> Result<Markup, AppError> {
                     }
                 }
             }
-            @if has_people {
-                div class="day-split" {
-                    (day_people(&people))
-                    div class="day-gestes" {
-                        (gestes_block(title, lede.as_str(), gestes.as_slice(), store, today, vat_scheme))
+            @if show_lede {
+                p class="lede" { (lede) }
+            }
+            @if !gestes.is_empty() {
+                div class="pupitre-head" {
+                    span { "Geste" }
+                    span { "Qui" }
+                    span { "Prochain pas" }
+                    span class="amt" { "Montant" }
+                }
+                ol class="gestes" {
+                    @for g in &gestes {
+                        (geste_li(g, store, today, vat_scheme))
                     }
                 }
-            } @else {
-                (gestes_block(title, lede.as_str(), gestes.as_slice(), store, today, vat_scheme))
+            }
+            @if pile > 0 {
+                a class="day-others" href="/affaires"
+                  hx-get="/affaires" hx-target="#content" hx-push-url="true" {
+                    (others_fr(bodies, pile))
+                }
             }
             (month_section(&month_view, today, vat_scheme))
         }
     })
-}
-
-fn gestes_block(
-    title: &str,
-    lede: &str,
-    gestes: &[DayGesture],
-    store: &Store,
-    today: Date,
-    vat_scheme: VatFilingScheme,
-) -> Markup {
-    html! {
-        h1 { (title) }
-        p class="lede" { (lede) }
-        @if !gestes.is_empty() {
-            ol class="gestes" {
-                @for (i, g) in gestes.iter().enumerate() {
-                    (geste_li(i + 1, g, store, today, vat_scheme))
-                }
-            }
-        }
-    }
-}
-
-fn day_people(list: &PeopleList) -> Markup {
-    let pile = list.first_messages.len() + list.first_contacts.len();
-    if list.conversations.is_empty() && list.missions.is_empty() && pile == 0 {
-        return html! {};
-    }
-    html! {
-        div class="day-who" {
-            @if !list.conversations.is_empty() || pile > 0 {
-                p class="section-label" { "En conversation" }
-                @if !list.conversations.is_empty() {
-                    ul class="people" {
-                        @for row in &list.conversations {
-                            li { (person_line(row)) }
-                        }
-                    }
-                }
-                @if pile > 0 {
-                    a class="day-others" href="/affaires"
-                      hx-get="/affaires" hx-target="#content" hx-push-url="true" {
-                        (others_fr(list.conversations.len(), pile))
-                    }
-                }
-            }
-            @if !list.missions.is_empty() {
-                p class="section-label" { "En mission" }
-                ul class="people" {
-                    @for row in &list.missions {
-                        li { (person_line(row)) }
-                    }
-                }
-            }
-        }
-    }
 }
 
 fn others_fr(bodies: usize, pile: usize) -> String {
@@ -215,27 +144,37 @@ fn runway_label(months: Option<u32>) -> String {
     }
 }
 
-/// « 2 prospects / 1 client ». Le singulier est réservé à 1 ; 0 prend le pluriel.
-fn roster_label(prospects: usize, clients: usize) -> String {
-    format!(
-        "{} / {}",
-        count_noun(prospects, "prospect", "prospects"),
-        count_noun(clients, "client", "clients")
-    )
-}
-
-fn count_noun(n: usize, one: &str, many: &str) -> String {
-    if n == 1 {
-        format!("1 {one}")
-    } else {
-        format!("{n} {many}")
+fn morning_sentence(n: usize, title: &str, mast: &Mast) -> Markup {
+    let head = in_sentence(title);
+    html! {
+        @if n > 0 {
+            "Ce matin, " (head) " — "
+        }
+        b { (mast.bank.to_string()) }
+        " en banque · "
+        b class={ @if runway_is_bad(mast) { "bad" } } { (runway_label(mast.runway_months)) }
+        " de piste · "
+        b class={ @if receivable_is_bad(mast) { "bad" } } { (encaisser_phrase(mast)) }
     }
 }
 
-fn encaisser_label(mast: &Mast) -> String {
-    mast.receivables
-        .first()
-        .map_or_else(|| "rien".into(), |r| r.amount.to_string())
+/// « Quatre gestes. » devient « quatre gestes » dans « Ce matin, … ».
+fn in_sentence(title: &str) -> String {
+    let head = title.trim_end_matches('.');
+    let mut chars = head.chars();
+    let Some(first) = chars.next() else {
+        return String::new();
+    };
+    let mut out = first.to_lowercase().collect::<String>();
+    out.push_str(chars.as_str());
+    out
+}
+
+fn encaisser_phrase(mast: &Mast) -> String {
+    mast.receivables.first().map_or_else(
+        || "rien à encaisser".into(),
+        |r| format!("{} chez {}", r.amount, r.party),
+    )
 }
 
 fn mast_note(mast: &Mast, setup_done: bool) -> Option<String> {
@@ -278,22 +217,31 @@ fn letter_lede(n: usize, setup_done: bool, today: Date, year_end: Option<Date>) 
     "Rien d'autre n'est urgent.".into()
 }
 
-fn geste_li(
-    n: usize,
-    g: &DayGesture,
-    store: &Store,
-    today: Date,
-    vat_scheme: VatFilingScheme,
-) -> Markup {
-    let (title, body) = geste_copy(g, store, today, vat_scheme);
+struct GesteCells {
+    verb: String,
+    who: String,
+    cue: String,
+    amount: String,
+    alarm: bool,
+}
+
+fn amount_cell(amount: Money) -> String {
+    if amount == Money::ZERO {
+        String::new()
+    } else {
+        amount.to_string()
+    }
+}
+
+fn geste_li(g: &DayGesture, store: &Store, today: Date, vat_scheme: VatFilingScheme) -> Markup {
+    let cells = geste_cells(g, store, today, vat_scheme);
     html! {
         li {
             button class="geste" type="button" {
-                span class="num" { (n) }
-                div {
-                    h2 { (title) }
-                    p { (body) }
-                }
+                span class="verb" { (cells.verb) }
+                span class="qui" { (cells.who) }
+                span class="cue" { (cells.cue) }
+                span class={ "amt" @if cells.alarm { " alarm" } } { (cells.amount) }
             }
             div class="unfold" {
                 div class="row-actions" { (geste_actions(g, today)) }
@@ -302,14 +250,20 @@ fn geste_li(
     }
 }
 
-fn geste_copy(
+fn geste_cells(
     g: &DayGesture,
     store: &Store,
     today: Date,
     vat_scheme: VatFilingScheme,
-) -> (String, String) {
+) -> GesteCells {
     match &g.source {
-        GestureSource::Setup { step } => ("Configurer ma société".into(), step.text().to_string()),
+        GestureSource::Setup { step } => GesteCells {
+            verb: "Configurer ma société".into(),
+            who: String::new(),
+            cue: step.text().to_string(),
+            amount: String::new(),
+            alarm: false,
+        },
         GestureSource::FollowUp {
             party,
             title,
@@ -317,45 +271,59 @@ fn geste_copy(
             block_reason,
             due_on,
             follow_kind,
+            amount,
             ..
         } => {
-            let who = party.as_str();
-            let head = match g.verb {
-                GestureVerb::Remind => format!("Relancer {who}"),
-                _ => format!("Écrire à {who}"),
+            let verb = match g.verb {
+                GestureVerb::Remind => "Relancer",
+                _ => "Écrire",
             };
-            let mut body = title.clone();
+            let mut cue = title.clone();
             if let Some(on) = due_on {
-                body.push_str(" — prévue le ");
-                body.push_str(&format_date_fr(*on));
+                cue.push_str(" — prévue le ");
+                cue.push_str(&format_date_fr(*on));
             }
             if *drafted {
-                body.push_str(". Un brouillon est prêt — il s'ouvre dans ton client mail.");
+                cue.push_str(". Un brouillon est prêt — il s'ouvre dans ton client mail.");
             } else if let Some(reason) = block_reason {
-                body.push_str(". ");
-                body.push_str(reason);
+                cue.push_str(". ");
+                cue.push_str(reason);
             } else if *follow_kind == griffe_core::domain::FollowUpKind::Invoice {
-                body.push_str(". Le montant est dans le coffre.");
+                cue.push_str(". Le montant est dans le coffre.");
             }
-            (head, body)
+            GesteCells {
+                verb: verb.into(),
+                who: party.clone(),
+                cue,
+                amount: amount_cell(*amount),
+                alarm: false,
+            }
         }
         GestureSource::BankStatement {
             unmatched,
             deposited,
         } => {
             if !deposited {
-                (
-                    "Déposer le relevé".into(),
-                    "Aucun mouvement n'est encore dans le coffre. L'export de la banque, tel quel."
-                        .into(),
-                )
+                GesteCells {
+                    verb: "Déposer le relevé".into(),
+                    who: "la banque".into(),
+                    cue: "Aucun mouvement n'est encore dans le coffre. L'export de la banque, tel quel.".into(),
+                    amount: String::new(),
+                    alarm: false,
+                }
             } else {
-                let body = if *unmatched == 1 {
+                let cue = if *unmatched == 1 {
                     "Un mouvement n'est pas encore traité.".into()
                 } else {
                     format!("{unmatched} mouvements ne sont pas encore traités.")
                 };
-                ("Ranger le relevé".into(), body)
+                GesteCells {
+                    verb: "Ranger le relevé".into(),
+                    who: "la banque".into(),
+                    cue,
+                    amount: String::new(),
+                    alarm: false,
+                }
             }
         }
         GestureSource::StateDuty {
@@ -364,7 +332,7 @@ fn geste_copy(
             amount,
             period_key,
         } => {
-            let title = if is_vat(*deadline) {
+            let verb = if is_vat(*deadline) {
                 "Savoir pour la TVA".into()
             } else {
                 format!("Savoir pour {}", deadline_fr(*deadline, vat_scheme))
@@ -378,20 +346,42 @@ fn geste_copy(
             } else {
                 String::new()
             };
-            let amount = amount
-                .filter(|m| *m != Money::ZERO)
-                .map(|m| format!("{m} · "))
-                .unwrap_or_default();
-            let body = format!(
-                "{recover}{amount}à déposer avant le {}. La lettre dit le chemin — le dépôt se fait sur le site des impôts, pas ici.",
+            let shown = amount.filter(|m| *m != Money::ZERO);
+            let inline = shown.map(|m| format!("{m} · ")).unwrap_or_default();
+            let cue = format!(
+                "{recover}{inline}à déposer avant le {}. La lettre dit le chemin — le dépôt se fait sur le site des impôts, pas ici.",
                 format_date_fr(*due_on)
             );
-            (title, body)
+            GesteCells {
+                verb,
+                who: "l'État".into(),
+                cue,
+                amount: shown.map(amount_cell).unwrap_or_default(),
+                alarm: false,
+            }
         }
-        GestureSource::ReleaseReceivable { party, amount, .. } => (
-            format!("Ne plus attendre {amount} chez {party}"),
-            "La confirmation se fait sur le dossier.".into(),
-        ),
+        GestureSource::ReleaseReceivable { party, amount, .. } => GesteCells {
+            verb: "Ne plus attendre".into(),
+            who: party.clone(),
+            cue: "La confirmation se fait sur le dossier.".into(),
+            amount: amount.to_string(),
+            alarm: true,
+        },
+        GestureSource::Outgoing {
+            party,
+            amount,
+            matching_debit,
+        } => GesteCells {
+            verb: "Régler".into(),
+            who: party.clone(),
+            cue: if *matching_debit {
+                "un débit correspond".into()
+            } else {
+                "une dette d'ouverture".into()
+            },
+            amount: amount.to_string(),
+            alarm: false,
+        },
     }
 }
 
@@ -448,7 +438,7 @@ fn geste_actions(g: &DayGesture, today: Date) -> Markup {
                 }
             }
         }
-        GestureSource::ReleaseReceivable { party, .. } => {
+        GestureSource::ReleaseReceivable { party, .. } | GestureSource::Outgoing { party, .. } => {
             let href = person_href(party);
             html! {
                 a class="seal" href=(href)

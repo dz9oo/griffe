@@ -233,7 +233,7 @@ fn receivables(conn: &Connection, today: Date) -> Result<Vec<Receivable>, AppErr
 // Gestes
 // ---------------------------------------------------------------------------------------------
 
-/// Un verbe typé. La fenêtre écrit « Écrire à » suivi du Qui.
+/// Un verbe typé. La fenêtre le pose dans la colonne Geste, le nom à côté.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GestureVerb {
@@ -244,6 +244,8 @@ pub enum GestureVerb {
     KnowVat,
     KnowDuty,
     ReleaseReceivable,
+    /// Une dette d'ouverture ou un débit qui correspond, chez un prestataire.
+    SettleOutgoing,
 }
 
 /// Source d'un geste — assez pour que chaque façade branche l'action (dossier, brouillon,
@@ -286,6 +288,12 @@ pub enum GestureSource {
         party: String,
         amount: Money,
     },
+    /// Prestataire à solder. `matching_debit` : un mouvement du relevé porte le même montant.
+    Outgoing {
+        party: String,
+        amount: Money,
+        matching_debit: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -304,7 +312,8 @@ pub fn day_gestures(conn: &Connection, today: Date) -> Result<Vec<DayGesture>, A
     let calendar = fiscal_calendar(conn, today)?;
     let duty = next_state_duty(conn, &calendar, today)?;
 
-    let cold = cold_opportunity_ids(conn, today)?;
+    let people = crate::people::people_list(conn, today)?;
+    let cold = cold_ids(&people);
     let mut gestes = Vec::new();
     if !setup.is_done() {
         gestes.push(setup_gesture(&setup));
@@ -360,6 +369,14 @@ pub fn day_gestures(conn: &Connection, today: Date) -> Result<Vec<DayGesture>, A
         gestes.insert(insert_at, bank);
         gestes.truncate(MAX_GESTURES);
     }
+    for row in &people.outgoing {
+        if gestes.len() >= MAX_GESTURES {
+            break;
+        }
+        if let Some(geste) = outgoing_gesture(row) {
+            gestes.push(geste);
+        }
+    }
     if let Some(d) = duty
         && gestes.len() < MAX_GESTURES
     {
@@ -373,12 +390,44 @@ fn cold_opportunity_ids(
     today: Date,
 ) -> Result<HashSet<OpportunityId>, AppError> {
     let list = crate::people::people_list(conn, today)?;
-    Ok(list
-        .first_messages
+    Ok(cold_ids(&list))
+}
+
+fn cold_ids(list: &crate::people::PeopleList) -> HashSet<OpportunityId> {
+    list.first_messages
         .iter()
         .chain(list.first_contacts.iter())
         .filter_map(|row| row.opportunity_id)
-        .collect())
+        .collect()
+}
+
+/// Dette d'ouverture ou débit correspondant. Un prestataire seulement « versé » n'est pas un geste.
+fn outgoing_gesture(row: &crate::people::PersonRow) -> Option<DayGesture> {
+    let matching_debit = row
+        .cues
+        .iter()
+        .any(|cue| matches!(cue, crate::people::PersonCue::MatchingDebit));
+    let opening_debt = row
+        .cues
+        .iter()
+        .any(|cue| matches!(cue, crate::people::PersonCue::OpeningDebt));
+    if !matching_debit && !opening_debt {
+        return None;
+    }
+    let Some(crate::people::PersonFigure::Money { amount }) = row.figure.as_ref() else {
+        return None;
+    };
+    if *amount == Money::ZERO {
+        return None;
+    }
+    Some(DayGesture {
+        verb: GestureVerb::SettleOutgoing,
+        source: GestureSource::Outgoing {
+            party: row.name.clone(),
+            amount: *amount,
+            matching_debit,
+        },
+    })
 }
 
 fn cold_prospect(card: &FollowUpCard, cold: &HashSet<OpportunityId>) -> bool {
@@ -949,8 +998,8 @@ mod tests {
     use super::*;
     use crate::app::{Actor, ExecutionContext, Executor, Outcome};
     use crate::billing::{
-        EmitInvoice, ImportBankTransactions, ParsedTransaction, WriteOffReceivable,
-        unmatched_debits,
+        EmitInvoice, ImportBankTransactions, ParsedTransaction, SettleBankTransaction,
+        WriteOffReceivable, unmatched_debits,
     };
     use crate::clients::{CreateClient, CreateContact};
     use crate::company::SetCompanyProfile;
@@ -1421,6 +1470,177 @@ mod tests {
         assert!(
             !gestes.iter().any(|g| g.verb == GestureVerb::Setup),
             "profil, bilan et relevé sont en place"
+        );
+    }
+
+    #[test]
+    fn an_opening_debt_is_a_morning_gesture_and_a_quiet_vendor_is_not() {
+        let mut store = test_store("leroy-geste");
+        seed_leroy_and_tiime(&mut store);
+        let gestes = day_gestures(store.connection(), today()).unwrap();
+        assert!(gestes.len() <= MAX_GESTURES, "{gestes:?}");
+        let settle = gestes
+            .iter()
+            .find(|g| g.verb == GestureVerb::SettleOutgoing)
+            .unwrap_or_else(|| panic!("Leroy est dû : {gestes:?}"));
+        match &settle.source {
+            GestureSource::Outgoing {
+                party,
+                amount,
+                matching_debit,
+            } => {
+                assert_eq!(party, "Cabinet Leroy");
+                assert_eq!(*amount, Money::from_cents(120_000));
+                assert!(*matching_debit, "{gestes:?}");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(
+            !gestes.iter().any(|g| {
+                matches!(
+                    &g.source,
+                    GestureSource::Outgoing { party, .. } if party == "Tiime"
+                )
+            }),
+            "Tiime n'a pas de dette : {gestes:?}"
+        );
+
+        let tx = crate::billing::list_bank_transactions(store.connection())
+            .unwrap()
+            .into_iter()
+            .find(|t| t.amount_cents == -120_000)
+            .unwrap_or_else(|| panic!("le débit Leroy"))
+            .id;
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &SettleBankTransaction {
+                        transaction_id: tx,
+                        account: "401000".parse().unwrap(),
+                        label: None,
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        let after = day_gestures(store.connection(), today()).unwrap();
+        assert!(
+            !after.iter().any(|g| g.verb == GestureVerb::SettleOutgoing),
+            "la dette rangée n'est plus un geste : {after:?}"
+        );
+    }
+
+    #[test]
+    fn a_full_morning_does_not_take_a_sixth_gesture_for_the_supplier() {
+        let mut store = test_store("leroy-cap");
+        seed_leroy_and_tiime(&mut store);
+        for i in 0..5 {
+            applied(
+                Executor::new(&mut store)
+                    .execute(
+                        &CreateProspect {
+                            prospect_name: format!("Chaud {i}"),
+                            address: None,
+                            representative: None,
+                            email: None,
+                            phone: None,
+                            name: format!("sujet {i}"),
+                            amount: Money::from_cents(10_000),
+                            probability: Probability::new(40).unwrap(),
+                            next_action_at: today(),
+                            source: None,
+                        },
+                        &human(),
+                    )
+                    .unwrap(),
+            );
+        }
+        let gestes = day_gestures(store.connection(), today()).unwrap();
+        assert_eq!(gestes.len(), MAX_GESTURES, "{gestes:?}");
+        assert!(
+            !gestes.iter().any(|g| g.verb == GestureVerb::SettleOutgoing),
+            "le plafond tient, Leroy reste dans le livre : {gestes:?}"
+        );
+    }
+
+    /// Ligne d'ouverture `401000:Cabinet Leroy:C:1200.00` (120 000 centimes) et un débit
+    /// du même montant. Tiime : 2 000 centimes versés, sans dette.
+    fn seed_leroy_and_tiime(store: &mut Store) {
+        applied(
+            Executor::new(store)
+                .execute(
+                    &RecordOpeningBalance {
+                        opens_on: date(2025, TimeMonth::October, 1),
+                        source: Some("cabinet".into()),
+                        lines: vec![
+                            "512000:Banque:D:15000.00"
+                                .parse::<OpeningBalanceLine>()
+                                .unwrap(),
+                            "401000:Cabinet Leroy:C:1200.00"
+                                .parse::<OpeningBalanceLine>()
+                                .unwrap(),
+                            "101000:Capital:C:13800.00"
+                                .parse::<OpeningBalanceLine>()
+                                .unwrap(),
+                        ],
+                        tax_losses: Money::ZERO,
+                        prior_corporate_tax: None,
+                        prior_vat_due: None,
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        import_txs(
+            store,
+            &[ParsedTransaction {
+                occurred_on: date(2026, TimeMonth::September, 4),
+                amount_cents: -120_000,
+                description: "VIR LEROY".into(),
+                fitid: None,
+            }],
+        );
+        applied(
+            Executor::new(store)
+                .execute(
+                    &RecordExpense {
+                        label: "honoraires clôture".into(),
+                        category: ExpenseCategory::Fees,
+                        amount: Money::from_cents(120_000),
+                        vat_rate: VatRate::Zero,
+                        vat_deductible: Money::ZERO,
+                        incurred_on: date(2026, TimeMonth::September, 4),
+                        receipt_hash: None,
+                        receipt_filename: None,
+                        bank_transaction_id: None,
+                        supplier: Some("Cabinet Leroy".into()),
+                        paid_by: crate::domain::ExpensePaidBy::Company,
+                        reverse_charge: false,
+                    },
+                    &human(),
+                )
+                .unwrap(),
+        );
+        applied(
+            Executor::new(store)
+                .execute(
+                    &RecordExpense {
+                        label: "Abonnement".into(),
+                        category: ExpenseCategory::Software,
+                        amount: Money::from_cents(2_000),
+                        vat_rate: VatRate::Zero,
+                        vat_deductible: Money::ZERO,
+                        incurred_on: date(2026, TimeMonth::March, 1),
+                        receipt_hash: None,
+                        receipt_filename: None,
+                        bank_transaction_id: None,
+                        supplier: Some("Tiime".into()),
+                        paid_by: crate::domain::ExpensePaidBy::Company,
+                        reverse_charge: false,
+                    },
+                    &human(),
+                )
+                .unwrap(),
         );
     }
 
