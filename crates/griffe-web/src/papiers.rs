@@ -29,6 +29,21 @@ fn is_htmx_request(headers: &HeaderMap) -> bool {
     headers.contains_key("hx-request")
 }
 
+/// La page et le remplacement de `#content` gardent les quatre colonnes.
+/// Le rafraîchissement de `#papiers-letter` ne renvoie que la lettre.
+fn replaces_content(headers: &HeaderMap) -> bool {
+    if !is_htmx_request(headers) {
+        return true;
+    }
+    matches!(
+        headers
+            .get("hx-target")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or(""),
+        "content" | "#content"
+    )
+}
+
 fn default_period(store: &griffe_core::store::Store, today: time::Date) -> i32 {
     let fiscal_year_end = griffe_core::company::company_profile(store.connection())
         .ok()
@@ -127,12 +142,20 @@ pub async fn chapter(
     Query(query): Query<PapiersQuery>,
 ) -> Html<String> {
     let today = state.today();
+    let frame = replaces_content(&headers);
     let content = state
         .with_store(|store| {
             let period = query.period.unwrap_or_else(|| default_period(store, today));
-            views::papiers::chapter(store, today, period, None).unwrap_or_else(|e| {
+            let inner = views::papiers::chapter(store, today, period, None).unwrap_or_else(|e| {
                 html! { div class="empty-state" { "erreur de lecture : " (e.to_string()) } }
-            })
+            });
+            if frame {
+                views::societe::bureau(store, today, "/societe/papiers", inner).unwrap_or_else(
+                    |e| html! { div class="empty-state" { "erreur de lecture : " (e.to_string()) } },
+                )
+            } else {
+                inner
+            }
         })
         .await
         .unwrap_or_else(

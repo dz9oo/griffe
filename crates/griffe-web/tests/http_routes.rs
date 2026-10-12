@@ -1921,6 +1921,10 @@ async fn la_societe_shows_the_landscape_chapters_and_a_closed_dividend() {
     assert!(home.contains("Le courrier"), "{home}");
     assert!(home.contains("/societe/courrier"), "{home}");
     assert!(
+        home.contains("/affaires/phrases?depuis=societe"),
+        "les phrases restent dans le bureau : {home}"
+    );
+    assert!(
         !home.contains("freeflow "),
         "pas de commande CLI dans la lettre : {home}"
     );
@@ -1962,6 +1966,10 @@ async fn la_societe_shows_the_landscape_chapters_and_a_closed_dividend() {
             .unwrap(),
     )
     .await;
+    assert!(
+        releve.contains("class=\"bureau\""),
+        "le relevé s'ouvre dans le bureau : {releve}"
+    );
     assert!(releve.contains("Leroy"), "{releve}");
     assert!(
         releve.contains("dette") || releve.contains("pas une charge"),
@@ -1971,6 +1979,65 @@ async fn la_societe_shows_the_landscape_chapters_and_a_closed_dividend() {
     assert!(
         !releve.to_lowercase().contains("c'est moi que je me paie"),
         "{releve}"
+    );
+
+    let papers = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/societe/papiers")
+                    .header("HX-Request", "true")
+                    .header("HX-Target", "content")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        papers.contains("class=\"bureau\"") && papers.contains("Les papiers."),
+        "les papiers restent au bureau : {papers}"
+    );
+    let slip = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/societe/papiers")
+                    .header("HX-Request", "true")
+                    .header("HX-Target", "papiers-letter")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        slip.contains("Les papiers.") && !slip.contains("class=\"bureau\""),
+        "le rafraîchissement de la lettre ne redessine pas les colonnes : {slip}"
+    );
+
+    let phrases = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/phrases?depuis=societe")
+                    .header("HX-Request", "true")
+                    .header("HX-Target", "content")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        phrases.contains("class=\"bureau\"") && phrases.contains("phrase-desk"),
+        "les phrases s'ouvrent dans le bureau : {phrases}"
     );
 
     let old = body_text(
@@ -2012,6 +2079,10 @@ async fn la_societe_bureau_bar_clears_the_word() {
         css.contains(".bureau-line[aria-current=\"true\"]")
             && css.contains("inset 3px 0 0 var(--seal)"),
         "{css}"
+    );
+    assert!(
+        css.contains(".bureau-line .who {\n  font-family: var(--sans);\n  font-size: 15px;"),
+        "les lignes du bureau ne sont pas des titres d'affiche : {css}"
     );
     assert!(css.contains("accent-color: var(--ink)"), "{css}");
 }
@@ -7602,8 +7673,15 @@ async fn the_papers_chapter_is_a_letter_not_a_dump() {
         "inventaires puis dépôt puis coda des deux lieux, pas l'inverse : {body}"
     );
 
-    let h2 = body.matches("<h2>").count();
-    assert_eq!(h2, 3, "trois chapitres serif, pas un h2 par ligne : {body}");
+    let letter = body
+        .split_once("id=\"papiers-letter\"")
+        .map(|(_, rest)| rest)
+        .unwrap_or(&body);
+    let h2 = letter.matches("<h2>").count();
+    assert_eq!(
+        h2, 3,
+        "trois chapitres serif dans la lettre, pas un h2 par ligne : {letter}"
+    );
     assert!(body.contains("class=\"mast\""), "{body}");
     assert!(
         body.contains("id=\"period\""),
@@ -11700,6 +11778,10 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
             .unwrap(),
     )
     .await;
+    assert!(
+        chapter.contains("class=\"bureau\""),
+        "le courrier reste au bureau : {chapter}"
+    );
     assert!(chapter.contains("Le courrier."), "{chapter}");
     assert!(
         chapter.contains("D'où elles partent") || chapter.contains("D&#x27;où elles partent"),

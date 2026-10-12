@@ -146,7 +146,7 @@ phrase. La colonne **est** la mesure.
 
 - Le jour, Les affaires et l’accueil de La société : toute la largeur du bureau. Les autres lettres : **760 px**.
 - Chrome et pied suivent la pièce : pleine largeur sur Le jour, Les affaires et La société.
-- La société aligne quatre colonnes (Tenir, Te payer, L’État, Les réglages). Les réglages est l’endroit où l’on retrouve la carte, le courrier, les phrases et les papiers. La ligne choisie a une gouttière : la barre de 3 px ne touche pas le mot.
+- La société aligne quatre colonnes (Tenir, Te payer, L’État, Les réglages). Les lignes sont du corps (sans, 15 px), pas des titres d’affiche. Le chapitre s’ouvre dans le panneau sous les colonnes — y compris Le courrier, Les papiers et Les phrases. Les réglages est l’endroit où l’on retrouve la carte, le courrier, les phrases et les papiers. La ligne choisie a une gouttière : la barre de 3 px ne touche pas le mot.
 - Corps, listes, montants, chemins, boutons : 100 % de la colonne. Pas de
   `max-width` en `ch` sous un titre de bloc.
 - Lede ≤ 52ch. Alarme (`.mast-note`) ≤ 46ch.

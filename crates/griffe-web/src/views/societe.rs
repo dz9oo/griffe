@@ -19,8 +19,8 @@ pub use courrier::{
     CourrierForm, page as courrier_page, preview_card, subtitle as courrier_subtitle,
 };
 pub use letter::{
-    ReleveFragment, ReleveQuery, VatCreditForm, account, bureau, closing, duties, duty,
-    duty_with_vat_form, identity, pay, piece, statement, year,
+    PHRASES_LINE, ReleveFragment, ReleveQuery, VatCreditForm, account, bureau, closing, duties,
+    duty, duty_with_vat_form, identity, pay, piece, statement, year,
 };
 
 pub const VAT_REGIME_OPTIONS: [(&str, &str); 5] = [

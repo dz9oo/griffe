@@ -61,6 +61,10 @@ fn hx_target_id(headers: &HeaderMap) -> &str {
 }
 
 fn page(headers: &HeaderMap, content: Markup) -> Html<String> {
+    page_in(headers, ViewId::Gens, content)
+}
+
+fn page_in(headers: &HeaderMap, view: ViewId, content: Markup) -> Html<String> {
     let content = if hx_target_id(headers) == "affaire" {
         gens::panel_chrome(content)
     } else {
@@ -69,8 +73,29 @@ fn page(headers: &HeaderMap, content: Markup) -> Html<String> {
     if is_htmx(headers) {
         Html(content.into_string())
     } else {
-        Html(crate::layout::page(ViewId::Gens, "déverrouillé", content).into_string())
+        Html(crate::layout::page(view, "déverrouillé", content).into_string())
     }
+}
+
+fn phrases_view(depuis: &str) -> ViewId {
+    if depuis.trim() == "societe" {
+        ViewId::Societe
+    } else {
+        ViewId::Gens
+    }
+}
+
+fn frame_phrases(
+    store: &griffe_core::store::Store,
+    today: time::Date,
+    depuis: &str,
+    inner: Markup,
+) -> Markup {
+    if depuis.trim() != "societe" {
+        return inner;
+    }
+    crate::views::societe::bureau(store, today, crate::views::societe::PHRASES_LINE, inner)
+        .unwrap_or_else(|error| html! { div class="empty-state" { (error.to_string()) } })
 }
 
 fn locked(headers: &HeaderMap) -> Html<String> {
@@ -301,7 +326,7 @@ pub async fn phrases_get(
         .with_store(|store| phrases_markup(store, &query, today, None, None, None, None))
         .await
         .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
-    page(&headers, content)
+    page_in(&headers, phrases_view(&query.depuis), content)
 }
 
 pub async fn phrases_post(
@@ -362,7 +387,7 @@ pub async fn phrases_post(
                 })
                 .await
                 .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
-            page(&headers, content).into_response()
+            page_in(&headers, phrases_view(&query.depuis), content).into_response()
         }
         Some(Ok(true)) => {
             let mut shown = query.clone();
@@ -392,7 +417,7 @@ pub async fn phrases_post(
                 })
                 .await
                 .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
-            page(&headers, content).into_response()
+            page_in(&headers, phrases_view(&query.depuis), content).into_response()
         }
     }
 }
@@ -416,20 +441,22 @@ pub async fn genre_new_get(
     headers: HeaderMap,
     Query(query): Query<NewGenreQuery>,
 ) -> Html<String> {
+    let today = state.today();
     let content = state
         .with_store(|store| {
             let (back_href, back_label) = genre_back(store, &query);
-            gens::new_genre_page(
+            let inner = gens::new_genre_page(
                 &back_href,
                 &back_label,
                 &gens::new_genre_href(&query.depuis, &query.pour, &query.source),
                 "",
                 None,
-            )
+            );
+            frame_phrases(store, today, &query.depuis, inner)
         })
         .await
         .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
-    page(&headers, content)
+    page_in(&headers, phrases_view(&query.depuis), content)
 }
 
 pub async fn genre_new_post(
@@ -461,17 +488,18 @@ pub async fn genre_new_post(
             let content = state
                 .with_store(|store| {
                     let (back_href, back_label) = genre_back(store, &query);
-                    gens::new_genre_page(
+                    let inner = gens::new_genre_page(
                         &back_href,
                         &back_label,
                         &gens::new_genre_href(&query.depuis, &query.pour, &query.source),
                         &form.name,
                         Some(&error.to_string()),
-                    )
+                    );
+                    frame_phrases(store, today, &query.depuis, inner)
                 })
                 .await
                 .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
-            page(&headers, content).into_response()
+            page_in(&headers, phrases_view(&query.depuis), content).into_response()
         }
         Some(Ok(outcome)) => {
             let Outcome::Applied(genre) = outcome else {
@@ -490,11 +518,16 @@ pub async fn genre_new_post(
                 .with_store(|store| phrases_markup(store, &shown, today, None, None, None, None))
                 .await
                 .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
-            with_push(
-                &headers,
-                &gens::phrases_href(&shown.depuis, &shown.pour, &shown.genre),
-                content,
-            )
+            let mut response =
+                page_in(&headers, phrases_view(&shown.depuis), content).into_response();
+            if let Ok(value) = HeaderValue::from_str(&gens::phrases_href(
+                &shown.depuis,
+                &shown.pour,
+                &shown.genre,
+            )) {
+                response.headers_mut().insert("HX-Push-Url", value);
+            }
+            response
         }
     }
 }
@@ -662,9 +695,10 @@ fn phrases_markup(
     fields: Option<&HashMap<String, String>>,
     navigation: Option<&HashMap<String, String>>,
 ) -> Markup {
-    gens::phrases_page(&assemble_phrases(
+    let inner = gens::phrases_page(&assemble_phrases(
         store, query, today, banner, status, fields, navigation,
-    ))
+    ));
+    frame_phrases(store, today, &query.depuis, inner)
 }
 
 fn phrases_sheet(

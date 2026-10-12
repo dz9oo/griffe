@@ -25,6 +25,10 @@ use crate::layout::ViewId;
 use crate::views::copy::{duty_occurrence_fr, letter_date, month_fr, year_end_fr};
 use crate::views::form;
 
+/// Les phrases ouvertes depuis le bureau. Le paramètre garde les colonnes
+/// pendant qu'on change de genre.
+pub const PHRASES_LINE: &str = "/affaires/phrases?depuis=societe";
+
 fn back() -> Markup {
     html! {
         a class="back" href="/societe"
@@ -169,7 +173,7 @@ fn bureau_markup(
                     h2 { "Les réglages" }
                     (bureau_line("/societe/identite", "La carte", &carte, active))
                     (bureau_line("/societe/courrier", "Le courrier", courrier_sub, active))
-                    (bureau_line("/affaires/phrases", "Les phrases", "la série", active))
+                    (bureau_line(PHRASES_LINE, "Les phrases", "la série", active))
                     (bureau_line("/societe/papiers", "Les papiers", papers_sub, active))
                 }
             }
@@ -1699,7 +1703,7 @@ pub fn identity(store: &Store, today: Date) -> Result<Markup, AppError> {
     let card = society_identity(store.connection())?;
     let genre = griffe_core::follow_up::latest_prospect_genre(store.connection())?;
     let phrases = crate::views::gens::phrases_href(
-        "identite",
+        "societe",
         "",
         genre.as_ref().map(|genre| genre.id.as_str()).unwrap_or(""),
     );

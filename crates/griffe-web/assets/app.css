@@ -2481,7 +2481,9 @@ body:has(.bureau) .foot { max-width: none; }
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  /* La piste de colonnes est plafonnée : le panneau garde le reste,
+     même si une ligne déborde. */
+  grid-template-rows: auto fit-content(15rem) minmax(0, 1fr);
 }
 .bureau-head { margin-bottom: 8px; }
 .bureau-head .date { margin: 0 0 4px; }
@@ -2497,6 +2499,7 @@ body:has(.bureau) .foot { max-width: none; }
   display: grid;
   grid-template-columns: 1.05fr 0.95fr 1.15fr 1fr;
   min-height: 0;
+  overflow: auto;
   border-top: 1px solid var(--ink);
 }
 .bureau-col {
@@ -2520,7 +2523,7 @@ body:has(.bureau) .foot { max-width: none; }
 }
 .bureau-line {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
   column-gap: 12px;
   align-items: baseline;
   width: 100%;
@@ -2534,22 +2537,53 @@ body:has(.bureau) .foot { max-width: none; }
 .bureau-line[aria-current="true"] {
   box-shadow: inset 3px 0 0 var(--seal);
 }
-.bureau-line .who { font-weight: 600; }
+/* .who est le titre d'affiche (36–58 px). Sur le bureau c'est une ligne de menu. */
+.bureau-line .who {
+  font-family: var(--sans);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1.3;
+  margin: 0;
+  min-width: 0;
+}
 .bureau-line .amt {
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.35;
   font-variant-numeric: tabular-nums;
   text-align: right;
   color: var(--ink-2);
+  overflow-wrap: anywhere;
 }
+a.bureau-line:hover .who { color: var(--seal); }
 .bureau-line[aria-current="true"] .who { color: var(--seal); }
 .bureau-line[aria-current="true"] .amt { color: var(--ink); }
 .bureau-pane {
   min-height: 0;
   overflow: auto;
   border-top: 1px solid var(--ink);
-  padding: 12px 0 10px;
+  padding: 16px 0 24px;
 }
-.bureau-pane .letter { max-width: none; margin: 0; }
-.bureau-pane .letter h1 { font-size: 28px; }
+.bureau-pane .letter,
+.bureau-pane .phrase-desk,
+.bureau-pane .courrier-desk { max-width: none; margin: 0; width: 100%; }
+.bureau-pane .back { display: none; }
+.bureau-pane h1 {
+  font-family: var(--sans);
+  font-weight: 600;
+  font-size: 22px;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  margin: 0 0 10px;
+}
+.bureau-pane .lede {
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.45;
+  max-width: 52ch;
+  margin-bottom: 16px;
+}
 @media (max-width: 1100px) {
   .bureau-columns { grid-template-columns: 1fr 1fr; }
 }
