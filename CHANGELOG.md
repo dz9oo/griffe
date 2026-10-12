@@ -2,14 +2,25 @@
 
 Ce qui change pour qui se sert de Griffe. Une section par version publiée.
 
+## 0.3.11
+
+- Les affaires nomment les arrêtés : les conversations qu'on a arrêtées. Ce qui demande un geste compte aussi un prochain pas déjà dû, une facture à régler, un débit qui correspond, un brouillon prêt.
+- Les types se portent en pastilles. On leur choisit une teinte, et si on veut une note sur ce qu'on y range. Sur la fiche, seuls les types qu'elle porte sont là. Le « + » ouvre ceux du coffre. La liste en montre deux, puis le reste.
+- La fiche sépare le standard et qui répond. Courriel et téléphone du haut sont ceux de l'accueil. Sous Qui répond : le prénom, le nom, Monsieur ou Madame, et leurs coordonnées. Quand les deux adresses sont là, la lettre se choisit : Le standard, ou Qui répond.
+- Les phrases suivent le nom et le genre. Une formule écrite des deux côtés n'en garde qu'un quand le genre est connu. Sans genre, les deux restent visibles.
+- Le jour ouvre sur une phrase : les gestes de ce matin, l'argent en banque, les mois de piste, ce qu'il reste à encaisser. Chaque geste se lit en colonnes : Geste, Qui, Prochain pas, Montant.
+- La société s'ouvre sur quatre colonnes : Tenir, Te payer, L'État, Les réglages. La phrase du haut dit la banque, la piste, et la prochaine échéance. La ligne choisie ouvre son détail en dessous.
+- Le nom affiché reste celui de l'expéditeur. Il n'ouvre plus la lettre.
+- L'aide se lit en lettres. Se repérer, Parler aux gens, Tenir l'argent, Rendre des comptes. Chaque situation a la sienne, et la palette les retrouve. Premiers pas reste la porte d'entrée. Dans le lexique, le produit s'appelle Griffe.
+- Ouvrir un coffre déjà créé avance son schéma. La version précédente ne peut plus l'ouvrir.
+
 ## 0.3.10
 
-- Les affaires s'ouvrent sur ce qui demande un geste : un prochain pas pour aujourd'hui, une facture à régler, un débit qui correspond, un brouillon prêt. On peut montrer le livre, le tas, les sorties, les arrêtés, ou tout. Ouvrir ces mots en dit le sens. Le livre réunit les conversations en cours et les missions. Le tas réunit les premiers messages et les premiers contacts. Les sorties nomment ceux qu'une dépense porte. Les arrêtés sont les conversations qu'on a arrêtées.
+- Les affaires s'ouvrent sur ce qui demande un geste. On peut montrer le livre, le tas, les sorties, ou tout. Ouvrir ces mots en dit le sens. Le livre réunit les conversations en cours et les missions. Le tas compte les premiers messages et les premiers contacts, sans les étaler. Les sorties nomment ceux qu'une dépense porte.
 - Un nom ouvre le dossier à côté de la liste. Pleine largeur le pose sur toute la pièce. Fermer le retire, Échap aussi.
 - Chercher un nom ne garde que la vue affichée.
 - Sur le dossier, Les travaux se lisent en rendu. Écrire ouvre le markdown, qui se garde seul. Relire revient au rendu. Plusieurs allers et retours laissent la page répondre : on peut revenir en arrière et changer de pièce.
-- Les types se portent en pastilles. On leur choisit une teinte, et si on veut une note sur ce qu'on y range. Sur la fiche, seuls les types qu'elle porte sont là. Le « + » ouvre ceux du coffre. La liste en montre deux, puis le reste.
-- Une lettre part en page, et le texte seul reste pour les boîtes qui ne lisent pas la page. Le nom affiché reste celui de l'expéditeur. Il n'ouvre plus le message. Une adresse suivie de ?utm_… reste cliquable en entier. La personne lit l'adresse sans cette partie.
+- Une lettre part en page, et le texte seul reste pour les boîtes qui ne lisent pas la page. Une adresse suivie de ?utm_… reste cliquable en entier. La personne lit l'adresse sans cette partie.
 - Dans Les affaires, Écrire et Relire se succèdent. Relire montre la lettre telle qu'elle part. La zone d'écriture garde le texte.
 - Le courrier montre la lettre, et la formule à côté. D'où elles partent tient sur une ligne une fois le serveur connu. L'essai est cette lettre. L'envoi du jour reste à part.
 - La formule ferme la lettre à la relecture et à l'envoi. Elle n'est pas recopiée dans la zone d'écriture. Un mail, un numéro ou une adresse, seuls sur leur ligne, restent cliquables, dans l'encre de la lettre, sans soulignement. Une lettre déjà classée garde son texte.
