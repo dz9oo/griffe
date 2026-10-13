@@ -433,7 +433,14 @@ fn run_types(
             Ok(format_value(&kinds, json))
         }
         TypesCommand::Create { name } => {
-            let outcome = Executor::new(store).execute(&CreateWorkKind { name }, ctx)?;
+            let outcome = Executor::new(store).execute(
+                &CreateWorkKind {
+                    name,
+                    note: String::new(),
+                    tint: String::new(),
+                },
+                ctx,
+            )?;
             Ok(format_outcome(&outcome, json))
         }
         TypesCommand::Rename { id, name } => {

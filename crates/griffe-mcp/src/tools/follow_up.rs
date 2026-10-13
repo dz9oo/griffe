@@ -83,7 +83,7 @@ pub(crate) struct RewritePhraseArgs {
     key: String,
     /// Nom du moment, tel qu'on le lit.
     label: String,
-    /// Sujet. `<prénom>`, ou le jeton `{{prenom}}`.
+    /// Sujet. `<prénom>`, `<nom>`, `<genre>`, ou le jeton `{{prenom}}`.
     subject: String,
     /// Corps. Mêmes balises que le sujet.
     body: String,
@@ -254,8 +254,9 @@ impl FreeflowServer {
         }
     }
 
-    /// Les phrases de prospection, dans l'ordre. Le coffre garde `{{prenom}}`, `{{sujet}}`,
-    /// `{{montant}}`, `{{moi}}`, `{{societe}}`, `{{signature}}`.
+    /// Les phrases de prospection, dans l'ordre. Le coffre garde `{{prenom}}`,
+    /// `{{family_name}}`, `{{civility}}`, `{{sujet}}`, `{{montant}}`, `{{moi}}`,
+    /// `{{societe}}`, `{{signature}}`. `<Monsieur le Maire/Madame la Maire>` suit le genre.
     #[tool(
         name = "follow_up.phrases",
         annotations(read_only_hint = true, idempotent_hint = true)
@@ -636,6 +637,7 @@ impl FreeflowServer {
             today,
             subject_line: args.subject_line,
             body: args.body,
+            recipient: None,
         };
         match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),

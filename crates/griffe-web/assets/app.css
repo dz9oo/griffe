@@ -1170,12 +1170,186 @@ tr.row-clickable:hover td { background: var(--paper-2); }
   text-decoration: none;
 }
 .letter-actions .aside:hover { color: var(--ink); }
-.kind-line { padding: 12px 0; border-top: 1px solid var(--rule); }
-.kind-word {
+/* Pastilles de type. Les hex sont ceux de WorkKindTint::wash. */
+.wash-encre { background: #e4ddd0; border-color: #cfc6b6; }
+.wash-sceau { background: #f0d8cf; border-color: #e4b8a8; }
+.wash-sable { background: #f3e2c4; border-color: #e2c99a; }
+.wash-olive { background: #e3e6d4; border-color: #c5cbae; }
+.wash-ardoise { background: #dde3e6; border-color: #b7c4cb; }
+.wash-prune { background: #e8dce4; border-color: #d0b8c6; }
+.wash-ocre { background: #f0e0c4; border-color: #e0c896; }
+.wash-mousse { background: #dce8dc; border-color: #b7d0b7; }
+.pastille {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+  color: var(--ink);
+  text-decoration: none;
+}
+.pastille.on-paper { color: var(--paper); }
+.pastille.ghost {
+  background: transparent;
+  color: var(--ink-2);
+  border-color: var(--rule);
+  font-weight: 500;
+}
+.pastille.ghost:hover { color: var(--ink); border-color: var(--ink); }
+.pastille-note {
+  display: none;
+  position: absolute;
+  left: 0;
+  top: calc(100% + 6px);
+  z-index: 5;
+  width: max-content;
+  max-width: 240px;
+  padding: 6px 10px;
+  background: var(--ink);
+  color: var(--paper);
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0;
+  line-height: 1.35;
+}
+.pastille:hover .pastille-note,
+.pastille:focus-visible .pastille-note { display: block; }
+.kind-block { margin: 0 0 18px; }
+.kind-label {
+  margin: 0 0 8px;
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+.kind-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.kind-add { position: relative; }
+.kind-add summary { list-style: none; cursor: pointer; }
+.kind-add summary::-webkit-details-marker { display: none; }
+.kind-add summary::marker { content: none; }
+.kind-picker {
+  position: absolute;
+  z-index: 7;
+  top: calc(100% + 6px);
+  left: 0;
+  width: max-content;
+  max-width: min(320px, 70vw);
+  padding: 10px;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(28, 24, 20, 0.08);
+}
+.kind-picker form { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; }
+.kind-picker label { position: relative; cursor: pointer; }
+.kind-picker input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.kind-picker label:not(:has(input:checked)) {
+  background: transparent;
+  color: var(--ink-2);
+}
+.kind-picker label:has(input:focus-visible) { box-shadow: 0 0 0 2px var(--paper), 0 0 0 3px var(--ink); }
+.kind-manage {
+  flex-basis: 100%;
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--ink-2);
+  text-decoration: none;
+}
+.kind-manage:hover { color: var(--ink); }
+.kind-list { list-style: none; margin: 8px 0 0; padding: 0; }
+.kind-list li {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 0;
+  border-top: 1px solid var(--rule);
+}
+.kind-list li.editing { display: block; }
+.kind-open {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex: 1;
+  min-width: 0;
+  text-decoration: none;
+  color: inherit;
+}
+.kind-aside {
+  color: var(--ink-2);
+  font-size: 14px;
+  font-weight: 400;
+}
+.kind-editor { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: 4px 0 8px; }
+.kind-editor input[type="text"] {
+  width: min(28rem, 100%);
+  padding: 6px 0;
+  border: 0;
+  border-bottom: 1px solid var(--ink);
+  background: transparent;
+  color: var(--ink);
   font-family: var(--sans);
   font-size: 16px;
-  color: var(--ink);
-  margin: 0 0 6px;
+  outline: none;
+}
+.kind-editor label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: min(28rem, 100%);
+  color: var(--ink-2);
+  font-size: 13px;
+}
+.kind-editor .row-actions { margin: 4px 0 0; }
+.swatches { display: flex; flex-wrap: wrap; gap: 8px; }
+.swatch {
+  position: relative;
+  width: 22px;
+  height: 22px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.swatch input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.swatch:has(input:checked),
+.swatch:has(input:focus-visible) {
+  box-shadow: 0 0 0 2px var(--paper), 0 0 0 4px var(--ink);
+}
+.tint-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 8px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  flex: none;
 }
 .back {
   display: inline-block;
@@ -1497,6 +1671,28 @@ tr.row-clickable:hover td { background: var(--paper-2); }
   border: 0;
   margin: 0 0 18px;
   padding: 0;
+}
+fieldset.respondent {
+  border: 0;
+  margin: 0 0 8px;
+  padding: 0;
+}
+fieldset.respondent > legend {
+  display: block;
+  width: 100%;
+  padding: 0;
+  margin: 0 0 12px;
+  font-family: var(--sans);
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+.recipient-mail {
+  margin-left: 8px;
+  font-size: 13px;
+  letter-spacing: 0;
+  text-transform: none;
 }
 .word-choice legend {
   display: block;
@@ -2004,7 +2200,9 @@ textarea.travaux-source:focus { border-color: var(--ink); }
 
 /* Les affaires — la lentille. Même papier, même encre, même sceau que le reste. */
 body:has(.lens) .chrome,
-body:has(.lens) .foot { max-width: none; }
+body:has(.lens) .foot,
+body:has(.pupitre) .chrome,
+body:has(.pupitre) .foot { max-width: none; }
 .content:has(.lens) {
   overflow: hidden;
   padding: 0;
@@ -2080,6 +2278,7 @@ body:has(.lens) .foot { max-width: none; }
   color: inherit;
   padding: 8px 12px;
 }
+.lens .menu a.type-link { display: flex; align-items: center; }
 .lens .menu .vue-name { display: block; font-weight: 600; }
 .lens .menu .vue-hint {
   display: block;
@@ -2112,15 +2311,6 @@ body:has(.lens) .foot { max-width: none; }
 .lens-new:hover { filter: brightness(1.08); }
 .lens-quiet { border: 1px solid var(--ink); color: var(--ink); background: transparent; }
 .lens-quiet:hover { background: var(--ink); color: var(--paper); }
-.lens-notes {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 18px;
-  padding: 0 28px 8px;
-  color: var(--muted);
-  font-size: 14px;
-}
-.lens-notes a { color: inherit; }
 .lens-work { flex: 1; min-height: 0; display: flex; position: relative; }
 .lens-table { flex: 1; min-width: 0; overflow: auto; }
 .lens-head, .lens .trow {
@@ -2156,6 +2346,9 @@ body:has(.lens) .foot { max-width: none; }
 .lens .who-cell { display: flex; flex-direction: column; min-width: 0; }
 .lens .who-cell strong { font-weight: 600; }
 .lens .who-cell small, .lens .kinds { color: var(--muted); font-size: 12px; margin: 0; }
+.lens .kinds { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 4px; }
+.lens .kinds .pastille { padding: 1px 8px; font-size: 11px; }
+.lens .kinds .kind-more { color: var(--muted); font-size: 11px; }
 .lens .alarm { color: var(--alarm); }
 .lens .amt { font-variant-numeric: tabular-nums; text-align: right; }
 .lens-panel {
@@ -2229,4 +2422,190 @@ body:has(.lens) .foot { max-width: none; }
   .lens-head, .lens .trow {
     grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) auto;
   }
+}
+
+/* Le jour — le pupitre. Même bureau que la lentille, la question du matin. */
+.content:has(.pupitre) { padding: 18px 28px 48px; }
+.content > .pupitre.letter.spread { max-width: none; width: 100%; }
+.pupitre-sentence {
+  margin: 0;
+  font-size: 22px;
+  letter-spacing: -0.02em;
+  line-height: 1.35;
+}
+.pupitre-sentence b { font-weight: 600; }
+.pupitre-sentence b.bad { color: var(--seal); }
+.pupitre .lede { margin: 10px 0 18px; }
+.pupitre-head, .pupitre .geste {
+  display: grid;
+  grid-template-columns: minmax(140px, 1.1fr) minmax(140px, 1.2fr) minmax(160px, 1.8fr) 140px;
+  gap: 8px 16px;
+  align-items: baseline;
+}
+.pupitre-head {
+  min-height: 32px;
+  color: var(--ink-2);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--rule);
+}
+.pupitre-head .amt, .pupitre .geste .amt {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.pupitre ol.gestes { margin: 0; padding: 0; font-size: inherit; }
+.pupitre ol.gestes > li { margin-top: 0; }
+
+/* La société — le bureau. Quatre colonnes, un seul panneau qui défile. */
+select,
+input[type="radio"],
+input[type="checkbox"] {
+  accent-color: var(--ink);
+  color: var(--ink);
+  background-color: var(--paper);
+}
+body:has(.bureau) .chrome,
+body:has(.bureau) .foot { max-width: none; }
+.content:has(.bureau) {
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 12px 28px 8px;
+}
+.content > .bureau,
+.content.wide > .bureau {
+  max-width: none;
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  /* La piste de colonnes est plafonnée : le panneau garde le reste,
+     même si une ligne déborde. */
+  grid-template-rows: auto fit-content(15rem) minmax(0, 1fr);
+}
+.bureau-head { margin-bottom: 8px; }
+.bureau-head .date { margin: 0 0 4px; }
+.bureau-sentence {
+  margin: 0;
+  font-size: 22px;
+  letter-spacing: -0.02em;
+  line-height: 1.35;
+}
+.bureau-sentence b { font-weight: 600; }
+.bureau-sentence b.bad { color: var(--seal); }
+.bureau-columns {
+  display: grid;
+  grid-template-columns: 1.05fr 0.95fr 1.15fr 1fr;
+  min-height: 0;
+  overflow: auto;
+  border-top: 1px solid var(--ink);
+}
+.bureau-col {
+  min-width: 0;
+  padding: 8px 16px 8px 0;
+  border-right: 1px solid var(--rule);
+}
+.bureau-col + .bureau-col { padding-left: 16px; }
+.bureau-col h2 {
+  margin: 0 0 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+.bureau-col.reglages {
+  background: var(--paper-2);
+  border-right: 0;
+  padding-right: 12px;
+}
+.bureau-line {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  column-gap: 12px;
+  align-items: baseline;
+  width: 100%;
+  text-align: left;
+  padding: 6px 8px 6px 14px;
+  border-top: 1px solid var(--rule);
+  color: inherit;
+  text-decoration: none;
+}
+.bureau-col .bureau-line:last-child { border-bottom: 1px solid var(--rule); }
+.bureau-line[aria-current="true"] {
+  box-shadow: inset 3px 0 0 var(--seal);
+}
+/* .who est le titre d'affiche (36–58 px). Sur le bureau c'est une ligne de menu. */
+.bureau-line .who {
+  font-family: var(--sans);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1.3;
+  margin: 0;
+  min-width: 0;
+}
+.bureau-line .amt {
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.35;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+a.bureau-line:hover .who { color: var(--seal); }
+.bureau-line[aria-current="true"] .who { color: var(--seal); }
+.bureau-line[aria-current="true"] .amt { color: var(--ink); }
+.bureau-pane {
+  min-height: 0;
+  overflow: auto;
+  border-top: 1px solid var(--ink);
+  padding: 16px 0 24px;
+}
+.bureau-pane .letter,
+.bureau-pane .phrase-desk,
+.bureau-pane .courrier-desk { max-width: none; margin: 0; width: 100%; }
+.bureau-pane .back { display: none; }
+.bureau-pane h1 {
+  font-family: var(--sans);
+  font-weight: 600;
+  font-size: 22px;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  margin: 0 0 10px;
+}
+.bureau-pane .lede {
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.45;
+  max-width: 52ch;
+  margin-bottom: 16px;
+}
+@media (max-width: 1100px) {
+  .bureau-columns { grid-template-columns: 1fr 1fr; }
+}
+.pupitre .geste {
+  min-height: 44px;
+  padding: 10px 0;
+}
+.pupitre .geste .verb { font-weight: 600; }
+.pupitre .geste .cue { color: var(--ink-2); }
+.pupitre .geste .amt.alarm { color: var(--seal); }
+.pupitre .geste:hover { background: var(--paper-2); }
+.pupitre .geste:hover .verb { color: var(--seal); }
+.pupitre .month { margin-top: 40px; }
+.pupitre .month h2 { font-size: clamp(26px, 3vw, 32px); }
+.pupitre .cal .d, .pupitre .cal .d.pad { min-height: 36px; padding: 4px 4px 6px; }
+@media (max-width: 960px) {
+  .pupitre-head span:nth-child(3),
+  .pupitre .geste .cue { display: none; }
+  .pupitre-head, .pupitre .geste {
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto;
+  }
+}
+@media (max-width: 700px) {
+  .content:has(.pupitre) { padding-left: 20px; padding-right: 20px; }
 }

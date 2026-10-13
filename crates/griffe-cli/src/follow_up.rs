@@ -213,8 +213,9 @@ pub enum FollowUpCommand {
         label: String,
         #[arg(long)]
         subject: String,
-        /// Corps. Les balises `<prénom>`, `<sujet>`, `<montant>`, `<moi>`, `<société>`
-        /// et `<signature>` sont les jetons. Un mot ordinaire reste tel quel.
+        /// Corps. Les balises `<prénom>`, `<nom>`, `<genre>`, `<sujet>`, `<montant>`,
+        /// `<moi>`, `<société>` et `<signature>` sont les jetons.
+        /// `<Monsieur le Maire/Madame la Maire>` suit le genre. Un mot ordinaire reste tel quel.
         #[arg(long)]
         body: Option<String>,
         #[arg(long, conflicts_with = "body")]
@@ -735,6 +736,7 @@ pub fn run(
                     today,
                     subject_line: subject,
                     body,
+                    recipient: None,
                 },
                 ctx,
             )?;

@@ -42,6 +42,15 @@ telle qu’elle part. La zone d’écriture reprend le texte sans le perdre.
 Une lettre déjà classée s’ouvre sur ce qui a été gardé : la formule
 d’aujourd’hui ne s’y ajoute pas.
 
+La fiche d’un dossier porte Quoi, ce dont il s’agit. Sous Qui répond :
+le prénom, le nom, et Monsieur ou Madame. Courriel et Téléphone restent
+ceux du standard, ou de l’accueil. En écrivant, on choisit le standard,
+ou le courriel de la personne lorsqu’il est là.
+
+Les phrases prennent aussi `<nom>`, `<genre>`, et une formule
+`<Monsieur le Maire/Madame la Maire>`. Sans genre, les deux côtés
+restent visibles.
+
 Le courrier s’ouvre sur la lettre d’essai, pour un prénom fictif. La
 formule est à côté, et la carte suit la frappe. Enregistrer l’écrit dans
 le coffre. D’où elles partent tient sur une ligne une fois le serveur
@@ -61,7 +70,8 @@ ouvert, les lettres dont la date prévue est aujourd’hui. Une lettre de la
 veille reste à envoyer à la main.
 
 La formule, écrite dans ce chapitre, ferme chaque lettre à la relecture
-et à l’envoi. Elle n’est pas recopiée dans la zone d’écriture. Vide, la
+et à l’envoi. Elle n’est pas recopiée dans la zone d’écriture. À l’écran,
+ses lignes se tiennent un peu plus serrées, et restent lisibles. Vide, la
 lettre se termine par Bien à vous, le nom, la société. Un mail, un
 numéro ou une adresse, seuls sur leur ligne, restent cliquables, dans
 l’encre de la lettre, sans soulignement. L’adresse se lit sans ?utm_….

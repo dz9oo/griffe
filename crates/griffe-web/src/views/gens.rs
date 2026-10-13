@@ -5,8 +5,8 @@ use std::collections::HashSet;
 
 use griffe_core::app::AppError;
 use griffe_core::domain::{
-    ClientId, ExpensePaidBy, FollowUpSubject, InteractionKind, display_phone, format_date,
-    format_date_fr,
+    ClientId, ExpensePaidBy, FicheChannels, FollowUpSubject, InteractionKind, LetterRecipient,
+    display_phone, fiche_channels, format_date, format_date_fr, letter_address,
 };
 use griffe_core::dossier_work::DossierWork;
 use griffe_core::follow_up::{
@@ -21,7 +21,7 @@ use griffe_core::people::{
     PersonCue, PersonDossier, PersonFigure, PersonKey, PersonRow, people_list, person,
 };
 use griffe_core::store::Store;
-use griffe_core::work_kinds::{WorkKind, dossiers_of_work_kind, work_kinds};
+use griffe_core::work_kinds::{WorkKind, WorkKindTint, dossiers_of_work_kind, work_kinds};
 use maud::{Markup, PreEscaped, html};
 use time::Date;
 
@@ -133,6 +133,7 @@ enum Vue {
     Livre,
     Tas,
     Sorties,
+    Arretes,
     Tout,
 }
 
@@ -141,6 +142,7 @@ fn parse_vue(raw: &str) -> Vue {
         "livre" => Vue::Livre,
         "tas" => Vue::Tas,
         "sorties" => Vue::Sorties,
+        "arretes" => Vue::Arretes,
         "tout" => Vue::Tout,
         _ => Vue::Geste,
     }
@@ -152,6 +154,7 @@ fn vue_key(vue: Vue) -> &'static str {
         Vue::Livre => "livre",
         Vue::Tas => "tas",
         Vue::Sorties => "sorties",
+        Vue::Arretes => "arretes",
         Vue::Tout => "tout",
     }
 }
@@ -162,6 +165,7 @@ fn vue_label(vue: Vue) -> &'static str {
         Vue::Livre => "le livre",
         Vue::Tas => "le tas",
         Vue::Sorties => "les sorties",
+        Vue::Arretes => "les arrêtés",
         Vue::Tout => "tout",
     }
 }
@@ -173,11 +177,19 @@ fn vue_hint(vue: Vue) -> &'static str {
         Vue::Livre => "Les conversations en cours, et les missions.",
         Vue::Tas => "Les premiers messages et les premiers contacts.",
         Vue::Sorties => "Un nom, dès qu'une dépense le porte.",
-        Vue::Tout => "Le livre, le tas, les sorties, et les arrêtées.",
+        Vue::Arretes => "Les conversations qu'on a arrêtées.",
+        Vue::Tout => "Le livre, le tas, les sorties, et les arrêtés.",
     }
 }
 
-const VUES: [Vue; 5] = [Vue::Geste, Vue::Livre, Vue::Tas, Vue::Sorties, Vue::Tout];
+const VUES: [Vue; 6] = [
+    Vue::Geste,
+    Vue::Livre,
+    Vue::Tas,
+    Vue::Sorties,
+    Vue::Arretes,
+    Vue::Tout,
+];
 
 fn lens_markup(
     list: &PeopleList,
@@ -210,8 +222,14 @@ fn lens_markup(
     let rows = match vue {
         Vue::Geste => {
             let mut rows = Vec::new();
-            for row in conversations.into_iter().chain(missions).chain(outgoing) {
-                if asks_today(row) {
+            for row in conversations
+                .into_iter()
+                .chain(messages)
+                .chain(contacts)
+                .chain(missions)
+                .chain(outgoing)
+            {
+                if asks_today(row, today) {
                     rows.push(row);
                 }
             }
@@ -228,6 +246,7 @@ fn lens_markup(
             rows
         }
         Vue::Sorties => outgoing,
+        Vue::Arretes => stopped,
         Vue::Tout => {
             let mut rows = conversations;
             rows.extend(messages);
@@ -277,27 +296,6 @@ fn lens_markup(
                     "Les types"
                 }
             }
-            div class="lens-notes" {
-                @if vue != Vue::Tas && !list.first_messages.is_empty() {
-                    @let pile = affaires_href(Vue::Tas, "", type_id);
-                    a href=(pile) hx-get=(pile) hx-target="#content" hx-push-url="true" {
-                        (pile_count(list.first_messages.len(), "premier message", "premiers messages"))
-                    }
-                }
-                @if vue != Vue::Tas && !list.first_contacts.is_empty() {
-                    @let pile = affaires_href(Vue::Tas, "", type_id);
-                    a href=(pile) hx-get=(pile) hx-target="#content" hx-push-url="true" {
-                        (pile_count(list.first_contacts.len(), "premier contact", "premiers contacts"))
-                    }
-                }
-                @if vue != Vue::Tout && !list.stopped.is_empty() {
-                    @let there = affaires_href(Vue::Tout, "", type_id);
-                    a href=(there) hx-get=(there) hx-target="#content" hx-push-url="true" {
-                        "Arrêtées · " (list.stopped.len())
-                        span class="stopped-hint" { " · voir" }
-                    }
-                }
-            }
             div class="lens-work" {
                 div class="lens-table" {
                     @if conv_empty {
@@ -318,7 +316,7 @@ fn lens_markup(
                             span class="amt" { "Montant" }
                         }
                         @for row in &rows {
-                            (lens_row(row, today))
+                            (lens_row(row, today, catalog))
                         }
                     }
                 }
@@ -346,16 +344,21 @@ fn rows_kept<'a>(
         .collect()
 }
 
-fn asks_today(row: &PersonRow) -> bool {
-    row.cues.iter().any(|cue| {
-        matches!(
-            cue,
-            PersonCue::FollowUpDue { today: true, .. }
-                | PersonCue::InvoiceOverdue { .. }
-                | PersonCue::MatchingDebit
-                | PersonCue::DraftReady
-        )
-    })
+/// Un prochain pas déjà dû, même quand la phrase du stade avale la relance
+/// (premier message). Une facture en retard, un débit qui correspond, ou un
+/// brouillon prêt, demandent aussi un geste.
+fn asks_today(row: &PersonRow, today: Date) -> bool {
+    let step_is_due = row.due_on.is_some_and(|on| on <= today);
+    step_is_due
+        || row.cues.iter().any(|cue| {
+            matches!(
+                cue,
+                PersonCue::FollowUpDue { today: true, .. }
+                    | PersonCue::InvoiceOverdue { .. }
+                    | PersonCue::MatchingDebit
+                    | PersonCue::DraftReady
+            )
+        })
 }
 
 fn empty_vue(vue: Vue) -> &'static str {
@@ -364,6 +367,7 @@ fn empty_vue(vue: Vue) -> &'static str {
         Vue::Livre => "Le livre est vide.",
         Vue::Tas => "Le tas est vide.",
         Vue::Sorties => "Un nom apparaît ici quand une dépense le porte.",
+        Vue::Arretes => "Personne n'est arrêté.",
         Vue::Tout => "Personne pour l'instant. Une conversation commence par un nom et une phrase.",
     }
 }
@@ -374,14 +378,6 @@ fn noms_fr(n: usize) -> String {
         1 => "un nom".into(),
         2 => "deux noms".into(),
         n => format!("{n} noms"),
-    }
-}
-
-fn pile_count(n: usize, one: &str, many: &str) -> String {
-    if n == 1 {
-        format!("1 {one}")
-    } else {
-        format!("{n} {many}")
     }
 }
 
@@ -432,7 +428,8 @@ fn type_menu(catalog: &[WorkKind], vue: Vue, query: &str, active: &str, label: &
                 @for kind in catalog {
                     @let href = affaires_href(vue, query, kind.id.as_str());
                     a href=(href) hx-get=(href) hx-target="#content" hx-push-url="true"
-                      class={ @if kind.id == active { "on" } } {
+                      class={ @if kind.id == active { "type-link on" } @else { "type-link" } } {
+                        span class=(format!("tint-dot wash-{}", kind.tint.slug())) {}
                         (kind.name)
                     }
                 }
@@ -441,7 +438,7 @@ fn type_menu(catalog: &[WorkKind], vue: Vue, query: &str, active: &str, label: &
     }
 }
 
-fn lens_row(row: &PersonRow, today: Date) -> Markup {
+fn lens_row(row: &PersonRow, today: Date, catalog: &[WorkKind]) -> Markup {
     let href = person_href(&row.name);
     let alarm = row.cues.iter().any(|cue| {
         matches!(
@@ -461,7 +458,7 @@ fn lens_row(row: &PersonRow, today: Date) -> Markup {
                     small { (row.party) }
                 }
                 @if !row.work_kinds.is_empty() {
-                    p class="kinds" { (row.work_kinds.join(" · ")) }
+                    p class="kinds" { (row_pastilles(&row.work_kinds, catalog)) }
                 }
             }
             span class=(cue_class) { (cues_fr(&row.cues)) }
@@ -587,14 +584,12 @@ pub fn dossier_page(store: &Store, needle: &str, today: Date) -> Result<Markup, 
 /// Habit de la lettre sur cet écran. Le dossier ne le porte pas : une relecture
 /// d'erreur, sans coffre sous la main, reste sur l'habit neutre.
 struct LetterLook {
-    from_name: String,
     chrome: LetterChrome,
 }
 
 impl LetterLook {
     fn plain() -> Self {
         Self {
-            from_name: String::new(),
             chrome: LetterChrome::default(),
         }
     }
@@ -602,7 +597,6 @@ impl LetterLook {
     fn from_store(store: &Store) -> Self {
         let account = griffe_core::mail::profile(store.connection()).unwrap_or_default();
         Self {
-            from_name: account.from_name.clone(),
             chrome: LetterChrome::from_profile(&account),
         }
     }
@@ -611,7 +605,6 @@ impl LetterLook {
 /// La carte telle qu'elle part. `close` ajoute la formule sans l'écrire dans le champ.
 /// `heading` pose le sujet au-dessus, quand la page ne l'a pas déjà.
 pub fn letter_stage(
-    from_name: &str,
     subject: &str,
     body: &str,
     chrome: &LetterChrome,
@@ -624,7 +617,6 @@ pub fn letter_stage(
         body.to_string()
     };
     let card = letter_card(&LetterParts {
-        from_name,
         subject,
         body: &text,
         chrome,
@@ -639,12 +631,9 @@ pub fn letter_stage(
     }
 }
 
-/// Saisie des types sur le dossier. `naming` affiche « Nomme le type. » sans écrire.
+/// Types cochés dans le panneau, quand l'écriture a été refusée.
 pub struct KindFormState {
     pub selected: Vec<String>,
-    pub other_open: bool,
-    pub other: String,
-    pub naming: bool,
 }
 
 pub fn dossier_markup(dossier: &PersonDossier, today: Date, flash: Option<&str>) -> Markup {
@@ -666,34 +655,78 @@ fn kinds_form(dossier: &PersonDossier, href: &str, posted: Option<&KindFormState
     let selected = posted.map_or(dossier.work_kinds.as_slice(), |state| {
         state.selected.as_slice()
     });
-    let other_open = posted.is_some_and(|state| state.other_open);
-    let other = posted.map_or("", |state| state.other.as_str());
-    let naming = posted.is_some_and(|state| state.naming);
     let action = format!("{href}/types");
+    let worn: Vec<&WorkKind> = dossier
+        .work_kind_catalog
+        .iter()
+        .filter(|kind| selected.iter().any(|name| name == &kind.name))
+        .collect();
     html! {
-        form hx-post=(action) hx-target="#content" hx-trigger="change, submit" {
-            fieldset class="word-choice" {
-                legend { "Types" }
-                div class="word-choice-row" {
-                    @for name in &dossier.work_kind_catalog {
-                        label {
-                            input type="checkbox" name="kind" value=(name)
-                                checked[selected.iter().any(|item| item == name)];
-                            (name)
+        div class="kind-block" {
+            p class="kind-label" { "Types" }
+            div class="kind-row" {
+                @for kind in &worn {
+                    (read_pastille(kind))
+                }
+                details class="kind-add" {
+                    summary class="pastille ghost" aria-label="Ajouter un type" { "+" }
+                    div class="kind-picker" {
+                        form hx-post=(action) hx-target="#content" hx-trigger="change" {
+                            @for kind in &dossier.work_kind_catalog {
+                                label class=(picker_class(kind)) {
+                                    input type="checkbox" name="kind" value=(kind.name)
+                                        checked[selected.iter().any(|name| name == &kind.name)];
+                                    span { (kind.name) }
+                                }
+                            }
+                            a class="kind-manage" href="/affaires/types"
+                              hx-get="/affaires/types" hx-target="#content" hx-push-url="true" {
+                                "Les types"
+                            }
                         }
                     }
-                    label {
-                        input class="word-other-toggle" type="checkbox" name="kind_other_on" value="1"
-                            checked[other_open];
-                        "un autre"
-                    }
                 }
-                input class="word-other" name="kind_other" type="text" value=(other)
-                    aria-label="Nom du type" aria-invalid[naming];
             }
-            @if naming {
-                div class="field-error" { "Nomme le type." }
+        }
+    }
+}
+
+fn read_pastille(kind: &WorkKind) -> Markup {
+    html! {
+        span class=(pastille_class(kind)) tabindex="0" {
+            (kind.name)
+            @if !kind.note.is_empty() {
+                span class="pastille-note" { (kind.note) }
             }
+        }
+    }
+}
+
+fn pastille_class(kind: &WorkKind) -> String {
+    let mut class = format!("pastille wash-{}", kind.tint.slug());
+    if kind.tint.needs_paper_text() {
+        class.push_str(" on-paper");
+    }
+    class
+}
+
+fn picker_class(kind: &WorkKind) -> String {
+    format!("{} pick", pastille_class(kind))
+}
+
+/// Deux pastilles au plus, puis le reste en « +N ».
+fn row_pastilles(names: &[String], catalog: &[WorkKind]) -> Markup {
+    let marks: Vec<&WorkKind> = catalog
+        .iter()
+        .filter(|kind| names.iter().any(|name| name == &kind.name))
+        .collect();
+    let rest = marks.len().saturating_sub(2);
+    html! {
+        @for kind in marks.iter().take(2) {
+            span class=(pastille_class(kind)) { (kind.name) }
+        }
+        @if rest > 0 {
+            span class="kind-more" { "+" (rest) }
         }
     }
 }
@@ -716,9 +749,6 @@ fn dossier_body(
         .any(|action| matches!(action, PersonAction::Snooze { .. }));
     html! {
         div class="letter" data-view=(ViewId::Gens.slug()) data-person=(dossier.name) {
-            a class="back" href="/affaires" hx-get="/affaires" hx-target="#content" hx-push-url="true" {
-                "← Les affaires"
-            }
             div class="who" { (dossier.name) }
             p class="co" { (subtitle(dossier, today)) }
             @if client_fiche {
@@ -1279,7 +1309,7 @@ fn history_body(event: &HistoryEvent, look: &LetterLook) -> Markup {
                         span class="preview" { (title) }
                         span class="fold-mark" aria-hidden="true" {}
                     }
-                    (letter_stage(&look.from_name, subject, body, &look.chrome, false, false))
+                    (letter_stage(subject, body, &look.chrome, false, false))
                 }
             }
         }
@@ -1584,21 +1614,35 @@ pub fn meeting_form(
 
 pub struct FicheValues {
     pub who: String,
+    /// Ce dont il s'agit, quand la conversation est ouverte.
+    pub matter: String,
+    pub matter_open: bool,
+    pub opportunity_revision: String,
     pub street: String,
     pub postal_code: String,
     pub city: String,
-    pub representative: String,
+    /// Courriel du standard.
     pub email: String,
+    /// Téléphone du standard.
     pub phone: String,
+    pub given_name: String,
+    pub family_name: String,
+    /// `""`, `monsieur` ou `madame`.
+    pub civility: String,
+    pub correspondent_email: String,
+    pub correspondent_phone: String,
     pub client_revision: i64,
     pub contact_id: String,
     pub contact_revision: String,
 }
 
+#[derive(Default)]
 pub struct FicheErrors {
     pub who: Option<String>,
+    pub matter: Option<String>,
     pub address: Option<String>,
     pub email: Option<String>,
+    pub correspondent_email: Option<String>,
     pub banner: Option<String>,
 }
 
@@ -1624,17 +1668,67 @@ pub fn fiche_page(
                 (form::hidden("contact_id", &values.contact_id))
                 (form::hidden("contact_revision", &values.contact_revision))
                 (form::text("who", "Qui", &values.who, errors.who.as_deref()))
+                @if values.matter_open {
+                    (form::hidden("matter_open", "1"))
+                    (form::hidden("opportunity_revision", &values.opportunity_revision))
+                    (form::text("matter", "Quoi", &values.matter, errors.matter.as_deref()))
+                }
                 (form::text("street", "Rue", &values.street, errors.address.as_deref()))
                 (form::text("postal_code", "Code postal", &values.postal_code, None))
                 (form::text("city", "Ville", &values.city, None))
-                (form::text("representative", "Qui répond", &values.representative, None))
                 (form::text("email", "Courriel", &values.email, errors.email.as_deref()))
                 (form::text("phone", "Téléphone", &display_phone(&values.phone), None))
+                (form::field_help("Le standard, ou l'accueil."))
+                (respondent_fields(values, errors))
                 @if genre.show {
                     (genre_line(genre))
                 }
                 div class="row-actions" {
                     button class="seal" type="submit" { "Enregistrer la fiche" }
+                }
+            }
+        }
+    }
+}
+
+fn respondent_fields(values: &FicheValues, errors: &FicheErrors) -> Markup {
+    html! {
+        fieldset class="respondent" {
+            legend { "Qui répond" }
+            (form::text("given_name", "Prénom", &values.given_name, None))
+            (form::text("family_name", "Nom", &values.family_name, None))
+            (civility_choice(&values.civility))
+            (form::text(
+                "correspondent_email",
+                "Courriel",
+                &values.correspondent_email,
+                errors.correspondent_email.as_deref(),
+            ))
+            (form::text(
+                "correspondent_phone",
+                "Téléphone",
+                &display_phone(&values.correspondent_phone),
+                None,
+            ))
+        }
+    }
+}
+
+fn civility_choice(picked: &str) -> Markup {
+    let options = [
+        ("monsieur", "Monsieur"),
+        ("madame", "Madame"),
+        ("", "non dit"),
+    ];
+    html! {
+        fieldset class="word-choice" {
+            legend { "Genre" }
+            div class="word-choice-row" {
+                @for (value, label) in options {
+                    label {
+                        input type="radio" name="civility" value=(value) checked[*value == *picked];
+                        (label)
+                    }
                 }
             }
         }
@@ -1853,8 +1947,6 @@ pub struct PhrasesView {
     pub moments: Vec<PhraseMoment>,
     pub chronicle: String,
     pub read_caption: String,
-    /// Nom en tête de la carte.
-    pub from_name: String,
     /// Couleur, métier, site, formule brute.
     pub chrome: LetterChrome,
     pub banner: Option<String>,
@@ -1898,6 +1990,8 @@ pub struct KeepUi {
     pub body: Option<String>,
     /// Relire est ouvert : la carte remplace la zone d'écriture.
     pub reading: bool,
+    /// `switchboard` ou `correspondent`. Vide : le standard, s'il existe.
+    pub recipient: String,
 }
 
 pub fn phrases_page(view: &PhrasesView) -> Markup {
@@ -1981,6 +2075,9 @@ pub fn phrases_page(view: &PhrasesView) -> Markup {
                                             button type="button" data-insert=(insert) { (name) }
                                         }
                                     }
+                                    p class="field-help" {
+                                        "<nom> et <genre> prennent le nom, et Monsieur ou Madame. <Monsieur le Maire/Madame la Maire> suit le genre. Sans genre, les deux côtés restent."
+                                    }
                                     @if !moment.alone {
                                         div class="phrase-moves" {
                                             @if !moment.first {
@@ -2014,6 +2111,8 @@ pub fn phrases_page(view: &PhrasesView) -> Markup {
 
 const PHRASE_TOKENS: &[(&str, &str)] = &[
     ("<prénom>", "<prénom>"),
+    ("<nom>", "<nom>"),
+    ("<genre>", "<genre>"),
     ("<sujet>", "<sujet>"),
     ("<montant>", "<montant>"),
     ("<moi>", "<moi>"),
@@ -2031,7 +2130,7 @@ pub fn phrase_sheet_inner(view: &PhrasesView) -> Markup {
     html! {
         p class="phrase-caption" { (view.read_caption) }
         p class="phrase-sheet-subject" { (subject) }
-        (letter_stage(&view.from_name, subject, body, &view.chrome, true, false))
+        (letter_stage(subject, body, &view.chrome, true, false))
     }
 }
 
@@ -2239,6 +2338,85 @@ fn post_button(action: &str, class: &str, name: &str, value: Option<&str>, label
     }
 }
 
+fn fiche_channels_of(store: &Store, dossier: &PersonDossier) -> Result<FicheChannels, AppError> {
+    let PersonKey::Client { id } = dossier.key else {
+        return Ok(FicheChannels::default());
+    };
+    let Some(client) = griffe_core::clients::client_by_id(store.connection(), id)? else {
+        return Ok(FicheChannels::default());
+    };
+    let contact = griffe_core::clients::correspondent(store.connection(), id)?;
+    Ok(fiche_channels(
+        &client.name,
+        client.switchboard_email.as_deref(),
+        contact
+            .as_ref()
+            .map(|person| person.name.as_str())
+            .unwrap_or(""),
+        contact.as_ref().and_then(|person| person.email.as_deref()),
+    ))
+}
+
+fn picked_recipient(channels: &FicheChannels, posted: &str) -> LetterRecipient {
+    if let Some(choice) = LetterRecipient::parse(posted) {
+        return choice;
+    }
+    if channels.switchboard_email.is_some() || channels.correspondent_email.is_none() {
+        LetterRecipient::Switchboard
+    } else {
+        LetterRecipient::Correspondent
+    }
+}
+
+fn letter_destination(
+    from: &str,
+    to: &str,
+    channels: &FicheChannels,
+    picked: LetterRecipient,
+    ready: bool,
+) -> Markup {
+    let standard = channels.switchboard_email.as_deref();
+    let person = channels.correspondent_email.as_deref();
+    html! {
+        div class="meta" {
+            "De " (from)
+            @if let (Some(address), None) = (standard, person) {
+                " · Le standard · " (address)
+            } @else if let (None, Some(address)) = (standard, person) {
+                " · Qui répond · " (address)
+            } @else if to.is_empty() {
+                " · À —"
+            } @else {
+                " · À " (to)
+            }
+            @if !ready { " · ne sera pas envoyé par Griffe" }
+        }
+        @if let (Some(standard), Some(person)) = (standard, person) {
+            fieldset class="word-choice" {
+                legend { "À" }
+                div class="word-choice-row" {
+                    label {
+                        input type="radio" name="recipient" value="switchboard"
+                            checked[picked == LetterRecipient::Switchboard];
+                        "Le standard"
+                        span class="recipient-mail" { (standard) }
+                    }
+                    label {
+                        input type="radio" name="recipient" value="correspondent"
+                            checked[picked == LetterRecipient::Correspondent];
+                        "Qui répond"
+                        span class="recipient-mail" { (person) }
+                    }
+                }
+            }
+        } @else if standard.is_some() {
+            input type="hidden" name="recipient" value="switchboard";
+        } @else if person.is_some() {
+            input type="hidden" name="recipient" value="correspondent";
+        }
+    }
+}
+
 pub fn letter_page(
     store: &Store,
     dossier: &PersonDossier,
@@ -2250,14 +2428,11 @@ pub fn letter_page(
     let href = person_href(&dossier.name);
     let sender = follow_up_sender(store.connection())?;
     let from = sender.sender_email.as_deref().unwrap_or("—");
-    let recipient = card.and_then(|c| c.contact_email.as_deref()).unwrap_or("");
-    let to = if recipient.is_empty() {
-        "—"
-    } else {
-        recipient
-    };
+    let channels = fiche_channels_of(store, dossier)?;
+    let picked = picked_recipient(&channels, &keep.recipient);
+    let to = letter_address(&channels, picked).unwrap_or("");
     let mail = griffe_core::mail::profile(store.connection()).unwrap_or_default();
-    let can_send = mail.ready && recipient.contains('@');
+    let can_send = mail.ready && to.contains('@');
     let depart = if can_send {
         griffe_core::mail::outbound_for_anchor(
             store.connection(),
@@ -2335,7 +2510,6 @@ pub fn letter_page(
         .filter(|e| matches!(e.kind, HistoryKind::Letter { .. }))
         .collect();
     let look = LetterLook {
-        from_name: mail.from_name.clone(),
         chrome: LetterChrome::from_profile(&mail),
     };
     let relire = format!("{href}/relire");
@@ -2421,16 +2595,13 @@ pub fn letter_page(
                     }
                 }
                 @if keep.reading {
-                    (letter_stage(&look.from_name, subject, body, &look.chrome, true, true))
+                    (letter_stage(subject, body, &look.chrome, true, true))
                 }
                 div class="letter-under" {
-                    div class="meta" {
-                        "De " (from) " · À " (to)
-                        @if !mail.ready { " · ne sera pas envoyé par Griffe" }
-                    }
+                    (letter_destination(from, to, &channels, picked, mail.ready))
                     div class="row-actions" {
                         @if can_send {
-                            (depart_markup(&href, depart.as_ref(), None, "Envoyer", (!recipient.is_empty()).then_some(recipient)))
+                            (depart_markup(&href, depart.as_ref(), None, "Envoyer", (!to.is_empty()).then_some(to)))
                         } @else if mail.ready {
                             p class="depart-line" { "Il manque l'adresse de la personne." }
                         }
@@ -2677,28 +2848,6 @@ pub fn href_for_party(party: &str) -> String {
     person_href(party)
 }
 
-fn row_link(row: &PersonRow) -> Markup {
-    let href = person_href(&row.name);
-    html! {
-        a href=(href) hx-get=(href) hx-target="#content" hx-push-url="true" {
-            div {
-                div class="nm" { (row.name) }
-                @if !row.work_kinds.is_empty() {
-                    p class="kinds" { (row.work_kinds.join(" · ")) }
-                }
-                div class="st" { (cues_fr(&row.cues)) }
-            }
-            @if let Some(fig) = &row.figure {
-                span class="amt" { (figure_fr(fig)) }
-            }
-        }
-    }
-}
-
-pub(crate) fn person_line(row: &PersonRow) -> Markup {
-    row_link(row)
-}
-
 pub fn load_card(
     store: &Store,
     subject: FollowUpSubject,
@@ -2712,7 +2861,8 @@ pub fn load_card(
 
 pub fn types_page(
     kinds: &[WorkKind],
-    draft: &str,
+    open: &str,
+    draft: Option<(&str, &str, &str)>,
     banner: Option<&str>,
     confirming: Option<&str>,
 ) -> Markup {
@@ -2726,40 +2876,102 @@ pub fn types_page(
             @if let Some(msg) = banner {
                 p class="mast-note" role="alert" { (msg) }
             }
-            @for kind in kinds {
-                div class="kind-line" {
-                    @if confirming == Some(kind.id.as_str()) {
-                        form hx-post=(format!("/affaires/types/{}", kind.id)) hx-target="#content" {
-                            p class="kind-word" { (kind.name) }
-                            div class="row-actions" {
-                                button class="btn danger" type="submit" name="geste" value="confirmer" {
-                                    "Oui, le retirer"
+            ul class="kind-list" {
+                @for kind in kinds {
+                    li class={ @if confirming == Some(kind.id.as_str()) || open == kind.id { "editing" } } {
+                        @if confirming == Some(kind.id.as_str()) {
+                            (kind_confirm(kind))
+                        } @else if open == kind.id {
+                            (kind_editor(
+                                &format!("/affaires/types/{}", kind.id),
+                                draft_or(kind, draft).0,
+                                draft_or(kind, draft).1,
+                                draft_or(kind, draft).2,
+                                true,
+                            ))
+                        } @else {
+                            @let href = format!("/affaires/types?ouvert={}", kind.id);
+                            a class="kind-open" href=(href)
+                              hx-get=(href) hx-target="#content" hx-push-url="true" {
+                                span class=(pastille_class(kind)) { (kind.name) }
+                                @if !kind.note.is_empty() {
+                                    span class="kind-aside" { (kind.note) }
                                 }
-                                a class="quiet" href="/affaires/types"
-                                  hx-get="/affaires/types" hx-target="#content" hx-push-url="true" {
-                                    "Garder"
-                                }
-                            }
-                        }
-                    } @else {
-                        form hx-post=(format!("/affaires/types/{}", kind.id)) hx-target="#content" {
-                            p class="kind-word" { (kind.name) }
-                            div class="field" {
-                                label for=(format!("rename-{}", kind.id)) { "Nouveau nom" }
-                                input id=(format!("rename-{}", kind.id)) name="name" type="text" value=(kind.name);
-                            }
-                            div class="row-actions" {
-                                button class="quiet" type="submit" name="geste" value="renommer" { "Renommer" }
-                                button class="quiet" type="submit" name="geste" value="retirer" { "Retirer" }
                             }
                         }
                     }
                 }
+                li class={ @if open == "nouveau" { "editing" } } {
+                    @if open == "nouveau" {
+                        (kind_editor(
+                            "/affaires/types",
+                            draft.map(|(name, _, _)| name).unwrap_or(""),
+                            draft.map(|(_, note, _)| note).unwrap_or(""),
+                            draft.map(|(_, _, tint)| tint).unwrap_or("encre"),
+                            false,
+                        ))
+                    } @else {
+                        a class="kind-open" href="/affaires/types?ouvert=nouveau"
+                          hx-get="/affaires/types?ouvert=nouveau" hx-target="#content" hx-push-url="true" {
+                            span class="pastille ghost" { "+ un type" }
+                        }
+                    }
+                }
             }
-            form hx-post="/affaires/types" hx-target="#content" {
-                (form::text("name", "Un type", draft, None))
-                div class="row-actions" {
-                    button class="seal" type="submit" { "Enregistrer" }
+        }
+    }
+}
+
+fn draft_or<'a>(
+    kind: &'a WorkKind,
+    draft: Option<(&'a str, &'a str, &'a str)>,
+) -> (&'a str, &'a str, &'a str) {
+    draft.unwrap_or((kind.name.as_str(), kind.note.as_str(), kind.tint.slug()))
+}
+
+fn kind_confirm(kind: &WorkKind) -> Markup {
+    html! {
+        form hx-post=(format!("/affaires/types/{}", kind.id)) hx-target="#content" {
+            span class=(pastille_class(kind)) { (kind.name) }
+            div class="row-actions" {
+                button class="btn danger" type="submit" name="geste" value="confirmer" {
+                    "Oui, le retirer"
+                }
+                a class="quiet" href="/affaires/types"
+                  hx-get="/affaires/types" hx-target="#content" hx-push-url="true" {
+                    "Garder"
+                }
+            }
+        }
+    }
+}
+
+fn kind_editor(action: &str, name: &str, note: &str, tint: &str, existing: bool) -> Markup {
+    let chosen = WorkKindTint::parse(tint).unwrap_or(WorkKindTint::Encre);
+    html! {
+        form class="kind-editor" hx-post=(action) hx-target="#content" {
+            input name="name" type="text" value=(name) aria-label="Nom" autocomplete="off";
+            label {
+                span { "Ce qu'on y range" }
+                input name="note" type="text" value=(note) autocomplete="off";
+            }
+            div class="swatches" {
+                @for wash in WorkKindTint::ALL {
+                    label class=(format!("swatch wash-{}", wash.slug())) {
+                        input type="radio" name="tint" value=(wash.slug())
+                            aria-label=(wash.label())
+                            checked[wash == chosen];
+                    }
+                }
+            }
+            div class="row-actions" {
+                button class="seal" type="submit" name="geste" value="garder" { "Garder" }
+                @if existing {
+                    button class="quiet" type="submit" name="geste" value="retirer" { "Retirer" }
+                }
+                a class="quiet" href="/affaires/types"
+                  hx-get="/affaires/types" hx-target="#content" hx-push-url="true" {
+                    "Fermer"
                 }
             }
         }

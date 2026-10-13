@@ -3,18 +3,19 @@
 use griffe_core::app::AppError;
 use griffe_core::closing::StepStatus;
 use griffe_core::company::company_profile;
+use griffe_core::day::{Mast, MastSignal, day_mast};
 use griffe_core::domain::{FiscalYearEnd, Money, VatRegime, format_date, format_date_fr};
 use griffe_core::fiscal::FiscalDeadlineKind;
 use griffe_core::papers::papers_checklist;
 use griffe_core::society::{
     AmountBasis, AmountStory, BeatKind, BeatWhen, BoxCoverage, BoxRole, ClosingBeat, ClosingStory,
-    ConversationBar, CurrentAccount, CurrentAccountBalance, DividendClosed, DividendDoor, Duty,
-    DutyBriefing, Expect, FormBox, IdentityCard, IdentityShort, JournalReading, Landscape,
-    PayYourself, STATEMENT_PAGE_SIZE, SocietyHome, StatementCursor, StatementFilter, StatementMove,
-    StatementPage, StatementPageRequest, StatementReading, UnknownReason, VatCarryInRecord,
-    VatPosition, VatRefundStatus, WaiverReason, closing_story, current_account, duty_briefing,
-    pay_yourself, society_duties, society_home, society_identity, statement_history,
-    statement_moves, vat_carry_in,
+    CurrentAccount, CurrentAccountBalance, DividendClosed, DividendDoor, Duty, DutyBriefing,
+    Expect, FormBox, IdentityCard, JournalReading, Landscape, PayYourself, STATEMENT_PAGE_SIZE,
+    SocietyHome, StatementCursor, StatementFilter, StatementMove, StatementPage,
+    StatementPageRequest, StatementReading, UnknownReason, VatCarryInRecord, VatPosition,
+    VatRefundStatus, WaiverReason, closing_story, current_account, duty_briefing, pay_yourself,
+    society_duties, society_home, society_identity, statement_history, statement_moves,
+    vat_carry_in,
 };
 use griffe_core::store::Store;
 use maud::{Markup, PreEscaped, html};
@@ -24,19 +25,9 @@ use crate::layout::ViewId;
 use crate::views::copy::{duty_occurrence_fr, letter_date, month_fr, year_end_fr};
 use crate::views::form;
 
-fn chapter_link(href: &str, title: &str, sub: &str) -> Markup {
-    html! {
-        li {
-            a href=(href) hx-get=(href) hx-target="#content" hx-push-url="true" {
-                div {
-                    strong { (title) }
-                    span { (sub) }
-                }
-                span class="go" { "→" }
-            }
-        }
-    }
-}
+/// Les phrases ouvertes depuis le bureau. Le paramètre garde les colonnes
+/// pendant qu'on change de genre.
+pub const PHRASES_LINE: &str = "/affaires/phrases?depuis=societe";
 
 fn back() -> Markup {
     html! {
@@ -47,13 +38,222 @@ fn back() -> Markup {
     }
 }
 
-/// La pièce « La société » : identité courte, paysage, conversations, chapitres.
+/// La pièce « La société » : le bureau, ouvert sur la piste.
 pub fn piece(store: &Store, today: Date) -> Result<Markup, AppError> {
     let home = society_home(store.connection(), today)?;
+    let pane = piste_pane(&home);
+    bureau_with(store, today, "/societe", &home, pane)
+}
+
+/// Le bureau autour d'un panneau déjà dessiné. `active` est l'URL de la ligne courante.
+///
+/// # Errors
+///
+/// Lecture du coffre (maison, mât, courrier).
+pub fn bureau(store: &Store, today: Date, active: &str, pane: Markup) -> Result<Markup, AppError> {
+    let home = society_home(store.connection(), today)?;
+    bureau_with(store, today, active, &home, pane)
+}
+
+fn bureau_with(
+    store: &Store,
+    today: Date,
+    active: &str,
+    home: &SocietyHome,
+    pane: Markup,
+) -> Result<Markup, AppError> {
+    let mast = day_mast(store.connection(), today)?;
     let papers_sub = papers_chapter_sub(store, today);
     let courrier_sub =
         crate::views::societe::courrier_subtitle(&griffe_core::mail::profile(store.connection())?);
-    Ok(home_markup(&home, today, &papers_sub, courrier_sub))
+    Ok(bureau_markup(
+        today,
+        active,
+        home,
+        &mast,
+        &papers_sub,
+        courrier_sub,
+        pane,
+    ))
+}
+
+fn piste_pane(home: &SocietyHome) -> Markup {
+    html! {
+        (landscape_figure(&home.landscape))
+        @if let Some(text) = landscape_prose(&home.landscape, home.vat_position.as_ref()) {
+            p class="prose" { (text) }
+        }
+    }
+}
+
+fn bureau_markup(
+    today: Date,
+    active: &str,
+    home: &SocietyHome,
+    mast: &Mast,
+    papers_sub: &str,
+    courrier_sub: &str,
+    pane: Markup,
+) -> Markup {
+    let month = if home.pay.possible.is_zero() {
+        "rien".to_string()
+    } else {
+        home.pay.possible.to_string()
+    };
+    let between = match &home.current_account.balance {
+        CurrentAccountBalance::CompanyOwes { amount }
+        | CurrentAccountBalance::YouOwe { amount } => amount.to_string(),
+        CurrentAccountBalance::Clear => "rien".to_string(),
+    };
+    let year = match home.pay.annual.target {
+        Some(target) if !target.is_zero() => format!("{} / {target}", home.pay.annual.paid),
+        _ => "—".to_string(),
+    };
+    let (duty_title, duty_amount) = match &home.next_duty {
+        Some(duty) => {
+            let title =
+                duty_occurrence_fr(duty.kind, duty.vat_scheme, &duty.period_key, duty.due_on);
+            let amount = match duty.amount.filter(|money| *money != Money::ZERO) {
+                Some(money) => format!("{money} · {}", format_date_fr(duty.due_on)),
+                None => format_date_fr(duty.due_on),
+            };
+            (title, amount)
+        }
+        None => (
+            "Les échéances".to_string(),
+            match &home.vat_position {
+                Some(VatPosition::Credit { amount }) => format!("{amount} de crédit"),
+                Some(VatPosition::Due { amount }) => format!("{amount} à payer"),
+                None => "aucune".to_string(),
+            },
+        ),
+    };
+    let carte = match (home.identity.legal_form.as_deref(), home.identity.year_end) {
+        (Some(form), Some(end)) => format!("{form} · clôture au {}", year_end_fr(end)),
+        (Some(form), None) => form.to_string(),
+        _ => "à renseigner".to_string(),
+    };
+    html! {
+        div class="bureau" data-view=(ViewId::Societe.slug()) {
+            div class="bureau-head" {
+                p class="date" { "La société · " (letter_date(today)) }
+                p class="bureau-sentence" {
+                    (bureau_sentence(mast, home.next_duty.as_ref()))
+                }
+            }
+            div class="bureau-columns" {
+                section class="bureau-col" {
+                    h2 { "Tenir" }
+                    (bureau_line("/societe", "La piste", &home.landscape.bank.to_string(), active))
+                    (bureau_line(
+                        "/societe/releve",
+                        "Le relevé",
+                        &releve_amount(home.unmatched),
+                        active,
+                    ))
+                    @if let Some(expected) = &home.landscape.expected {
+                        div class="bureau-line" {
+                            span class="who" { (expected.party) }
+                            span class="amt" { (expected.amount) }
+                        }
+                    }
+                }
+                section class="bureau-col" {
+                    h2 { "Te payer" }
+                    (bureau_line("/societe/payer", "Ce mois-ci", &month, active))
+                    (bureau_line("/societe/compte", "Entre toi et la société", &between, active))
+                    (bureau_line("/societe/annee", "Cette année", &year, active))
+                }
+                section class="bureau-col" {
+                    h2 { "L'État" }
+                    (bureau_line("/societe/impots", &duty_title, &duty_amount, active))
+                    (bureau_line("/societe/cloture", "Clore", &closing_amount(home), active))
+                }
+                section class="bureau-col reglages" {
+                    h2 { "Les réglages" }
+                    (bureau_line("/societe/identite", "La carte", &carte, active))
+                    (bureau_line("/societe/courrier", "Le courrier", courrier_sub, active))
+                    (bureau_line(PHRASES_LINE, "Les phrases", "la série", active))
+                    (bureau_line("/societe/papiers", "Les papiers", papers_sub, active))
+                }
+            }
+            div class="bureau-pane" { (pane) }
+        }
+    }
+}
+
+fn bureau_sentence(mast: &Mast, duty: Option<&Duty>) -> Markup {
+    let bad = mast
+        .signals
+        .iter()
+        .any(|signal| matches!(signal, MastSignal::RunwayAlarm { .. }));
+    let months = match mast.runway_months {
+        Some(n) => format!("{n} mois"),
+        None => "—".to_string(),
+    };
+    html! {
+        b { (mast.bank.to_string()) }
+        " en banque · "
+        b class={ @if bad { "bad" } } { (months) }
+        " de piste"
+        @if let Some(duty) = duty {
+            " · "
+            (duty_occurrence_fr(duty.kind, duty.vat_scheme, &duty.period_key, duty.due_on))
+            " le "
+            (format_date_fr(duty.due_on))
+        }
+    }
+}
+
+fn bureau_line(href: &str, title: &str, amount: &str, active: &str) -> Markup {
+    let on = line_on(href, active);
+    html! {
+        a class="bureau-line" href=(href)
+          hx-get=(href) hx-target="#content" hx-push-url="true" hx-swap="innerHTML"
+          aria-current=[on.then_some("true")] {
+            span class="who" { (title) }
+            span class="amt" { (amount) }
+        }
+    }
+}
+
+fn line_on(href: &str, active: &str) -> bool {
+    if href == "/societe" {
+        active == "/societe"
+    } else {
+        active == href || active.starts_with(&format!("{href}/"))
+    }
+}
+
+fn releve_amount(unmatched: u32) -> String {
+    match unmatched {
+        0 => "tout est traité".to_string(),
+        1 => "1 non traité".to_string(),
+        n => format!("{n} non traités"),
+    }
+}
+
+fn closing_amount(home: &SocietyHome) -> String {
+    if home.closing.elapsed {
+        let base = format!(
+            "L'exercice clos le {} est à arrêter",
+            format_date_fr(home.closing.ends_on)
+        );
+        match home.closing.unmatched {
+            0 => base,
+            1 => format!("{base} · 1 mouvement à ranger d'abord"),
+            n => format!("{base} · {n} mouvements à ranger d'abord"),
+        }
+    } else {
+        match (home.closing.days_left, home.closing.unmatched) {
+            (Some(days), 0) => format!("Dans {days} jours"),
+            (Some(days), 1) => format!("Dans {days} jours · 1 mouvement à ranger d'abord"),
+            (Some(days), n) => format!("Dans {days} jours · {n} mouvements à ranger d'abord"),
+            (None, 0) => "Le parcours, en phrases.".to_string(),
+            (None, 1) => "1 mouvement à ranger d'abord".to_string(),
+            (None, n) => format!("{n} mouvements à ranger d'abord"),
+        }
+    }
 }
 
 fn papers_chapter_sub(store: &Store, today: Date) -> String {
@@ -83,110 +283,6 @@ fn papers_chapter_sub(store: &Store, today: Date) -> String {
         0 => "Tout est au coffre".into(),
         1 => format!("1 manquant pour {period}"),
         n => format!("{n} manquants pour {period}"),
-    }
-}
-
-fn home_markup(home: &SocietyHome, today: Date, papers_sub: &str, courrier_sub: &str) -> Markup {
-    let title = home.identity.name.as_deref().unwrap_or("La société.");
-    let lede = identity_lede(&home.identity);
-    let pay_runway = if home.pay.possible.is_zero() {
-        "rien à sortir ce mois-ci sans casser la piste".to_string()
-    } else {
-        format!(
-            "{} possibles ce mois-ci sans casser la piste",
-            home.pay.possible
-        )
-    };
-    let pay_sub = match &home.current_account.balance {
-        CurrentAccountBalance::CompanyOwes { amount } => {
-            format!("La société te doit {amount} · {pay_runway}")
-        }
-        CurrentAccountBalance::YouOwe { amount } => {
-            format!("Tu dois {amount} à la société · {pay_runway}")
-        }
-        CurrentAccountBalance::Clear => pay_runway,
-    };
-    let taxes_sub = match &home.next_duty {
-        Some(d) => {
-            let amount = d
-                .amount
-                .filter(|m| *m != Money::ZERO)
-                .map(|m| format!(" · {m}"))
-                .unwrap_or_default();
-            let vat = match &home.vat_position {
-                Some(VatPosition::Credit { amount }) => format!("{amount} de crédit · "),
-                Some(VatPosition::Due { amount }) => format!("{amount} à payer · "),
-                None => String::new(),
-            };
-            format!(
-                "{vat}{} le {}{amount}",
-                duty_occurrence_fr(d.kind, d.vat_scheme, &d.period_key, d.due_on),
-                format_date_fr(d.due_on)
-            )
-        }
-        None => match &home.vat_position {
-            Some(VatPosition::Credit { amount }) => format!("{amount} de crédit"),
-            Some(VatPosition::Due { amount }) => format!("{amount} à payer"),
-            None => "Aucune échéance dans l'horizon.".to_string(),
-        },
-    };
-    let closing_sub = if home.closing.elapsed {
-        let base = format!(
-            "L'exercice clos le {} est à arrêter",
-            format_date_fr(home.closing.ends_on)
-        );
-        match home.closing.unmatched {
-            0 => base,
-            1 => format!("{base} · 1 mouvement à ranger d'abord"),
-            n => format!("{base} · {n} mouvements à ranger d'abord"),
-        }
-    } else {
-        match (home.closing.days_left, home.closing.unmatched) {
-            (Some(days), 0) => format!("Dans {days} jours"),
-            (Some(days), 1) => format!("Dans {days} jours · 1 mouvement à ranger d'abord"),
-            (Some(days), n) => format!("Dans {days} jours · {n} mouvements à ranger d'abord"),
-            (None, 0) => "Le parcours, en phrases.".into(),
-            (None, 1) => "1 mouvement à ranger d'abord".into(),
-            (None, n) => format!("{n} mouvements à ranger d'abord"),
-        }
-    };
-    let releve_sub = match home.unmatched {
-        0 => "Tout est traité.".to_string(),
-        1 => "1 mouvement non traité".to_string(),
-        n => format!("{n} mouvements non traités"),
-    };
-    let identite_sub = match (home.identity.legal_form.as_deref(), home.identity.year_end) {
-        (Some(form), Some(end)) => format!("{form} · clôture au {}", year_end_fr(end)),
-        (Some(form), None) => form.to_string(),
-        _ => "à renseigner".into(),
-    };
-
-    html! {
-        div class="letter" data-view=(ViewId::Societe.slug()) {
-            div class="date" { "La société · " (letter_date(today)) }
-            h1 { (title) }
-            p class="lede" { (lede) }
-            (landscape_figure(&home.landscape))
-            @if let Some(text) = landscape_prose(&home.landscape, home.vat_position.as_ref()) {
-                p class="prose" { (text) }
-            }
-            (current_account_block(&home.current_account, false))
-            @if !home.conversations.bars.iter().all(|b| b.count == 0) {
-                div class="block" {
-                    h3 { "Les conversations, cette année" }
-                    (conversation_bars(&home.conversations.bars))
-                }
-            }
-            ul class="chapters" {
-                (chapter_link("/societe/payer", "Te payer", &pay_sub))
-                (chapter_link("/societe/impots", "Ce que tu dois à l'État", &taxes_sub))
-                (chapter_link("/societe/cloture", "Clore l'exercice", &closing_sub))
-                (chapter_link("/societe/releve", "Le relevé", &releve_sub))
-                (chapter_link("/societe/identite", "L'identité", &identite_sub))
-                (chapter_link("/societe/courrier", "Le courrier", courrier_sub))
-                (chapter_link("/societe/papiers", "Les papiers", papers_sub))
-            }
-        }
     }
 }
 
@@ -234,42 +330,6 @@ fn current_account_block(acc: &CurrentAccount, with_moves: bool) -> Markup {
                 }
             }
         }
-    }
-}
-
-fn identity_lede(id: &IdentityShort) -> String {
-    if let Some(on) = id.unclosed_on {
-        let form = id.legal_form.as_deref().unwrap_or("La société");
-        let cap = id
-            .capital
-            .filter(|c| *c != Money::ZERO)
-            .map(|c| format!(" au capital de {c}"))
-            .unwrap_or_default();
-        return format!(
-            "{form}{cap}. L'exercice clos le {} n'est pas arrêté.",
-            format_date_fr(on)
-        );
-    }
-    match (&id.legal_form, id.capital, id.year_end, id.days_to_year_end) {
-        (Some(form), capital, Some(end), Some(days)) => {
-            let cap = capital
-                .filter(|c| *c != Money::ZERO)
-                .map(|c| format!(" au capital de {c}"))
-                .unwrap_or_default();
-            format!(
-                "{form}{cap}. L'exercice se clôt le {}. {days} jours.",
-                year_end_fr(end)
-            )
-        }
-        (Some(form), capital, Some(end), None) => {
-            let cap = capital
-                .filter(|c| *c != Money::ZERO)
-                .map(|c| format!(" au capital de {c}"))
-                .unwrap_or_default();
-            format!("{form}{cap}. L'exercice se clôt le {}.", year_end_fr(end))
-        }
-        (Some(form), _, _, _) => format!("{form}. La date de clôture n'est pas encore posée."),
-        _ => "Dites d'abord qui vous êtes : nom, forme, clôture. Tout le reste en dépend.".into(),
     }
 }
 
@@ -387,42 +447,58 @@ fn landscape_svg(land: &Landscape) -> String {
     )
 }
 
-fn conversation_bars(bars: &[ConversationBar]) -> Markup {
-    let max = bars.iter().map(|b| b.count).max().unwrap_or(0).max(1);
-    let cap_left = bars
-        .first()
-        .map(|b| month_label(b.month.month()))
-        .unwrap_or_default();
-    let now = bars.iter().find(|b| b.now);
-    let cap_right = match now {
-        Some(b) if b.thin && b.count == 1 => "aujourd'hui — un nom seulement".into(),
-        Some(b) if b.thin && b.count == 2 => "aujourd'hui — deux noms seulement".into(),
-        Some(b) if b.thin => format!("aujourd'hui — {} noms", b.count),
-        Some(_) => "aujourd'hui".into(),
-        None => String::new(),
-    };
-    html! {
-        div class="bars" aria-hidden="true" {
-            @for b in bars {
-                @let h = if b.count == 0 {
-                    4u32
-                } else {
-                    (b.count * 100 / max).max(12)
-                };
-                i class={ @if b.now { "now" } } style=(format!("height:{h}%")) {}
-            }
-        }
-        div class="bars-cap" {
-            span { (cap_left) }
-            span { (cap_right) }
-        }
-    }
-}
-
 pub fn pay(store: &Store, today: Date) -> Result<Markup, AppError> {
     let pay = pay_yourself(store.connection(), today)?;
     let acc = current_account(store.connection(), today)?;
-    Ok(pay_markup(&pay, &acc))
+    bureau(store, today, "/societe/payer", pay_markup(&pay, &acc))
+}
+
+/// Le compte courant, dans le bureau.
+///
+/// # Errors
+///
+/// Lecture du coffre.
+pub fn account(store: &Store, today: Date) -> Result<Markup, AppError> {
+    let acc = current_account(store.connection(), today)?;
+    bureau(
+        store,
+        today,
+        "/societe/compte",
+        current_account_block(&acc, true),
+    )
+}
+
+/// L'objectif de l'année, dans le bureau.
+///
+/// # Errors
+///
+/// Lecture du coffre.
+pub fn year(store: &Store, today: Date) -> Result<Markup, AppError> {
+    let pay = pay_yourself(store.connection(), today)?;
+    bureau(store, today, "/societe/annee", year_pane(&pay))
+}
+
+fn year_pane(pay: &PayYourself) -> Markup {
+    match pay.annual.target {
+        Some(target) if !target.is_zero() => {
+            let pct = ((i128::from(pay.annual.paid.cents()) * 100)
+                / i128::from(target.cents()).max(1))
+            .clamp(0, 100);
+            let paid = pay.annual.paid;
+            html! {
+                div class="block" {
+                    h3 { "Cette année, pour vivre" }
+                    p { "Objectif " (target) ". Versé " (paid) "." }
+                    div class="meter" aria-label=(format!("{paid} sur {target}")) {
+                        i style=(format!("width:{pct}%")) {}
+                    }
+                }
+            }
+        }
+        _ => html! {
+            p class="prose" { "Aucun montant visé." }
+        },
+    }
 }
 
 fn pay_markup(pay: &PayYourself, acc: &CurrentAccount) -> Markup {
@@ -523,7 +599,12 @@ fn pay_markup(pay: &PayYourself, acc: &CurrentAccount) -> Markup {
 
 pub fn duties(store: &Store, today: Date) -> Result<Markup, AppError> {
     let duties = society_duties(store.connection(), today)?;
-    Ok(duties_markup(&duties, today))
+    bureau(
+        store,
+        today,
+        "/societe/impots",
+        duties_markup(&duties, today),
+    )
 }
 
 fn duties_markup(rows: &[Duty], today: Date) -> Markup {
@@ -706,7 +787,12 @@ pub fn duty_with_vat_form(
     } else {
         None
     };
-    Ok(duty_markup(&briefing, today, vat_form.as_ref()))
+    bureau(
+        store,
+        today,
+        "/societe/impots",
+        duty_markup(&briefing, today, vat_form.as_ref()),
+    )
 }
 
 fn duty_markup(b: &DutyBriefing, today: Date, vat_form: Option<&VatCreditForm>) -> Markup {
@@ -1198,7 +1284,12 @@ fn expect_fr(expect: &Expect) -> &'static str {
 
 pub fn closing(store: &Store, today: Date) -> Result<Markup, AppError> {
     let story = closing_story(store.connection(), today)?;
-    Ok(closing_markup(&story, today))
+    bureau(
+        store,
+        today,
+        "/societe/cloture",
+        closing_markup(&story, today),
+    )
 }
 
 fn closing_lede(story: &ClosingStory) -> String {
@@ -1612,11 +1703,16 @@ pub fn identity(store: &Store, today: Date) -> Result<Markup, AppError> {
     let card = society_identity(store.connection())?;
     let genre = griffe_core::follow_up::latest_prospect_genre(store.connection())?;
     let phrases = crate::views::gens::phrases_href(
-        "identite",
+        "societe",
         "",
         genre.as_ref().map(|genre| genre.id.as_str()).unwrap_or(""),
     );
-    Ok(identity_markup(&card, &phrases))
+    bureau(
+        store,
+        today,
+        "/societe/identite",
+        identity_markup(&card, &phrases),
+    )
 }
 
 fn identity_markup(card: &IdentityCard, phrases: &str) -> Markup {

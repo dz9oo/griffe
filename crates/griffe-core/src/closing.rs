@@ -632,7 +632,7 @@ fn opening_balance_step(
             StepStatus::Warning,
             "Aucun bilan d'ouverture : la chaîne part de zéro (report à nouveau, réserve \
              légale et déficits antérieurs nuls, aucun à-nouveau au grand livre). Si la société \
-             existait avant FreeFlow, reprenez le dernier bilan de l'expert-comptable avant de \
+             existait avant Griffe, reprenez le dernier bilan de l'expert-comptable avant de \
              clore — il sera figé ensuite.",
         ),
         Some(o) if o.opens_on == start => {
@@ -1656,7 +1656,7 @@ pub const GLOSSARY: &[GlossaryEntry] = &[
         term: "Exercice",
         meaning: "La période d'un an sur laquelle on fait les comptes (du 1er janvier au \
                   31 décembre, ou décalée — du 1er octobre au 30 septembre par exemple). \
-                  FreeFlow désigne un exercice par l'année civile de sa fin : « 2026 » est \
+                  Griffe désigne un exercice par l'année civile de sa fin : « 2026 » est \
                   l'exercice qui se termine en 2026.",
     },
     GlossaryEntry {
@@ -1670,19 +1670,19 @@ pub const GLOSSARY: &[GlossaryEntry] = &[
         term: "Bilan d'ouverture",
         meaning: "La photo au premier jour du premier exercice suivi ici, recopiée compte par \
                   compte depuis le dernier bilan de l'expert-comptable. C'est le point de \
-                  départ de tout : sans lui, FreeFlow part de zéro, comme si la société \
+                  départ de tout : sans lui, Griffe part de zéro, comme si la société \
                   venait d'être créée.",
     },
     GlossaryEntry {
         term: "À-nouveaux",
         meaning: "Les soldes de départ d'un exercice : le bilan d'ouverture pour le premier, \
-                  le bilan de clôture de l'exercice précédent pour les suivants. FreeFlow les \
+                  le bilan de clôture de l'exercice précédent pour les suivants. Griffe les \
                   enchaîne tout seul.",
     },
     GlossaryEntry {
         term: "Grand livre, balance",
         meaning: "Le grand livre est la liste de toutes les écritures comptables, compte par \
-                  compte ; la balance en est le résumé (un solde par compte). FreeFlow les \
+                  compte ; la balance en est le résumé (un solde par compte). Griffe les \
                   dérive de ce qu'il connaît (factures, encaissements, dépenses, relevé) : il \
                   ne tient pas de comptabilité, il la déduit de vos faits.",
     },
@@ -1701,7 +1701,7 @@ pub const GLOSSARY: &[GlossaryEntry] = &[
     GlossaryEntry {
         term: "Justificatif",
         meaning: "La pièce (facture, ticket, relevé) qui prouve une dépense. Sans elle, la \
-                  dépense et sa TVA ne sont pas déductibles en cas de contrôle. FreeFlow \
+                  dépense et sa TVA ne sont pas déductibles en cas de contrôle. Griffe \
                   l'archive à côté du coffre et en garde l'empreinte.",
     },
     GlossaryEntry {
@@ -1714,7 +1714,7 @@ pub const GLOSSARY: &[GlossaryEntry] = &[
         term: "Résultat fiscal, déficit reportable",
         meaning: "Le résultat sur lequel l'impôt se calcule. Une perte (un « déficit ») n'est \
                   pas perdue : elle se garde en réserve et vient réduire les bénéfices des \
-                  exercices suivants avant impôt. FreeFlow tient ce compte tout seul.",
+                  exercices suivants avant impôt. Griffe tient ce compte tout seul.",
     },
     GlossaryEntry {
         term: "IS (impôt sur les sociétés)",
@@ -1738,7 +1738,7 @@ pub const GLOSSARY: &[GlossaryEntry] = &[
         term: "Réserve légale",
         meaning: "Une part du bénéfice que la loi oblige à garder dans la société : au moins \
                   un vingtième (5 %) du bénéfice chaque année, jusqu'à ce que la réserve \
-                  atteigne un dixième du capital. FreeFlow calcule ce minimum et vous le \
+                  atteigne un dixième du capital. Griffe calcule ce minimum et vous le \
                   propose.",
     },
     GlossaryEntry {
@@ -1750,7 +1750,7 @@ pub const GLOSSARY: &[GlossaryEntry] = &[
     GlossaryEntry {
         term: "Approbation des comptes",
         meaning: "En SASU, la décision écrite de l'associé unique qui arrête les comptes de \
-                  l'exercice, à prendre dans les six mois de la clôture. FreeFlow en rédige le \
+                  l'exercice, à prendre dans les six mois de la clôture. Griffe en rédige le \
                   procès-verbal (PV). Une fois approuvé, l'exercice ne se modifie plus.",
     },
     GlossaryEntry {
@@ -1758,19 +1758,19 @@ pub const GLOSSARY: &[GlossaryEntry] = &[
         meaning: "La déclaration annuelle de résultat : le formulaire 2065 et les tableaux \
                   2033 (bilan, compte de résultat, suivi des déficits). À télétransmettre sur \
                   impots.gouv.fr en EDI (via un expert-comptable ou un partenaire EDI) dans \
-                  les trois mois de la clôture. FreeFlow en fournit les chiffres, case par case.",
+                  les trois mois de la clôture. Griffe en fournit les chiffres, case par case.",
     },
     GlossaryEntry {
         term: "FEC",
         meaning: "Le Fichier des Écritures Comptables, que l'administration peut demander en \
                   cas de contrôle : toutes les écritures de l'exercice dans un format imposé. \
-                  FreeFlow l'exporte depuis son grand livre dérivé.",
+                  Griffe l'exporte depuis son grand livre dérivé.",
     },
     GlossaryEntry {
         term: "Balance",
         meaning: "La liste de tous les comptes avec leur solde à une date : c'est ce que votre \
                   cabinet vous remet à la clôture (« balance générale » ou « balance de \
-                  clôture »), et ce que FreeFlow lit pour reprendre votre bilan d'ouverture. Un \
+                  clôture »), et ce que Griffe lit pour reprendre votre bilan d'ouverture. Un \
                   export FEC de l'exercice précédent fait aussi l'affaire.",
     },
     GlossaryEntry {

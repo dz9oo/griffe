@@ -8,7 +8,7 @@ use griffe_core::app::{ExecutionContext, Executor};
 use griffe_core::clients::{
     self, ClientFilter, client_by_id, contact_by_id, list_clients_with, list_contacts,
 };
-use griffe_core::domain::{Address, ContactId, Siren, VatNumber, display_phone};
+use griffe_core::domain::{Address, Civility, ContactId, Siren, VatNumber, display_phone};
 use griffe_core::store::Store;
 
 use crate::error::CliError;
@@ -105,6 +105,18 @@ pub enum ClientCommand {
         /// Efface l'adresse postale, sans en fournir une nouvelle.
         #[arg(long)]
         clear_address: bool,
+        /// Courriel du standard, ou de l'accueil.
+        #[arg(long, conflicts_with = "clear_switchboard_email")]
+        switchboard_email: Option<String>,
+        /// Efface le courriel du standard.
+        #[arg(long)]
+        clear_switchboard_email: bool,
+        /// Téléphone du standard, ou de l'accueil.
+        #[arg(long, conflicts_with = "clear_switchboard_phone")]
+        switchboard_phone: Option<String>,
+        /// Efface le téléphone du standard.
+        #[arg(long)]
+        clear_switchboard_phone: bool,
     },
     /// Retire un client des listes actives sans le supprimer — les factures et devis passés
     /// gardent une référence valide.
@@ -142,6 +154,16 @@ pub enum ContactCommand {
         phone: Option<String>,
         #[arg(long)]
         role: Option<String>,
+        #[arg(long)]
+        given_name: Option<String>,
+        #[arg(long)]
+        family_name: Option<String>,
+        /// `monsieur` ou `madame`.
+        #[arg(long, value_parser = ["monsieur", "madame"], conflicts_with = "clear_civility")]
+        civility: Option<String>,
+        /// N'écrit ni Monsieur ni Madame.
+        #[arg(long)]
+        clear_civility: bool,
     },
     /// Liste les contacts d'un client.
     List {
@@ -172,6 +194,16 @@ pub enum ContactCommand {
         /// Efface la fonction, sans en fournir une nouvelle.
         #[arg(long)]
         clear_role: bool,
+        #[arg(long)]
+        given_name: Option<String>,
+        #[arg(long)]
+        family_name: Option<String>,
+        /// `monsieur` ou `madame`.
+        #[arg(long, value_parser = ["monsieur", "madame"], conflicts_with = "clear_civility")]
+        civility: Option<String>,
+        /// N'écrit ni Monsieur ni Madame.
+        #[arg(long)]
+        clear_civility: bool,
     },
     /// Supprime un contact.
     Rm {
@@ -300,6 +332,10 @@ pub fn run(
             city,
             country,
             clear_address,
+            switchboard_email,
+            clear_switchboard_email,
+            switchboard_phone,
+            clear_switchboard_phone,
         } => {
             let id = refs::resolve_client(store, &reference)?;
             let current = client_or_not_found(store, id)?;
@@ -331,6 +367,16 @@ pub fn run(
                     vat_number.or(current.vat_number)
                 },
                 address,
+                switchboard_email: if clear_switchboard_email {
+                    None
+                } else {
+                    switchboard_email.or(current.switchboard_email)
+                },
+                switchboard_phone: if clear_switchboard_phone {
+                    None
+                } else {
+                    switchboard_phone.or(current.switchboard_phone)
+                },
             };
             let outcome = Executor::new(store).execute(&command, ctx)?;
             format_outcome(&outcome, json)
@@ -383,14 +429,28 @@ fn run_contact(
             email,
             phone,
             role,
+            given_name,
+            family_name,
+            civility,
+            clear_civility,
         } => {
             let client_id = refs::resolve_client(store, &client)?;
+            let civility = if clear_civility {
+                None
+            } else {
+                civility.as_deref().and_then(Civility::parse)
+            };
+            let structured = given_name.is_some() || family_name.is_some() || civility.is_some();
             let command = clients::CreateContact {
                 client_id,
                 name,
                 email,
                 phone,
                 role,
+                given_name: given_name.unwrap_or_default(),
+                family_name: family_name.unwrap_or_default(),
+                civility,
+                structured,
             };
             let outcome = Executor::new(store).execute(&command, ctx)?;
             format_outcome(&outcome, json)
@@ -413,19 +473,57 @@ fn run_contact(
             clear_phone,
             role,
             clear_role,
+            given_name,
+            family_name,
+            civility,
+            clear_civility,
         } => {
             let current = contact_or_not_found(store, id)?;
             let keep_unless_cleared =
                 |clear: bool, new: Option<String>, current: Option<String>| {
                     if clear { None } else { new.or(current) }
                 };
+            let name = name.unwrap_or_else(|| current.name.clone());
+            let parts_posted = given_name.is_some()
+                || family_name.is_some()
+                || civility.is_some()
+                || clear_civility;
+            let civility = if clear_civility {
+                None
+            } else {
+                civility
+                    .as_deref()
+                    .and_then(Civility::parse)
+                    .or(current.civility)
+            };
+            let (given_name, family_name, civility, structured) = if parts_posted {
+                (
+                    given_name.unwrap_or(current.given_name),
+                    family_name.unwrap_or(current.family_name),
+                    civility,
+                    true,
+                )
+            } else if name == current.name {
+                (
+                    current.given_name,
+                    current.family_name,
+                    current.civility,
+                    true,
+                )
+            } else {
+                (String::new(), String::new(), None, false)
+            };
             let command = clients::UpdateContact {
                 id,
                 revision: current.revision,
-                name: name.unwrap_or(current.name),
+                name,
                 email: keep_unless_cleared(clear_email, email, current.email),
                 phone: keep_unless_cleared(clear_phone, phone, current.phone),
                 role: keep_unless_cleared(clear_role, role, current.role),
+                given_name,
+                family_name,
+                civility,
+                structured,
             };
             let outcome = Executor::new(store).execute(&command, ctx)?;
             format_outcome(&outcome, json)

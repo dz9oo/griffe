@@ -259,7 +259,6 @@ fn compose(message: &OutboundMessage) -> Result<Message, MailSubmitError> {
     let to = mailbox(None, &message.to_address)?;
     let text = close_letter(&message.text, &message.chrome.signature);
     let html = letter_html(&LetterParts {
-        from_name: message.from_name.as_deref().unwrap_or(""),
         subject: &message.subject,
         body: &text,
         chrome: &message.chrome,
@@ -460,6 +459,8 @@ mod tests {
         assert!(raw.contains("text/html"));
         assert!(raw.contains("<lettre@griffe.local>"));
         assert!(raw.contains("Une ligne."));
+        assert!(raw.contains("Ada"));
+        assert!(!raw.contains("font-size:22px"));
         assert!(!raw.contains("secret-value"));
         assert!(!raw.contains("<img"));
         assert!(!raw.contains("@import"));

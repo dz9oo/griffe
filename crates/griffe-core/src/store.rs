@@ -1509,6 +1509,92 @@ mod tests {
     }
 
     #[test]
+    fn fiche_channels_move_the_correspondent_address_to_the_switchboard() {
+        let db_path = temp_db_path("fiche-channels");
+        let mut store = create(&db_path, "s3cret");
+        migrations::migrations()
+            .to_version(store.connection_mut(), 50)
+            .unwrap();
+        store
+            .connection()
+            .execute_batch(
+                "INSERT INTO clients (id, name, created_at)
+                    VALUES ('c1', 'Mairie', '2026-01-01T00:00:00Z');
+                 INSERT INTO contacts (id, client_id, name, email, phone, correspondent)
+                    VALUES ('k1', 'c1', 'Camille Rivière', 'camille@mairie.example', '03 27 44 44 44', 1);
+                 INSERT INTO contacts (id, client_id, name, email, phone, correspondent)
+                    VALUES ('k2', 'c1', 'Accueil', 'autre@mairie.example', '01 02 03 04 05', 0);
+                 INSERT INTO outbound_mail (
+                     id, kind, status, from_address, to_address, subject, body, message_id,
+                     send_after, created_at, updated_at, client_id
+                 ) VALUES (
+                     'm1', 'letter', 'armed', 'moi@atelier.example', 'camille@mairie.example',
+                     'Bonjour', 'Texte', '<m1@griffe.local>',
+                     '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 'c1'
+                 );",
+            )
+            .unwrap();
+        migrations::migrations()
+            .to_version(store.connection_mut(), 51)
+            .unwrap();
+
+        let (email, phone): (Option<String>, Option<String>) = store
+            .connection()
+            .query_row(
+                "SELECT switchboard_email, switchboard_phone FROM clients WHERE id = 'c1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(email.as_deref(), Some("camille@mairie.example"));
+        assert_eq!(phone.as_deref(), Some("03 27 44 44 44"));
+        let (person_email, person_phone): (Option<String>, Option<String>) = store
+            .connection()
+            .query_row(
+                "SELECT email, phone FROM contacts WHERE id = 'k1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(person_email, None);
+        assert_eq!(person_phone, None);
+        let (kept_email, kept_phone): (String, String) = store
+            .connection()
+            .query_row(
+                "SELECT email, phone FROM contacts WHERE id = 'k2'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(kept_email, "autre@mairie.example");
+        assert_eq!(kept_phone, "01 02 03 04 05");
+        let (recipient, to_address): (String, String) = store
+            .connection()
+            .query_row(
+                "SELECT recipient, to_address FROM outbound_mail WHERE id = 'm1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(recipient, "switchboard");
+        assert_eq!(to_address, "camille@mairie.example");
+
+        migrations::migrations()
+            .to_version(store.connection_mut(), 50)
+            .unwrap();
+        let (restored_email, restored_phone): (String, String) = store
+            .connection()
+            .query_row(
+                "SELECT email, phone FROM contacts WHERE id = 'k1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(restored_email, "camille@mairie.example");
+        assert_eq!(restored_phone, "03 27 44 44 44");
+    }
+
+    #[test]
     fn down_migration_removes_every_table_created_by_up() {
         let db_path = temp_db_path("migration-round-trip");
         let mut store = create(&db_path, "s3cret");

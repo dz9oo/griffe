@@ -899,8 +899,15 @@ mod tests {
         let contacts = crate::clients::list_contacts(store.connection(), party.id).unwrap();
         assert_eq!(contacts.len(), 1);
         assert_eq!(contacts[0].name, "Camille Martin");
-        assert_eq!(contacts[0].email.as_deref(), Some("camille@nova.example"));
-        assert_eq!(contacts[0].phone.as_deref(), Some("06 12 34 56 78"));
+        assert_eq!(contacts[0].given_name, "Camille");
+        assert_eq!(contacts[0].family_name, "Martin");
+        assert_eq!(contacts[0].email, None);
+        assert_eq!(contacts[0].phone, None);
+        assert_eq!(
+            party.switchboard_email.as_deref(),
+            Some("camille@nova.example")
+        );
+        assert_eq!(party.switchboard_phone.as_deref(), Some("06 12 34 56 78"));
     }
 
     #[test]
@@ -922,7 +929,7 @@ mod tests {
         let stored: String = store
             .connection()
             .query_row(
-                "SELECT phone FROM contacts WHERE client_id = ?1",
+                "SELECT switchboard_phone FROM clients WHERE id = ?1",
                 [opportunity.client_id.to_string()],
                 |row| row.get(0),
             )

@@ -33,17 +33,20 @@ pub use calendar::{
     easter_sunday, french_business_days_in, french_public_holidays, is_french_business_day,
     next_french_business_day_on_or_after,
 };
-pub use client::{Address, Client, Contact};
+pub use client::{Address, Civility, Client, Contact};
 pub use expense::{
     Expense, ExpenseCategory, ExpensePaidBy, UnknownExpenseCategory, UnknownExpensePaidBy,
 };
 pub use follow_up::{
-    CadenceStep, EmlDraft, FollowUpCursor, FollowUpEvent, FollowUpFact, FollowUpKind,
-    FollowUpSubject, INVOICE_CADENCE, InvalidEmail, NEW_MOMENT_BODY, PROSPECT_CADENCE, PhraseStep,
-    SnoozeDaysError, SnoozePreset, TemplateContext, UnknownFollowUpFact, UnknownFollowUpKind,
-    active_events, chronicle, derive_cursor, derive_cursor_with, entered_cycle_key, format_date_fr,
-    given_name, parse_email, phrase_from_editor, phrase_to_editor, render_eml, render_template,
-    resolve_signature, snooze_date, snooze_in_days,
+    CadenceStep, EmlDraft, FicheChannels, FollowUpCursor, FollowUpEvent, FollowUpFact,
+    FollowUpKind, FollowUpSubject, INVOICE_CADENCE, InvalidEmail, LetterRecipient, NEW_MOMENT_BODY,
+    PROSPECT_CADENCE, PhraseStep, RespondentParts, SnoozeDaysError, SnoozePreset, TemplateContext,
+    UnknownFollowUpFact, UnknownFollowUpKind, active_events, chronicle, compose_respondent_name,
+    default_letter_address, derive_cursor, derive_cursor_with, entered_cycle_key, fiche_channels,
+    format_date_fr, given_name, infer_letter_recipient, letter_address, letter_recipient_name,
+    parse_email, phrase_from_editor, phrase_to_editor, render_eml, render_template,
+    resolve_signature, respondent_view, settle_respondent, settled_display_name, snooze_date,
+    snooze_in_days, split_respondent,
 };
 pub use ids::{
     BankTransactionId, ClientId, ContactId, DutyFilingId, ExpenseId, FiscalYearId, FixedAssetId,

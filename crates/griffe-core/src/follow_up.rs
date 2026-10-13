@@ -133,6 +133,10 @@ mod tests {
                     email: Some("marie@acme.test".into()),
                     phone: None,
                     role: None,
+                    given_name: String::new(),
+                    family_name: String::new(),
+                    civility: None,
+                    structured: false,
                 },
                 &human(),
             )
@@ -198,6 +202,7 @@ mod tests {
                     today,
                     subject_line: None,
                     body: None,
+                    recipient: None,
                 },
                 &human(),
             )
@@ -225,6 +230,7 @@ mod tests {
                     today,
                     subject_line: None,
                     body: None,
+                    recipient: None,
                 },
                 &human(),
             )
@@ -363,6 +369,7 @@ mod tests {
                     today,
                     subject_line: None,
                     body: None,
+                    recipient: None,
                 },
                 &human(),
             )
@@ -393,6 +400,7 @@ mod tests {
                     today,
                     subject_line: None,
                     body: None,
+                    recipient: None,
                 },
                 &human(),
             )
@@ -541,6 +549,7 @@ mod tests {
                     today,
                     subject_line: Some("Au sujet de la refonte".into()),
                     body: Some(body.into()),
+                    recipient: None,
                 },
                 &human(),
             )
@@ -582,6 +591,7 @@ mod tests {
                     today,
                     subject_line: Some("Refonte".into()),
                     body: Some(body.into()),
+                    recipient: None,
                 },
                 &human(),
             )
@@ -629,6 +639,7 @@ mod tests {
                     today,
                     subject_line: Some("Brouillon".into()),
                     body: Some("texte du brouillon".into()),
+                    recipient: None,
                 },
                 &human(),
             )
@@ -666,6 +677,7 @@ mod tests {
                     today,
                     subject_line: Some("Refonte".into()),
                     body: Some("un double".into()),
+                    recipient: None,
                 },
                 &human(),
             )
@@ -793,6 +805,7 @@ mod tests {
                     today,
                     subject_line: None,
                     body: None,
+                    recipient: None,
                 },
                 &human(),
             )
@@ -1472,6 +1485,7 @@ mod tests {
                 today,
                 subject_line: Some("Brouillon déjà préparé".into()),
                 body: Some("Ce brouillon reste.".into()),
+                recipient: None,
             },
         );
         applied(

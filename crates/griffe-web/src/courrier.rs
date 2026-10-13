@@ -881,11 +881,15 @@ fn french(error: &AppError) -> String {
 }
 
 async fn courrier_markup(state: &AppState, form: Option<&CourrierForm>) -> Markup {
+    let today = state.today();
     state
         .with_store(|store| {
-            courrier_page(store, form).unwrap_or_else(|error| {
+            let inner = courrier_page(store, form).unwrap_or_else(|error| {
                 maud::html! { div class="empty-state" { (error.to_string()) } }
-            })
+            });
+            crate::views::societe::bureau(store, today, "/societe/courrier", inner).unwrap_or_else(
+                |error| maud::html! { div class="empty-state" { (error.to_string()) } },
+            )
         })
         .await
         .unwrap_or_else(|| maud::html! { div class="empty-state" { "coffre verrouillé" } })

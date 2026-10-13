@@ -2,6 +2,24 @@
 
 Ce qui change pour qui se sert de Griffe. Une section par version publiée.
 
+## 0.3.12
+
+- Sur La société, chaque ligne se lit en corps de texte, à côté de son montant. La piste, Le relevé, Clore et les autres ouvrent leur chapitre sous les quatre colonnes.
+- Le courrier, Les papiers et Les phrases s'ouvrent dans ce chapitre. Les colonnes restent en place.
+- Le coffre garde la même forme.
+
+## 0.3.11
+
+- Les affaires nomment les arrêtés : les conversations qu'on a arrêtées. Ce qui demande un geste compte aussi un prochain pas déjà dû, une facture à régler, un débit qui correspond, un brouillon prêt.
+- Les types se portent en pastilles. On leur choisit une teinte, et si on veut une note sur ce qu'on y range. Sur la fiche, seuls les types qu'elle porte sont là. Le « + » ouvre ceux du coffre. La liste en montre deux, puis le reste.
+- La fiche sépare le standard et qui répond. Courriel et téléphone du haut sont ceux de l'accueil. Sous Qui répond : le prénom, le nom, Monsieur ou Madame, et leurs coordonnées. Quand les deux adresses sont là, la lettre se choisit : Le standard, ou Qui répond.
+- Les phrases suivent le nom et le genre. Une formule écrite des deux côtés n'en garde qu'un quand le genre est connu. Sans genre, les deux restent visibles.
+- Le jour ouvre sur une phrase : les gestes de ce matin, l'argent en banque, les mois de piste, ce qu'il reste à encaisser. Chaque geste se lit en colonnes : Geste, Qui, Prochain pas, Montant.
+- La société s'ouvre sur quatre colonnes : Tenir, Te payer, L'État, Les réglages. La phrase du haut dit la banque, la piste, et la prochaine échéance. La ligne choisie ouvre son détail en dessous.
+- Le nom affiché reste celui de l'expéditeur. Il n'ouvre plus la lettre.
+- L'aide se lit en lettres. Se repérer, Parler aux gens, Tenir l'argent, Rendre des comptes. Chaque situation a la sienne, et la palette les retrouve. Premiers pas reste la porte d'entrée. Dans le lexique, le produit s'appelle Griffe.
+- Ouvrir un coffre déjà créé avance son schéma. La version précédente ne peut plus l'ouvrir.
+
 ## 0.3.10
 
 - Les affaires s'ouvrent sur ce qui demande un geste. On peut montrer le livre, le tas, les sorties, ou tout. Ouvrir ces mots en dit le sens. Le livre réunit les conversations en cours et les missions. Le tas compte les premiers messages et les premiers contacts, sans les étaler. Les sorties nomment ceux qu'une dépense porte.

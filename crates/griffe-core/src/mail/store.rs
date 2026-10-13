@@ -13,7 +13,10 @@ use super::model::{
 };
 use super::secret::MailSecret;
 use crate::app::AppError;
-use crate::domain::{FollowUpSubject, entered_cycle_key};
+use crate::domain::{
+    FollowUpSubject, LetterRecipient, entered_cycle_key, fiche_channels, infer_letter_recipient,
+    letter_address,
+};
 use crate::follow_up::{CardStatus, events_for, follow_up_queue};
 
 pub(super) fn profile(conn: &Connection) -> Result<MailProfile, AppError> {
@@ -314,6 +317,8 @@ pub(super) struct NewLetter {
     pub(super) follow_cycle: Option<String>,
     pub(super) follow_step: Option<String>,
     pub(super) client_id: Option<String>,
+    /// Posé au réessai pour ne pas reclasser l'adresse. Absent : déduit de `to_address`.
+    pub(super) recipient: Option<LetterRecipient>,
 }
 
 pub(super) fn insert_letter(
@@ -327,13 +332,17 @@ pub(super) fn insert_letter(
     }
     let id = Uuid::now_v7().to_string();
     let message_id = format!("<{id}@griffe.local>");
+    let recipient = match letter.recipient {
+        Some(kind) => kind,
+        None => inferred_recipient(conn, letter.client_id.as_deref(), &letter.to_address)?,
+    };
     conn.execute(
         "INSERT INTO outbound_mail (
             id, kind, status, anchor, from_address, from_name, to_address, subject, body,
             message_id, send_after, session_token, follow_subject, follow_subject_id,
-            follow_cycle, follow_step, client_id, created_at, updated_at
+            follow_cycle, follow_step, client_id, recipient, created_at, updated_at
          ) VALUES (
-            ?1, ?2, 'armed', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?17
+            ?1, ?2, 'armed', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?18
          )",
         params![
             id,
@@ -352,6 +361,7 @@ pub(super) fn insert_letter(
             letter.follow_cycle,
             letter.follow_step,
             letter.client_id,
+            recipient.as_str(),
             now,
         ],
     )?;
@@ -473,20 +483,21 @@ pub(super) fn abandon_held(conn: &Connection, now: &str) -> Result<(), AppError>
 /// Relit le courriel de la fiche pour une relance. Une lettre sans fiche garde
 /// l'adresse saisie. `false` : la lettre est marquée échouée, elle ne part pas.
 fn refresh_destination(conn: &Connection, id: &str, now: &str) -> Result<bool, AppError> {
-    let row: Option<(Option<String>,)> = conn
+    let row: Option<(Option<String>, String)> = conn
         .query_row(
-            "SELECT client_id FROM outbound_mail WHERE id = ?1 AND status = 'armed'",
+            "SELECT client_id, recipient FROM outbound_mail WHERE id = ?1 AND status = 'armed'",
             [id],
-            |row| Ok((row.get(0)?,)),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?;
-    let Some((client_id,)) = row else {
+    let Some((client_id, recipient)) = row else {
         return Ok(false);
     };
     let Some(client_id) = client_id.filter(|value| !value.is_empty()) else {
         return Ok(true);
     };
-    let Some(email) = client_email(conn, &client_id)? else {
+    let kind = LetterRecipient::parse(&recipient).unwrap_or_default();
+    let Some(email) = channel_address(conn, &client_id, kind)? else {
         mark_failed(conn, id, MISSING_ADDRESS, now)?;
         return Ok(false);
     };
@@ -497,18 +508,48 @@ fn refresh_destination(conn: &Connection, id: &str, now: &str) -> Result<bool, A
     Ok(true)
 }
 
-fn client_email(conn: &Connection, client_id: &str) -> Result<Option<String>, AppError> {
-    use crate::domain::parse_email;
+fn inferred_recipient(
+    conn: &Connection,
+    client_id: Option<&str>,
+    to_address: &str,
+) -> Result<LetterRecipient, AppError> {
+    let Some(client_id) = client_id.filter(|value| !value.is_empty()) else {
+        return Ok(LetterRecipient::Switchboard);
+    };
+    let Some(channels) = load_channels(conn, client_id)? else {
+        return Ok(LetterRecipient::Switchboard);
+    };
+    Ok(infer_letter_recipient(&channels, to_address))
+}
+
+fn channel_address(
+    conn: &Connection,
+    client_id: &str,
+    kind: LetterRecipient,
+) -> Result<Option<String>, AppError> {
+    let Some(channels) = load_channels(conn, client_id)? else {
+        return Ok(None);
+    };
+    Ok(letter_address(&channels, kind).map(ToOwned::to_owned))
+}
+
+fn load_channels(
+    conn: &Connection,
+    client_id: &str,
+) -> Result<Option<crate::domain::FicheChannels>, AppError> {
     let Ok(id) = client_id.parse() else {
         return Ok(None);
     };
-    let Some(contact) = crate::clients::correspondent(conn, id)? else {
+    let Some(client) = crate::clients::client_by_id(conn, id)? else {
         return Ok(None);
     };
-    Ok(contact
-        .email
-        .as_deref()
-        .and_then(|email| parse_email(email).ok()))
+    let contact = crate::clients::correspondent(conn, id)?;
+    Ok(Some(fiche_channels(
+        &client.name,
+        client.switchboard_email.as_deref(),
+        contact.as_ref().map_or("", |person| person.name.as_str()),
+        contact.as_ref().and_then(|person| person.email.as_deref()),
+    )))
 }
 
 pub(super) fn load_batch(
@@ -702,6 +743,7 @@ struct StoredLetter {
     follow_cycle: Option<String>,
     follow_step: Option<String>,
     client_id: Option<String>,
+    recipient: String,
     status: String,
 }
 
@@ -715,7 +757,8 @@ pub(super) fn retry(
     let row = conn
         .query_row(
             "SELECT kind, anchor, to_address, session_token, subject, body,
-                follow_subject, follow_subject_id, follow_cycle, follow_step, client_id, status
+                follow_subject, follow_subject_id, follow_cycle, follow_step, client_id,
+                recipient, status
          FROM outbound_mail WHERE id = ?1",
             [id],
             |row| {
@@ -731,7 +774,8 @@ pub(super) fn retry(
                     follow_cycle: row.get(8)?,
                     follow_step: row.get(9)?,
                     client_id: row.get(10)?,
-                    status: row.get(11)?,
+                    recipient: row.get(11)?,
+                    status: row.get(12)?,
                 })
             },
         )
@@ -742,12 +786,13 @@ pub(super) fn retry(
     if letter.status != "failed" && letter.status != "uncertain" {
         return Err(MailError::NotWaiting.into());
     }
+    let kind = LetterRecipient::parse(&letter.recipient).unwrap_or_default();
     let to_address = if let Some(client_id) = letter
         .client_id
         .as_deref()
         .filter(|value| !value.is_empty())
     {
-        client_email(conn, client_id)?.ok_or(MailError::MissingAddress)?
+        channel_address(conn, client_id, kind)?.ok_or(MailError::MissingAddress)?
     } else {
         letter.to_address
     };
@@ -774,6 +819,7 @@ pub(super) fn retry(
             follow_cycle: letter.follow_cycle,
             follow_step: letter.follow_step,
             client_id: letter.client_id,
+            recipient: Some(kind),
         },
         now,
     )
@@ -834,6 +880,7 @@ pub(super) fn enroll(
                 follow_cycle: Some(cycle),
                 follow_step: Some(step),
                 client_id,
+                recipient: None,
             },
             now,
         ) {

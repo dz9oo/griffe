@@ -399,7 +399,7 @@ mod tests {
         mail_tick, profile, record_deliveries, take_copies, take_due, trial_letter,
     };
     use crate::app::{Actor, AppError, ExecutionContext, Executor, Outcome, recent_audit_entries};
-    use crate::clients::{CreateClient, CreateContact, DeleteContact, UpdateContact};
+    use crate::clients::{CreateClient, CreateContact, DeleteContact, UpdateClient, UpdateContact};
     use crate::domain::{ClientId, FollowUpSubject, Money, Probability};
     use crate::follow_up::SetFollowUpSender;
     use crate::mail::MailSecret;
@@ -487,6 +487,10 @@ mod tests {
                     email: Some("marie@acme.test".into()),
                     phone: None,
                     role: None,
+                    given_name: String::new(),
+                    family_name: String::new(),
+                    civility: None,
+                    structured: false,
                 },
                 &human(),
             )
@@ -1377,6 +1381,10 @@ mod tests {
                     email: Some(email.to_string()),
                     phone: None,
                     role: None,
+                    given_name: String::new(),
+                    family_name: String::new(),
+                    civility: None,
+                    structured: false,
                 },
                 &human(),
             )
@@ -1425,6 +1433,7 @@ mod tests {
         let client_id = new_client(&mut store, "Atelier Nord");
         let contact_id = new_contact(&mut store, client_id, "Marie", "marie@exemple.fr");
         new_contact(&mut store, client_id, "Aaron", "aaron@exemple.fr");
+        arm_fiche(&mut store, client_id, "marie@exemple.fr", "Bonjour");
         Executor::new(&mut store)
             .execute(
                 &UpdateContact {
@@ -1434,11 +1443,14 @@ mod tests {
                     email: Some("aline@exemple.fr".into()),
                     phone: None,
                     role: None,
+                    given_name: String::new(),
+                    family_name: String::new(),
+                    civility: None,
+                    structured: false,
                 },
                 &human(),
             )
             .unwrap();
-        arm_fiche(&mut store, client_id, "marie@exemple.fr", "Bonjour");
         let now = OffsetDateTime::now_utc() + Duration::seconds(1);
         let batch = take_due(&mut store, &human(), "fenetre", now, now.date(), true)
             .unwrap()
@@ -1452,6 +1464,7 @@ mod tests {
         save_ready(&mut store);
         let client_id = new_client(&mut store, "Atelier Sud");
         let contact_id = new_contact(&mut store, client_id, "Marie", "marie@exemple.fr");
+        let armed = arm_fiche(&mut store, client_id, "marie@exemple.fr", "Bonjour");
         Executor::new(&mut store)
             .execute(
                 &UpdateContact {
@@ -1461,11 +1474,14 @@ mod tests {
                     email: Some("pas une adresse".into()),
                     phone: None,
                     role: None,
+                    given_name: String::new(),
+                    family_name: String::new(),
+                    civility: None,
+                    structured: false,
                 },
                 &human(),
             )
             .unwrap();
-        let armed = arm_fiche(&mut store, client_id, "oublie@exemple.fr", "Bonjour");
         let now = OffsetDateTime::now_utc() + Duration::seconds(1);
         assert!(
             take_due(&mut store, &human(), "fenetre", now, now.date(), true)
@@ -1481,7 +1497,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(status, "failed");
-        assert_eq!(to_address, "oublie@exemple.fr");
+        assert_eq!(to_address, "marie@exemple.fr");
         assert_eq!(error, MISSING_ADDRESS);
         let refused = Executor::new(&mut store)
             .execute(
@@ -1515,6 +1531,10 @@ mod tests {
                     email: Some("aline@exemple.fr".into()),
                     phone: None,
                     role: None,
+                    given_name: String::new(),
+                    family_name: String::new(),
+                    civility: None,
+                    structured: false,
                 },
                 &human(),
             )
@@ -1537,6 +1557,101 @@ mod tests {
             )
             .unwrap();
         assert_eq!(fresh, "aline@exemple.fr");
+    }
+
+    #[test]
+    fn choosing_the_correspondent_is_reread_and_a_cleared_address_holds_the_letter() {
+        let mut store = test_store("mail-fiche-choice");
+        save_ready(&mut store);
+        let client_id = new_client(&mut store, "Mairie");
+        Executor::new(&mut store)
+            .execute(
+                &UpdateClient {
+                    id: client_id,
+                    revision: 1,
+                    name: "Mairie".into(),
+                    siren: None,
+                    vat_number: None,
+                    address: None,
+                    switchboard_email: Some("accueil@mairie.example".into()),
+                    switchboard_phone: None,
+                },
+                &human(),
+            )
+            .unwrap();
+        let contact_id = new_contact(&mut store, client_id, "Camille", "camille@mairie.example");
+        let armed = arm_fiche(&mut store, client_id, "camille@mairie.example", "Personne");
+        let kind: String = store
+            .connection()
+            .query_row(
+                "SELECT recipient FROM outbound_mail WHERE id = ?1",
+                [armed],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(kind, "correspondent");
+        Executor::new(&mut store)
+            .execute(
+                &UpdateContact {
+                    id: contact_id,
+                    revision: 1,
+                    name: "Camille".into(),
+                    email: Some("riviere@mairie.example".into()),
+                    phone: None,
+                    role: None,
+                    given_name: String::new(),
+                    family_name: String::new(),
+                    civility: None,
+                    structured: false,
+                },
+                &human(),
+            )
+            .unwrap();
+        let now = OffsetDateTime::now_utc() + Duration::seconds(1);
+        let batch = take_due(&mut store, &human(), "fenetre", now, now.date(), true)
+            .unwrap()
+            .expect("réclamée");
+        assert_eq!(
+            batch.letters[0].message.to_address,
+            "riviere@mairie.example"
+        );
+
+        arm_fiche(&mut store, client_id, "riviere@mairie.example", "Retenue");
+        Executor::new(&mut store)
+            .execute(
+                &UpdateContact {
+                    id: contact_id,
+                    revision: 2,
+                    name: "Camille".into(),
+                    email: None,
+                    phone: None,
+                    role: None,
+                    given_name: String::new(),
+                    family_name: String::new(),
+                    civility: None,
+                    structured: true,
+                },
+                &human(),
+            )
+            .unwrap();
+        let later = now + Duration::seconds(2);
+        assert!(
+            take_due(&mut store, &human(), "fenetre", later, later.date(), true)
+                .unwrap()
+                .is_none()
+        );
+        let (status, to_address, error): (String, String, String) = store
+            .connection()
+            .query_row(
+                "SELECT status, to_address, error FROM outbound_mail WHERE subject = 'Retenue'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "failed");
+        assert_eq!(to_address, "riviere@mairie.example");
+        assert_ne!(to_address, "accueil@mairie.example");
+        assert_eq!(error, MISSING_ADDRESS);
     }
 
     #[test]

@@ -250,9 +250,14 @@ fn palette() -> Markup {
                       href="/aide" hx-get="/aide" hx-target="#content" hx-push-url="true" hx-swap="innerHTML" {
                         "? aide — l'atelier, les recettes"
                     }
-                    a class="palette-item" data-label="lexique mots comptabilité"
-                      href="/aide/lexique" hx-get="/aide/lexique" hx-target="#content" hx-push-url="true" hx-swap="innerHTML" {
-                        "les mots — lexique"
+                    @for page in crate::views::aide::atelier_letters() {
+                        @let href = format!("/aide/{}", page.slug);
+                        @let label = format!("{} {}", page.kicker, page.title).to_lowercase();
+                        a class="palette-item" data-label=(label)
+                          href=(href)
+                          hx-get=(href) hx-target="#content" hx-push-url="true" hx-swap="innerHTML" {
+                            (page.title)
+                        }
                     }
                 }
             }

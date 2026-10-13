@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Griffe — Le pupitre</title>
+  <style>
+    :root {
+      --paper: #f1ebe0;
+      --paper-2: #e8e0d2;
+      --ink: #1c1814;
+      --ink-2: #6a635a;
+      --rule: #d0c6b4;
+      --seal: #9f3218;
+      --serif: "Liberation Serif", "Noto Serif", serif;
+      --sans: "Adwaita Sans", "Noto Sans", sans-serif;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: var(--sans);
+      background: radial-gradient(ellipse at top, #f7f1e6, var(--paper) 55%);
+      color: var(--ink);
+      font-size: 16px;
+      line-height: 1.5;
+    }
+    button { font-family: inherit; color: inherit; cursor: pointer; background: none; border: 0; }
+    .desk { min-height: 100vh; display: grid; grid-template-rows: auto 1fr auto; }
+    .chrome, .foot {
+      display: flex; justify-content: space-between; align-items: baseline;
+      padding: 24px 28px 0;
+    }
+    .mark { font-family: var(--serif); font-style: italic; font-size: 22px; text-decoration: none; color: var(--ink); }
+    nav { display: flex; gap: 22px; }
+    nav a { font-size: 13px; color: var(--ink-2); letter-spacing: 0.04em; text-decoration: none; }
+    nav a[aria-current="page"] { color: var(--ink); box-shadow: inset 0 -1px 0 var(--ink); }
+    main { padding: 18px 28px 48px; }
+    .date { font-size: 12px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--ink-2); margin-bottom: 14px; }
+    .mast { margin: 0 0 28px; padding-bottom: 18px; border-bottom: 1px solid var(--ink); }
+    .sentence { font-size: 22px; letter-spacing: -0.02em; line-height: 1.35; }
+    .sentence b { font-weight: 600; }
+    .note { font-family: var(--serif); font-style: italic; font-size: 18px; color: var(--seal); max-width: 46ch; margin-top: 12px; }
+    .head, .geste {
+      display: grid;
+      grid-template-columns: minmax(140px, 1.1fr) minmax(140px, 1.2fr) minmax(160px, 1.8fr) 140px;
+      gap: 8px 16px;
+      align-items: baseline;
+      width: 100%;
+      text-align: left;
+    }
+    .head {
+      min-height: 32px; color: var(--ink-2); font-size: 11px;
+      letter-spacing: 0.14em; text-transform: uppercase; border-bottom: 1px solid var(--rule);
+    }
+    ol { list-style: none; }
+    li { border-top: 1px solid var(--rule); }
+    li:last-child { border-bottom: 1px solid var(--rule); }
+    .geste { min-height: 44px; padding: 10px 0; }
+    .geste .verb { font-weight: 600; }
+    .geste .cue { color: var(--ink-2); }
+    .amt { text-align: right; font-variant-numeric: tabular-nums; }
+    .geste:hover { background: var(--paper-2); }
+    .geste:hover .verb { color: var(--seal); }
+    .unfold { display: none; padding: 0 0 14px; }
+    li.open .unfold { display: block; }
+    .seal { background: var(--seal); color: var(--paper); text-decoration: none; padding: 8px 12px; font-size: 14px; }
+    .quiet { border: 1px solid var(--ink); padding: 8px 12px; font-size: 14px; margin-left: 8px; }
+    .others { display: block; margin-top: 12px; color: var(--ink-2); text-decoration: none; }
+    .month { margin-top: 40px; padding-top: 28px; border-top: 1px solid var(--ink); }
+    .month h2 { font-family: var(--serif); font-weight: 400; font-size: 32px; letter-spacing: -0.03em; }
+    .cal { display: grid; grid-template-columns: repeat(7, 1fr); margin-top: 16px; }
+    .dow { font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-2); padding-bottom: 8px; }
+    .d { min-height: 36px; padding: 4px; border-top: 1px solid var(--rule); font-family: var(--serif); color: var(--ink-2); }
+    .d.today { color: var(--seal); box-shadow: inset 0 -1px 0 var(--seal); }
+    .track { display: grid; grid-template-columns: 140px 1fr 120px; gap: 12px; align-items: center; margin-top: 10px; }
+    .rail { height: 1px; background: var(--rule); position: relative; }
+    .rail i { position: absolute; top: -2px; height: 5px; background: var(--ink); }
+    .foot { padding-bottom: 16px; color: var(--ink-2); font-size: 13px; }
+    @media (max-width: 960px) {
+      .head span:nth-child(3), .geste .cue { display: none; }
+      .head, .geste { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto; }
+    }
+  </style>
+</head>
+<body>
+  <div class="desk">
+    <header class="chrome">
+      <a class="mark" href="jour-pupitre.html">Griffe</a>
+      <nav>
+        <a href="jour-pupitre.html" aria-current="page">Le jour</a>
+        <a href="affaires-lentille.html">Les affaires</a>
+        <a href="atelier-app.html">La société</a>
+      </nav>
+    </header>
+    <main>
+      <div class="date">Samedi 5 septembre 2026</div>
+      <div class="mast">
+        <p class="sentence">Ce matin, quatre gestes — <b>12 788,20&nbsp;€</b> en banque · <b>3 mois</b> de piste · <b>6 240,00&nbsp;€ chez Atlas</b></p>
+        <p class="note">Une seule conversation ouverte derrière Camille Rivière. Si elle dit non, la piste s’arrête.</p>
+      </div>
+      <div class="head">
+        <span>Geste</span><span>Qui</span><span>Prochain pas</span><span class="amt">Montant</span>
+      </div>
+      <ol>
+        <li>
+          <button class="geste" type="button">
+            <span class="verb">Écrire</span>
+            <span>Camille Rivière</span>
+            <span class="cue">devis envoyé · aujourd’hui</span>
+            <span class="amt">8 400,00&nbsp;€</span>
+          </button>
+          <div class="unfold">
+            <a class="seal" href="affaires-lentille.html">Ouvrir son dossier</a>
+            <button class="quiet" type="button">Préparer le brouillon</button>
+            <button class="quiet" type="button">Demain</button>
+          </div>
+        </li>
+        <li>
+          <button class="geste" type="button">
+            <span class="verb">Ranger le relevé</span>
+            <span>la banque</span>
+            <span class="cue">3 mouvements ne sont pas encore traités.</span>
+            <span class="amt"></span>
+          </button>
+          <div class="unfold"><a class="seal" href="atelier-app.html">Lire les mouvements</a></div>
+        </li>
+        <li>
+          <button class="geste" type="button">
+            <span class="verb">Régler</span>
+            <span>Cabinet Leroy</span>
+            <span class="cue">un débit correspond</span>
+            <span class="amt">1 200,00&nbsp;€</span>
+          </button>
+          <div class="unfold"><a class="seal" href="affaires-lentille.html">Ouvrir son dossier</a></div>
+        </li>
+        <li>
+          <button class="geste" type="button">
+            <span class="verb">Savoir pour la TVA</span>
+            <span>l’État</span>
+            <span class="cue">à déposer avant le 24 septembre 2026</span>
+            <span class="amt">1 765,17&nbsp;€</span>
+          </button>
+          <div class="unfold"><button class="quiet" type="button">Lire la lettre avant de partir</button></div>
+        </li>
+      </ol>
+      <a class="others" href="affaires-lentille.html">et 2 autres conversations</a>
+      <section class="month">
+        <h2>Septembre.</h2>
+        <p class="lede" style="color:var(--ink-2);margin-top:8px">Deux missions en cours. La TVA le 24.</p>
+        <div class="cal">
+          <div class="dow">Lu</div><div class="dow">Ma</div><div class="dow">Me</div><div class="dow">Je</div><div class="dow">Ve</div><div class="dow">Sa</div><div class="dow">Di</div>
+          <div class="d"></div><div class="d">1</div><div class="d">2</div><div class="d">3</div><div class="d">4</div><div class="d today">5</div><div class="d">6</div>
+        </div>
+        <div class="track"><span>Studio Hume</span><div class="rail"><i style="left:0;width:70%"></i></div><span>jalon le 22</span></div>
+        <div class="track"><span>Atlas Digital</span><div class="rail"><i style="left:0;width:100%"></i></div><span>tout le mois</span></div>
+      </section>
+    </main>
+    <footer class="foot"><span>déverrouillé</span><span>Journal · Aide · Verrouiller</span></footer>
+  </div>
+  <script>
+    document.querySelectorAll(".geste").forEach((button) => {
+      button.addEventListener("click", () => {
+        const item = button.parentElement;
+        const open = item.classList.toggle("open");
+        document.querySelectorAll("li").forEach((other) => {
+          if (other !== item) other.classList.remove("open");
+        });
+        button.setAttribute("aria-expanded", open ? "true" : "false");
+      });
+    });
+  </script>
+</body>
+</html>

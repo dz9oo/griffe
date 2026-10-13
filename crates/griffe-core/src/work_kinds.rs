@@ -12,6 +12,127 @@ use crate::clients::client_by_id;
 use crate::domain::ClientId;
 
 const MAX_NAME_CHARS: usize = 40;
+const MAX_NOTE_CHARS: usize = 120;
+
+/// Lavis d'une pastille. Le mot reste en encre tant que le fond est assez clair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkKindTint {
+    #[default]
+    Encre,
+    Sceau,
+    Sable,
+    Olive,
+    Ardoise,
+    Prune,
+    Ocre,
+    Mousse,
+}
+
+impl WorkKindTint {
+    pub const ALL: [Self; 8] = [
+        Self::Encre,
+        Self::Sceau,
+        Self::Sable,
+        Self::Olive,
+        Self::Ardoise,
+        Self::Prune,
+        Self::Ocre,
+        Self::Mousse,
+    ];
+
+    /// Valeur gardée dans le coffre.
+    #[must_use]
+    pub fn slug(self) -> &'static str {
+        match self {
+            Self::Encre => "encre",
+            Self::Sceau => "sceau",
+            Self::Sable => "sable",
+            Self::Olive => "olive",
+            Self::Ardoise => "ardoise",
+            Self::Prune => "prune",
+            Self::Ocre => "ocre",
+            Self::Mousse => "mousse",
+        }
+    }
+
+    /// Nom dit à voix haute, pour le choix de teinte.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Encre => "Encre",
+            Self::Sceau => "Sceau",
+            Self::Sable => "Sable",
+            Self::Olive => "Olive",
+            Self::Ardoise => "Ardoise",
+            Self::Prune => "Prune",
+            Self::Ocre => "Ocre",
+            Self::Mousse => "Mousse",
+        }
+    }
+
+    /// Fond déjà mêlé au papier `#f1ebe0`. Les mêmes teintes sont dans `app.css`.
+    #[must_use]
+    pub fn wash(self) -> (u8, u8, u8) {
+        match self {
+            Self::Encre => (0xe4, 0xdd, 0xd0),
+            Self::Sceau => (0xf0, 0xd8, 0xcf),
+            Self::Sable => (0xf3, 0xe2, 0xc4),
+            Self::Olive => (0xe3, 0xe6, 0xd4),
+            Self::Ardoise => (0xdd, 0xe3, 0xe6),
+            Self::Prune => (0xe8, 0xdc, 0xe4),
+            Self::Ocre => (0xf0, 0xe0, 0xc4),
+            Self::Mousse => (0xdc, 0xe8, 0xdc),
+        }
+    }
+
+    /// Vrai quand le mot doit passer au papier pour rester lisible.
+    #[must_use]
+    pub fn needs_paper_text(self) -> bool {
+        text_needs_paper(self.wash())
+    }
+
+    /// Un slug vide est l'encre. Un slug inconnu est refusé.
+    ///
+    /// # Errors
+    ///
+    /// Retourne une erreur si le slug n'est pas une teinte du catalogue.
+    pub fn parse(raw: &str) -> Result<Self, WorkKindError> {
+        let slug = raw.trim();
+        if slug.is_empty() {
+            return Ok(Self::Encre);
+        }
+        Self::ALL
+            .into_iter()
+            .find(|tint| tint.slug() == slug)
+            .ok_or(WorkKindError::UnknownTint)
+    }
+}
+
+/// Vrai quand l'encre `#1c1814` reste sous le contraste 4,5 sur ce fond.
+#[must_use]
+pub fn text_needs_paper(rgb: (u8, u8, u8)) -> bool {
+    contrast(rgb, (0x1c, 0x18, 0x14)) < 4.5
+}
+
+fn contrast(bg: (u8, u8, u8), fg: (u8, u8, u8)) -> f64 {
+    let lighter = luminance(bg).max(luminance(fg));
+    let darker = luminance(bg).min(luminance(fg));
+    (lighter + 0.05) / (darker + 0.05)
+}
+
+fn luminance((r, g, b): (u8, u8, u8)) -> f64 {
+    0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+}
+
+fn channel(c: u8) -> f64 {
+    let s = f64::from(c) / 255.0;
+    if s <= 0.04045 {
+        s / 12.92
+    } else {
+        ((s + 0.055) / 1.055).powf(2.4)
+    }
+}
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum WorkKindError {
@@ -21,6 +142,10 @@ pub enum WorkKindError {
     Duplicate,
     #[error("Ce type dépasse 40 caractères.")]
     TooLong,
+    #[error("Cette note dépasse 120 caractères.")]
+    NoteTooLong,
+    #[error("Cette teinte n'existe pas.")]
+    UnknownTint,
     #[error("Ce type n'existe pas.")]
     Unknown,
     #[error("Ce dossier n'existe pas.")]
@@ -38,6 +163,8 @@ impl From<WorkKindError> for AppError {
 pub struct WorkKind {
     pub id: String,
     pub name: String,
+    pub tint: WorkKindTint,
+    pub note: String,
     pub created_at: String,
 }
 
@@ -53,6 +180,12 @@ pub struct WorkKindDossier {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateWorkKind {
     pub name: String,
+    /// Vide : pas de note. Les blancs de bord tombent.
+    #[serde(default)]
+    pub note: String,
+    /// Slug de teinte. Vide : encre.
+    #[serde(default)]
+    pub tint: String,
 }
 
 impl Command for CreateWorkKind {
@@ -61,10 +194,12 @@ impl Command for CreateWorkKind {
 
     fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
         let name = checked_name(&self.name)?;
+        let note = checked_note(&self.note)?;
+        let tint = WorkKindTint::parse(&self.tint)?;
         if id_of(&work_kinds(conn)?, &name).is_some() {
             return Err(WorkKindError::Duplicate.into());
         }
-        insert_kind(conn, &name)
+        insert_kind(conn, &name, &note, tint)
     }
 }
 
@@ -98,6 +233,51 @@ impl Command for RenameWorkKind {
             params![name, current.id],
         )?;
         Ok(WorkKind { name, ..current })
+    }
+}
+
+/// Repose le nom, la note et la teinte. La date et l'identifiant restent.
+/// Les dossiers gardent le lien.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReviseWorkKind {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub note: String,
+    #[serde(default)]
+    pub tint: String,
+}
+
+impl Command for ReviseWorkKind {
+    type Output = WorkKind;
+    const NAME: &'static str = "people.revise_work_kind";
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        let name = checked_name(&self.name)?;
+        let note = checked_note(&self.note)?;
+        let tint = WorkKindTint::parse(&self.tint)?;
+        let id = self.id.trim();
+        let Some(current) = work_kind_by_id(conn, id)? else {
+            return Err(WorkKindError::Unknown.into());
+        };
+        if let Some(other) = id_of(&work_kinds(conn)?, &name)
+            && other != current.id
+        {
+            return Err(WorkKindError::Duplicate.into());
+        }
+        if current.name == name && current.note == note && current.tint == tint {
+            return Ok(current);
+        }
+        conn.execute(
+            "UPDATE work_kinds SET name = ?1, note = ?2, tint = ?3 WHERE id = ?4",
+            params![name, note, tint.slug(), current.id],
+        )?;
+        Ok(WorkKind {
+            name,
+            tint,
+            note,
+            ..current
+        })
     }
 }
 
@@ -150,7 +330,7 @@ impl Command for SetDossierWorkKinds {
             if let Some(id) = id_of(&catalog, &name) {
                 chosen.push(id);
             } else {
-                let created = insert_kind(conn, &name)?;
+                let created = insert_kind(conn, &name, "", WorkKindTint::Encre)?;
                 chosen.push(created.id.clone());
                 catalog.push(created);
             }
@@ -176,7 +356,7 @@ impl Command for SetDossierWorkKinds {
 /// Retourne une erreur si la lecture SQL échoue.
 pub fn work_kinds(conn: &Connection) -> Result<Vec<WorkKind>, AppError> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, created_at FROM work_kinds ORDER BY name COLLATE NOCASE ASC, id ASC",
+        "SELECT id, name, tint, note, created_at FROM work_kinds ORDER BY name COLLATE NOCASE ASC, id ASC",
     )?;
     let rows = stmt.query_map([], read_kind)?;
     rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
@@ -189,7 +369,7 @@ pub fn work_kinds(conn: &Connection) -> Result<Vec<WorkKind>, AppError> {
 /// Retourne une erreur si la lecture SQL échoue.
 pub fn dossier_work_kinds(conn: &Connection, client: ClientId) -> Result<Vec<WorkKind>, AppError> {
     let mut stmt = conn.prepare(
-        "SELECT k.id, k.name, k.created_at
+        "SELECT k.id, k.name, k.tint, k.note, k.created_at
            FROM dossier_work_kinds AS l
            JOIN work_kinds AS k ON k.id = l.kind_id
           WHERE l.client_id = ?1
@@ -255,16 +435,19 @@ pub(crate) fn attached_kind_names(conn: &Connection) -> Result<Vec<(ClientId, St
 }
 
 fn read_kind(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkKind> {
+    let slug: String = row.get(2)?;
     Ok(WorkKind {
         id: row.get(0)?,
         name: row.get(1)?,
-        created_at: row.get(2)?,
+        tint: WorkKindTint::parse(&slug).unwrap_or(WorkKindTint::Encre),
+        note: row.get(3)?,
+        created_at: row.get(4)?,
     })
 }
 
 fn work_kind_by_id(conn: &Connection, id: &str) -> Result<Option<WorkKind>, AppError> {
     conn.query_row(
-        "SELECT id, name, created_at FROM work_kinds WHERE id = ?1",
+        "SELECT id, name, tint, note, created_at FROM work_kinds WHERE id = ?1",
         [id],
         read_kind,
     )
@@ -272,15 +455,28 @@ fn work_kind_by_id(conn: &Connection, id: &str) -> Result<Option<WorkKind>, AppE
     .map_err(AppError::from)
 }
 
-fn insert_kind(conn: &Connection, name: &str) -> Result<WorkKind, AppError> {
+fn insert_kind(
+    conn: &Connection,
+    name: &str,
+    note: &str,
+    tint: WorkKindTint,
+) -> Result<WorkKind, AppError> {
     let kind = WorkKind {
         id: uuid::Uuid::now_v7().to_string(),
         name: name.to_string(),
+        tint,
+        note: note.to_string(),
         created_at: OffsetDateTime::now_utc().format(&Rfc3339)?,
     };
     conn.execute(
-        "INSERT INTO work_kinds (id, name, created_at) VALUES (?1, ?2, ?3)",
-        params![kind.id, kind.name, kind.created_at],
+        "INSERT INTO work_kinds (id, name, tint, note, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            kind.id,
+            kind.name,
+            kind.tint.slug(),
+            kind.note,
+            kind.created_at
+        ],
     )?;
     Ok(kind)
 }
@@ -294,6 +490,14 @@ fn checked_name(raw: &str) -> Result<String, WorkKindError> {
         return Err(WorkKindError::TooLong);
     }
     Ok(name.to_string())
+}
+
+fn checked_note(raw: &str) -> Result<String, WorkKindError> {
+    let note = raw.trim();
+    if note.chars().count() > MAX_NOTE_CHARS {
+        return Err(WorkKindError::NoteTooLong);
+    }
+    Ok(note.to_string())
 }
 
 fn folded(name: &str) -> String {
@@ -526,7 +730,14 @@ mod tests {
         let (quai, _) = conversation(&mut store, "Atelier des gardes");
 
         assert_eq!(
-            domain(&mut store, &CreateWorkKind { name: "   ".into() }),
+            domain(
+                &mut store,
+                &CreateWorkKind {
+                    name: "   ".into(),
+                    note: String::new(),
+                    tint: String::new(),
+                },
+            ),
             "Ce type n'a pas de nom."
         );
         let forty = "é".repeat(40);
@@ -534,6 +745,8 @@ mod tests {
             &mut store,
             &CreateWorkKind {
                 name: forty.clone(),
+                note: String::new(),
+                tint: String::new(),
             },
         );
         assert_eq!(kept.name, forty);
@@ -542,6 +755,8 @@ mod tests {
                 &mut store,
                 &CreateWorkKind {
                     name: "é".repeat(41),
+                    note: String::new(),
+                    tint: String::new(),
                 }
             ),
             "Ce type dépasse 40 caractères."
@@ -550,6 +765,8 @@ mod tests {
             &mut store,
             &CreateWorkKind {
                 name: "Site Web".into(),
+                note: String::new(),
+                tint: String::new(),
             },
         );
         assert_eq!(
@@ -557,6 +774,8 @@ mod tests {
                 &mut store,
                 &CreateWorkKind {
                     name: "site web".into(),
+                    note: String::new(),
+                    tint: String::new(),
                 }
             ),
             "Ce type existe déjà."
@@ -678,5 +897,111 @@ mod tests {
         assert_eq!(confirmed, Outcome::Applied(()));
         assert!(kind_names(&store, quai).is_empty());
         assert!(work_kinds(store.connection()).unwrap().is_empty());
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn a_wash_and_a_note_stay_on_the_type_and_a_rename_leaves_them() {
+        let mut store = test_store("types-teinte");
+        let (quai, _) = conversation(&mut store, "Atelier des teintes");
+        let created = applied(
+            &mut store,
+            &CreateWorkKind {
+                name: "site web".into(),
+                note: "  le site, la page  ".into(),
+                tint: "mousse".into(),
+            },
+        );
+        assert_eq!(created.tint, WorkKindTint::Mousse);
+        assert_eq!(created.note, "le site, la page");
+        assert!(!created.tint.needs_paper_text());
+        assert_eq!(created.tint.slug(), "mousse");
+
+        let revised = applied(
+            &mut store,
+            &ReviseWorkKind {
+                id: created.id.clone(),
+                name: "site".into(),
+                note: String::new(),
+                tint: "ardoise".into(),
+            },
+        );
+        assert_eq!(revised.id, created.id);
+        assert_eq!(revised.created_at, created.created_at);
+        assert_eq!(revised.name, "site");
+        assert_eq!(revised.tint, WorkKindTint::Ardoise);
+        assert_eq!(revised.note, "");
+
+        let renamed = applied(
+            &mut store,
+            &RenameWorkKind {
+                id: created.id.clone(),
+                name: "sites".into(),
+            },
+        );
+        assert_eq!(renamed.name, "sites");
+        assert_eq!(renamed.tint, WorkKindTint::Ardoise);
+        assert_eq!(renamed.note, "");
+
+        store
+            .connection()
+            .execute(
+                "INSERT INTO work_kinds (id, name, created_at) VALUES ('ancien', 'ancien', '2026-01-01T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+        let old = work_kind_by_id(store.connection(), "ancien")
+            .unwrap()
+            .unwrap();
+        assert_eq!(old.tint, WorkKindTint::Encre);
+        assert_eq!(old.note, "");
+
+        let before = work_kinds(store.connection()).unwrap();
+        assert_eq!(
+            domain(
+                &mut store,
+                &ReviseWorkKind {
+                    id: created.id.clone(),
+                    name: "sites".into(),
+                    note: "é".repeat(121),
+                    tint: "ocre".into(),
+                }
+            ),
+            "Cette note dépasse 120 caractères."
+        );
+        assert_eq!(
+            domain(
+                &mut store,
+                &CreateWorkKind {
+                    name: "autre".into(),
+                    note: String::new(),
+                    tint: "neon".into(),
+                }
+            ),
+            "Cette teinte n'existe pas."
+        );
+        assert_eq!(work_kinds(store.connection()).unwrap(), before);
+        let kept = work_kind_by_id(store.connection(), &created.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(kept.tint, WorkKindTint::Ardoise);
+        assert_eq!(kept.name, "sites");
+
+        let born = applied(
+            &mut store,
+            &SetDossierWorkKinds {
+                client: quai,
+                names: vec!["né du dossier".into()],
+            },
+        );
+        let fresh = born
+            .iter()
+            .find(|kind| kind.name == "né du dossier")
+            .unwrap();
+        assert_eq!(fresh.tint, WorkKindTint::Encre);
+        assert_eq!(fresh.note, "");
+
+        assert!(!WorkKindTint::ALL.iter().any(|tint| tint.needs_paper_text()));
+        assert!(text_needs_paper((0x1c, 0x18, 0x14)));
     }
 }

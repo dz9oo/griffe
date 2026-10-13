@@ -376,10 +376,7 @@ async fn the_atelier_chrome_has_three_pieces_and_vendored_fonts() {
     .await;
     assert!(societe.contains("Te payer"), "{societe}");
     assert!(societe.contains("Le relevé"), "{societe}");
-    assert!(
-        societe.contains("L'identité") || societe.contains("L&#x27;identité"),
-        "{societe}"
-    );
+    assert!(societe.contains("La carte"), "{societe}");
 
     let css = body_text(
         router
@@ -451,24 +448,22 @@ async fn the_help_letter_explains_atelier_and_opens_recipes() {
     assert!(!aide.contains("3514"), "{aide}");
     assert!(!aide.contains("2777"), "{aide}");
     assert!(!aide.contains("freeflow "), "{aide}");
-    for slug in [
-        "relancer",
-        "conversation",
-        "devis",
-        "releve",
-        "impots",
-        "cfe",
-        "clore",
-        "papiers",
-        "lexique",
-    ] {
+    for slug in AIDE_SLUGS {
         assert!(
             aide.contains(&format!("href=\"/aide/{slug}\"")),
             "sommaire {slug} : {aide}"
         );
     }
     assert!(aide.contains("href=\"/premiers-pas\""), "{aide}");
-    assert!(aide.contains("href=\"/societe/payer\""), "{aide}");
+    assert!(aide.contains("href=\"/aide/payer\""), "{aide}");
+    assert!(
+        !aide.contains("Les formalités"),
+        "le rayon vide ne s'affiche pas : {aide}"
+    );
+    assert!(
+        aide.contains("data-label=\"se repérer les trois pièces.\""),
+        "la palette reprend le catalogue : {aide}"
+    );
     assert!(
         !aide.contains("aria-current=\"page\""),
         "aucune pièce soulignée : {aide}"
@@ -649,6 +644,10 @@ async fn the_help_letter_explains_atelier_and_opens_recipes() {
     assert!(lexique.contains("Report à nouveau"), "{lexique}");
     assert!(lexique.contains("href=\"/aide\""), "{lexique}");
     assert!(!lexique.contains("class=\"panel\""), "{lexique}");
+    assert!(
+        !lexique.contains("FreeFlow"),
+        "le lexique nomme Griffe : {lexique}"
+    );
 
     let alias = body_text(
         router
@@ -700,6 +699,144 @@ async fn the_help_letter_explains_atelier_and_opens_recipes() {
     assert!(js.contains("event.key !== \"?\""), "{js}");
 }
 
+fn without_urls(html: &str) -> String {
+    let mut out = html.to_string();
+    for marker in ["href=\"", "hx-get=\""] {
+        out = strip_attr(&out, marker);
+    }
+    out
+}
+
+fn strip_attr(html: &str, marker: &str) -> String {
+    let mut out = String::new();
+    let mut rest = html;
+    while let Some(start) = rest.find(marker) {
+        out.push_str(&rest[..start]);
+        rest = &rest[start + marker.len()..];
+        if let Some(end) = rest.find('"') {
+            rest = &rest[end + 1..];
+        } else {
+            break;
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+const AIDE_SLUGS: &[&str] = &[
+    "pieces",
+    "coffre",
+    "lentille",
+    "conversation",
+    "relancer",
+    "courrier",
+    "devis",
+    "travaux",
+    "phrases",
+    "gestes",
+    "jour",
+    "releve",
+    "facture",
+    "payer",
+    "impots",
+    "cfe",
+    "clore",
+    "papiers",
+    "lexique",
+];
+
+#[tokio::test]
+async fn the_help_catalog_covers_each_situation_and_hides_an_empty_shelf() {
+    let state = unlocked_state(&test_db_path("aide-catalog")).await;
+    let router = griffe_web::router(state);
+
+    let index = body_text(
+        router
+            .clone()
+            .oneshot(Request::builder().uri("/aide").body(Body::empty()).unwrap())
+            .await
+            .unwrap(),
+    )
+    .await;
+    for label in [
+        "Se repérer",
+        "Parler aux gens",
+        "Tenir l'argent",
+        "Rendre des comptes",
+    ] {
+        assert!(index.contains(label), "{label} : {index}");
+    }
+
+    let pages: &[(&str, &str, Option<&str>)] = &[
+        ("pieces", "Les trois pièces.", Some("/jour")),
+        (
+            "coffre",
+            "Pendant 12 h, ne pas redemander la passphrase",
+            None,
+        ),
+        ("lentille", "les arrêtés", Some("/affaires")),
+        ("conversation", "fiche déjà là", Some("/affaires/nouvelle")),
+        ("relancer", "cinq secondes", Some("/jour")),
+        (
+            "courrier",
+            "Enregistrer et essayer la liaison",
+            Some("/societe/courrier"),
+        ),
+        ("devis", "Le total est la somme", Some("/affaires")),
+        ("travaux", "Il se garde tout seul", Some("/affaires")),
+        (
+            "phrases",
+            "Les conversations déjà engagées finissent leur série.",
+            Some("/affaires/phrases"),
+        ),
+        ("gestes", "Ils reviennent", Some("/affaires")),
+        ("jour", "mois de piste", Some("/jour")),
+        ("releve", "non traitée", Some("/societe/releve")),
+        ("facture", "quantité négative", Some("/affaires")),
+        ("payer", "Entre toi et la société", Some("/societe/payer")),
+        ("impots", "vous doit de la TVA", Some("/societe/impots")),
+        ("cfe", "cotisation foncière", Some("/societe/impots/cfe")),
+        ("clore", "greffe", Some("/societe/cloture")),
+        ("papiers", "Garder les originaux", Some("/societe/papiers")),
+        ("lexique", "Report à nouveau", None),
+    ];
+    assert_eq!(pages.len(), AIDE_SLUGS.len());
+
+    for (slug, needle, door) in pages {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/aide/{slug}"))
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_text(response).await;
+        assert!(
+            !body.contains("<!DOCTYPE html>") && !body.contains("<body"),
+            "{slug} htmx : {body}"
+        );
+        assert!(body.contains(needle), "{slug} attend « {needle} » : {body}");
+        assert!(body.contains("href=\"/aide\""), "{slug} : {body}");
+        let prose = without_urls(&body);
+        assert!(!prose.contains("CA3"), "{slug} : {prose}");
+        assert!(!prose.contains("3514"), "{slug} : {prose}");
+        assert!(!prose.contains("2777"), "{slug} : {prose}");
+        assert!(!body.contains("Tiime"), "{slug} : {body}");
+        assert!(!body.contains("Les formalités"), "{slug} : {body}");
+        if let Some(href) = door {
+            assert!(
+                body.contains(&format!("href=\"{href}\"")),
+                "{slug} porte {href} : {body}"
+            );
+        }
+    }
+}
+
 #[tokio::test]
 async fn the_day_letter_shows_the_mast_gestures_and_the_month_grid() {
     let db_path = test_db_path("letter-jour");
@@ -718,9 +855,22 @@ async fn the_day_letter_shows_the_mast_gestures_and_the_month_grid() {
     .await;
     assert!(jour.contains("data-view=\"jour\""), "{jour}");
     assert!(jour.contains("class=\"mast\""), "mât visible : {jour}");
+    assert!(jour.contains("class=\"pupitre"), "{jour}");
+    assert!(
+        jour.contains("Ce matin, un geste")
+            || jour.contains("Ce matin, deux gestes")
+            || jour.contains("Ce matin, trois gestes")
+            || jour.contains("Ce matin, quatre gestes")
+            || jour.contains("Ce matin, cinq gestes"),
+        "{jour}"
+    );
     assert!(jour.contains("en banque"), "{jour}");
     assert!(jour.contains("de piste"), "{jour}");
-    assert!(jour.contains("0 prospects / 0 clients"), "{jour}");
+    assert!(
+        !jour.contains("prospects"),
+        "le compte du livre n'est plus sur le pupitre : {jour}"
+    );
+    assert!(!jour.contains("class=\"day-split\""), "{jour}");
     assert!(jour.contains("Samedi 5 septembre 2026"), "{jour}");
     assert!(jour.contains("class=\"gestes\""), "{jour}");
     assert!(
@@ -774,6 +924,235 @@ async fn the_day_letter_shows_the_mast_gestures_and_the_month_grid() {
     .await;
     assert!(fragment.contains("data-view=\"jour\""), "{fragment}");
     assert!(fragment.contains("class=\"mast\""), "{fragment}");
+    assert!(fragment.contains("class=\"pupitre"), "{fragment}");
+}
+
+#[tokio::test]
+async fn the_morning_settles_leroy_and_leaves_a_quiet_vendor_off_the_page() {
+    let db_path = test_db_path("jour-leroy");
+    let state = unlocked_state(&db_path)
+        .await
+        .with_today(time::macros::date!(2026 - 09 - 05));
+    {
+        let mut store =
+            Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+        fn applied<T: std::fmt::Debug>(outcome: Outcome<T>) -> T {
+            match outcome {
+                Outcome::Applied(value) => value,
+                other => panic!("expected Applied, got {other:?}"),
+            }
+        }
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &griffe_core::opening_balance::RecordOpeningBalance {
+                        opens_on: time::macros::date!(2025 - 10 - 01),
+                        source: Some("cabinet".into()),
+                        lines: vec![
+                            "512000:Banque:D:15000.00"
+                                .parse::<griffe_core::domain::OpeningBalanceLine>()
+                                .unwrap(),
+                            "401000:Cabinet Leroy:C:1200.00"
+                                .parse::<griffe_core::domain::OpeningBalanceLine>()
+                                .unwrap(),
+                            "101000:Capital:C:13800.00"
+                                .parse::<griffe_core::domain::OpeningBalanceLine>()
+                                .unwrap(),
+                        ],
+                        tax_losses: Money::ZERO,
+                        prior_corporate_tax: None,
+                        prior_vat_due: None,
+                    },
+                    &human_ctx(),
+                )
+                .unwrap(),
+        );
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &griffe_core::billing::ImportBankTransactions {
+                        transactions: vec![griffe_core::billing::ParsedTransaction {
+                            occurred_on: time::macros::date!(2026 - 09 - 04),
+                            amount_cents: -120_000,
+                            description: "VIR LEROY".into(),
+                            fitid: None,
+                        }],
+                    },
+                    &human_ctx(),
+                )
+                .unwrap(),
+        );
+        let mut expense = |label: &str, supplier: &str, cents: i64, on: time::Date| {
+            applied(
+                Executor::new(&mut store)
+                    .execute(
+                        &RecordExpense {
+                            label: label.into(),
+                            category: griffe_core::domain::ExpenseCategory::Fees,
+                            amount: Money::from_cents(cents),
+                            vat_rate: griffe_core::domain::VatRate::Zero,
+                            vat_deductible: Money::ZERO,
+                            incurred_on: on,
+                            receipt_hash: None,
+                            receipt_filename: None,
+                            bank_transaction_id: None,
+                            supplier: Some(supplier.into()),
+                            paid_by: griffe_core::domain::ExpensePaidBy::Company,
+                            reverse_charge: false,
+                        },
+                        &human_ctx(),
+                    )
+                    .unwrap(),
+            );
+        };
+        expense(
+            "honoraires clôture",
+            "Cabinet Leroy",
+            120_000,
+            time::macros::date!(2026 - 09 - 04),
+        );
+        expense(
+            "Abonnement",
+            "Tiime",
+            2_000,
+            time::macros::date!(2026 - 03 - 01),
+        );
+    }
+    let router = griffe_web::router(state);
+    let jour = body_text(
+        router
+            .oneshot(
+                Request::builder()
+                    .uri("/jour")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(jour.contains("Régler"), "{jour}");
+    assert!(jour.contains("Cabinet Leroy"), "{jour}");
+    assert!(jour.contains("un débit correspond"), "{jour}");
+    assert!(jour.contains("1\u{202f}200,00"), "{jour}");
+    assert!(!jour.contains("Tiime"), "{jour}");
+    assert!(
+        jour.contains("href=\"/affaires/Cabinet%20Leroy\""),
+        "{jour}"
+    );
+    let rows = jour.matches("class=\"geste\"").count();
+    assert!(rows <= 5, "{rows} lignes : {jour}");
+    assert!(jour.contains("class=\"pupitre-head\""), "{jour}");
+}
+
+/// Matin sans geste : la phrase du vide, et pas d'en-tête de colonnes.
+/// Le 10 février 2026 est à plus de trente jours de l'acompte d'IS du 15 mars,
+/// et la franchise ne pose pas de déclaration de TVA.
+#[tokio::test]
+async fn a_clear_morning_says_nothing_is_due_and_hides_the_columns() {
+    let db_path = test_db_path("jour-vide");
+    let state = unlocked_state(&db_path)
+        .await
+        .with_today(time::macros::date!(2026 - 02 - 10));
+    {
+        let mut store =
+            Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &griffe_core::company::SetCompanyProfile {
+                        name: "Nova Dev".into(),
+                        legal_form: "SASU".into(),
+                        siren: griffe_core::domain::Siren::parse("889112348").unwrap(),
+                        vat_number: None,
+                        address: griffe_core::domain::Address {
+                            street: "3 allée des Tanneurs".into(),
+                            postal_code: "44000".into(),
+                            city: "Nantes".into(),
+                            country: "FR".into(),
+                        },
+                        share_capital: Some(Money::from_cents(100_000)),
+                        rcs_city: None,
+                        iban: None,
+                        fiscal_year_end: Some(griffe_core::domain::FiscalYearEnd::CALENDAR),
+                        vat_regime: Some(griffe_core::domain::VatRegime::Franchise),
+                        director_monthly_gross: None,
+                        director_charge_ratio_bps: None,
+                        president_name: Some("Nova Martin".into()),
+                        sole_shareholder_name: Some("Nova Martin".into()),
+                        sole_shareholder_address: None,
+                        share_count: Some(100),
+                    },
+                    &human_ctx(),
+                )
+                .unwrap(),
+        );
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &griffe_core::setup::DeclareNewCompany { declared: true },
+                    &human_ctx(),
+                )
+                .unwrap(),
+        );
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &griffe_core::billing::ImportBankTransactions {
+                        transactions: vec![griffe_core::billing::ParsedTransaction {
+                            occurred_on: time::macros::date!(2026 - 02 - 01),
+                            amount_cents: 10_000,
+                            description: "apport".into(),
+                            fitid: None,
+                        }],
+                    },
+                    &human_ctx(),
+                )
+                .unwrap(),
+        );
+        let tx = griffe_core::billing::list_bank_transactions(store.connection())
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+        applied(
+            Executor::new(&mut store)
+                .execute(
+                    &griffe_core::billing::SettleBankTransaction {
+                        transaction_id: tx.id,
+                        account: "455000"
+                            .parse::<griffe_core::domain::SettlementAccount>()
+                            .unwrap(),
+                        label: None,
+                    },
+                    &human_ctx(),
+                )
+                .unwrap(),
+        );
+    }
+    let router = griffe_web::router(state);
+    let jour = body_text(
+        router
+            .oneshot(
+                Request::builder()
+                    .uri("/jour")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        jour.contains("Rien n'est dû ce matin.") || jour.contains("Rien n&#x27;est dû ce matin."),
+        "{jour}"
+    );
+    assert!(
+        !jour.contains("Prochain pas"),
+        "pas d'en-tête sans geste : {jour}"
+    );
 }
 
 #[tokio::test]
@@ -810,6 +1189,28 @@ async fn les_affaires_lists_three_chapters_and_opens_a_dossier() {
         "pas de commande CLI dans la lettre : {created_body}"
     );
 
+    {
+        let mut store =
+            Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+        Executor::new(&mut store)
+            .execute(
+                &CreateProspect {
+                    prospect_name: "Plus tard".into(),
+                    address: None,
+                    representative: None,
+                    email: None,
+                    phone: None,
+                    name: "un jour".into(),
+                    amount: Money::ZERO,
+                    probability: Probability::new(10).unwrap(),
+                    next_action_at: time::macros::date!(2026 - 10 - 01),
+                    source: None,
+                },
+                &human_ctx(),
+            )
+            .unwrap();
+    }
+
     let list = body_text(
         router
             .clone()
@@ -827,6 +1228,11 @@ async fn les_affaires_lists_three_chapters_and_opens_a_dossier() {
     assert!(list.contains("demande un geste"), "{list}");
     assert!(list.contains("le livre"), "{list}");
     assert!(list.contains("les sorties"), "{list}");
+    assert!(list.contains("les arrêtés"), "{list}");
+    assert!(
+        !list.contains("les arrêtées"),
+        "le filtre dit les arrêtés : {list}"
+    );
     assert!(
         list.contains("Les conversations en cours, et les missions."),
         "le livre s'explique dans le menu : {list}"
@@ -840,15 +1246,23 @@ async fn les_affaires_lists_three_chapters_and_opens_a_dossier() {
         "les sorties s'expliquent dans le menu : {list}"
     );
     assert!(
+        list.contains("Les conversations qu'on a arrêtées."),
+        "les arrêtés s'expliquent dans le menu : {list}"
+    );
+    assert!(
         !list.contains("Fournisseurs"),
         "plus un chapitre Fournisseurs : {list}"
     );
     assert!(
-        !list.contains("Camille"),
-        "un premier message reste dans le tas : {list}"
+        list.contains("Camille") && list.contains("aujourd'hui"),
+        "un premier message dont le pas est aujourd'hui demande un geste : {list}"
     );
-    assert!(list.contains("1 premier message"), "{list}");
-    assert!(list.contains("Rien ne demande un geste."), "{list}");
+    assert!(
+        !list.contains("Plus tard"),
+        "un pas plus loin reste dans le tas : {list}"
+    );
+    assert!(!list.contains("1 premier message"), "{list}");
+    assert!(!list.contains("Rien ne demande un geste."), "{list}");
     assert!(list.contains("Nouvelle conversation"), "{list}");
 
     let filtered = body_text(
@@ -864,7 +1278,8 @@ async fn les_affaires_lists_three_chapters_and_opens_a_dossier() {
             .unwrap(),
     )
     .await;
-    assert!(filtered.contains("1 premier message"), "{filtered}");
+    assert!(!filtered.contains("Camille"), "{filtered}");
+    assert!(!filtered.contains("1 premier message"), "{filtered}");
     assert!(filtered.contains("Aucun nom."), "{filtered}");
 
     let found = body_text(
@@ -881,7 +1296,24 @@ async fn les_affaires_lists_three_chapters_and_opens_a_dossier() {
     )
     .await;
     assert!(found.contains("Camille"), "{found}");
+    assert!(!found.contains("Plus tard"), "{found}");
     assert!(!found.contains("Aucun nom."), "{found}");
+
+    let pile = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires?vue=tas")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(pile.contains("Plus tard"), "{pile}");
+    assert!(pile.contains("Camille"), "{pile}");
     assert!(!list.contains("freeflow "), "{list}");
     assert!(
         !list.contains("impayé") && !list.contains("pipeline"),
@@ -959,6 +1391,10 @@ async fn les_affaires_lists_three_chapters_and_opens_a_dossier() {
                     email: Some("camille@exemple.fr".into()),
                     phone: None,
                     role: None,
+                    given_name: String::new(),
+                    family_name: String::new(),
+                    civility: None,
+                    structured: false,
                 },
                 &human_ctx(),
             )
@@ -1242,16 +1678,24 @@ async fn le_jour_nomme_les_conversations_et_le_dossier_note_fiche_estimation_ren
     )
     .await;
     assert!(jour.contains("de piste"), "{jour}");
-    assert!(jour.contains("2 prospects / 1 client"), "{jour}");
-    assert!(jour.contains("class=\"day-split\""), "{jour}");
-    assert!(jour.contains("En conversation"), "{jour}");
+    assert!(
+        !jour.contains("prospects"),
+        "le compte du livre n'est plus sur le pupitre : {jour}"
+    );
+    assert!(!jour.contains("class=\"day-split\""), "{jour}");
     assert!(jour.contains("2 autres conversations"), "{jour}");
     assert!(
         !jour.contains("Le porc du Val") && !jour.contains("Ferme du Nord"),
         "le tas froid ne s'écrit pas dans la lettre du matin : {jour}"
     );
-    assert!(jour.contains("En mission"), "{jour}");
-    assert!(jour.contains("Mairie test"), "{jour}");
+    assert!(
+        !jour.contains("En mission") && !jour.contains("En conversation"),
+        "les chapitres ont quitté le matin : {jour}"
+    );
+    assert!(
+        jour.contains("class=\"track\"") && jour.contains("Mairie test"),
+        "la mission reste sur sa bande : {jour}"
+    );
 
     let dossier = body_text(
         router
@@ -1454,14 +1898,32 @@ async fn la_societe_shows_the_landscape_chapters_and_a_closed_dividend() {
     )
     .await;
     assert!(home.contains("data-view=\"societe\""), "{home}");
+    assert!(home.contains("class=\"bureau\""), "bureau : {home}");
     assert!(home.contains("class=\"landscape\""), "paysage : {home}");
+    assert!(home.contains("Tenir"), "{home}");
     assert!(home.contains("Te payer"), "{home}");
+    assert!(
+        home.contains("L'État") || home.contains("L&#x27;État"),
+        "{home}"
+    );
+    assert!(home.contains("Les réglages"), "{home}");
+    assert!(home.contains("La piste"), "{home}");
+    let piste_at = home.find("La piste").expect("La piste");
+    let piste_tag = &home[piste_at.saturating_sub(500)..piste_at];
+    assert!(
+        piste_tag.contains("aria-current=\"true\""),
+        "la piste est la ligne courante : {piste_tag}"
+    );
     assert!(home.contains("Entre toi et la société"), "{home}");
     assert!(home.contains("/societe/payer"), "{home}");
     assert!(home.contains("Les papiers"), "{home}");
     assert!(home.contains("/societe/papiers"), "{home}");
     assert!(home.contains("Le courrier"), "{home}");
     assert!(home.contains("/societe/courrier"), "{home}");
+    assert!(
+        home.contains("/affaires/phrases?depuis=societe"),
+        "les phrases restent dans le bureau : {home}"
+    );
     assert!(
         !home.contains("freeflow "),
         "pas de commande CLI dans la lettre : {home}"
@@ -1504,6 +1966,10 @@ async fn la_societe_shows_the_landscape_chapters_and_a_closed_dividend() {
             .unwrap(),
     )
     .await;
+    assert!(
+        releve.contains("class=\"bureau\""),
+        "le relevé s'ouvre dans le bureau : {releve}"
+    );
     assert!(releve.contains("Leroy"), "{releve}");
     assert!(
         releve.contains("dette") || releve.contains("pas une charge"),
@@ -1513,6 +1979,65 @@ async fn la_societe_shows_the_landscape_chapters_and_a_closed_dividend() {
     assert!(
         !releve.to_lowercase().contains("c'est moi que je me paie"),
         "{releve}"
+    );
+
+    let papers = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/societe/papiers")
+                    .header("HX-Request", "true")
+                    .header("HX-Target", "content")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        papers.contains("class=\"bureau\"") && papers.contains("Les papiers."),
+        "les papiers restent au bureau : {papers}"
+    );
+    let slip = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/societe/papiers")
+                    .header("HX-Request", "true")
+                    .header("HX-Target", "papiers-letter")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        slip.contains("Les papiers.") && !slip.contains("class=\"bureau\""),
+        "le rafraîchissement de la lettre ne redessine pas les colonnes : {slip}"
+    );
+
+    let phrases = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/phrases?depuis=societe")
+                    .header("HX-Request", "true")
+                    .header("HX-Target", "content")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        phrases.contains("class=\"bureau\"") && phrases.contains("phrase-desk"),
+        "les phrases s'ouvrent dans le bureau : {phrases}"
     );
 
     let old = body_text(
@@ -1529,6 +2054,37 @@ async fn la_societe_shows_the_landscape_chapters_and_a_closed_dividend() {
     )
     .await;
     assert!(old.contains("Le relevé"), "{old}");
+}
+
+#[tokio::test]
+async fn la_societe_bureau_bar_clears_the_word() {
+    let state = unlocked_state(&test_db_path("bureau-css")).await;
+    let css = body_text(
+        griffe_web::router(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/assets/app.css")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        css.contains(".bureau-line") && css.contains("padding: 6px 8px 6px 14px"),
+        "{css}"
+    );
+    assert!(
+        css.contains(".bureau-line[aria-current=\"true\"]")
+            && css.contains("inset 3px 0 0 var(--seal)"),
+        "{css}"
+    );
+    assert!(
+        css.contains(".bureau-line .who {\n  font-family: var(--sans);\n  font-size: 15px;"),
+        "les lignes du bureau ne sont pas des titres d'affiche : {css}"
+    );
+    assert!(css.contains("accent-color: var(--ink)"), "{css}");
 }
 
 #[tokio::test]
@@ -7117,8 +7673,15 @@ async fn the_papers_chapter_is_a_letter_not_a_dump() {
         "inventaires puis dépôt puis coda des deux lieux, pas l'inverse : {body}"
     );
 
-    let h2 = body.matches("<h2>").count();
-    assert_eq!(h2, 3, "trois chapitres serif, pas un h2 par ligne : {body}");
+    let letter = body
+        .split_once("id=\"papiers-letter\"")
+        .map(|(_, rest)| rest)
+        .unwrap_or(&body);
+    let h2 = letter.matches("<h2>").count();
+    assert_eq!(
+        h2, 3,
+        "trois chapitres serif dans la lettre, pas un h2 par ligne : {letter}"
+    );
     assert!(body.contains("class=\"mast\""), "{body}");
     assert!(
         body.contains("id=\"period\""),
@@ -7934,6 +8497,9 @@ async fn phrases_are_a_letter_and_the_next_unopened_mail_uses_them() {
         "{page}"
     );
     assert!(page.contains("&lt;prénom&gt;"), "{page}");
+    assert!(page.contains("&lt;nom&gt;"), "{page}");
+    assert!(page.contains("&lt;genre&gt;"), "{page}");
+    assert!(page.contains("les deux côtés restent"), "{page}");
     assert!(page.contains("class=\"phrase-frise\""), "{page}");
     assert!(!page.contains("class=\"phrase-moment\""), "{page}");
     assert!(
@@ -8101,6 +8667,10 @@ async fn engaged_conversations_finish_their_series_and_a_new_one_takes_three_mom
                         email: Some("camille@exemple.fr".into()),
                         phone: None,
                         role: None,
+                        given_name: String::new(),
+                        family_name: String::new(),
+                        civility: None,
+                        structured: false,
                     },
                     &human_ctx(),
                 )
@@ -8170,9 +8740,7 @@ async fn engaged_conversations_finish_their_series_and_a_new_one_takes_three_mom
     )
     .await;
     assert!(
-        listed.contains("1 premier contact")
-            && listed.contains("Camille")
-            && listed.contains("à reprendre aujourd'hui"),
+        listed.contains("premier contact · à reprendre aujourd'hui") && listed.contains("Camille"),
         "{listed}"
     );
 
@@ -8282,9 +8850,8 @@ label_close=Derni%C3%A8re+relance&subject_close=Fin&body_close=Le+dernier+mot.&r
     )
     .await;
     assert!(
-        listed.contains("1 premier contact")
+        listed.contains("premier contact · à reprendre aujourd'hui")
             && listed.contains("Camille")
-            && listed.contains("à reprendre aujourd'hui")
             && !listed.contains("12 septembre"),
         "{listed}"
     );
@@ -8430,6 +8997,10 @@ async fn the_genre_changes_only_the_words() {
                         email: Some(email.into()),
                         phone: None,
                         role: None,
+                        given_name: String::new(),
+                        family_name: String::new(),
+                        civility: None,
+                        structured: false,
                     },
                     &human_ctx(),
                 )
@@ -8481,9 +9052,10 @@ async fn the_genre_changes_only_the_words() {
         "{bare}"
     );
     assert!(bare.contains("name=\"genre_other\""), "{bare}");
-    assert!(!bare.contains("word-choice"), "{bare}");
+    assert!(bare.contains("name=\"civility\""), "{bare}");
     assert!(!bare.contains("<select"), "{bare}");
     assert!(!bare.contains("name=\"genre\" type=\"text\""), "{bare}");
+    assert!(!bare.contains("name=\"genre\" value="), "{bare}");
 
     let services = create_genre(&router, "Services publics").await;
     let shops = create_genre(&router, "Commerces").await;
@@ -9079,6 +9651,165 @@ fn hidden_value(page: &str, name: &str) -> String {
         .to_string()
 }
 
+#[tokio::test]
+async fn the_fiche_names_the_matter_and_who_answers() {
+    let db_path = test_db_path("fiche-quoi");
+    let state = unlocked_state(&db_path).await;
+    let router = griffe_web::router(state);
+    router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/affaires/nouvelle")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from("who=Mairie&phrase=Le+porche"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let fiche = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Mairie/fiche")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    for needle in [
+        "Quoi",
+        "Qui répond",
+        "Prénom",
+        "Nom",
+        "Monsieur",
+        "non dit",
+        "Courriel",
+        "Téléphone",
+        "Le standard, ou l'accueil.",
+        "Le porche",
+    ] {
+        assert!(fiche.contains(needle), "{needle} manque : {fiche}");
+    }
+    let dossier = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Mairie")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        !dossier.contains("← Les affaires"),
+        "le panneau n'a plus de retour : {dossier}"
+    );
+
+    let refused = post_form(
+        &router,
+        "/affaires/Mairie/fiche",
+        &format!(
+            "who=Mairie&matter=&matter_open=1&opportunity_revision={}&client_revision={}&contact_id={}&contact_revision={}",
+            hidden_value(&fiche, "opportunity_revision"),
+            hidden_value(&fiche, "client_revision"),
+            hidden_value(&fiche, "contact_id"),
+            hidden_value(&fiche, "contact_revision"),
+        ),
+    )
+    .await;
+    assert!(refused.contains("ce dont il s'agit"), "{refused}");
+
+    let saved = post_form(
+        &router,
+        "/affaires/Mairie/fiche",
+        &format!(
+            "who=Mairie&matter=Le+portail&matter_open=1&opportunity_revision={}&client_revision={}&contact_id={}&contact_revision={}&email=accueil@mairie.example&given_name=Camille&family_name=Riviere&civility=madame&correspondent_email=camille@mairie.example",
+            hidden_value(&fiche, "opportunity_revision"),
+            hidden_value(&fiche, "client_revision"),
+            hidden_value(&fiche, "contact_id"),
+            hidden_value(&fiche, "contact_revision"),
+        ),
+    )
+    .await;
+    assert!(saved.contains("Fiche à jour."), "{saved}");
+
+    let estimation = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Mairie/estimation")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(estimation.contains("Le portail"), "{estimation}");
+    assert!(estimation.contains("Ce dont il s'agit"), "{estimation}");
+
+    let again = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Mairie/fiche")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(again.contains("value=\"Camille\""), "{again}");
+    assert!(again.contains("value=\"Riviere\""), "{again}");
+    assert!(
+        again.contains("value=\"madame\" checked") || again.contains("checked value=\"madame\""),
+        "{again}"
+    );
+    assert!(again.contains("accueil@mairie.example"), "{again}");
+    assert!(again.contains("camille@mairie.example"), "{again}");
+
+    let letter = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Mairie/ecrire")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(letter.contains("Le standard"), "{letter}");
+    assert!(letter.contains("Qui répond"), "{letter}");
+    assert!(letter.contains("accueil@mairie.example"), "{letter}");
+    assert!(letter.contains("camille@mairie.example"), "{letter}");
+    assert!(
+        letter.contains("value=\"switchboard\" checked")
+            || letter.contains("checked value=\"switchboard\""),
+        "{letter}"
+    );
+}
+
 /// Rejoue l'envoi du formulaire de fiche, jeton de contact compris.
 /// Sans ce jeton, le coffre refuse : la fiche a un correspondant.
 fn fiche_post_body(page: &str, who: &str, email: &str, extra: &str) -> String {
@@ -9382,9 +10113,34 @@ async fn a_stopped_conversation_is_visible_and_the_stop_gesture_looks_final() {
             .unwrap(),
     )
     .await;
-    assert!(list.contains("Arrêtées · 1"), "{list}");
-    assert!(list.contains("voir"), "{list}");
-    assert!(list.contains("stopped-hint"), "{list}");
+    assert!(list.contains("les arrêtés"), "{list}");
+    assert!(!list.contains("Arrêtées · "), "{list}");
+    assert!(!list.contains("stopped-hint"), "{list}");
+    assert!(
+        !list.contains("Ancien"),
+        "un arrêté n'est pas un geste du jour : {list}"
+    );
+
+    let arretes = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires?vue=arretes")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(arretes.contains("Ancien"), "{arretes}");
+    assert!(arretes.contains("pas le bon moment"), "{arretes}");
+    assert!(
+        !arretes.contains("Atelier"),
+        "une conversation ouverte reste hors des arrêtés : {arretes}"
+    );
 
     let dossier = body_text(
         router
@@ -10434,24 +11190,26 @@ async fn travaux_is_read_as_prose_and_written_as_markdown_that_saves_itself() {
     );
 }
 
-fn kind_forms(html: &str) -> Vec<(String, String)> {
-    let marker = "hx-post=\"/affaires/types/";
-    let word = "class=\"kind-word\">";
+fn kind_links(html: &str) -> Vec<(String, String)> {
+    let marker = "/affaires/types?ouvert=";
     let mut rest = html;
     let mut found = Vec::new();
     while let Some(at) = rest.find(marker) {
         let after = &rest[at + marker.len()..];
         let end = after.find('"').unwrap_or(0);
         let id = after[..end].to_string();
-        let name = after
-            .find(word)
-            .map(|pos| {
-                let start = pos + word.len();
-                let stop = after[start..].find('<').unwrap_or(0);
-                after[start..start + stop].trim().to_string()
-            })
-            .unwrap_or_default();
-        found.push((id, name));
+        if id != "nouveau" && found.iter().all(|(seen, _)| seen != &id) {
+            let name = after
+                .find("class=\"pastille")
+                .and_then(|pos| {
+                    let gt = after[pos..].find('>')?;
+                    let start = pos + gt + 1;
+                    let stop = after[start..].find('<')?;
+                    Some(after[start..start + stop].trim().to_string())
+                })
+                .unwrap_or_default();
+            found.push((id, name));
+        }
         rest = &after[end..];
     }
     found
@@ -10572,27 +11330,35 @@ async fn work_kinds_filter_the_affaires_and_leave_on_the_second_gesture() {
     let quai_uri = "/affaires/Atelier%20Quai";
     let port_uri = "/affaires/Atelier%20Port";
 
-    let naming = posted(
-        &router,
-        &format!("{quai_uri}/types"),
-        &[("kind_other_on", "1"), ("kind_other", "")],
+    let bare = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(quai_uri)
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
     )
     .await;
-    assert_eq!(naming.status(), StatusCode::OK);
-    assert!(naming.headers().get("HX-Trigger").is_none());
-    let naming_body = body_text(naming).await;
-    assert!(naming_body.contains("Nomme le type."), "{naming_body}");
-    assert!(
-        naming_body.contains("hx-trigger=\"change, submit\""),
-        "{naming_body}"
-    );
-    assert!(!naming_body.contains(">Enregistrer<"), "{naming_body}");
-    assert!(!naming_body.contains("hx-on"), "{naming_body}");
+    assert!(bare.contains("Ajouter un type"), "{bare}");
+    assert!(bare.contains("hx-trigger=\"change\""), "{bare}");
+    assert!(!bare.contains("un autre"), "{bare}");
+    assert!(!bare.contains("Nouveau nom"), "{bare}");
+    assert!(!bare.contains("hx-on"), "{bare}");
 
     let created = posted(
         &router,
-        &format!("{quai_uri}/types"),
-        &[("kind_other_on", "1"), ("kind_other", "site web")],
+        "/affaires/types",
+        &[
+            ("name", "site web"),
+            ("note", "le site, la page"),
+            ("tint", "mousse"),
+            ("geste", "garder"),
+        ],
     )
     .await;
     assert_eq!(
@@ -10603,17 +11369,23 @@ async fn work_kinds_filter_the_affaires_and_leave_on_the_second_gesture() {
         Some("griffe:saved")
     );
     let created_body = body_text(created).await;
-    assert!(
-        created_body.contains("value=\"site web\""),
-        "{created_body}"
-    );
+    assert!(created_body.contains("Les types."), "{created_body}");
+    assert!(created_body.contains("le site, la page"), "{created_body}");
+    assert!(created_body.contains("+ un type"), "{created_body}");
+    assert!(!created_body.contains("Nouveau nom"), "{created_body}");
+    let forms = kind_links(&created_body);
+    let site_id = forms
+        .iter()
+        .find(|(_, name)| name == "site web")
+        .map(|(id, _)| id.clone())
+        .unwrap_or_else(|| panic!("site web absent du catalogue : {created_body}"));
 
-    let catalog = body_text(
+    let editor = body_text(
         router
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/affaires/types")
+                    .uri(format!("/affaires/types?ouvert={site_id}"))
                     .header("HX-Request", "true")
                     .body(Body::empty())
                     .unwrap(),
@@ -10622,13 +11394,30 @@ async fn work_kinds_filter_the_affaires_and_leave_on_the_second_gesture() {
             .unwrap(),
     )
     .await;
-    assert!(catalog.contains("Les types."), "{catalog}");
-    let forms = kind_forms(&catalog);
-    let site_id = forms
-        .iter()
-        .find(|(_, name)| name == "site web")
-        .map(|(id, _)| id.clone())
-        .unwrap_or_else(|| panic!("site web absent du catalogue : {catalog}"));
+    assert!(editor.contains("Ce qu'on y range"), "{editor}");
+    assert!(editor.contains("value=\"le site, la page\""), "{editor}");
+    assert!(editor.contains("value=\"mousse\""), "{editor}");
+    assert!(!editor.contains("Nouveau nom"), "{editor}");
+
+    let worn = posted(
+        &router,
+        &format!("{quai_uri}/types"),
+        &[("kind", "site web")],
+    )
+    .await;
+    assert_eq!(
+        worn.headers()
+            .get("HX-Trigger")
+            .and_then(|value| value.to_str().ok()),
+        Some("griffe:saved")
+    );
+    let worn_body = body_text(worn).await;
+    let reading = worn_body
+        .split_once("<details class=\"kind-add\"")
+        .map(|(head, _)| head)
+        .unwrap_or(&worn_body);
+    assert!(reading.contains("site web"), "{worn_body}");
+    assert!(worn_body.contains("value=\"site web\""), "{worn_body}");
 
     let filtered = body_text(
         router
@@ -10653,18 +11442,26 @@ async fn work_kinds_filter_the_affaires_and_leave_on_the_second_gesture() {
     assert!(!filtered.contains("Atelier Port"), "{filtered}");
     assert!(filtered.contains("Les types"), "{filtered}");
     assert!(
-        filtered.contains("<p class=\"kinds\">site web</p>"),
+        filtered.contains("class=\"pastille wash-mousse\">site web"),
         "{filtered}"
     );
+    assert!(
+        filtered.contains("class=\"tint-dot wash-mousse\""),
+        "{filtered}"
+    );
+
+    let made_backend = posted(
+        &router,
+        "/affaires/types",
+        &[("name", "backend"), ("tint", "encre"), ("geste", "garder")],
+    )
+    .await;
+    assert_eq!(made_backend.status(), StatusCode::OK);
 
     let both = posted(
         &router,
         &format!("{port_uri}/types"),
-        &[
-            ("kind", "site web"),
-            ("kind_other_on", "1"),
-            ("kind_other", "backend"),
-        ],
+        &[("kind", "site web"), ("kind", "backend")],
     )
     .await;
     assert_eq!(
@@ -10719,12 +11516,30 @@ async fn work_kinds_filter_the_affaires_and_leave_on_the_second_gesture() {
             .unwrap(),
     )
     .await;
-    let forms = kind_forms(&catalog);
+    let forms = kind_links(&catalog);
     let backend_id = forms
         .iter()
         .find(|(_, name)| name == "backend")
         .map(|(id, _)| id.clone())
         .unwrap_or_else(|| panic!("backend absent : {catalog}"));
+    let made_third = posted(
+        &router,
+        "/affaires/types",
+        &[("name", "reliure"), ("tint", "sable"), ("geste", "garder")],
+    )
+    .await;
+    assert_eq!(made_third.status(), StatusCode::OK);
+    let piled = posted(
+        &router,
+        &format!("{port_uri}/types"),
+        &[
+            ("kind", "site web"),
+            ("kind", "backend"),
+            ("kind", "reliure"),
+        ],
+    )
+    .await;
+    assert_eq!(piled.status(), StatusCode::OK);
     let backend_page = body_text(
         router
             .clone()
@@ -10745,6 +11560,10 @@ async fn work_kinds_filter_the_affaires_and_leave_on_the_second_gesture() {
     );
     assert!(backend_page.contains("Atelier Port"), "{backend_page}");
     assert!(
+        backend_page.contains("class=\"kind-more\">+1"),
+        "{backend_page}"
+    );
+    assert!(
         !backend_page.contains("href=\"/affaires/Atelier%20Quai\""),
         "{backend_page}"
     );
@@ -10752,7 +11571,12 @@ async fn work_kinds_filter_the_affaires_and_leave_on_the_second_gesture() {
     let renamed = posted(
         &router,
         &format!("/affaires/types/{site_id}"),
-        &[("name", "site"), ("geste", "renommer")],
+        &[
+            ("name", "site"),
+            ("note", ""),
+            ("tint", "ardoise"),
+            ("geste", "garder"),
+        ],
     )
     .await;
     assert_eq!(
@@ -10763,8 +11587,12 @@ async fn work_kinds_filter_the_affaires_and_leave_on_the_second_gesture() {
         Some("griffe:saved")
     );
     let renamed_body = body_text(renamed).await;
-    assert!(renamed_body.contains("value=\"site\""), "{renamed_body}");
+    assert!(
+        renamed_body.contains("class=\"pastille wash-ardoise\">site"),
+        "{renamed_body}"
+    );
     assert!(!renamed_body.contains("site web"), "{renamed_body}");
+    assert!(!renamed_body.contains("Nouveau nom"), "{renamed_body}");
 
     let followed = body_text(
         router
@@ -10824,8 +11652,11 @@ async fn work_kinds_filter_the_affaires_and_leave_on_the_second_gesture() {
         Some("griffe:saved")
     );
     let removed_body = body_text(removed).await;
-    assert!(!removed_body.contains("value=\"site\""), "{removed_body}");
-    assert!(removed_body.contains("value=\"backend\""), "{removed_body}");
+    assert!(!removed_body.contains(">site<"), "{removed_body}");
+    assert!(
+        removed_body.contains("class=\"pastille wash-encre\">backend"),
+        "{removed_body}"
+    );
 
     let after = body_text(
         router
@@ -10903,6 +11734,10 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
                     email: Some("ada@atelier.test".into()),
                     phone: None,
                     role: None,
+                    given_name: String::new(),
+                    family_name: String::new(),
+                    civility: None,
+                    structured: false,
                 },
                 &human_ctx(),
             )
@@ -10943,6 +11778,10 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
             .unwrap(),
     )
     .await;
+    assert!(
+        chapter.contains("class=\"bureau\""),
+        "le courrier reste au bureau : {chapter}"
+    );
     assert!(chapter.contains("Le courrier."), "{chapter}");
     assert!(
         chapter.contains("D'où elles partent") || chapter.contains("D&#x27;où elles partent"),
@@ -11645,7 +12484,7 @@ async fn la_fiche_refuse_une_adresse_illisible_et_ecrire_prend_la_nouvelle() {
             .revision
     };
     let first = format!(
-        "who=Atelier+Copie&representative=Ada&email=ada.ancienne%40exemple.fr&phone=&client_revision={revision}&contact_id=&contact_revision=&street=&postal_code=&city="
+        "who=Atelier+Copie&given_name=Ada&email=ada.ancienne%40exemple.fr&phone=&client_revision={revision}&contact_id=&contact_revision=&street=&postal_code=&city="
     );
     let saved = body_text(
         router
@@ -11670,14 +12509,19 @@ async fn la_fiche_refuse_une_adresse_illisible_et_ecrire_prend_la_nouvelle() {
         let client = griffe_core::clients::client_by_id(store.connection(), client_id)
             .unwrap()
             .unwrap();
+        assert_eq!(
+            client.switchboard_email.as_deref(),
+            Some("ada.ancienne@exemple.fr")
+        );
         let contact = griffe_core::clients::correspondent(store.connection(), client_id)
             .unwrap()
             .expect("correspondant");
-        assert_eq!(contact.email.as_deref(), Some("ada.ancienne@exemple.fr"));
+        assert_eq!(contact.name, "Ada");
+        assert_eq!(contact.email, None);
         (client.revision, contact.id.to_string(), contact.revision)
     };
     let bad = format!(
-        "who=Atelier+Copie&representative=Ada&email=ada+sans+arobase&phone=&client_revision={client_revision}&contact_id={contact_id}&contact_revision={contact_revision}&street=&postal_code=&city="
+        "who=Atelier+Copie&given_name=Ada&email=ada+sans+arobase&phone=&client_revision={client_revision}&contact_id={contact_id}&contact_revision={contact_revision}&street=&postal_code=&city="
     );
     let refused = body_text(
         router
@@ -11719,7 +12563,7 @@ async fn la_fiche_refuse_une_adresse_illisible_et_ecrire_prend_la_nouvelle() {
     assert!(!kept.contains("ada sans arobase"), "{kept}");
 
     let next = format!(
-        "who=Atelier+Copie&representative=Ada&email=ada.nouvelle%40exemple.fr&phone=&client_revision={client_revision}&contact_id={contact_id}&contact_revision={contact_revision}&street=&postal_code=&city="
+        "who=Atelier+Copie&given_name=Ada&email=ada.nouvelle%40exemple.fr&phone=&client_revision={client_revision}&contact_id={contact_id}&contact_revision={contact_revision}&street=&postal_code=&city="
     );
     let updated = body_text(
         router
@@ -11752,6 +12596,7 @@ async fn la_fiche_refuse_une_adresse_illisible_et_ecrire_prend_la_nouvelle() {
             .unwrap(),
     )
     .await;
-    assert!(letter.contains("À ada.nouvelle@exemple.fr"), "{letter}");
+    assert!(letter.contains("Le standard"), "{letter}");
+    assert!(letter.contains("ada.nouvelle@exemple.fr"), "{letter}");
     assert!(!letter.contains("ada.ancienne@exemple.fr"), "{letter}");
 }

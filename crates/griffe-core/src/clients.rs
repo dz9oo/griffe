@@ -17,7 +17,8 @@ use time::format_description::well_known::Rfc3339;
 
 use crate::app::{AppError, Command};
 use crate::domain::{
-    Address, Client, ClientId, Contact, ContactId, Siren, VatNumber, display_phone,
+    Address, Civility, Client, ClientId, Contact, ContactId, Siren, VatNumber, display_phone,
+    settle_respondent, settled_display_name,
 };
 
 fn conv_err(e: impl std::error::Error + Send + Sync + 'static) -> rusqlite::Error {
@@ -69,6 +70,8 @@ impl Command for CreateClient {
             siren: self.siren,
             vat_number: self.vat_number.clone(),
             address: self.address.clone(),
+            switchboard_email: None,
+            switchboard_phone: None,
             created_at: OffsetDateTime::now_utc(),
             revision: 1,
             archived_at: None,
@@ -90,6 +93,10 @@ pub struct UpdateClient {
     pub siren: Option<Siren>,
     pub vat_number: Option<VatNumber>,
     pub address: Option<Address>,
+    #[serde(default)]
+    pub switchboard_email: Option<String>,
+    #[serde(default)]
+    pub switchboard_phone: Option<String>,
 }
 
 impl Command for UpdateClient {
@@ -103,8 +110,9 @@ impl Command for UpdateClient {
         refuse_taken_name(conn, &self.name, Some(self.id))?;
         conn.execute(
             "UPDATE clients SET name = ?1, siren = ?2, vat_number = ?3, address_street = ?4,
-                address_postal_code = ?5, address_city = ?6, address_country = ?7, revision = ?8
-             WHERE id = ?9 AND revision = ?10",
+                address_postal_code = ?5, address_city = ?6, address_country = ?7,
+                switchboard_email = ?8, switchboard_phone = ?9, revision = ?10
+             WHERE id = ?11 AND revision = ?12",
             params![
                 self.name,
                 self.siren.map(|s| s.to_string()),
@@ -115,6 +123,8 @@ impl Command for UpdateClient {
                 self.address.as_ref().map(|a| a.postal_code.clone()),
                 self.address.as_ref().map(|a| a.city.clone()),
                 self.address.as_ref().map(|a| a.country.clone()),
+                stored_switchboard_email(self.switchboard_email.as_deref()),
+                stored_switchboard_phone(self.switchboard_phone.as_deref()),
                 new_revision,
                 self.id.to_string(),
                 self.revision,
@@ -333,17 +343,24 @@ pub(crate) fn insert_client_as(
 ) -> Result<(), AppError> {
     refuse_taken_name(conn, &client.name, None)?;
     conn.execute(
-        "INSERT INTO clients (id, name, siren, vat_number, address_street, address_postal_code, address_city, address_country, created_at, is_prospect)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        "INSERT INTO clients (
+            id, name, siren, vat_number, address_street, address_postal_code, address_city,
+            address_country, switchboard_email, switchboard_phone, created_at, is_prospect
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             client.id.to_string(),
             client.name,
             client.siren.map(|s| s.to_string()),
-            client.vat_number.as_ref().map(std::string::ToString::to_string),
+            client
+                .vat_number
+                .as_ref()
+                .map(std::string::ToString::to_string),
             client.address.as_ref().map(|a| a.street.clone()),
             client.address.as_ref().map(|a| a.postal_code.clone()),
             client.address.as_ref().map(|a| a.city.clone()),
             client.address.as_ref().map(|a| a.country.clone()),
+            stored_switchboard_email(client.switchboard_email.as_deref()),
+            stored_switchboard_phone(client.switchboard_phone.as_deref()),
             client.created_at.format(&Rfc3339)?,
             i64::from(is_prospect),
         ],
@@ -384,6 +401,14 @@ fn row_to_client(row: &Row) -> rusqlite::Result<Client> {
             .transpose()
             .map_err(conv_err)?,
         address,
+        switchboard_email: stored_switchboard_email(
+            row.get::<_, Option<String>>("switchboard_email")?
+                .as_deref(),
+        ),
+        switchboard_phone: stored_switchboard_phone(
+            row.get::<_, Option<String>>("switchboard_phone")?
+                .as_deref(),
+        ),
         created_at: OffsetDateTime::parse(&created_at, &Rfc3339).map_err(conv_err)?,
         revision: row.get("revision")?,
         archived_at: archived_at
@@ -480,6 +505,17 @@ pub struct CreateContact {
     pub email: Option<String>,
     pub phone: Option<String>,
     pub role: Option<String>,
+    /// Prénom déjà séparé. Ignoré si `structured` est faux.
+    #[serde(default)]
+    pub given_name: String,
+    #[serde(default)]
+    pub family_name: String,
+    #[serde(default)]
+    pub civility: Option<Civility>,
+    /// Vrai : prénom, nom et genre font foi, même vides.
+    /// Faux : `name` est le texte libre, découpé à l'enregistrement.
+    #[serde(default)]
+    pub structured: bool,
 }
 
 impl Command for CreateContact {
@@ -492,10 +528,20 @@ impl Command for CreateContact {
         client_by_id(conn, self.client_id)?.ok_or(ClientError::NotFound(self.client_id))?;
         // Le premier contact de la fiche est le correspondant. Un suivant ne le vole pas.
         let correspondent = correspondent(conn, self.client_id)?.is_none();
+        let parts = settle_respondent(
+            &self.name,
+            &self.given_name,
+            &self.family_name,
+            self.civility,
+            self.structured,
+        );
         let contact = Contact {
             id: ContactId::new(),
             client_id: self.client_id,
-            name: self.name.clone(),
+            name: settled_display_name(&parts, &self.name),
+            given_name: parts.given_name,
+            family_name: parts.family_name,
+            civility: parts.civility,
             email: self.email.clone(),
             phone: stored_phone(self.phone.as_deref()),
             role: self.role.clone(),
@@ -515,6 +561,14 @@ pub struct UpdateContact {
     pub email: Option<String>,
     pub phone: Option<String>,
     pub role: Option<String>,
+    #[serde(default)]
+    pub given_name: String,
+    #[serde(default)]
+    pub family_name: String,
+    #[serde(default)]
+    pub civility: Option<Civility>,
+    #[serde(default)]
+    pub structured: bool,
 }
 
 impl Command for UpdateContact {
@@ -523,14 +577,25 @@ impl Command for UpdateContact {
 
     fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
         let new_revision = require_contact_revision(conn, self.id, self.revision)?;
+        let parts = settle_respondent(
+            &self.name,
+            &self.given_name,
+            &self.family_name,
+            self.civility,
+            self.structured,
+        );
         conn.execute(
-            "UPDATE contacts SET name = ?1, email = ?2, phone = ?3, role = ?4, revision = ?5
-             WHERE id = ?6 AND revision = ?7",
+            "UPDATE contacts SET name = ?1, email = ?2, phone = ?3, role = ?4,
+                given_name = ?5, family_name = ?6, civility = ?7, revision = ?8
+             WHERE id = ?9 AND revision = ?10",
             params![
-                self.name,
+                settled_display_name(&parts, &self.name),
                 self.email,
                 stored_phone(self.phone.as_deref()),
                 self.role,
+                parts.given_name,
+                parts.family_name,
+                civility_db(parts.civility),
                 new_revision,
                 self.id.to_string(),
                 self.revision,
@@ -568,8 +633,10 @@ impl Command for DeleteContact {
 
 pub(crate) fn insert_contact(conn: &Connection, contact: &Contact) -> Result<(), AppError> {
     conn.execute(
-        "INSERT INTO contacts (id, client_id, name, email, phone, role, correspondent)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO contacts (
+            id, client_id, name, email, phone, role, correspondent,
+            given_name, family_name, civility
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             contact.id.to_string(),
             contact.client_id.to_string(),
@@ -578,6 +645,9 @@ pub(crate) fn insert_contact(conn: &Connection, contact: &Contact) -> Result<(),
             contact.phone,
             contact.role,
             i64::from(contact.correspondent),
+            contact.given_name,
+            contact.family_name,
+            civility_db(contact.civility),
         ],
     )?;
     Ok(())
@@ -587,15 +657,50 @@ fn stored_phone(phone: Option<&str>) -> Option<String> {
     phone.map(display_phone).filter(|value| !value.is_empty())
 }
 
+pub(crate) fn stored_switchboard_email(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|email| !email.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+pub(crate) fn stored_switchboard_phone(value: Option<&str>) -> Option<String> {
+    value.map(display_phone).filter(|phone| !phone.is_empty())
+}
+
+fn civility_db(civility: Option<Civility>) -> &'static str {
+    civility.map_or("", Civility::as_str)
+}
+
+fn civility_from_db(value: &str) -> rusqlite::Result<Option<Civility>> {
+    match value {
+        "" => Ok(None),
+        "monsieur" => Ok(Some(Civility::Monsieur)),
+        "madame" => Ok(Some(Civility::Madame)),
+        other => Err(rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("genre inconnu : {other}"),
+            )),
+        )),
+    }
+}
+
 fn row_to_contact(row: &Row) -> rusqlite::Result<Contact> {
     let id: String = row.get("id")?;
     let client_id: String = row.get("client_id")?;
     let phone: Option<String> = row.get("phone")?;
     let correspondent: i64 = row.get("correspondent")?;
+    let civility: String = row.get("civility")?;
     Ok(Contact {
         id: id.parse().map_err(conv_err)?,
         client_id: client_id.parse().map_err(conv_err)?,
         name: row.get("name")?,
+        given_name: row.get("given_name")?,
+        family_name: row.get("family_name")?,
+        civility: civility_from_db(&civility)?,
         email: row.get("email")?,
         phone: stored_phone(phone.as_deref()),
         role: row.get("role")?,
@@ -709,6 +814,8 @@ mod tests {
                     siren: None,
                     vat_number: None,
                     address: None,
+                    switchboard_email: None,
+                    switchboard_phone: None,
                 },
                 &human_ctx(),
             )
@@ -734,6 +841,8 @@ mod tests {
             siren: None,
             vat_number: None,
             address: None,
+            switchboard_email: None,
+            switchboard_phone: None,
         };
         let Outcome::Applied(new_revision) = Executor::new(&mut store)
             .execute(&cmd, &human_ctx())
@@ -760,6 +869,8 @@ mod tests {
             siren: None,
             vat_number: None,
             address: None,
+            switchboard_email: None,
+            switchboard_phone: None,
         };
         let err = Executor::new(&mut store)
             .execute(&cmd, &human_ctx())
@@ -787,6 +898,8 @@ mod tests {
             siren: None,
             vat_number: None,
             address: None,
+            switchboard_email: None,
+            switchboard_phone: None,
         };
         let err = Executor::new(&mut store)
             .execute(&cmd, &human_ctx())
@@ -851,6 +964,10 @@ mod tests {
                     email: None,
                     phone: None,
                     role: None,
+                    given_name: String::new(),
+                    family_name: String::new(),
+                    civility: None,
+                    structured: false,
                 },
                 &human_ctx(),
             )
@@ -904,6 +1021,10 @@ mod tests {
                     email: Some("alex@argon.example".to_string()),
                     phone: None,
                     role: Some("DAF".to_string()),
+                    given_name: String::new(),
+                    family_name: String::new(),
+                    civility: None,
+                    structured: false,
                 },
                 &human_ctx(),
             )
@@ -925,6 +1046,10 @@ mod tests {
                     email: Some("alex.martin@argon.example".to_string()),
                     phone: None,
                     role: Some("DAF".to_string()),
+                    given_name: String::new(),
+                    family_name: String::new(),
+                    civility: None,
+                    structured: false,
                 },
                 &human_ctx(),
             )
@@ -960,6 +1085,10 @@ mod tests {
                     email: Some("marie@exemple.fr".into()),
                     phone: None,
                     role: None,
+                    given_name: String::new(),
+                    family_name: String::new(),
+                    civility: None,
+                    structured: false,
                 },
                 &human_ctx(),
             )
@@ -975,6 +1104,10 @@ mod tests {
                     email: Some("aaron@exemple.fr".into()),
                     phone: None,
                     role: None,
+                    given_name: String::new(),
+                    family_name: String::new(),
+                    civility: None,
+                    structured: false,
                 },
                 &human_ctx(),
             )
@@ -1002,6 +1135,10 @@ mod tests {
                     email: Some("aline@exemple.fr".into()),
                     phone: None,
                     role: None,
+                    given_name: String::new(),
+                    family_name: String::new(),
+                    civility: None,
+                    structured: false,
                 },
                 &human_ctx(),
             )
@@ -1042,6 +1179,10 @@ mod tests {
                     email: None,
                     phone: None,
                     role: None,
+                    given_name: String::new(),
+                    family_name: String::new(),
+                    civility: None,
+                    structured: false,
                 },
                 &human_ctx(),
             )
@@ -1072,6 +1213,10 @@ mod tests {
                     email: None,
                     phone: Some("0327444444".into()),
                     role: None,
+                    given_name: String::new(),
+                    family_name: String::new(),
+                    civility: None,
+                    structured: false,
                 },
                 &human_ctx(),
             )
@@ -1090,6 +1235,10 @@ mod tests {
                     email: None,
                     phone: Some("+33327444444".into()),
                     role: None,
+                    given_name: String::new(),
+                    family_name: String::new(),
+                    civility: None,
+                    structured: false,
                 },
                 &human_ctx(),
             )
@@ -1105,6 +1254,10 @@ mod tests {
                     email: None,
                     phone: Some("  +1 415 555 0100  ".into()),
                     role: None,
+                    given_name: String::new(),
+                    family_name: String::new(),
+                    civility: None,
+                    structured: false,
                 },
                 &human_ctx(),
             )
@@ -1120,6 +1273,10 @@ mod tests {
                     email: None,
                     phone: Some("03 27 44 44 44 poste 12".into()),
                     role: None,
+                    given_name: String::new(),
+                    family_name: String::new(),
+                    civility: None,
+                    structured: false,
                 },
                 &human_ctx(),
             )
@@ -1143,6 +1300,9 @@ mod tests {
             role: None,
             correspondent: false,
             revision: 1,
+            given_name: String::new(),
+            family_name: String::new(),
+            civility: None,
         };
         insert_contact(store.connection(), &contact).unwrap();
 
