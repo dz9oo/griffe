@@ -256,22 +256,36 @@ nouveau. Les boutons de mutation restent dans leur formulaire.
 
 ## 7. Les affaires
 
-Une liste, trois chapitres : **en conversation** (prospects), **en mission** (clients
-avec projet), **fournisseurs**. Un bouton « Nouvelle conversation » = nom + une phrase.
-Pas de fiche client obligatoire pour commencer (lot 45).
+La lentille est le menu : ce qui demande un geste, le livre, le tas, les sorties,
+les arrêtés, le type, la recherche, « Nouvelle conversation ». « Les types » ouvre
+le catalogue. La phrase (« Montre … — N noms ») est la carte de statut
+`article.plateau-status`, fond `#fbf7f0`, le même composant que Le jour. Le texte
+est en encre. Les lignes sont des cartes sur le bureau `#e6dfd2`, fond `#fbf7f0`.
+Pas de famille colorée. `#f4ead6`, `#f6e4dc`, `#efe6d6` et les teintes de lecture
+`#f8f1e2`, `#f8ebe4`, `#f3ecdf` ne s'appliquent pas aux personnes. Les pastilles
+de type restent celles du coffre.
 
-Le **dossier** est l’unité. Chapitres selon ce qui existe :
+Choisir un nom replie la liste. Le dossier prend la largeur. « Revenir au menu »
+restaure la liste, avec la vue, la recherche et le type dans l'URL. Le volet
+côte à côte n'est plus là.
 
-- En cours (la phrase du moment)
-- Le projet (mission, jalons, jours)
-- Les papiers (devis, factures)
-- Histoire (interactions, relances)
+Pastilles, dans l'ordre du dossier : En cours, Écrire, La fiche, L'estimation,
+Les travaux, Noter une rencontre. Reporter, Arrêter et C'est un client restent
+des actions dans En cours. Le projet, les papiers, les notes et l'histoire
+restent le corps d'En cours. Depuis une pastille, « Revenir » rentre vers la liste.
 
-Actions : Écrire, La fiche, L'estimation, Noter une rencontre, Reporter.
-L'estimation est le sujet et le montant gardés dans le coffre. Griffe ne rédige pas le devis.
-On n’« ouvre pas un devis » depuis un onglet Devis : on ouvre Camille.
+`/affaires/types` et la nouvelle conversation utilisent la même barre. Les routes
+`/affaires/{référence}/fiche`, `/estimation`, `/ecrire`, `/travaux`, `/rencontre`
+restent. Les anciens `/view/prospection`, `/view/devis`, `/view/missions`,
+`/view/facturation`, `/view/clients` restent joignables par ⌘K. On ne les redessine pas.
 
-Résolution de référence inchangée (nom, préfixe, UUID).
+Une nouvelle conversation est un nom et une phrase. Pas de fiche obligatoire pour
+commencer. L'estimation est le sujet et le montant gardés dans le coffre. Griffe
+ne rédige pas le devis. On ouvre un nom. La résolution de référence est inchangée
+(nom, préfixe, UUID).
+
+« Aucun nom. » quand la recherche ne trouve personne. « Aucune conversation de ce
+type. » quand le type filtre le livre.
 
 ## 8. La société
 

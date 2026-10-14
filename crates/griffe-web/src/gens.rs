@@ -53,23 +53,11 @@ fn is_htmx(headers: &HeaderMap) -> bool {
     headers.contains_key("hx-request")
 }
 
-fn hx_target_id(headers: &HeaderMap) -> &str {
-    headers
-        .get("hx-target")
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("")
-}
-
 fn page(state: &AppState, headers: &HeaderMap, content: Markup) -> Html<String> {
     page_in(state, headers, ViewId::Gens, content)
 }
 
 fn page_in(state: &AppState, headers: &HeaderMap, view: ViewId, content: Markup) -> Html<String> {
-    let content = if hx_target_id(headers) == "affaire" {
-        gens::panel_chrome(content)
-    } else {
-        content
-    };
     if is_htmx(headers) {
         Html(content.into_string())
     } else {
@@ -89,13 +77,18 @@ fn dress_phrases(
     store: &griffe_core::store::Store,
     today: time::Date,
     depuis: &str,
+    pour: &str,
     headers: &HeaderMap,
     inner: Markup,
 ) -> Markup {
-    if !is_htmx(headers) && matches!(depuis.trim(), "lettre" | "fiche") {
-        return gens::render_with_panel(store, today, inner).unwrap_or_else(|error| {
-            html! { div class="empty-state" { (error.to_string()) } }
-        });
+    let origin = depuis.trim();
+    if !is_htmx(headers) && matches!(origin, "lettre" | "fiche") && !pour.trim().is_empty() {
+        let door = if origin == "fiche" {
+            gens::DossierDoor::Fiche
+        } else {
+            gens::DossierDoor::Ecrire
+        };
+        return gens::phrases_in_dossier(pour.trim(), door, inner);
     }
     frame_phrases(store, today, depuis, inner)
 }
@@ -137,46 +130,64 @@ fn with_push(state: &AppState, headers: &HeaderMap, url: &str, content: Markup) 
     response
 }
 
+#[derive(Debug, Deserialize, Default)]
+pub struct KeptQuery {
+    #[serde(default)]
+    vue: String,
+    #[serde(default)]
+    q: String,
+    #[serde(default, rename = "type")]
+    type_id: String,
+}
+
+impl KeptQuery {
+    fn keep(&self) -> gens::ListKeep {
+        gens::ListKeep {
+            vue: self.vue.clone(),
+            q: self.q.clone(),
+            type_id: self.type_id.clone(),
+        }
+    }
+}
+
 pub async fn show(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(reference): Path<String>,
+    Query(kept): Query<KeptQuery>,
 ) -> Html<String> {
     let today = state.today();
-    let htmx = is_htmx(&headers);
+    let list = kept.keep();
     let content = state
-        .with_store(|store| {
-            let dossier = match resolve_person(store.connection(), &reference) {
-                Ok(RefMatch::NotFound) => gens::not_found(&reference, today),
-                Ok(RefMatch::Ambiguous(choices)) => gens::several(&reference, &choices),
-                Ok(RefMatch::Unique(_)) => gens::dossier_page(store, &reference, today)
+        .with_store(
+            |store| match resolve_person(store.connection(), &reference) {
+                Ok(RefMatch::NotFound) => gens::not_found_kept(&reference, today, &list),
+                Ok(RefMatch::Ambiguous(choices)) => gens::several_kept(&reference, &choices, &list),
+                Ok(RefMatch::Unique(_)) => gens::dossier_kept(store, &reference, today, &list)
                     .unwrap_or_else(|e| {
                         if e.to_string().contains("introuvable") {
-                            gens::not_found(&reference, today)
+                            gens::not_found_kept(&reference, today, &list)
                         } else {
                             html! { div class="empty-state" { (e.to_string()) } }
                         }
                     }),
                 Err(e) => html! { div class="empty-state" { (e.to_string()) } },
-            };
-            if htmx {
-                dossier
-            } else {
-                gens::render_with_panel(store, today, dossier).unwrap_or_else(|err| {
-                    html! { div class="empty-state" { (err.to_string()) } }
-                })
-            }
-        })
+            },
+        )
         .await
         .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
     page(&state, &headers, content)
 }
 
-pub async fn new_get(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
+pub async fn new_get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(kept): Query<KeptQuery>,
+) -> Html<String> {
     page(
         &state,
         &headers,
-        gens::new_conversation(state.today(), "", "", None, None, None),
+        gens::new_conversation_kept(state.today(), "", "", None, None, None, &kept.keep()),
     )
 }
 
@@ -345,7 +356,7 @@ pub async fn phrases_get(
     let content = state
         .with_store(|store| {
             let inner = phrases_markup(store, &query, today, None, None, None, None);
-            dress_phrases(store, today, &query.depuis, &headers, inner)
+            dress_phrases(store, today, &query.depuis, &query.pour, &headers, inner)
         })
         .await
         .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
@@ -407,7 +418,7 @@ pub async fn phrases_post(
                         Some(&fields),
                         Some(&fields),
                     );
-                    dress_phrases(store, today, &query.depuis, &headers, inner)
+                    dress_phrases(store, today, &query.depuis, &query.pour, &headers, inner)
                 })
                 .await
                 .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
@@ -419,7 +430,7 @@ pub async fn phrases_post(
             let content = state
                 .with_store(|store| {
                     let inner = phrases_markup(store, &shown, today, None, None, None, None);
-                    dress_phrases(store, today, &shown.depuis, &headers, inner)
+                    dress_phrases(store, today, &shown.depuis, &shown.pour, &headers, inner)
                 })
                 .await
                 .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
@@ -442,7 +453,7 @@ pub async fn phrases_post(
                         None,
                         Some(&fields),
                     );
-                    dress_phrases(store, today, &query.depuis, &headers, inner)
+                    dress_phrases(store, today, &query.depuis, &query.pour, &headers, inner)
                 })
                 .await
                 .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
@@ -481,7 +492,7 @@ pub async fn genre_new_get(
                 "",
                 None,
             );
-            dress_phrases(store, today, &query.depuis, &headers, inner)
+            dress_phrases(store, today, &query.depuis, &query.pour, &headers, inner)
         })
         .await
         .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
@@ -524,7 +535,7 @@ pub async fn genre_new_post(
                         &form.name,
                         Some(&error.to_string()),
                     );
-                    dress_phrases(store, today, &query.depuis, &headers, inner)
+                    dress_phrases(store, today, &query.depuis, &query.pour, &headers, inner)
                 })
                 .await
                 .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
@@ -547,7 +558,7 @@ pub async fn genre_new_post(
             let content = state
                 .with_store(|store| {
                     let inner = phrases_markup(store, &shown, today, None, None, None, None);
-                    dress_phrases(store, today, &shown.depuis, &headers, inner)
+                    dress_phrases(store, today, &shown.depuis, &shown.pour, &headers, inner)
                 })
                 .await
                 .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
@@ -1111,28 +1122,41 @@ pub async fn write_get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(reference): Path<String>,
+    Query(kept): Query<KeptQuery>,
 ) -> Html<String> {
     let today = state.today();
+    let list = kept.keep();
     let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
-        return page(&state, &headers, gens::not_found(&reference, today));
+        return page(
+            &state,
+            &headers,
+            gens::not_found_kept(&reference, today, &list),
+        );
     };
     let Some(subject) = dossier.follow_up_subject else {
         return page(
             &state,
             &headers,
-            gens::dossier_markup(&dossier, today, Some("rien à écrire pour l'instant")),
+            gens::dossier_marked(
+                &dossier,
+                today,
+                Some("rien à écrire pour l'instant"),
+                &list,
+                gens::DossierDoor::Ecrire,
+            ),
         );
     };
     let content = state
         .with_store(|store| {
             let card = gens::load_card(store, subject, today).ok().flatten();
-            gens::letter_page(
+            gens::letter_page_kept(
                 store,
                 &dossier,
                 card.as_ref(),
                 today,
                 None,
                 &gens::KeepUi::default(),
+                &list,
             )
             .unwrap_or_else(|err| html! { div class="empty-state" { (err.to_string()) } })
         })
@@ -1382,17 +1406,18 @@ pub async fn sent(
     headers: HeaderMap,
     Path(reference): Path<String>,
     Form(form): Form<LetterForm>,
-) -> Html<String> {
+) -> Response {
     let today = state.today();
     let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
-        return page(&state, &headers, gens::not_found(&reference, today));
+        return page(&state, &headers, gens::not_found(&reference, today)).into_response();
     };
     let Some(subject) = dossier.follow_up_subject else {
         return page(
             &state,
             &headers,
             gens::dossier_markup(&dossier, today, None),
-        );
+        )
+        .into_response();
     };
     let subject_line = optional_letter_field(form.subject_line);
     let body = optional_letter_field(form.body);
@@ -1410,12 +1435,13 @@ pub async fn sent(
         })
         .await;
     match result {
-        None => locked(&state, &headers),
+        None => locked(&state, &headers).into_response(),
         Some(Err(e)) => page(
             &state,
             &headers,
             gens::dossier_markup(&dossier, today, Some(&e.to_string())),
-        ),
+        )
+        .into_response(),
         Some(Ok(_)) => {
             let content = state
                 .with_store(|store| {
@@ -1425,7 +1451,11 @@ pub async fn sent(
                 })
                 .await
                 .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
-            page(&state, &headers, content)
+            let mut response = page(&state, &headers, content).into_response();
+            response
+                .headers_mut()
+                .insert("HX-Trigger", HeaderValue::from_static("griffe:saved"));
+            response
         }
     }
 }
@@ -1867,15 +1897,21 @@ pub async fn meeting_get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(reference): Path<String>,
+    Query(kept): Query<KeptQuery>,
 ) -> Html<String> {
     let today = state.today();
+    let list = kept.keep();
     match load_dossier(&state, &reference).await {
         Some(Ok(dossier)) => page(
             &state,
             &headers,
-            gens::meeting_form(&dossier, today, "", "", None),
+            gens::meeting_form_kept(&dossier, today, "", "", None, &list),
         ),
-        _ => page(&state, &headers, gens::not_found(&reference, today)),
+        _ => page(
+            &state,
+            &headers,
+            gens::not_found_kept(&reference, today, &list),
+        ),
     }
 }
 
@@ -2345,16 +2381,28 @@ pub async fn fiche_get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(reference): Path<String>,
+    Query(kept): Query<KeptQuery>,
 ) -> Html<String> {
     let today = state.today();
+    let list = kept.keep();
     let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
-        return page(&state, &headers, gens::not_found(&reference, today));
+        return page(
+            &state,
+            &headers,
+            gens::not_found_kept(&reference, today, &list),
+        );
     };
     let PersonKey::Client { id } = dossier.key else {
         return page(
             &state,
             &headers,
-            gens::dossier_markup(&dossier, today, Some("cette chemise n'a pas de fiche")),
+            gens::dossier_marked(
+                &dossier,
+                today,
+                Some("cette chemise n'a pas de fiche"),
+                &list,
+                gens::DossierDoor::Fiche,
+            ),
         );
     };
     let loaded = state
@@ -2371,7 +2419,13 @@ pub async fn fiche_get(
         Some(Err(e)) => page(
             &state,
             &headers,
-            gens::dossier_markup(&dossier, today, Some(&e.to_string())),
+            gens::dossier_marked(
+                &dossier,
+                today,
+                Some(&e.to_string()),
+                &list,
+                gens::DossierDoor::Fiche,
+            ),
         ),
         Some(Ok((client, contact, matter))) => {
             let values = fiche_values_from(&client, contact.as_ref(), matter.as_ref());
@@ -2379,7 +2433,13 @@ pub async fn fiche_get(
             page(
                 &state,
                 &headers,
-                gens::fiche_page(&dossier, &values, &gens::FicheErrors::default(), &genre),
+                gens::fiche_page_kept(
+                    &dossier,
+                    &values,
+                    &gens::FicheErrors::default(),
+                    &genre,
+                    &list,
+                ),
             )
         }
     }
@@ -2752,10 +2812,16 @@ pub async fn estimate_get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(reference): Path<String>,
+    Query(kept): Query<KeptQuery>,
 ) -> Html<String> {
     let today = state.today();
+    let list = kept.keep();
     let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
-        return page(&state, &headers, gens::not_found(&reference, today));
+        return page(
+            &state,
+            &headers,
+            gens::not_found_kept(&reference, today, &list),
+        );
     };
     let values = state
         .with_store(|store| -> Result<gens::EstimateValues, AppError> {
@@ -2795,12 +2861,18 @@ pub async fn estimate_get(
         Some(Err(e)) => page(
             &state,
             &headers,
-            gens::dossier_markup(&dossier, today, Some(&e.to_string())),
+            gens::dossier_marked(
+                &dossier,
+                today,
+                Some(&e.to_string()),
+                &list,
+                gens::DossierDoor::Estimation,
+            ),
         ),
         Some(Ok(values)) => page(
             &state,
             &headers,
-            gens::estimate_page(
+            gens::estimate_page_kept(
                 &dossier,
                 &values,
                 &gens::EstimateErrors {
@@ -2808,6 +2880,7 @@ pub async fn estimate_get(
                     lines: None,
                     banner: None,
                 },
+                &list,
             ),
         ),
     }
@@ -3687,16 +3760,18 @@ pub async fn travaux_get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(reference): Path<String>,
+    Query(kept): Query<KeptQuery>,
 ) -> Html<String> {
-    travaux_show(&state, &headers, &reference, false).await
+    travaux_show(&state, &headers, &reference, false, &kept.keep()).await
 }
 
 pub async fn travaux_edit_get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(reference): Path<String>,
+    Query(kept): Query<KeptQuery>,
 ) -> Html<String> {
-    travaux_show(&state, &headers, &reference, true).await
+    travaux_show(&state, &headers, &reference, true, &kept.keep()).await
 }
 
 async fn travaux_show(
@@ -3704,29 +3779,46 @@ async fn travaux_show(
     headers: &HeaderMap,
     reference: &str,
     editing: bool,
+    list: &gens::ListKeep,
 ) -> Html<String> {
     let today = state.today();
     let Some(Ok(dossier)) = load_dossier(state, reference).await else {
-        return page(state, headers, gens::not_found(reference, today));
+        return page(state, headers, gens::not_found_kept(reference, today, list));
     };
     match load_travaux(state, &dossier).await {
         TravauxLoad::Locked => locked(state, headers),
         TravauxLoad::NotAFiche => page(
             state,
             headers,
-            gens::dossier_markup(&dossier, today, Some("Les travaux tiennent sur une fiche.")),
+            gens::dossier_marked(
+                &dossier,
+                today,
+                Some("Les travaux tiennent sur une fiche."),
+                list,
+                gens::DossierDoor::Travaux,
+            ),
         ),
         TravauxLoad::Failed(msg) => page(
             state,
             headers,
-            gens::dossier_markup(&dossier, today, Some(&msg)),
+            gens::dossier_marked(
+                &dossier,
+                today,
+                Some(&msg),
+                list,
+                gens::DossierDoor::Travaux,
+            ),
         ),
         TravauxLoad::Ready(note) if editing => page(
             state,
             headers,
-            gens::travaux_edit(&dossier, &note, &note.body, None, false),
+            gens::travaux_edit_kept(&dossier, &note, &note.body, None, false, list),
         ),
-        TravauxLoad::Ready(note) => page(state, headers, gens::travaux_page(&dossier, &note)),
+        TravauxLoad::Ready(note) => page(
+            state,
+            headers,
+            gens::travaux_page_kept(&dossier, &note, list),
+        ),
     }
 }
 
@@ -3958,6 +4050,22 @@ pub(crate) struct TypeGesteForm {
 pub(crate) struct TypesQuery {
     #[serde(default)]
     ouvert: String,
+    #[serde(default)]
+    vue: String,
+    #[serde(default)]
+    q: String,
+    #[serde(default, rename = "type")]
+    type_id: String,
+}
+
+impl TypesQuery {
+    fn keep(&self) -> gens::ListKeep {
+        gens::ListKeep {
+            vue: self.vue.clone(),
+            q: self.q.clone(),
+            type_id: self.type_id.clone(),
+        }
+    }
 }
 
 fn dossier_types_form(pairs: &[(String, String)]) -> DossierTypesForm {
@@ -4043,7 +4151,7 @@ pub async fn types_get(
     headers: HeaderMap,
     Query(query): Query<TypesQuery>,
 ) -> Html<String> {
-    match types_markup(&state, &query.ouvert, None, None, None).await {
+    match types_markup(&state, &query.ouvert, None, None, None, &query.keep()).await {
         None => locked(&state, &headers),
         Some(Err(error)) => page(
             &state,
@@ -4171,11 +4279,14 @@ async fn types_markup(
     draft: Option<(&str, &str, &str)>,
     banner: Option<&str>,
     confirming: Option<&str>,
+    list: &gens::ListKeep,
 ) -> Option<Result<Markup, AppError>> {
     state
         .with_store(|store| {
             let kinds = work_kinds(store.connection())?;
-            Ok(gens::types_page(&kinds, open, draft, banner, confirming))
+            Ok(gens::types_page_kept(
+                &kinds, open, draft, banner, confirming, list,
+            ))
         })
         .await
 }
@@ -4189,7 +4300,16 @@ async fn types_response(
     confirming: Option<&str>,
     saved: bool,
 ) -> Response {
-    match types_markup(state, open, draft, banner, confirming).await {
+    match types_markup(
+        state,
+        open,
+        draft,
+        banner,
+        confirming,
+        &gens::ListKeep::default(),
+    )
+    .await
+    {
         None => locked(state, headers).into_response(),
         Some(Err(error)) => page(
             state,

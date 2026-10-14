@@ -1352,6 +1352,83 @@ async fn les_affaires_lists_three_chapters_and_opens_a_dossier() {
     assert!(found.contains("Camille"), "{found}");
     assert!(!found.contains("Plus tard"), "{found}");
     assert!(!found.contains("Aucun nom."), "{found}");
+    assert!(
+        found.contains("/affaires/Camille%20Rivi%C3%A8re?vue=tas&amp;q=cami"),
+        "{found}"
+    );
+    assert!(!found.contains("id=\"affaire\""), "{found}");
+
+    let opened = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Camille%20Rivi%C3%A8re?vue=tas&q=cami")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(opened.contains("Revenir au menu"), "{opened}");
+    assert!(
+        opened.contains("/affaires?vue=tas&amp;q=cami"),
+        "le retour garde la vue et la recherche : {opened}"
+    );
+    assert!(!opened.contains("id=\"affaire\""), "{opened}");
+    let mut rest = opened.as_str();
+    for label in [
+        "En cours",
+        "Écrire",
+        "La fiche",
+        "L'estimation",
+        "Les travaux",
+        "Noter une rencontre",
+    ] {
+        let at = rest
+            .find(label)
+            .or_else(|| rest.find("L&#x27;estimation"))
+            .unwrap_or_else(|| panic!("{label} manque : {opened}"));
+        let hit = if rest[at..].starts_with(label) {
+            label
+        } else {
+            "L&#x27;estimation"
+        };
+        rest = &rest[at + hit.len()..];
+    }
+    for (suffix, marker) in [
+        ("", "En cours"),
+        ("/ecrire", "Une lettre"),
+        ("/fiche", "La fiche."),
+        ("/estimation", "L'estimation."),
+        ("/travaux", "Les travaux."),
+        ("/rencontre", "Une rencontre."),
+    ] {
+        let door = body_text(
+            router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!(
+                            "/affaires/Camille%20Rivi%C3%A8re{suffix}?vue=tas&q=cami"
+                        ))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(
+            door.contains("Revenir au menu") && door.contains("/affaires?vue=tas&amp;q=cami"),
+            "{suffix} ne revient pas au filtre : {door}"
+        );
+        let marked = door.contains(marker)
+            || (suffix == "/estimation" && door.contains("L&#x27;estimation."))
+            || (suffix == "/travaux" && door.contains("tiennent sur une fiche"));
+        assert!(marked, "{suffix} n'ouvre pas sa page : {door}");
+    }
 
     let pile = body_text(
         router
@@ -1464,24 +1541,31 @@ async fn les_affaires_lists_three_chapters_and_opens_a_dossier() {
             .unwrap();
     }
 
-    let posted = body_text(
-        router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/affaires/Camille%20Rivi%C3%A8re/envoye")
-                    .header("content-type", "application/x-www-form-urlencoded")
-                    .header("HX-Request", "true")
-                    .body(Body::from(
-                        "subject_line=Bonjour&body=On+se+voit+mardi+pour+en+parler.",
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap(),
-    )
-    .await;
+    let posted_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/affaires/Camille%20Rivi%C3%A8re/envoye")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from(
+                    "subject_line=Bonjour&body=On+se+voit+mardi+pour+en+parler.",
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(posted_response.status(), StatusCode::OK);
+    assert_eq!(
+        posted_response
+            .headers()
+            .get("HX-Trigger")
+            .and_then(|value| value.to_str().ok()),
+        Some("griffe:saved"),
+        "C'est parti confirme l'enregistrement"
+    );
+    let posted = body_text(posted_response).await;
     assert!(
         posted.contains("On se voit mardi pour en parler."),
         "la lettre classée est dans l'historique : {posted}"
@@ -9238,8 +9322,9 @@ async fn phrases_from_a_letter_stay_in_the_dossier_lens() {
             .unwrap(),
     )
     .await;
-    assert!(full.contains("class=\"lens\""), "{full}");
-    assert!(full.contains("id=\"affaire\""), "{full}");
+    assert!(full.contains("class=\"lens lens-open\""), "{full}");
+    assert!(!full.contains("id=\"affaire\""), "{full}");
+    assert!(full.contains("Revenir au menu"), "{full}");
     assert!(full.contains(back), "{full}");
     assert!(
         !full.contains("class=\"back\" href=\"/affaires/Camille%20Rivi%C3%A8re/ecrire\""),
@@ -9259,7 +9344,7 @@ async fn phrases_from_a_letter_stay_in_the_dossier_lens() {
     )
     .await;
     assert!(!fragment.contains("class=\"lens\""), "{fragment}");
-    assert!(fragment.contains("class=\"phrase-desk"), "{fragment}");
+    assert!(fragment.contains("phrase-desk"), "{fragment}");
     assert!(fragment.contains(back), "{fragment}");
 }
 
@@ -11192,11 +11277,11 @@ async fn two_fiches_with_the_same_respondent_open_under_qui() {
     assert!(list.contains("Mairie de Hornaing"), "{list}");
     assert!(list.contains("Mairie de Somain"), "{list}");
     assert!(
-        list.contains("href=\"/affaires/Mairie%20de%20Hornaing\""),
+        list.contains("href=\"/affaires/Mairie%20de%20Hornaing?vue=tas\""),
         "{list}"
     );
     assert!(
-        list.contains("href=\"/affaires/Mairie%20de%20Somain\""),
+        list.contains("href=\"/affaires/Mairie%20de%20Somain?vue=tas\""),
         "{list}"
     );
     assert!(

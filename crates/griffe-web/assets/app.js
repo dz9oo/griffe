@@ -787,7 +787,7 @@ document.body.addEventListener("keydown", (event) => {
   });
 })();
 
-// Les affaires, la lentille. Le dossier se charge dans #affaire ; la liste reste.
+// Les affaires. La liste est le menu. Un nom ouvre le dossier sur toute la largeur.
 (() => {
   const FULL_KEY = "griffe-lens-full";
 
@@ -1002,7 +1002,7 @@ document.body.addEventListener("keydown", (event) => {
       return;
     }
     if (event.key === "e" || event.key === "E") {
-      const write = lens.querySelector('.lens-body a.seal[href$="/ecrire"]');
+      const write = lens.querySelector('a.lens-pill[href*="/ecrire"], .lens-body a.seal[href$="/ecrire"]');
       if (!write) return;
       event.preventDefault();
       write.click();
