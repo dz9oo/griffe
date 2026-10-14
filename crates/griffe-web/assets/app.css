@@ -2911,6 +2911,81 @@ input[type="checkbox"] {
   }
   .payer-span { grid-column: 1; }
 }
+
+/* L'État — cartes de lecture. Le pli et les lettres d'échéance restent. */
+.plateau-open[data-family="etat"] .work:has(.etat-desk) {
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+}
+.etat-desk {
+  flex: 1 0 auto;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.plateau .work .etat-desk > .lede { margin: 0; color: var(--ink); }
+.etat-grid {
+  flex: 1 0 auto;
+  min-height: min-content;
+  display: grid;
+  gap: 12px;
+  align-items: stretch;
+  grid-template-rows: minmax(min-content, 1fr);
+}
+.etat-grid[data-etat="1"] {
+  grid-template-columns: minmax(min-content, 1fr);
+}
+.etat-grid[data-etat="2"] {
+  grid-template-columns: repeat(2, minmax(min-content, 1fr));
+}
+.etat-grid[data-etat="3"] {
+  grid-template-columns: repeat(3, minmax(min-content, 1fr));
+}
+.etat-card {
+  background: #f8ebe4;
+  color: var(--ink);
+  border-radius: 16px;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 8px;
+  min-width: min-content;
+  min-height: min-content;
+  box-shadow: inset 0 0 0 1px rgba(28, 24, 20, 0.08);
+}
+.etat-card h2 {
+  margin: 0;
+  font-family: var(--serif);
+  font-weight: 500;
+  font-size: clamp(22px, 2vw, 28px);
+  letter-spacing: -0.03em;
+  line-height: 1.05;
+  color: var(--ink);
+}
+.etat-card p { margin: 0; color: var(--ink); overflow-wrap: anywhere; }
+.etat-card .chapters { margin-top: 0; }
+.etat-card .row-actions { margin-top: 0; }
+.etat-desk > .duties-done { margin-top: 4px; flex: none; }
+.etat-desk > .hist,
+.etat-desk > .row-actions { flex: none; }
+@media (max-width: 1100px) {
+  .etat-grid[data-etat="2"],
+  .etat-grid[data-etat="3"] {
+    grid-template-columns: repeat(2, minmax(min-content, 1fr));
+    grid-template-rows: none;
+  }
+}
+@media (max-width: 700px) {
+  .etat-grid[data-etat="1"],
+  .etat-grid[data-etat="2"],
+  .etat-grid[data-etat="3"] {
+    grid-template-columns: minmax(min-content, 1fr);
+    grid-template-rows: none;
+  }
+}
 .pupitre .geste {
   min-height: 44px;
   padding: 10px 0;

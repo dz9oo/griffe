@@ -265,9 +265,10 @@ trésorerie** (encre sur papier, pointillés = si l’encaissement prévu arrive
 Une URL de chapitre replie le menu. « Revenir au menu » ramène à `/societe`.
 Le fil nomme la famille et le titre. Les voisins sont des pastilles ; la pastille
 courante est en encre. Échap, depuis `app.js`, ramène au menu. Le chapitre garde
-son marquage dans `.work`. Te payer est peint en cartes. Tenir, L’État et Les
-réglages gardent le marquage. Les teintes de lecture restent `#fbf7f0`,
-`#f8f1e2`, `#f8ebe4`, `#f3ecdf`.
+son marquage dans `.work`. Te payer est peint en cartes. L’État peint Les
+échéances et Clore. Tenir, les lettres d’échéance et Les réglages gardent le
+marquage. Les teintes de lecture restent `#fbf7f0`, `#f8f1e2`, `#f8ebe4`,
+`#f3ecdf`.
 
 Voisins : Tenir = La piste et Le relevé ; Te payer = Ce mois-ci, Le compte et
 L’année ; L’État = Les échéances et Clore ; Les réglages = La carte, Le courrier,
@@ -319,6 +320,45 @@ sous la grille (Au départ, Avancé, Pris, Apporté).
 barre. Sans objectif : « Aucun montant visé. », sans barre.
 
 Aucun formulaire sur ces trois chapitres.
+
+### Cartes de L’État
+
+Le fil, « Revenir au menu » et les pastilles restent. La teinte de menu reste
+`#f6e4dc`. La teinte de lecture des cartes est `#f8ebe4`. Le texte est en
+encre. Les queries et les POST ne changent pas.
+
+Le fil porte « Les échéances » et « Clore ». Le `h1` du chapitre sort. Le lien
+« ← La société » reste, le pli le masque.
+
+**Les échéances** (`/societe/impots`). La phrase d’entrée reste au-dessus :
+« Pas des sigles. Des dates, des montants, et où le déposer. On prépare. On ne
+transmet rien. » Une carte par groupe qui a des lignes :
+
+- « Avant ce coffre » ;
+- « En retard » ;
+- « À venir ».
+
+La liste du groupe reste une liste dans la carte : la date, la phrase déjà
+écrite, le montant déjà écrit. Le formulaire « Tout était à jour à l’échéance »
+reste un formulaire, le bouton dans le form, dans la carte « Avant ce coffre ».
+« Déjà déposé » reste le repliable sous la grille. « Aucune échéance dans
+l’horizon. » et « Rien à déposer pour l’instant. » restent des phrases.
+
+La grille vise un écran. Autant de colonnes que de cartes présentes, trois au
+plus. Une seule carte occupe une colonne, sans piste vide. Sous 1 100 px, deux
+colonnes dès qu’il y en a deux. Sous 700 px, une. Les cartes suivent leur texte
+(`minmax(min-content, …)`). Le défilement de `.work` est permis.
+
+**Clore** (`/societe/cloture`). Une carte pour la phrase d’exercice déjà écrite.
+Le parcours reste la liste `.hist` : fait, aujourd’hui, ensuite. « Arrêter les
+comptes » reste le bouton qui ouvre `/cloture/new` dans `#panel`. « Ranger le
+relevé » reste le lien sous la liste quand des mouvements ne sont pas rangés.
+
+Une lettre `/societe/impots/{kind}` reste une lettre. Le parent est « Les
+échéances », les voisins « L’État » et « Clore ». Les blocs, les formulaires et
+les POST restent.
+
+Classes `.etat-*`. Ces deux adresses restent sans CA3, 3514, 2777.
 
 | Chapitre | Contenu |
 |---|---|

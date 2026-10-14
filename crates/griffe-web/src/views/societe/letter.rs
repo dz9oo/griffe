@@ -978,33 +978,45 @@ fn duties_markup(rows: &[Duty], today: Date) -> Markup {
         upcoming.push(d);
     }
     let done: Vec<&Duty> = rows.iter().filter(|d| d.filed_on.is_some()).collect();
+    let cards: u8 = u8::from(!catch_up.is_empty())
+        + u8::from(!overdue.is_empty())
+        + u8::from(!upcoming.is_empty());
     html! {
-        div class="letter" data-view=(ViewId::Societe.slug()) {
+        div class="letter etat-desk" data-view=(ViewId::Societe.slug()) {
             (back())
-            h1 { "Ce que tu dois." }
             p class="lede" { "Pas des sigles. Des dates, des montants, et où le déposer. On prépare. On ne transmet rien." }
-            @if catch_up.is_empty() && overdue.is_empty() && upcoming.is_empty() && done.is_empty() {
+            @if cards == 0 && done.is_empty() {
                 p class="prose" { "Aucune échéance dans l'horizon." }
             }
-            @if !catch_up.is_empty() {
-                p class="section-label" { "Avant ce coffre" }
-                p class="prose" {
-                    "Ces dates sont antérieures à Griffe. Si vous les avez déjà déposées, dites-le — à l'échéance, ou à la date réelle."
+            @if cards > 0 {
+                div class="etat-grid" data-etat=(cards) {
+                    @if !catch_up.is_empty() {
+                        article class="etat-card" {
+                            h2 { "Avant ce coffre" }
+                            p {
+                                "Ces dates sont antérieures à Griffe. Si vous les avez déjà déposées, dites-le — à l'échéance, ou à la date réelle."
+                            }
+                            form class="row-actions" hx-post="/societe/impots/catch-up" hx-target="#content" {
+                                button class="quiet" type="submit" { "Tout était à jour à l'échéance" }
+                            }
+                            (duty_list(&catch_up, today))
+                        }
+                    }
+                    @if !overdue.is_empty() {
+                        article class="etat-card" {
+                            h2 { "En retard" }
+                            (duty_list(&overdue, today))
+                        }
+                    }
+                    @if !upcoming.is_empty() {
+                        article class="etat-card" {
+                            h2 { "À venir" }
+                            (duty_list(&upcoming, today))
+                        }
+                    }
                 }
-                form class="row-actions" hx-post="/societe/impots/catch-up" hx-target="#content" {
-                    button class="quiet" type="submit" { "Tout était à jour à l'échéance" }
-                }
-                (duty_list(&catch_up, today))
             }
-            @if !overdue.is_empty() {
-                p class="section-label" { "En retard" }
-                (duty_list(&overdue, today))
-            }
-            @if !upcoming.is_empty() {
-                p class="section-label" { "À venir" }
-                (duty_list(&upcoming, today))
-            }
-            @if catch_up.is_empty() && overdue.is_empty() && upcoming.is_empty() && !done.is_empty() {
+            @if cards == 0 && !done.is_empty() {
                 p class="prose" { "Rien à déposer pour l'instant." }
             }
             @if !done.is_empty() {
@@ -1672,10 +1684,11 @@ fn closing_lede(story: &ClosingStory) -> String {
 fn closing_markup(story: &ClosingStory, today: Date) -> Markup {
     let lede = closing_lede(story);
     html! {
-        div class="letter" data-view=(ViewId::Societe.slug()) {
+        div class="letter etat-desk" data-view=(ViewId::Societe.slug()) {
             (back())
-            h1 { "Clore." }
-            p class="lede" { (lede) }
+            article class="etat-card" {
+                p { (lede) }
+            }
             ul class="hist" {
                 @for beat in &story.beats {
                     li {

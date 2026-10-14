@@ -2074,6 +2074,25 @@ async fn la_societe_opens_on_the_plateau_and_folds_each_chapter() {
                 assert!(page.contains("class=\"meter\""), "{page}");
                 assert!(!page.contains("<form"), "pas de formulaire : {page}");
             }
+            "/societe/impots" => {
+                assert!(page.contains("Pas des sigles"), "{page}");
+                assert!(page.contains("etat-desk"), "{page}");
+                assert!(page.contains(">Les échéances<"), "{page}");
+                assert!(!page.contains("Ce que tu dois"), "{page}");
+                assert!(!page.contains("<h1"), "{page}");
+                assert!(!page.contains("hx-on"), "{page}");
+            }
+            "/societe/cloture" => {
+                assert!(page.contains("class=\"etat-card\""), "{page}");
+                assert!(page.contains("ul class=\"hist\""), "{page}");
+                assert!(page.contains(">Clore<"), "{page}");
+                assert!(!page.contains("<h1"), "{page}");
+                assert!(
+                    !page.contains("<form"),
+                    "pas de formulaire inventé : {page}"
+                );
+                assert!(!page.contains("hx-on"), "{page}");
+            }
             "/societe/releve" => {
                 assert!(page.contains("Leroy"), "{page}");
                 assert!(
@@ -2225,6 +2244,54 @@ async fn la_societe_plateau_presses_a_line_into_its_family() {
         css.contains(".payer-card.on {\n  box-shadow: inset 3px 0 0 var(--ink)"),
         "la porte ouverte est en encre : {css}"
     );
+    assert!(
+        css.contains(".etat-card {\n  background: #f8ebe4;"),
+        "la lecture de L'État : {css}"
+    );
+    assert!(
+        css.contains(".plateau-family[data-family=\"etat\"] { background: #f6e4dc; }"),
+        "la teinte de menu de L'État reste : {css}"
+    );
+    assert!(
+        css.contains(
+            ".etat-grid[data-etat=\"1\"] {\n  grid-template-columns: minmax(min-content, 1fr);"
+        ),
+        "une carte, une colonne : {css}"
+    );
+    assert!(
+        css.contains(".etat-grid[data-etat=\"3\"] {\n  grid-template-columns: repeat(3, minmax(min-content, 1fr));"),
+        "trois cartes, trois colonnes : {css}"
+    );
+    assert!(
+        css.contains(
+            ".plateau-open[data-family=\"etat\"] .work:has(.etat-desk) {\n  display: flex;\n  flex-direction: column;\n  overflow: auto;"
+        ),
+        "le chapitre défile : {css}"
+    );
+    let etat_css = css
+        .split("/* L'État — cartes de lecture.")
+        .nth(1)
+        .expect("cartes de L'État");
+    let under_1100 = etat_css
+        .split("@media (max-width: 1100px)")
+        .nth(1)
+        .expect("palier 1100 des échéances");
+    assert!(
+        under_1100.contains(
+            ".etat-grid[data-etat=\"2\"],\n  .etat-grid[data-etat=\"3\"] {\n    grid-template-columns: repeat(2, minmax(min-content, 1fr));"
+        ),
+        "sous 1100 px, deux colonnes dès deux cartes : {under_1100}"
+    );
+    let under_700 = etat_css
+        .split("@media (max-width: 700px)")
+        .nth(1)
+        .expect("palier 700 des échéances");
+    assert!(
+        under_700.contains(
+            ".etat-grid[data-etat=\"1\"],\n  .etat-grid[data-etat=\"2\"],\n  .etat-grid[data-etat=\"3\"] {\n    grid-template-columns: minmax(min-content, 1fr);"
+        ),
+        "sous 700 px, une colonne : {under_700}"
+    );
     assert!(css.contains("background: var(--ink);"), "{css}");
     assert!(css.contains("accent-color: var(--ink)"), "{css}");
 
@@ -2248,9 +2315,22 @@ async fn la_societe_plateau_presses_a_line_into_its_family() {
 
 #[tokio::test]
 async fn society_duties_stack_the_title_above_the_body() {
-    let state = unlocked_state(&test_db_path("letter-impots"))
+    let db_path = test_db_path("letter-impots");
+    let state = unlocked_state(&db_path)
         .await
         .with_today(time::macros::date!(2026 - 09 - 05));
+    {
+        let store = Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+        store
+            .connection()
+            .execute(
+                "INSERT INTO setup (id, declared_new_company, updated_at, created_on)
+                 VALUES (1, 0, '2026-01-01T00:00:00Z', '2026-12-01')
+                 ON CONFLICT (id) DO UPDATE SET created_on = '2026-12-01'",
+                [],
+            )
+            .unwrap();
+    }
     let router = griffe_web::router(state);
 
     let page = body_text(
@@ -2266,12 +2346,105 @@ async fn society_duties_stack_the_title_above_the_body() {
             .unwrap(),
     )
     .await;
-    assert!(page.contains("Ce que tu dois"), "{page}");
+    assert!(page.contains(">Les échéances<"), "{page}");
+    assert!(!page.contains("Ce que tu dois"), "{page}");
+    assert!(!page.contains("<h1"), "{page}");
+    assert!(
+        page.contains("Pas des sigles. Des dates, des montants, et où le déposer."),
+        "{page}"
+    );
+    assert!(
+        page.contains("data-etat=\"2\""),
+        "deux groupes dessinés : {page}"
+    );
+    assert_eq!(page.matches("class=\"etat-card\"").count(), 2, "{page}");
+    assert!(
+        !page.contains(">En retard<"),
+        "le groupe vide reste absent : {page}"
+    );
+    assert!(page.contains("ul class=\"chapters\""), "{page}");
     assert!(
         page.contains("acompte d'impôt sur les sociétés")
             || page.contains("acompte d&#x27;impôt sur les sociétés"),
         "{page}"
     );
+    assert!(
+        !page.contains("CA3") && !page.contains("3514") && !page.contains("2777"),
+        "{page}"
+    );
+    assert!(!page.contains("hx-on"), "{page}");
+    assert!(!page.contains("Aucune échéance dans l'horizon."), "{page}");
+    assert!(!page.contains("Rien à déposer pour l'instant."), "{page}");
+    let avant = page.find("Avant ce coffre").expect("carte de rattrapage");
+    let open = page[..avant].rfind("<article").expect("carte");
+    let close = page[avant..].find("</article>").expect("fin de carte") + avant;
+    let card = &page[open..close];
+    let form_at = card
+        .find("hx-post=\"/societe/impots/catch-up\"")
+        .expect("formulaire de rattrapage");
+    let form_end = card[form_at..].find("</form>").expect("fin de formulaire") + form_at;
+    let form = &card[form_at..form_end];
+    assert!(
+        form.contains("type=\"submit\"")
+            && (form.contains("Tout était à jour à l'échéance")
+                || form.contains("Tout était à jour à l&#x27;échéance")),
+        "le bouton reste dans le formulaire : {form}"
+    );
+    assert!(card.contains("ul class=\"chapters\""), "{card}");
+    let lede = page.find("Pas des sigles").expect("phrase d'entrée");
+    let grid = page.find("class=\"etat-grid\"").expect("grille");
+    assert!(lede < grid, "la phrase reste au-dessus de la grille");
+
+    let cloture = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/societe/cloture")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(cloture.contains(">Clore<"), "{cloture}");
+    assert!(!cloture.contains("<h1"), "{cloture}");
+    assert!(cloture.contains("Le parcours, en phrases."), "{cloture}");
+    assert!(cloture.contains("ul class=\"hist\""), "{cloture}");
+    assert!(cloture.contains(">fait<"), "{cloture}");
+    assert!(
+        cloture.contains("aujourd'hui") || cloture.contains("aujourd&#x27;hui"),
+        "{cloture}"
+    );
+    assert!(cloture.contains("ensuite"), "{cloture}");
+    let hist_at = cloture.find("ul class=\"hist\"").expect("parcours");
+    let hist_end = cloture[hist_at..].find("</ul>").expect("fin du parcours") + hist_at;
+    let hist = &cloture[hist_at..hist_end];
+    assert!(
+        hist.contains("Arrêter les comptes"),
+        "la phrase du parcours reste : {hist}"
+    );
+    assert!(
+        !hist.contains("hx-get=\"/cloture/new\""),
+        "le bouton n'apparaît que l'exercice écoulé : {hist}"
+    );
+    assert!(!hist.contains("<form"), "{hist}");
+    assert!(!cloture.contains("<form"), "{cloture}");
+    assert!(
+        !cloture.contains("CA3") && !cloture.contains("3514") && !cloture.contains("2777"),
+        "{cloture}"
+    );
+    let phrase = cloture
+        .find("Le parcours, en phrases.")
+        .expect("phrase d'exercice");
+    let phrase_open = cloture[..phrase].rfind("<article").expect("carte");
+    let phrase_close = cloture[phrase..].find("</article>").expect("fin") + phrase;
+    assert!(
+        cloture[phrase_open..phrase_close].contains("class=\"etat-card\""),
+        "{cloture}"
+    );
+    assert!(phrase_close < hist_at, "le parcours reste sous la carte");
 
     let css = body_text(
         router
@@ -2333,6 +2506,15 @@ async fn society_duty_letter_shows_the_amount_and_the_2571_path() {
     );
     assert!(page.contains("Clore"), "le voisin est Clore : {page}");
     assert!(page.contains("data-family=\"etat\""), "{page}");
+    assert!(page.contains("<h1"), "la lettre garde son titre : {page}");
+    assert!(
+        page.contains("class=\"block\""),
+        "la lettre garde ses blocs : {page}"
+    );
+    assert!(
+        !page.contains("etat-desk") && !page.contains("etat-card"),
+        "la lettre ne devient pas une carte : {page}"
+    );
     assert!(
         !page.contains("bureau-columns") && !page.contains("bureau-pane"),
         "{page}"
@@ -2571,6 +2753,14 @@ async fn filing_september_ca3_does_not_clear_august() {
     assert!(
         list.contains("Déjà déposé"),
         "août a quitté En retard : {list}"
+    );
+    assert!(list.contains("ul class=\"chapters\""), "{list}");
+    assert!(list.contains("<details class=\"duties-done\""), "{list}");
+    let filed_at = list.find("<details").expect("repliable");
+    let last_card = list.rfind("</article>").expect("cartes");
+    assert!(
+        last_card < filed_at,
+        "Déjà déposé reste sous la grille : {list}"
     );
 
     let august = body_text(
@@ -10585,6 +10775,24 @@ async fn october_first_declares_september_vat_and_closes_the_year_that_just_ende
     assert!(
         cloture.contains("hx-get=\"/cloture/new\""),
         "le bouton ouvre le formulaire : {cloture}"
+    );
+    let hist_at = cloture.find("ul class=\"hist\"").expect("parcours");
+    let hist_end = cloture[hist_at..].find("</ul>").expect("fin du parcours") + hist_at;
+    let hist = &cloture[hist_at..hist_end];
+    assert!(
+        hist.contains("hx-get=\"/cloture/new\"") && hist.contains("hx-target=\"#panel\""),
+        "le bouton du parcours ouvre le volet : {hist}"
+    );
+    assert!(
+        !hist.contains("<form"),
+        "pas de formulaire inventé : {hist}"
+    );
+    assert!(cloture.contains("class=\"etat-card\""), "{cloture}");
+    assert!(!cloture.contains("<h1"), "{cloture}");
+    assert!(!cloture.contains("<form"), "{cloture}");
+    assert!(
+        !cloture.contains("CA3") && !cloture.contains("3514") && !cloture.contains("2777"),
+        "{cloture}"
     );
     assert!(
         !cloture.contains("30 septembre 2027") && !cloture.contains("1 octobre 2027"),
