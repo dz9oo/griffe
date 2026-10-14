@@ -2033,6 +2033,31 @@ async fn la_societe_opens_on_the_plateau_and_folds_each_chapter() {
             "/societe/piste" => {
                 assert!(page.contains("class=\"landscape\""), "{page}");
                 assert!(page.contains("aria-current=\"page\""), "{page}");
+                assert_eq!(page.matches("class=\"tenir-card\"").count(), 1, "{page}");
+                let card = page.find("class=\"tenir-card\"").expect("carte");
+                assert!(
+                    page[card..].contains("class=\"landscape\""),
+                    "la figure reste dans la carte : {page}"
+                );
+                assert!(
+                    page.contains("stroke-dasharray"),
+                    "le pointillé reste : {page}"
+                );
+                assert!(
+                    page.contains("clôture dans 25 jours"),
+                    "la légende déjà écrite : {page}"
+                );
+                assert!(
+                    page.contains("aujourd'hui") || page.contains("aujourd&#x27;hui"),
+                    "{page}"
+                );
+                assert!(!page.contains("<h1"), "{page}");
+                let work = page.find("class=\"work\"").expect("volet");
+                let foot = page[work..].find("class=\"foot\"").expect("pied");
+                let pane = &page[work..work + foot];
+                assert!(!pane.contains("<form"), "pas de formulaire : {pane}");
+                assert!(!pane.contains("<button"), "pas de bouton inventé : {pane}");
+                assert!(!page.contains("hx-on"), "{page}");
             }
             "/societe/payer" => {
                 assert!(
@@ -2102,6 +2127,38 @@ async fn la_societe_opens_on_the_plateau_and_folds_each_chapter() {
                 assert!(
                     !page.to_lowercase().contains("c'est moi que je me paie"),
                     "{page}"
+                );
+                assert!(
+                    page.contains("class=\"letter spread tenir-desk\""),
+                    "{page}"
+                );
+                assert_eq!(page.matches("class=\"tenir-card\"").count(), 1, "{page}");
+                assert!(page.contains("Déposer un export"), "{page}");
+                let deposit = page.find("Déposer un export").expect("dépôt");
+                let opener = &page[deposit.saturating_sub(240)..deposit];
+                assert!(
+                    opener.contains("type=\"button\"")
+                        && opener.contains("hx-get=\"/banque/import\""),
+                    "le dépôt ouvre le volet : {opener}"
+                );
+                assert!(!opener.contains("<form"), "pas de form inventé : {opener}");
+                assert!(page.contains("class=\"releve-search\""), "{page}");
+                assert!(page.contains("class=\"block\""), "{page}");
+                assert!(
+                    page.contains("hx-trigger=\"griffe:saved from:body\""),
+                    "{page}"
+                );
+                assert!(!page.contains("<h1"), "{page}");
+                assert!(!page.contains("hx-on"), "{page}");
+                let card = page.find("class=\"tenir-card\"").expect("carte");
+                let card_end = page[card..]
+                    .find("</article>")
+                    .map(|end| card + end)
+                    .expect("fin de carte");
+                let search = page.find("class=\"releve-search\"").expect("recherche");
+                assert!(
+                    search > card_end,
+                    "la recherche n'est pas une carte : {page}"
                 );
             }
             "/affaires/phrases?depuis=societe" => {
@@ -2188,7 +2245,10 @@ async fn la_societe_opens_on_the_plateau_and_folds_each_chapter() {
             .unwrap(),
     )
     .await;
-    assert!(old.contains("Le relevé"), "{old}");
+    assert!(
+        old.contains("Tu déposes l'export de la banque") && old.contains("Déposer un export"),
+        "l'ancienne adresse ouvre le relevé : {old}"
+    );
 }
 
 #[tokio::test]
@@ -2291,6 +2351,58 @@ async fn la_societe_plateau_presses_a_line_into_its_family() {
             ".etat-grid[data-etat=\"1\"],\n  .etat-grid[data-etat=\"2\"],\n  .etat-grid[data-etat=\"3\"] {\n    grid-template-columns: minmax(min-content, 1fr);"
         ),
         "sous 700 px, une colonne : {under_700}"
+    );
+    assert!(
+        css.contains(".tenir-card {\n  background: #fbf7f0;"),
+        "la lecture de Tenir : {css}"
+    );
+    assert!(
+        css.contains(".plateau-family[data-family=\"tenir\"] { background: #fbf7f0; }"),
+        "la teinte de menu de Tenir reste : {css}"
+    );
+    assert!(
+        css.contains(".landscape svg { width: 100%; height: 160px;"),
+        "le paysage garde sa hauteur : {css}"
+    );
+    assert!(
+        css.contains(
+            ".plateau-open[data-family=\"tenir\"] .work:has(.tenir-desk) {\n  display: flex;\n  flex-direction: column;\n  overflow: auto;"
+        ),
+        "le chapitre défile : {css}"
+    );
+    let tenir_css = css
+        .split("/* Tenir — cartes de lecture.")
+        .nth(1)
+        .expect("cartes de Tenir");
+    let under_1100_tenir = tenir_css
+        .split("@media (max-width: 1100px)")
+        .nth(1)
+        .expect("palier 1100 de Tenir");
+    let rule_1100 = under_1100_tenir.split("@media").next().unwrap();
+    assert!(
+        rule_1100.contains(
+            ".tenir-desk,\n  .tenir-card {\n    display: flex;\n    flex-direction: column;\n    width: 100%;"
+        ),
+        "sous 1100 px, la carte reste seule : {rule_1100}"
+    );
+    assert!(
+        !rule_1100.contains("grid-template-columns") && !rule_1100.contains("repeat("),
+        "pas de grille à plusieurs colonnes : {rule_1100}"
+    );
+    let under_700_tenir = tenir_css
+        .split("@media (max-width: 700px)")
+        .nth(1)
+        .expect("palier 700 de Tenir");
+    let rule_700 = under_700_tenir.split("@media").next().unwrap();
+    assert!(
+        rule_700.contains(
+            ".tenir-desk,\n  .tenir-card {\n    display: flex;\n    flex-direction: column;\n    width: 100%;"
+        ),
+        "sous 700 px, la carte reste seule : {rule_700}"
+    );
+    assert!(
+        !rule_700.contains("grid-template-columns") && !rule_700.contains("repeat("),
+        "pas de grille à plusieurs colonnes : {rule_700}"
     );
     assert!(css.contains("background: var(--ink);"), "{css}");
     assert!(css.contains("accent-color: var(--ink)"), "{css}");
@@ -3573,6 +3685,12 @@ async fn going_back_from_the_statement_keeps_content_inner_html() {
         !releve.contains("Revenir au menu"),
         "ce fragment ne redessine pas le pli : {releve}"
     );
+    assert!(
+        releve.contains("class=\"letter spread tenir-desk\""),
+        "{releve}"
+    );
+    assert!(releve.contains("class=\"tenir-card\""), "{releve}");
+    assert!(!releve.contains("<h1"), "{releve}");
     assert!(!releve.contains("<!DOCTYPE html>"), "{releve}");
 }
 
@@ -10391,6 +10509,16 @@ async fn the_statement_pages_badges_and_search() {
     assert!(
         page.contains("40 mouvements ne sont pas encore traités, sur 41."),
         "{page}"
+    );
+    assert_eq!(
+        page.matches("class=\"tenir-card\"").count(),
+        1,
+        "une carte, pas une par mouvement : {page}"
+    );
+    assert_eq!(
+        page.matches("class=\"block\"").count(),
+        40,
+        "chaque mouvement reste un article : {page}"
     );
     assert!(
         page.contains("non traité") && page.contains("traité"),

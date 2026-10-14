@@ -162,10 +162,21 @@ pub fn bureau(
 }
 
 fn piste_pane(home: &SocietyHome) -> Markup {
+    let prose = landscape_prose(&home.landscape, home.vat_position.as_ref());
+    let show_figure = home.landscape.points.len() >= 2;
+    if !show_figure && prose.is_none() {
+        return html! {};
+    }
     html! {
-        (landscape_figure(&home.landscape))
-        @if let Some(text) = landscape_prose(&home.landscape, home.vat_position.as_ref()) {
-            p class="prose" { (text) }
+        div class="tenir-desk" data-view=(ViewId::Societe.slug()) {
+            article class="tenir-card" {
+                @if show_figure {
+                    (landscape_figure(&home.landscape))
+                }
+                @if let Some(text) = prose {
+                    p { (text) }
+                }
+            }
         }
     }
 }
@@ -1817,23 +1828,24 @@ fn letter_markup(page: &StatementPage, pending: &[StatementMove], query: &Releve
         .then(|| page.entries.first().map(|e| e.occurred_on))
         .flatten();
     html! {
-        div class="letter spread" data-view=(ViewId::Societe.slug())
+        div class="letter spread tenir-desk" data-view=(ViewId::Societe.slug())
             hx-get=(refresh)
             hx-trigger="griffe:saved from:body"
             hx-swap="outerHTML"
             hx-disinherit="hx-swap" {
             (back())
-            h1 { "Le relevé." }
-            p class="lede" {
-                @if let Some(on) = last_on {
-                    "Dernier mouvement au " (format_date_fr(on)) ". "
+            article class="tenir-card" {
+                p {
+                    @if let Some(on) = last_on {
+                        "Dernier mouvement au " (format_date_fr(on)) ". "
+                    }
+                    "Tu déposes l'export de la banque quand il y a du nouveau. Griffe ne va pas le chercher."
                 }
-                "Tu déposes l'export de la banque quand il y a du nouveau. Griffe ne va pas le chercher."
-            }
-            div class="row-actions" {
-                button class="seal" type="button"
-                    hx-get="/banque/import" hx-target="#panel" hx-swap="innerHTML" {
-                    "Déposer un export"
+                div class="row-actions" {
+                    button class="seal" type="button"
+                        hx-get="/banque/import" hx-target="#panel" hx-swap="innerHTML" {
+                        "Déposer un export"
+                    }
                 }
             }
             form class="releve-search" hx-get="/societe/releve" hx-target="#releve-body"

@@ -2986,6 +2986,56 @@ input[type="checkbox"] {
     grid-template-rows: none;
   }
 }
+
+/* Tenir — cartes de lecture. La piste et Le relevé. Le pli reste. */
+.plateau-open[data-family="tenir"] .work:has(.tenir-desk) {
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+}
+.tenir-desk {
+  flex: 1 0 auto;
+  min-height: min-content;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+}
+.tenir-card {
+  background: #fbf7f0;
+  color: var(--ink);
+  border-radius: 16px;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 8px;
+  min-width: 0;
+  min-height: min-content;
+  width: 100%;
+  box-shadow: inset 0 0 0 1px rgba(28, 24, 20, 0.08);
+}
+.tenir-card p { margin: 0; color: var(--ink); overflow-wrap: anywhere; }
+.tenir-card .landscape { margin: 0; padding: 0; width: 100%; }
+.tenir-card .row-actions { margin-top: 0; }
+.tenir-desk > .releve-search,
+.tenir-desk > #releve-body { flex: none; }
+@media (max-width: 1100px) {
+  .tenir-desk,
+  .tenir-card {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+  }
+}
+@media (max-width: 700px) {
+  .tenir-desk,
+  .tenir-card {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+  }
+}
 .pupitre .geste {
   min-height: 44px;
   padding: 10px 0;

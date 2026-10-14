@@ -266,9 +266,9 @@ Une URL de chapitre replie le menu. « Revenir au menu » ramène à `/societe`.
 Le fil nomme la famille et le titre. Les voisins sont des pastilles ; la pastille
 courante est en encre. Échap, depuis `app.js`, ramène au menu. Le chapitre garde
 son marquage dans `.work`. Te payer est peint en cartes. L’État peint Les
-échéances et Clore. Tenir, les lettres d’échéance et Les réglages gardent le
-marquage. Les teintes de lecture restent `#fbf7f0`, `#f8f1e2`, `#f8ebe4`,
-`#f3ecdf`.
+échéances et Clore. Tenir peint La piste et Le relevé. Les lettres d’échéance
+et Les réglages gardent le marquage. Les teintes de lecture restent `#fbf7f0`,
+`#f8f1e2`, `#f8ebe4`, `#f3ecdf`.
 
 Voisins : Tenir = La piste et Le relevé ; Te payer = Ce mois-ci, Le compte et
 L’année ; L’État = Les échéances et Clore ; Les réglages = La carte, Le courrier,
@@ -359,6 +359,55 @@ Une lettre `/societe/impots/{kind}` reste une lettre. Le parent est « Les
 les POST restent.
 
 Classes `.etat-*`. Ces deux adresses restent sans CA3, 3514, 2777.
+
+### Cartes de Tenir
+
+Le fil, « Revenir au menu » et les pastilles restent. La teinte de menu reste
+`#fbf7f0`. La teinte de lecture des cartes est `#fbf7f0`. Le texte est en
+encre. Les cartes se posent sur le bureau `#e6dfd2`. Les queries et les POST
+ne changent pas.
+
+La piste tient sur une carte, pleine largeur. Le relevé tient sa carte
+au-dessus de la liste, pleine largeur. Sous 1 100 px et sous 700 px, la carte
+reste seule : pas de grille à deux ou trois colonnes. Les cartes suivent leur
+texte. Le défilement de `.work` reste permis.
+
+**La piste** (`/societe/piste`). Le volet n’a pas de `h1` et n’a pas le lien
+« ← La société ». Le fil porte « La piste ». Une carte pour le paysage déjà
+dessiné. `figure.landscape` reste une figure dans la carte : le SVG s’il y a
+au moins deux points, la légende déjà écrite (mois abrégé, « aujourd’hui »,
+« · clôture dans {n} jours » s’il y a un délai, « · si ça arrive » si un
+encaissement est prévu). La phrase déjà écrite (`landscape_prose`) reste une
+phrase, dans la carte. Sans figure et sans phrase, aucune carte vide. Pas une
+carte par point de la courbe. Le pointillé reste dans le SVG. Le SVG garde
+160 px de haut et 100 % de large. Aucun formulaire, aucun bouton.
+
+**Le relevé** (`/societe/releve`). Le `h1` « Le relevé. » sort : le fil porte
+« Le relevé ». Le lien « ← La société » reste, le pli le masque. La lettre
+garde `letter` et `spread`. La racine qui se rafraîchit sur `griffe:saved`
+reste cette lettre : `hx-get` vers elle-même,
+`hx-trigger="griffe:saved from:body"`, `hx-swap="outerHTML"`,
+`hx-disinherit="hx-swap"`. Le fragment HX-Request garde le retour en
+`hx-swap="innerHTML"`, et il ne redessine pas « Revenir au menu ». Une carte
+pour la phrase d’entrée déjà écrite : « Dernier mouvement au {date}. » quand
+il y en a un, puis « Tu déposes l’export de la banque quand il y a du nouveau.
+Griffe ne va pas le chercher. » « Déposer un export » reste le bouton
+`type="button"` qui ouvre `/banque/import` dans `#panel`, dans cette carte.
+La recherche reste le formulaire `form.releve-search` (GET vers
+`#releve-body`, le champ et le délai déjà écrits), pas une carte. La phrase de
+compteur reste une phrase (« Aucun mouvement dans le coffre. », « Tout est
+traité. … », « {n} mouvements ne sont pas encore traités, sur {total}. »).
+« Voir les non traités » et « Voir tout l’historique » restent des liens.
+Chaque mouvement reste un `article.block` : pastille « non traité » ou
+« traité », date, montant déjà écrit, phrase déjà écrite, lectures déjà
+écrites. Pas une carte par mouvement. « Aucun mouvement ne correspond. » et
+« Les mouvements plus anciens » restent où ils sont. Les lectures ne bougent
+pas : formulaire dont le bouton est dans le form quand c’est un POST vers
+`#panel` (« C’est le règlement d’une dette » si la dette est suggérée,
+« C’est pour moi. » ou « C’est moi qui apporte. »), lien vers `#panel` pour
+« C’est une dépense » et pour la dette quand c’est déjà un lien.
+
+Classes `.tenir-*`. Ces deux adresses restent sans CA3, 3514, 2777.
 
 | Chapitre | Contenu |
 |---|---|
