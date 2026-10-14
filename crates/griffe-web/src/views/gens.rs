@@ -1951,6 +1951,8 @@ pub struct PhrasesView {
     pub chrome: LetterChrome,
     pub banner: Option<String>,
     pub status: Option<String>,
+    /// Ouvert depuis La société : le fil porte le titre, l'entrée est une carte.
+    pub reglages: bool,
 }
 
 /// Valeur du bouton « un autre ». Ce n'est pas un nom de genre.
@@ -1994,6 +1996,20 @@ pub struct KeepUi {
     pub recipient: String,
 }
 
+fn phrases_entry(view: &PhrasesView) -> Markup {
+    html! {
+        p class="lede" { (view.lede) }
+        p class="phrase-chronicle" id="phrase-chronicle" { (view.chronicle) }
+        p class="phrase-when" { "Les conversations déjà engagées finissent leur série." }
+        @if let Some(msg) = &view.banner {
+            p class="mast-note" role="alert" { (msg) }
+        }
+        @if let Some(msg) = &view.status {
+            p class="mast-note" role="status" { (msg) }
+        }
+    }
+}
+
 pub fn phrases_page(view: &PhrasesView) -> Markup {
     let order = view
         .moments
@@ -2002,12 +2018,15 @@ pub fn phrases_page(view: &PhrasesView) -> Markup {
         .collect::<Vec<_>>()
         .join(",");
     let preview = phrase_preview_href(&view.action);
+    let genre_title = view.reglages && view.title != "Les phrases.";
     html! {
-        div class="phrase-desk phrase-open" data-view=(ViewId::Gens.slug()) {
+        div class={ "phrase-desk phrase-open" @if view.reglages { " reglages-desk" } } data-view=(ViewId::Gens.slug()) {
             a class="back" href=(view.back_href) hx-get=(view.back_href) hx-target="#content" hx-push-url="true" {
                 "← " (view.back_label)
             }
-            h1 { (view.title) }
+            @if !view.reglages {
+                h1 { (view.title) }
+            }
             p class="phrase-line" {
                 @for link in &view.links {
                     @if link.current {
@@ -2022,14 +2041,15 @@ pub fn phrases_page(view: &PhrasesView) -> Markup {
                     "Un autre genre"
                 }
             }
-            p class="lede" { (view.lede) }
-            p class="phrase-chronicle" id="phrase-chronicle" { (view.chronicle) }
-            p class="phrase-when" { "Les conversations déjà engagées finissent leur série." }
-            @if let Some(msg) = &view.banner {
-                p class="mast-note" role="alert" { (msg) }
-            }
-            @if let Some(msg) = &view.status {
-                p class="mast-note" role="status" { (msg) }
+            @if view.reglages {
+                article class="reglages-card" {
+                    @if genre_title {
+                        p { (view.title) }
+                    }
+                    (phrases_entry(view))
+                }
+            } @else {
+                (phrases_entry(view))
             }
             form hx-post=(view.action) hx-target="#content" hx-push-url="true" {
                 input type="hidden" name="order" value=(order);

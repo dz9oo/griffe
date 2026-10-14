@@ -2110,10 +2110,10 @@ fn identity_markup(card: &IdentityCard, phrases: &str) -> Markup {
         _ => String::new(),
     };
     html! {
-        div class="letter" data-view=(ViewId::Societe.slug()) {
+        div class="letter reglages-desk" data-view=(ViewId::Societe.slug()) {
             (back())
-            h1 { "L'identité." }
             p class="lede" { "La carte de la société, pas un formulaire de paramètres." }
+            article class="reglages-card" {
             ul class="people" {
                 (id_row("Nom", card.name.as_deref().unwrap_or("—")))
                 (id_row(
@@ -2140,7 +2140,8 @@ fn identity_markup(card: &IdentityCard, phrases: &str) -> Markup {
                     (id_row("TVA", vat_regime_fr(r)))
                 }
             }
-            div class="block" {
+            }
+            article class="reglages-card" {
                 h3 { "Le coffre" }
                 p {
                     "Un fichier sur cette machine, chiffré. "

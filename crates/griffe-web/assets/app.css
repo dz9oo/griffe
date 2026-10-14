@@ -3036,6 +3036,87 @@ input[type="checkbox"] {
     width: 100%;
   }
 }
+
+/* Les réglages — cartes de lecture. La carte, Le courrier, Les phrases, Les papiers. */
+.plateau-open[data-family="reglages"] .work:has(.reglages-desk) {
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+}
+.reglages-desk {
+  flex: 1 0 auto;
+  min-height: min-content;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+}
+.plateau .work .reglages-desk > .lede,
+.plateau .work .reglages-card > .lede { margin: 0; color: var(--ink); }
+.reglages-card {
+  background: #f3ecdf;
+  color: var(--ink);
+  border-radius: 16px;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 8px;
+  min-width: 0;
+  min-height: min-content;
+  width: 100%;
+  box-shadow: inset 0 0 0 1px rgba(28, 24, 20, 0.08);
+}
+.reglages-card > p { margin: 0; overflow-wrap: anywhere; }
+.reglages-card:not(.place) > h3:not([class]) {
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  font-weight: 600;
+}
+#papiers-letter .reglages-card > h2,
+#papiers-letter.reglages-desk > h2 {
+  font-family: var(--serif);
+  font-weight: 500;
+  font-size: clamp(22px, 2vw, 28px);
+  letter-spacing: -0.03em;
+  line-height: 1.05;
+  color: var(--ink);
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.reglages-card.courrier-read,
+.reglages-card.courrier-block {
+  margin-top: 0;
+  border-top: 0;
+}
+.reglages-desk > .mast,
+.reglages-desk > .row-actions,
+.reglages-desk > .phrase-line,
+.reglages-desk > form,
+.reglages-desk > .places,
+.reglages-desk > h2,
+.reglages-desk > .prose,
+.reglages-desk > .mast-note { flex: none; }
+@media (max-width: 1100px) {
+  .reglages-desk,
+  .reglages-desk > .reglages-card {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+  }
+}
+@media (max-width: 700px) {
+  .reglages-desk,
+  .reglages-desk > .reglages-card {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+  }
+}
 .pupitre .geste {
   min-height: 44px;
   padding: 10px 0;

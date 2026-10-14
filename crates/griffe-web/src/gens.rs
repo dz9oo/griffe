@@ -834,6 +834,7 @@ fn assemble_phrases(
         chrome: reading.chrome,
         banner,
         status,
+        reglages: query.depuis.trim() == "societe",
     }
 }
 

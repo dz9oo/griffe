@@ -83,9 +83,8 @@ fn markup(
     let copies = !imap_host.trim().is_empty();
 
     html! {
-        div class="letter courrier-desk" data-view=(ViewId::Societe.slug()) {
+        div class="letter courrier-desk reglages-desk" data-view=(ViewId::Societe.slug()) {
             (back())
-            h1 { "Le courrier." }
             p class="lede" { (lede(account)) }
             @if let Some(form) = form {
                 @if let Some(error) = &form.error {
@@ -98,8 +97,7 @@ fn markup(
             @if pause {
                 p class="prose" { "Trop de lettres cette heure. Celles qui restent attendent." }
             }
-            div class="courrier-read" {
-                div class="courrier-letter-col" {
+            article class="reglages-card courrier-read" {
                     p class="courrier-kicker" { "Une lettre d'essai. Le prénom est fictif." }
                     div id="letter-card" {
                         (card_column(
@@ -124,8 +122,8 @@ fn markup(
                             depart.map(|item| item.to_address.as_str()),
                         ))
                     }
-                }
-                form class="courrier-formula courrier-block" hx-post="/societe/courrier/signature" hx-target="#content" hx-push-url="true" {
+            }
+            form class="reglages-card courrier-formula courrier-block" hx-post="/societe/courrier/signature" hx-target="#content" hx-push-url="true" {
                     h3 class="panel-title" { "Ce qui ferme la lettre" }
                     p class="field-help" {
                         "Ces lignes ferment chaque lettre. On les écrit ici une fois. Par exemple : Ingénieur logiciel indépendant, sur sa ligne. Un mail, un numéro ou une adresse, seuls sur leur ligne, restent cliquables. L'adresse se lit sans ?utm_…."
@@ -142,9 +140,8 @@ fn markup(
                     div class="row-actions" {
                         button class="seal" type="submit" { "Enregistrer" }
                     }
-                }
             }
-            section class="courrier-account courrier-block" {
+            section class="reglages-card courrier-account courrier-block" {
                 h3 class="panel-title" { "D'où elles partent" }
                 @if known {
                     (account_line(from_name, from_address, preset, host, account))
@@ -255,7 +252,7 @@ fn markup(
                     }
                 }
             }
-            div class="courrier-jour courrier-block" {
+            div class="reglages-card courrier-jour courrier-block" {
                 h3 class="panel-title" { "L'envoi du jour" }
                 p class="prose" {
                     "Pendant que le coffre est ouvert, Griffe envoie les lettres dont la date prévue est aujourd'hui. Une lettre d'hier reste un geste à la main."

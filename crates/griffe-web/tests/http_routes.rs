@@ -2167,6 +2167,74 @@ async fn la_societe_opens_on_the_plateau_and_folds_each_chapter() {
                     "le soulignement reste La société : {page}"
                 );
                 assert!(page.contains("phrase-desk"), "{page}");
+                assert!(page.contains("reglages-desk"), "{page}");
+                assert_eq!(page.matches("reglages-card").count(), 1, "{page}");
+                assert!(page.contains("class=\"phrase-line\""), "{page}");
+                assert!(page.contains("class=\"phrase-stage\""), "{page}");
+                assert!(page.contains("id=\"phrase-sheet\""), "{page}");
+                assert!(
+                    page.contains("Les conversations déjà engagées finissent leur série."),
+                    "{page}"
+                );
+                assert!(!page.contains("<h1"), "{page}");
+                assert!(!page.contains("hx-on"), "{page}");
+                let line = page.find("class=\"phrase-line\"").expect("genres");
+                let card = page.find("reglages-card").expect("carte");
+                let form = page.find("<form").expect("formulaire");
+                assert!(
+                    line < card && card < form,
+                    "la ligne, puis la carte, puis le formulaire : {page}"
+                );
+            }
+            "/societe/identite" => {
+                assert!(page.contains("class=\"letter reglages-desk\""), "{page}");
+                assert_eq!(page.matches("reglages-card").count(), 2, "{page}");
+                assert!(page.contains("ul class=\"people\""), "{page}");
+                assert!(page.contains("552100554"), "le SIREN déjà écrit : {page}");
+                assert!(page.contains("pas un formulaire de paramètres"), "{page}");
+                assert!(page.contains(">Le coffre<"), "{page}");
+                assert!(page.contains("Modifier la carte"), "{page}");
+                assert!(page.contains("href=\"/view/societe\""), "{page}");
+                assert!(page.contains("selon qui ils sont"), "{page}");
+                assert!(!page.contains("<h1"), "{page}");
+                assert!(
+                    !page.contains("<form"),
+                    "pas de formulaire inventé : {page}"
+                );
+                assert!(!page.contains("hx-on"), "{page}");
+                let people = page.find("ul class=\"people\"").expect("liste");
+                let coffre = page.find(">Le coffre<").expect("coffre");
+                let edit = page.find("Modifier la carte").expect("lien");
+                let cards: Vec<usize> = page
+                    .match_indices("reglages-card")
+                    .map(|(i, _)| i)
+                    .collect();
+                assert!(
+                    cards[0] < people && people < cards[1] && cards[1] < coffre && coffre < edit,
+                    "la liste, le coffre, puis le lien : {page}"
+                );
+            }
+            "/societe/courrier" => {
+                assert!(page.contains("courrier-desk"), "{page}");
+                assert_eq!(page.matches("reglages-card").count(), 4, "{page}");
+                assert!(
+                    page.contains("Pas encore branché") || page.contains("Prêt"),
+                    "{page}"
+                );
+                assert!(!page.contains("<h1"), "{page}");
+                assert!(!page.contains("hx-on"), "{page}");
+            }
+            "/societe/papiers" => {
+                assert!(page.contains("id=\"papiers-letter\""), "{page}");
+                assert!(page.contains("class=\"letter reglages-desk\""), "{page}");
+                assert!(page.contains("class=\"mast\""), "{page}");
+                assert!(page.contains("class=\"places\""), "{page}");
+                assert_eq!(page.matches("reglages-card").count(), 4, "{page}");
+                assert!(!page.contains("<h1"), "{page}");
+                assert!(!page.contains("hx-on"), "{page}");
+                let mast = page.find("class=\"mast\"").expect("mât");
+                let card = page.find("reglages-card").expect("carte");
+                assert!(mast < card, "le mât reste au-dessus des cartes : {page}");
             }
             _ => {}
         }
@@ -2188,7 +2256,7 @@ async fn la_societe_opens_on_the_plateau_and_folds_each_chapter() {
     )
     .await;
     assert!(
-        papers.contains("Revenir au menu") && papers.contains("Les papiers."),
+        papers.contains("Revenir au menu") && papers.contains("Les originaux nés ici restent ici."),
         "les papiers restent dans le pli : {papers}"
     );
     let slip = body_text(
@@ -2207,7 +2275,7 @@ async fn la_societe_opens_on_the_plateau_and_folds_each_chapter() {
     )
     .await;
     assert!(
-        slip.contains("Les papiers.")
+        slip.contains("Les originaux nés ici restent ici.")
             && !slip.contains("plateau")
             && !slip.contains("Revenir au menu"),
         "le rafraîchissement de la lettre ne redessine pas le pli : {slip}"
@@ -2403,6 +2471,64 @@ async fn la_societe_plateau_presses_a_line_into_its_family() {
     assert!(
         !rule_700.contains("grid-template-columns") && !rule_700.contains("repeat("),
         "pas de grille à plusieurs colonnes : {rule_700}"
+    );
+    assert!(
+        css.contains(".reglages-card {\n  background: #f3ecdf;"),
+        "la lecture des réglages : {css}"
+    );
+    assert!(
+        css.contains(".plateau-family[data-family=\"reglages\"] { background: #efe6d6; }"),
+        "la teinte de menu des réglages reste : {css}"
+    );
+    assert!(
+        css.contains(".plateau .work .courrier-desk { max-width: 40rem;"),
+        "le courrier garde ses 40 rem : {css}"
+    );
+    assert!(
+        css.contains(
+            ".plateau-open[data-family=\"reglages\"] .work:has(.reglages-desk) {\n  display: flex;\n  flex-direction: column;\n  overflow: auto;"
+        ),
+        "le chapitre défile : {css}"
+    );
+    assert!(
+        css.contains("@container courrier (min-width: 640px)"),
+        "la grille du serveur reste une grille de champs : {css}"
+    );
+    let reglages_css = css
+        .split("/* Les réglages — cartes de lecture.")
+        .nth(1)
+        .expect("cartes des réglages");
+    let under_1100_reglages = reglages_css
+        .split("@media (max-width: 1100px)")
+        .nth(1)
+        .expect("palier 1100 des réglages");
+    let rule_1100_reglages = under_1100_reglages.split("@media").next().unwrap();
+    assert!(
+        rule_1100_reglages.contains(
+            ".reglages-desk,\n  .reglages-desk > .reglages-card {\n    display: flex;\n    flex-direction: column;\n    width: 100%;"
+        ),
+        "sous 1100 px, les cartes empilées restent une colonne : {rule_1100_reglages}"
+    );
+    assert!(
+        !rule_1100_reglages.contains("grid-template-columns")
+            && !rule_1100_reglages.contains("repeat("),
+        "pas de grille à plusieurs colonnes : {rule_1100_reglages}"
+    );
+    let under_700_reglages = reglages_css
+        .split("@media (max-width: 700px)")
+        .nth(1)
+        .expect("palier 700 des réglages");
+    let rule_700_reglages = under_700_reglages.split("@media").next().unwrap();
+    assert!(
+        rule_700_reglages.contains(
+            ".reglages-desk,\n  .reglages-desk > .reglages-card {\n    display: flex;\n    flex-direction: column;\n    width: 100%;"
+        ),
+        "sous 700 px, les cartes empilées restent une colonne : {rule_700_reglages}"
+    );
+    assert!(
+        !rule_700_reglages.contains("grid-template-columns")
+            && !rule_700_reglages.contains("repeat("),
+        "pas de grille à plusieurs colonnes : {rule_700_reglages}"
     );
     assert!(css.contains("background: var(--ink);"), "{css}");
     assert!(css.contains("accent-color: var(--ink)"), "{css}");
@@ -12345,7 +12471,7 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
         chapter.contains("class=\"plateau plateau-open\"") && chapter.contains("Revenir au menu"),
         "le courrier reste dans le pli : {chapter}"
     );
-    assert!(chapter.contains("Le courrier."), "{chapter}");
+    assert!(chapter.contains("Pas encore branché."), "{chapter}");
     assert!(
         chapter.contains("D'où elles partent") || chapter.contains("D&#x27;où elles partent"),
         "{chapter}"

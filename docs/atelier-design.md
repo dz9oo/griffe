@@ -266,8 +266,9 @@ Une URL de chapitre replie le menu. « Revenir au menu » ramène à `/societe`.
 Le fil nomme la famille et le titre. Les voisins sont des pastilles ; la pastille
 courante est en encre. Échap, depuis `app.js`, ramène au menu. Le chapitre garde
 son marquage dans `.work`. Te payer est peint en cartes. L’État peint Les
-échéances et Clore. Tenir peint La piste et Le relevé. Les lettres d’échéance
-et Les réglages gardent le marquage. Les teintes de lecture restent `#fbf7f0`,
+échéances et Clore. Tenir peint La piste et Le relevé. Les réglages peignent
+La carte, Le courrier, Les phrases et Les papiers. Les lettres d’échéance
+gardent le marquage. Les teintes de lecture restent `#fbf7f0`,
 `#f8f1e2`, `#f8ebe4`, `#f3ecdf`.
 
 Voisins : Tenir = La piste et Le relevé ; Te payer = Ce mois-ci, Le compte et
@@ -408,6 +409,104 @@ pas : formulaire dont le bouton est dans le form quand c’est un POST vers
 « C’est une dépense » et pour la dette quand c’est déjà un lien.
 
 Classes `.tenir-*`. Ces deux adresses restent sans CA3, 3514, 2777.
+
+### Cartes des réglages
+
+Le fil, « Revenir au menu » et les pastilles restent. La teinte de menu reste
+`#efe6d6`. La teinte de lecture des cartes est `#f3ecdf`. Le texte est en
+encre. Les cartes se posent sur le bureau `#e6dfd2`. Les queries et les POST
+ne changent pas.
+
+Les cartes se posent l’une sous l’autre, pleine largeur. Pas de grille à deux
+ou trois colonnes pour ces cartes. Sous 1 100 px et sous 700 px, les cartes
+empilées restent une colonne. Elles suivent leur texte. Le défilement de
+`.work` reste permis. Le courrier garde `courrier-desk` et ses 40 rem. Les
+phrases gardent `phrase-desk`. Les papiers gardent `letter` et
+`#papiers-letter`.
+
+**La carte** (`/societe/identite`). Le fil porte « La carte ». Le `h1`
+« L’identité. » sort : le lede dit déjà « La carte de la société, pas un
+formulaire de paramètres. » Le lien « ← La société » reste, le pli le masque.
+La racine reste `div.letter` dans le bureau. Deux cartes. La première porte
+`ul.people`, une liste dans la carte : Nom, Forme avec le capital quand il
+n’est pas nul, Siège s’il est là, Président s’il est là, SIREN s’il est là,
+Clôture, TVA. Une ligne absente le reste. Pas une carte par ligne. La seconde
+porte « Le coffre » : les deux phrases déjà écrites, et les liens déjà écrits
+vers Le courrier et vers les phrases. « Modifier la carte » reste le lien
+quiet vers `/view/societe`, sous les cartes. Pas un formulaire, pas une carte.
+Aucun formulaire inventé.
+
+**Le courrier** (`/societe/courrier`). Le `h1` « Le courrier. » sort. Le lien
+« ← La société » reste, le pli le masque. La racine garde `letter` et
+`courrier-desk`. Le lede déjà écrit reste une phrase au-dessus (pas encore
+branché, prêt envoi du jour, ou prêt à la main). « Trop de lettres cette
+heure. Celles qui restent attendent. » reste où elle est. Quatre cartes, dans
+les 40 rem. La première est la lecture : l’amorce « Une lettre d’essai. Le
+prénom est fictif. », `#letter-card`, la feuille, puis `form.courrier-send`.
+`mail-pane` reste la figure de la lettre. L’iframe `.letter-frame` garde son
+bloc vide. Les radios de la feuille restent sur l’input. `form.courrier-send`
+reste le formulaire du champ « Vers » et de « Envoyer l’essai », le bouton
+dans le form. La deuxième carte est `form.courrier-formula` : « Ce qui ferme
+la lettre », l’aide déjà écrite, le textarea dont l’aperçu part en delay
+600 ms vers `#letter-card` en innerHTML sans pousser l’URL, et le bouton
+« Enregistrer » dans le form. La troisième est « D’où elles partent » : la
+ligne de compte déjà écrite, `details.courrier-sheet`, `form.serveur` dont le
+bouton « Enregistrer et essayer la liaison » est dans le form, et, quand un
+mot de passe est au coffre, le formulaire « Retirer le mot de passe » dont le
+bouton est dans le form. Le champ mot de passe reste `type="password"`. La
+page ne le réécrit pas. La grille des champs du serveur reste la grille des
+champs (une colonne, deux colonnes dès 640 px dans le conteneur courrier),
+pas une grille de cartes. La quatrième est « L’envoi du jour » : les deux
+phrases déjà écrites, et le formulaire dont le bouton est « Activer l’envoi
+du jour » ou « Couper l’envoi du jour », dans le form.
+
+**Les phrases** (`/affaires/phrases?depuis=societe`). L’habillage du bureau
+reste : `frame_phrases`, famille Les réglages, soulignement La société.
+`?depuis=lettre` et `?depuis=fiche` restent dans la lentille des affaires,
+avec leur lien retour. Le fil porte « Les phrases ». Le `h1` « Les phrases. »
+sort. Le titre « {genre}. » reste une phrase dans la carte. Le lien « ← … »
+du gabarit partagé reste dans le gabarit. La ligne des genres (« Les
+phrases », chaque genre, « Un autre genre ») reste une ligne, pas une carte.
+Une carte pour l’entrée déjà écrite : le lede, la chronique, « Les
+conversations déjà engagées finissent leur série. » Un seul formulaire
+ensuite, pas une carte par moment. La frise et la feuille gardent la grille
+`phrase-stage` (frise | feuille, une colonne sous 800 px). Les boutons
+Monter, Descendre, Retirer, Ajouter un moment, Enregistrer les phrases et
+Retirer ce genre restent dans ce form. Les jetons restent des boutons
+`type="button"`. L’aperçu reste `#phrase-sheet`, remplacé en innerHTML,
+delay 600 ms. La feuille reste une figure dans le formulaire.
+
+**Les papiers** (`/societe/papiers`). Le `h1` « Les papiers. » sort. Le lien
+« ← La société » reste, le pli le masque. La racine qui se rafraîchit sur
+`griffe:saved` reste `#papiers-letter`. Le fragment dont la cible est
+`papiers-letter` ne redessine pas le pli et ne contient pas « Revenir au
+menu ». Le mât (exercice, « vu le ») reste le mât, au-dessus des cartes. La
+phrase d’entrée déjà écrite reste au-dessus. Deux cartes de listes. « Ce que
+Griffe écrit. » : la phrase déjà écrite (« Le PV et l’affectation… » ou « Le
+PV, le FEC, les factures… ») et le lien « Lesquelles ? », puis `ol.papers`.
+« Ce que vous apportez. » : `ol.papers`, ou « Rien à apporter pour cet
+exercice. », puis `details` « une autre pièce » dont le formulaire (le
+select, « Déposer ») reste dans le `details`. Chaque pièce reste un `li` : le
+bouton `type="button"` qui déplie, le formulaire de dépôt dans le déplié
+quand la pièce est à apporter, les liens « Ouvrir … », les phrases déjà
+écrites. Pas une carte par pièce. « Deux endroits. » garde la grille
+`.places` (deux colonnes, le filet, une colonne sous 700 px). « Au coffre »
+et « Pour un contrôle » sont les deux cartes de cette grille. Le chemin du
+coffre reste le chemin. Le formulaire « Préparer le dossier d’un contrôle »
+reste dans « Pour un contrôle », le bouton dans le form, le résultat dans
+`#pack-result`.
+
+Ce qui reste une figure : `mail-pane` dans la carte de lecture du courrier,
+la feuille `#phrase-sheet` dans le formulaire des phrases. Ce qui reste une
+liste : `ul.people` dans La carte, `ol.papers` dans chaque carte de liste,
+chaque pièce un `li`. Ce qui reste un formulaire : l’envoi d’essai, la
+formule, le serveur, le retrait du mot de passe, l’envoi du jour, le
+formulaire unique des phrases, le dépôt d’une pièce, le dépôt « une autre
+pièce », la préparation du dossier d’un contrôle. La carte n’a pas de
+formulaire.
+
+Classes `.reglages-*`. Ces quatre adresses restent sans CA3, 3514, 2777. Le
+SIREN déjà écrit reste.
 
 | Chapitre | Contenu |
 |---|---|
