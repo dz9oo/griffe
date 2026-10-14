@@ -586,46 +586,108 @@ fn papers_chapter_sub(store: &Store, today: Date) -> String {
     }
 }
 
-fn current_account_block(acc: &CurrentAccount, with_moves: bool) -> Markup {
-    let headline = match &acc.balance {
-        CurrentAccountBalance::CompanyOwes { amount } => {
-            html! { strong { (amount) } " — la société te doit cette somme." }
-        }
-        CurrentAccountBalance::YouOwe { amount } => {
-            html! { strong { (amount) } " — tu dois cette somme à la société." }
-        }
-        CurrentAccountBalance::Clear => html! { "Rien entre toi et la société." },
-    };
-    let mut bits = Vec::new();
-    if !acc.opening.is_zero() {
-        bits.push(format!("{} repris du cabinet", acc.opening));
+fn move_kind(kind: griffe_core::society::CurrentAccountMoveKind) -> &'static str {
+    match kind {
+        griffe_core::society::CurrentAccountMoveKind::Opening => "Au départ",
+        griffe_core::society::CurrentAccountMoveKind::Advanced => "Avancé",
+        griffe_core::society::CurrentAccountMoveKind::Taken => "Pris",
+        griffe_core::society::CurrentAccountMoveKind::Brought => "Apporté",
     }
-    if !acc.advanced.is_zero() {
-        bits.push(format!("{} avancés de ta poche", acc.advanced));
-    }
-    if !acc.taken.is_zero() {
-        bits.push(format!("{} pris sur le compte de la société", acc.taken));
-    }
-    if !acc.brought.is_zero() {
-        bits.push(format!("{} mis sur le compte de la société", acc.brought));
-    }
+}
+
+struct AnnualBar {
+    paid: Money,
+    target: Money,
+    pct: i128,
+}
+
+fn annual_bar(pay: &PayYourself) -> Option<AnnualBar> {
+    let target = pay.annual.target.filter(|amount| !amount.is_zero())?;
+    let paid = pay.annual.paid;
+    let pct = ((i128::from(paid.cents()) * 100) / i128::from(target.cents()).max(1)).clamp(0, 100);
+    Some(AnnualBar { paid, target, pct })
+}
+
+fn year_meter(bar: &AnnualBar) -> Markup {
+    let paid = bar.paid;
+    let target = bar.target;
+    let pct = bar.pct;
     html! {
-        div class="block" {
-            h3 { "Entre toi et la société" }
-            p { (headline) }
-            @if !bits.is_empty() {
-                p class="lede" { (bits.join(" · ")) }
+        div class="meter" aria-label=(format!("{paid} sur {target}")) {
+            i style=(format!("width:{pct}%")) {}
+        }
+        div class="bars-cap" {
+            span { (paid) }
+            span { (target) }
+        }
+    }
+}
+
+fn year_span(bar: &AnnualBar) -> Markup {
+    html! {
+        article class="payer-card payer-span" {
+            h2 { "Cette année, pour vivre" }
+            p { "Objectif " (bar.target) ". Versé " (bar.paid) "." }
+            (year_meter(bar))
+        }
+    }
+}
+
+fn definition_card(title: &'static str, amount: Money, phrase: &'static str) -> Markup {
+    html! {
+        article class="payer-card" {
+            h2 { (title) }
+            @if amount.is_zero() {
+                p { (phrase) }
+            } @else {
+                p class="payer-figure" { (amount) }
+                p { (amount) " " (phrase) }
             }
-            @if with_moves {
-                @for m in &acc.moves {
-                    p {
-                        (match m.kind {
-                            griffe_core::society::CurrentAccountMoveKind::Opening => "Au départ",
-                            griffe_core::society::CurrentAccountMoveKind::Advanced => "Avancé",
-                            griffe_core::society::CurrentAccountMoveKind::Taken => "Pris",
-                            griffe_core::society::CurrentAccountMoveKind::Brought => "Apporté",
-                        })
-                        " · " (m.label) " · " (m.amount)
+        }
+    }
+}
+
+fn balance_card(acc: &CurrentAccount) -> Markup {
+    html! {
+        article class="payer-card" {
+            span class="kicker" { "Le solde" }
+            @match &acc.balance {
+                CurrentAccountBalance::CompanyOwes { amount } => {
+                    p class="payer-figure" { (amount) }
+                    p { strong { (amount) } " — la société te doit cette somme." }
+                }
+                CurrentAccountBalance::YouOwe { amount } => {
+                    p class="payer-figure" { (amount) }
+                    p { strong { (amount) } " — tu dois cette somme à la société." }
+                }
+                CurrentAccountBalance::Clear => {
+                    p class="payer-figure" { "Rien" }
+                    p { "Rien entre toi et la société." }
+                }
+            }
+            @if !acc.opening.is_zero() {
+                p { (acc.opening) " repris du cabinet" }
+            }
+        }
+    }
+}
+
+fn account_markup(acc: &CurrentAccount) -> Markup {
+    html! {
+        div class="letter payer-desk" data-view=(ViewId::Societe.slug()) {
+            (back())
+            div class="payer-grid" data-payer="compte" {
+                (balance_card(acc))
+                div class="payer-stack" {
+                    (definition_card("Avancé", acc.advanced, "avancés de ta poche"))
+                    (definition_card("Pris", acc.taken, "pris sur le compte de la société"))
+                    (definition_card("Apporté", acc.brought, "mis sur le compte de la société"))
+                }
+            }
+            @if !acc.moves.is_empty() {
+                ul class="payer-moves" {
+                    @for m in &acc.moves {
+                        li { (move_kind(m.kind)) " · " (m.label) " · " (m.amount) }
                     }
                 }
             }
@@ -749,8 +811,7 @@ fn landscape_svg(land: &Landscape) -> String {
 
 pub fn pay(store: &Store, today: Date) -> Result<Markup, AppError> {
     let pay = pay_yourself(store.connection(), today)?;
-    let acc = current_account(store.connection(), today)?;
-    bureau(store, today, "/societe/payer", pay_markup(&pay, &acc))
+    bureau(store, today, "/societe/payer", pay_markup(&pay))
 }
 
 /// Le compte courant, dans le bureau.
@@ -760,12 +821,7 @@ pub fn pay(store: &Store, today: Date) -> Result<Markup, AppError> {
 /// Lecture du coffre.
 pub fn account(store: &Store, today: Date) -> Result<Markup, AppError> {
     let acc = current_account(store.connection(), today)?;
-    bureau(
-        store,
-        today,
-        "/societe/compte",
-        current_account_block(&acc, true),
-    )
+    bureau(store, today, "/societe/compte", account_markup(&acc))
 }
 
 /// L'objectif de l'année, dans le bureau.
@@ -778,32 +834,45 @@ pub fn year(store: &Store, today: Date) -> Result<Markup, AppError> {
     bureau(store, today, "/societe/annee", year_pane(&pay))
 }
 
-fn year_pane(pay: &PayYourself) -> Markup {
-    match pay.annual.target {
-        Some(target) if !target.is_zero() => {
-            let pct = ((i128::from(pay.annual.paid.cents()) * 100)
-                / i128::from(target.cents()).max(1))
-            .clamp(0, 100);
-            let paid = pay.annual.paid;
-            html! {
-                div class="block" {
-                    h3 { "Cette année, pour vivre" }
-                    p { "Objectif " (target) ". Versé " (paid) "." }
-                    div class="meter" aria-label=(format!("{paid} sur {target}")) {
-                        i style=(format!("width:{pct}%")) {}
-                    }
-                }
+fn year_facts(bar: &AnnualBar) -> Markup {
+    html! {
+        div class="payer-grid" data-payer="annee" {
+            article class="payer-card" {
+                h2 { "Versé" }
+                p class="payer-figure" { (bar.paid) }
+                p { "Versé " (bar.paid) "." }
             }
+            article class="payer-card" {
+                h2 { "Objectif" }
+                p class="payer-figure" { (bar.target) }
+                p { "Objectif " (bar.target) "." }
+            }
+            (year_span(bar))
         }
-        _ => html! {
-            p class="prose" { "Aucun montant visé." }
-        },
     }
 }
 
-fn pay_markup(pay: &PayYourself, acc: &CurrentAccount) -> Markup {
-    let salary_on = !matches!(pay.dividend, DividendDoor::Open { .. });
-    let dividend_body = match &pay.dividend {
+fn year_pane(pay: &PayYourself) -> Markup {
+    let grid = match annual_bar(pay) {
+        Some(bar) => year_facts(&bar),
+        None => html! {
+            div class="payer-grid" data-payer="annee" {
+                article class="payer-card payer-span" {
+                    p { "Aucun montant visé." }
+                }
+            }
+        },
+    };
+    html! {
+        div class="letter payer-desk" data-view=(ViewId::Societe.slug()) {
+            (back())
+            (grid)
+        }
+    }
+}
+
+fn dividend_body(pay: &PayYourself) -> String {
+    match &pay.dividend {
         DividendDoor::Closed {
             reason: DividendClosed::YearNotClosed,
         } => format!(
@@ -820,78 +889,60 @@ fn pay_markup(pay: &PayYourself, acc: &CurrentAccount) -> Markup {
             "L'exercice est clos. {available} restent à verser. 1 000 € pour toi coûtent {} à la société.",
             pay.dividend_cost_per_thousand
         ),
-    };
-    let annual = match pay.annual.target {
-        Some(target) if !target.is_zero() => {
-            let pct = ((i128::from(pay.annual.paid.cents()) * 100)
-                / i128::from(target.cents()).max(1))
-            .clamp(0, 100);
-            Some((pay.annual.paid, target, pct))
-        }
-        _ => None,
-    };
+    }
+}
+
+fn pay_markup(pay: &PayYourself) -> Markup {
+    let dividend_open = matches!(pay.dividend, DividendDoor::Open { .. });
+    let salary_on = !dividend_open;
     html! {
-        div class="letter" data-view=(ViewId::Societe.slug()) {
+        div class="letter payer-desk" data-view=(ViewId::Societe.slug()) {
             (back())
-            h1 { "Te payer." }
             p class="lede" { "La question n'est pas « salaire ou dividendes ». C'est : de l'argent sur ton compte, sans casser la société." }
-            (current_account_block(acc, true))
-            div class="block" {
-                h3 { "Ce mois-ci" }
-                p {
+            div class="payer-grid" data-payer="mois" {
+                article class="payer-card" {
+                    span class="kicker" { "Ce mois-ci" }
                     @if pay.possible.is_zero() {
-                        "Tu ne peux rien sortir ce mois-ci sans casser la piste."
+                        p class="payer-figure" { "Rien" }
+                        p { "Tu ne peux rien sortir ce mois-ci sans casser la piste." }
                     } @else {
-                        "Tu peux te verser jusqu'à " strong { (pay.possible) }
-                        " et garder " (pay.runway_kept_months)
-                        " mois de piste. Au-delà, tu manges le délai qui te reste pour trouver la conversation suivante."
-                    }
-                }
-            }
-            div class="pay-choice" {
-                div class={ "opt" @if salary_on { " on" } } {
-                    span class="mark" {}
-                    div {
-                        strong { "Comme un salaire" }
+                        p class="payer-figure" { (pay.possible) }
                         p {
-                            "Chaque mois. Une fiche de paie chez ton expert (Griffe n'est pas un logiciel de paie). "
-                            @if pay.possible.is_zero() {
-                                "Rien à verser ce mois-ci sans casser la piste."
-                            } @else {
-                                "Toi tu reçois " (pay.salary.net) ". La société débourse "
-                                (pay.salary.company_cost) ", charges comprises. Une déclaration sociale suit, en fin de mois."
-                            }
+                            "Tu peux te verser jusqu'à " strong { (pay.possible) }
+                            " et garder " (pay.runway_kept_months)
+                            " mois de piste. Au-delà, tu manges le délai qui te reste pour trouver la conversation suivante."
                         }
                     }
                 }
-                div class={ "opt" @if !salary_on { " on" } @else { " shut" } } {
-                    span class="mark" {}
-                    div {
-                        strong { "Plus tard, en dividendes" }
-                        p { (dividend_body) }
+                article class={ "payer-card" @if salary_on { " on" } } {
+                    @if salary_on {
+                        span class="kicker" { "Ouverte" }
+                    }
+                    h2 { "Comme un salaire" }
+                    p {
+                        "Chaque mois. Une fiche de paie chez ton expert (Griffe n'est pas un logiciel de paie). "
+                        @if pay.possible.is_zero() {
+                            "Rien à verser ce mois-ci sans casser la piste."
+                        } @else {
+                            "Toi tu reçois " (pay.salary.net) ". La société débourse "
+                            (pay.salary.company_cost) ", charges comprises. Une déclaration sociale suit, en fin de mois."
+                        }
                     }
                 }
-            }
-            @if let Some((paid, target, pct)) = annual {
-                div class="block" {
-                    h3 { "Cette année, pour vivre" }
-                    p { "Objectif " (target) ". Versé " (paid) "." }
-                    div class="meter" aria-label=(format!("{paid} sur {target}")) {
-                        i style=(format!("width:{pct}%")) {}
-                    }
-                    div class="bars-cap" {
-                        span { (paid) }
-                        span { (target) }
-                    }
+                article class={ "payer-card" @if dividend_open { " on" } @else { " shut" } } {
+                    span class="kicker" { @if dividend_open { "Ouverte" } @else { "Fermée" } }
+                    h2 { "Plus tard, en dividendes" }
+                    p { (dividend_body(pay)) }
+                }
+                @if let Some(bar) = annual_bar(pay) {
+                    (year_span(&bar))
                 }
             }
-            div class="row-actions" {
+            p class="payer-next" {
                 a class="seal" href="/societe/releve"
                   hx-get="/societe/releve" hx-target="#content" hx-push-url="true" {
                     "Le prochain virement, depuis le relevé"
                 }
-                a class="quiet" href="/societe"
-                  hx-get="/societe" hx-target="#content" hx-push-url="true" { "Revenir" }
             }
         }
     }

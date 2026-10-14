@@ -2799,6 +2799,118 @@ input[type="checkbox"] {
   .content:has(.plateau) { padding-left: 20px; padding-right: 20px; }
   .plateau-board { grid-template-columns: 1fr; }
 }
+
+/* Te payer — cartes de lecture. Le pli reste au-dessus. */
+.plateau-open[data-family="payer"] .work {
+  display: flex;
+  flex-direction: column;
+}
+.payer-desk {
+  flex: 1 0 auto;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.plateau .work .payer-desk > .lede { margin: 0; color: var(--ink); }
+.payer-grid {
+  flex: 1;
+  min-height: min-content;
+  display: grid;
+  gap: 12px;
+  align-items: stretch;
+}
+.payer-grid[data-payer="mois"] {
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-rows: minmax(min-content, 1.25fr) minmax(min-content, 0.7fr);
+}
+.payer-grid[data-payer="mois"]:not(:has(.payer-span)) {
+  grid-template-rows: minmax(min-content, 1fr);
+}
+.payer-grid[data-payer="compte"] {
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+}
+.payer-grid[data-payer="annee"] {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-rows: minmax(min-content, 1fr) auto;
+}
+.payer-span { grid-column: 1 / -1; justify-content: center; }
+.payer-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  min-height: 0;
+}
+.payer-stack > .payer-card { flex: 1; }
+.payer-card {
+  background: #f8f1e2;
+  color: var(--ink);
+  border-radius: 16px;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 8px;
+  min-width: 0;
+  min-height: 0;
+  box-shadow: inset 0 0 0 1px rgba(28, 24, 20, 0.08);
+}
+.payer-card.on {
+  box-shadow: inset 3px 0 0 var(--ink), inset 0 0 0 1px rgba(28, 24, 20, 0.08);
+}
+.payer-card.shut { opacity: 0.72; }
+.payer-card h2 {
+  margin: 0;
+  font-family: var(--serif);
+  font-weight: 500;
+  font-size: clamp(22px, 2vw, 28px);
+  letter-spacing: -0.03em;
+  line-height: 1.05;
+  color: inherit;
+}
+.payer-figure {
+  margin: 0;
+  font-family: var(--serif);
+  font-weight: 500;
+  font-size: clamp(32px, 3vw, 48px);
+  letter-spacing: -0.03em;
+  line-height: 1;
+  color: var(--ink);
+}
+.payer-card p { margin: 0; color: var(--ink); overflow-wrap: anywhere; }
+.payer-moves {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  flex: none;
+}
+.payer-moves li {
+  padding: 8px 2px;
+  border-top: 1px solid var(--rule);
+  font-size: 15px;
+  color: var(--ink);
+}
+.payer-next { margin: 0; flex: none; }
+@media (max-width: 1100px) {
+  .payer-grid[data-payer="mois"],
+  .payer-grid[data-payer="compte"],
+  .payer-grid[data-payer="annee"] {
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: none;
+    flex: none;
+  }
+  .payer-stack { display: contents; }
+  .payer-card { min-height: 9rem; }
+}
+@media (max-width: 700px) {
+  .payer-grid[data-payer="mois"],
+  .payer-grid[data-payer="compte"],
+  .payer-grid[data-payer="annee"] {
+    grid-template-columns: 1fr;
+  }
+  .payer-span { grid-column: 1; }
+}
 .pupitre .geste {
   min-height: 44px;
   padding: 10px 0;

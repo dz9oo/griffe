@@ -2039,6 +2039,40 @@ async fn la_societe_opens_on_the_plateau_and_folds_each_chapter() {
                     page.contains("n'est pas clos") || page.contains("n&#x27;est pas clos"),
                     "dividende fermé : {page}"
                 );
+                assert!(page.contains("data-payer=\"mois\""), "{page}");
+                assert!(page.contains("Comme un salaire"), "{page}");
+                assert!(page.contains("Plus tard, en dividendes"), "{page}");
+                assert!(page.contains("Cette année, pour vivre"), "{page}");
+                assert!(page.contains("Ouverte"), "{page}");
+                assert!(page.contains("Fermée"), "{page}");
+                assert!(
+                    page.contains("Le prochain virement, depuis le relevé"),
+                    "{page}"
+                );
+                assert!(!page.contains("<form"), "pas de formulaire : {page}");
+                assert!(!page.contains("hx-on"), "{page}");
+            }
+            "/societe/compte" => {
+                assert!(page.contains("data-payer=\"compte\""), "{page}");
+                assert!(
+                    page.contains("Rien entre toi et la société")
+                        || page.contains("Rien entre toi et la soci&#xE9;t&#xE9;"),
+                    "{page}"
+                );
+                assert!(page.contains("avancés de ta poche"), "{page}");
+                assert!(page.contains("pris sur le compte de la société"), "{page}");
+                assert!(page.contains("mis sur le compte de la société"), "{page}");
+                assert!(page.contains(">Avancé<"), "{page}");
+                assert!(page.contains(">Pris<"), "{page}");
+                assert!(page.contains(">Apporté<"), "{page}");
+                assert!(!page.contains("<form"), "pas de formulaire : {page}");
+            }
+            "/societe/annee" => {
+                assert!(page.contains("data-payer=\"annee\""), "{page}");
+                assert!(page.contains(">Versé<"), "{page}");
+                assert!(page.contains(">Objectif<"), "{page}");
+                assert!(page.contains("class=\"meter\""), "{page}");
+                assert!(!page.contains("<form"), "pas de formulaire : {page}");
             }
             "/societe/releve" => {
                 assert!(page.contains("Leroy"), "{page}");
@@ -2178,6 +2212,18 @@ async fn la_societe_plateau_presses_a_line_into_its_family() {
     assert!(
         css.contains(".plateau-open[data-family] .plateau-pill[aria-current=\"page\"]"),
         "la pastille courante est en encre : {css}"
+    );
+    assert!(
+        css.contains(".payer-card {\n  background: #f8f1e2;"),
+        "la lecture de Te payer : {css}"
+    );
+    assert!(
+        css.contains(".payer-grid[data-payer=\"mois\"]"),
+        "la grille de Ce mois-ci : {css}"
+    );
+    assert!(
+        css.contains(".payer-card.on {\n  box-shadow: inset 3px 0 0 var(--ink)"),
+        "la porte ouverte est en encre : {css}"
     );
     assert!(css.contains("background: var(--ink);"), "{css}");
     assert!(css.contains("accent-color: var(--ink)"), "{css}");

@@ -265,9 +265,9 @@ trésorerie** (encre sur papier, pointillés = si l’encaissement prévu arrive
 Une URL de chapitre replie le menu. « Revenir au menu » ramène à `/societe`.
 Le fil nomme la famille et le titre. Les voisins sont des pastilles ; la pastille
 courante est en encre. Échap, depuis `app.js`, ramène au menu. Le chapitre garde
-son marquage dans `.work`. Les cartes de contenu viennent ensuite. La teinte de
-lecture est posée (`#fbf7f0`, `#f8f1e2`, `#f8ebe4`, `#f3ecdf`) et le contenu
-n’est pas encore peint dedans.
+son marquage dans `.work`. Te payer est peint en cartes. Tenir, L’État et Les
+réglages gardent le marquage. Les teintes de lecture restent `#fbf7f0`,
+`#f8f1e2`, `#f8ebe4`, `#f3ecdf`.
 
 Voisins : Tenir = La piste et Le relevé ; Te payer = Ce mois-ci, Le compte et
 L’année ; L’État = Les échéances et Clore ; Les réglages = La carte, Le courrier,
@@ -279,6 +279,46 @@ rentre à `/societe`.
 
 Les phrases `?depuis=societe` portent la famille Les réglages et le soulignement
 La société. Ouvertes depuis une affaire, elles restent dans Les affaires.
+
+### Cartes de Te payer
+
+Le fil, « Revenir au menu » et les pastilles restent. La teinte de lecture des
+cartes est `#f8f1e2`. Le texte est en encre. Les queries ne changent pas : aucun
+montant nouveau, la porte dividende suit le coffre.
+
+La grille remplit l’écran du chapitre. Au-dessus de 1 100 px, Ce mois-ci tient
+en trois colonnes et Le compte en deux (le solde, puis les définitions
+empilées). Sous 1 100 px, deux colonnes. Sous 700 px, une colonne. Le
+défilement de `.work` reste permis : les cartes suivent leur texte, elles ne
+sont pas coupées.
+
+**Ce mois-ci** (`/societe/payer`). La phrase d’entrée reste au-dessus. Trois
+cartes, puis la barre de l’année sur toute la largeur :
+
+- le montant possible, avec la phrase déjà écrite (jusqu’où se verser en gardant
+  la piste, ou rien ce mois-ci) ;
+- « Comme un salaire », porte ouverte tant que les dividendes sont fermés ;
+- « Plus tard, en dividendes », porte fermée avec la phrase déjà écrite
+  (exercice non clos, ou sans bénéfice). Quand la query ouvre les dividendes,
+  cette carte passe ouverte ;
+- la barre « Cette année, pour vivre » : objectif, versé, mètre. Sans objectif,
+  la barre n’est pas dessinée.
+
+« Le prochain virement, depuis le relevé » reste un lien sous la grille. Le
+solde du compte courant vit sur Le compte.
+
+**Le compte** (`/societe/compte`). Carte du solde : la phrase déjà écrite (la
+société te doit, tu dois, ou rien entre toi et la société). « Repris du cabinet »
+reste sur cette carte quand l’ouverture n’est pas nulle. Trois cartes de
+définition, phrases déjà écrites : « avancés de ta poche », « pris sur le compte
+de la société », « mis sur le compte de la société ». Le montant de la
+définition s’écrit quand il n’est pas nul. Les mouvements restent une liste
+sous la grille (Au départ, Avancé, Pris, Apporté).
+
+**Cette année** (`/societe/annee`). Deux faits, versé et objectif, puis la même
+barre. Sans objectif : « Aucun montant visé. », sans barre.
+
+Aucun formulaire sur ces trois chapitres.
 
 | Chapitre | Contenu |
 |---|---|
