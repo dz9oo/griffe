@@ -112,17 +112,17 @@ en inversant ces variables.
 Maquette : Newsreader (titres, chiffres du calendrier, italiques) + Source Sans 3 (UI).
 **Pas de webfont distante.** Pas de Google Fonts dans la fenêtre.
 
-À faire : vendoriser les woff2 (OFL) dans `crates/griffe-web/assets/fonts/`
-et les déclarer en `@font-face`. Replis : `Liberation Serif` / `Noto Serif` et
+Les woff2 (OFL) sont dans `crates/griffe-web/assets/fonts/`
+et déclarés en `@font-face`. Replis : `Liberation Serif` / `Noto Serif` et
 `Adwaita Sans` / `Noto Sans`.
 
 - Titres : serif, weight 400, letter-spacing −0.03em, `clamp(36px, 6vw, 58px)`
-- Lede : serif 20px, ink-2, max 52ch (voix éditoriale, plus courte que le corps)
+- Lede : serif 20px, ink-2, max 52ch (voix éditoriale, plus courte que le corps). Sur un chapitre de La société, la phrase d’entrée est en sans 15 px, en encre.
 - UI : sans 15–16px
 - Dates kicker : sans 11–12px, uppercase, letter-spacing 0.2em
 - Marque : serif italic 22px, « Griffe »
 
-Chiffres d’argent : sans, tabular si disponible. Pas de mono type console sur Le jour.
+Chiffres d’argent en ligne : sans, tabular si disponible. Le grand fait d’une famille et le montant de Te payer sont en serif. Pas de mono type console sur Le jour.
 
 ### Chrome et page
 
@@ -130,7 +130,7 @@ Chiffres d’argent : sans, tabular si disponible. Pas de mono type console sur 
 - La date du jour n’est pas répétée en tête de lettre. Une date qui est le sujet (échéance, histoire, mois) reste dans la page.
 - Chrome et pied prennent toute la largeur, avec le même retrait, quelle que soit la pièce.
 - Le jour, Les affaires et La société prennent toute la largeur. Les autres lettres restent à **760 px**.
-- Padding page ~40 px (20 px sous 700 px).
+- Padding des autres lettres ~40 px (20 px sous 700 px).
 - Pas de rail d’audit visible par défaut.
 - Bouton primaire : fond sceau, texte papier.
 - Bouton secondaire : filet encre, pas de fond.
@@ -166,7 +166,7 @@ Ordre de la page, toujours :
 2. **Gestes** — cinq lignes au plus, la langue de la lentille
 3. **Le mois** — grille, bandes de missions, agenda
 
-Le bureau a la largeur de Les affaires. Le compte « N prospects / M clients » reste dans le livre.
+Le bureau a la largeur de Les affaires. La carte des affaires compte les noms de la vue.
 
 ### Mât
 
@@ -176,17 +176,16 @@ Une phrase : **Ce matin, trois gestes — banque · piste en mois · à encaisse
 S'il n'y a aucun geste : les trois faits, puis « Rien n'est dû ce matin. »
 Si un fait est alarmant (piste sous le seuil, à encaisser trop vieux), il passe sceau.
 
-Sous les faits, **une phrase** seulement s’il y a un trou :
+Sous les faits, **une phrase** seulement, le premier de ces trous :
 
-- piste courte
-- aucune conversation derrière la relance du jour
-- octobre vide de missions
+- la piste sous deux mois
+- aucune conversation ouverte
+- une seule conversation ouverte
+- une créance à encaisser depuis trente jours
 
-Pas de phrase si tout va. Le calme se voit à l’absence d’italique rouge.
+Pas de phrase si tout va. Le calme se voit à l’absence d’italique sceau.
 
-Seuil de piste à caler en vivant la maquette (proposition de départ : alarme sous **2 mois**,
-note dès **3 mois** si le pipeline derrière est vide). Cœur : une query compose le mât,
-elle ne décide pas du texte français mot à mot — la fenêtre rédige à partir de faits typés.
+L’alarme de piste est sous **2 mois**. Le cœur compose les faits. La fenêtre rédige le français. Un mois vide de missions se dit sur le mois.
 
 ### Gestes
 
@@ -200,7 +199,7 @@ File dérivée de ce qui existe déjà, fusionnée, **un verbe par ligne** :
 Trois à cinq, pas vingt. Chaque ligne a quatre cellules : le verbe, le qui, le prochain pas, le montant. Le tas froid n'est pas nommé : un lien « et N autres » ouvre Les affaires. Une mission sans geste du matin reste sur sa bande. Un prestataire n'a une ligne que s'il a une dette d'ouverture ou un débit qui correspond. Le reste vit dans le mois. Déplier un geste (pas un panneau
 latéral) : les boutons de la chose (ouvrir le dossier, le brouillon, plus tard).
 
-Le `.eml` ne change pas (lot 47). Griffe n’envoie pas.
+Le brouillon `.eml` des relances reste. L’envoi part du dossier, ou depuis Le courrier.
 
 ### Le mois
 
@@ -557,10 +556,10 @@ SIREN déjà écrit reste.
 | Le relevé | Chaque mouvement = une phrase, trois lectures : dépense, règlement d’une dette, *c’est moi que je me paie*. |
 | La carte | Carte (nom, forme, siège, président, SIREN, clôture, régime de TVA). Le coffre se dit ici. |
 
-« Te payer » et le paysage demandent des **chiffres déjà dans le domaine**
-(prévisionnel, rémunération du dirigeant, affectation) présentés autrement.
-La *recommandation* « 2 800 € ce mois-ci gardent 3 mois de piste » est une
-query nouvelle, pure, à tests chiffrés à la main — pas un calcul dans la fenêtre.
+« Te payer » et le paysage montrent des **chiffres déjà dans le domaine**
+(prévisionnel, rémunération du dirigeant, affectation).
+Le montant qui garde 3 mois de piste vient de la query du cœur,
+tenue par le test chiffré « 2 800 € ». La fenêtre affiche ce résultat.
 
 ## 9. Cœur vs fenêtre
 
