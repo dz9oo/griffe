@@ -37,7 +37,7 @@ La console, le journal d’audit, les slugs d’URL peuvent rester. Ils ne sont 
 |---|---|---|
 | **Le jour** | Quoi faire, et où en est le mois ? | Un dashboard |
 | **Les affaires** | Avec qui j’en suis ? | Un CRM + un module devis + un module missions |
-| **La société** | Est-ce que ça tient, et que dois-je à l’État ? | « La maison ». Les réglages sont la quatrième colonne du bureau |
+| **La société** | Est-ce que ça tient, et que dois-je à l’État ? | « La maison ». Les réglages sont une des quatre cartes du plateau |
 
 Chrome : `Griffe` (italique, serif) à gauche · les trois mots à droite.
 La pièce active = un soulignement encre, pas un onglet teinté.
@@ -62,7 +62,7 @@ Nouveaux chemins souhaités, à poser dès que ça ne casse pas les tests :
 
 - `/jour` (accueil après déverrouillage, à la place de `/view/dashboard`)
 - `/affaires`, `/affaires/{réf}` (`/dossiers` et `/gens` restent des alias)
-- `/societe`, `/societe/payer`, `/societe/impots`, `/societe/cloture`, `/societe/releve`, `/societe/identite`
+- `/societe`, `/societe/piste`, `/societe/payer`, `/societe/impots`, `/societe/cloture`, `/societe/releve`, `/societe/identite`
 
 ## 4. Langage
 
@@ -129,7 +129,7 @@ Chiffres d’argent : sans, tabular si disponible. Pas de mono type console sur 
 - La chrome est la même sur Le jour, Les affaires, La société, l’aide et la console : le wordmark (nom et paraphe), les trois pièces au centre, la date du jour à droite. La date est `letter_date` (jour de semaine réel). Elle vit hors du fragment htmx, donc une navigation ne la redessine pas.
 - La date du jour n’est pas répétée en tête de lettre. Une date qui est le sujet (échéance, histoire, mois) reste dans la page.
 - Chrome et pied prennent toute la largeur, avec le même retrait, quelle que soit la pièce.
-- Le jour, Les affaires et l’accueil de La société prennent toute la largeur du bureau. Les autres lettres restent à **760 px**.
+- Le jour, Les affaires et La société prennent toute la largeur. Les autres lettres restent à **760 px**.
 - Padding page ~40 px (20 px sous 700 px).
 - Pas de rail d’audit visible par défaut.
 - Bouton primaire : fond sceau, texte papier.
@@ -147,9 +147,9 @@ on ne remplit pas avec des graphiques. Inversement on ne cache pas un trou
 Le vide vit **autour de la feuille et entre les blocs**, pas à l’intérieur d’une
 phrase. La colonne **est** la mesure.
 
-- Le jour, Les affaires et l’accueil de La société : toute la largeur du bureau. Les autres lettres : **760 px**.
+- Le jour, Les affaires et La société : toute la largeur. Les autres lettres : **760 px**.
 - Chrome et pied suivent la pièce : pleine largeur sur Le jour, Les affaires et La société.
-- La société aligne quatre colonnes (Tenir, Te payer, L’État, Les réglages). Les lignes sont du corps (sans, 15 px), pas des titres d’affiche. Le chapitre s’ouvre dans le panneau sous les colonnes — y compris Le courrier, Les papiers et Les phrases. Les réglages est l’endroit où l’on retrouve la carte, le courrier, les phrases et les papiers. La ligne choisie a une gouttière : la barre de 3 px ne touche pas le mot.
+- La société est le plateau. L’accueil et chaque chapitre prennent toute la largeur, sur le bureau `#e6dfd2`. Quatre cartes : Tenir `#fbf7f0`, Te payer `#f4ead6`, L’État `#f6e4dc`, Les réglages `#efe6d6`. Les lignes sont du corps (sans, 15 px), des cartes crème posées sur la teinte. Le survol enfonce la ligne dans sa famille (`#f3ece0`, `#ead9bc`, `#f0d2c6`, `#e6d9c4`). Une URL de chapitre replie les cartes : « Revenir au menu », le fil, les pastilles des voisins, le chapitre dans `.work`. La piste est `/societe/piste`.
 - Corps, listes, montants, chemins, boutons : 100 % de la colonne. Pas de
   `max-width` en `ch` sous un titre de bloc.
 - Lede ≤ 52ch. Alarme (`.mast-note`) ≤ 46ch.
@@ -248,10 +248,37 @@ Résolution de référence inchangée (nom, préfixe, UUID).
 
 ## 8. La société
 
-Page d’entrée = le bureau. Une phrase (banque, piste, prochaine échéance), quatre
-colonnes toujours visibles, et un panneau. La piste montre le **paysage de
+Page d’entrée = le plateau. Une phrase (banque, piste, prochaine échéance), quatre
+cartes toujours visibles. L’alarme de piste est en sceau. Les destinations sont
+des cartes crème posées sur la teinte de la famille.
+
+| Famille | Grand fait | Lignes |
+|---|---|---|
+| Tenir | la banque | La piste, Le relevé. Sous le fait : les mois de piste. L’encaissement prévu (partie · montant) est une mention, pas un lien. |
+| Te payer | le montant du mois | Ce mois-ci, Le compte, L’année |
+| L’État | la date courte de la prochaine échéance (« 24 sept. ») | Les échéances, Clore. Le nom de l’échéance reste dans la phrase et dans le fait. |
+| Les réglages | La maison | La carte, Le courrier, Les phrases, Les papiers |
+
+La piste a sa propre adresse, `/societe/piste`. Elle montre le **paysage de
 trésorerie** (encre sur papier, pointillés = si l’encaissement prévu arrive).
-Les colonnes :
+
+Une URL de chapitre replie le menu. « Revenir au menu » ramène à `/societe`.
+Le fil nomme la famille et le titre. Les voisins sont des pastilles ; la pastille
+courante est en encre. Échap, depuis `app.js`, ramène au menu. Le chapitre garde
+son marquage dans `.work`. Les cartes de contenu viennent ensuite. La teinte de
+lecture est posée (`#fbf7f0`, `#f8f1e2`, `#f8ebe4`, `#f3ecdf`) et le contenu
+n’est pas encore peint dedans.
+
+Voisins : Tenir = La piste et Le relevé ; Te payer = Ce mois-ci, Le compte et
+L’année ; L’État = Les échéances et Clore ; Les réglages = La carte, Le courrier,
+Les phrases et Les papiers.
+
+Une lettre `/societe/impots/{kind}` a pour parent « Les échéances » (lien vers
+`/societe/impots`) et pour voisins « L’État » et « Clore ». « Revenir au menu »
+rentre à `/societe`.
+
+Les phrases `?depuis=societe` portent la famille Les réglages et le soulignement
+La société. Ouvertes depuis une affaire, elles restent dans Les affaires.
 
 | Chapitre | Contenu |
 |---|---|

@@ -1031,3 +1031,17 @@ document.body.addEventListener("keydown", (event) => {
     }
   });
 })();
+
+// Échap, sur un chapitre de La société, revient au menu.
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || event.defaultPrevented) return;
+  if (paletteOverlay?.classList.contains("open")) return;
+  if (panel && panel.childElementCount > 0) return;
+  if (document.querySelector(".date-pick-pop:not([hidden])")) return;
+  const target = event.target;
+  if (target instanceof Element && target.closest("input, textarea, select")) return;
+  const home = document.querySelector("[data-plateau-home]");
+  if (!home) return;
+  event.preventDefault();
+  home.click();
+}, true);

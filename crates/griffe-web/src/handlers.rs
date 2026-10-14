@@ -138,6 +138,10 @@ pub async fn societe_piece(State(state): State<AppState>, headers: HeaderMap) ->
     letter(&state, headers, ViewId::Societe, views::societe::piece).await
 }
 
+pub async fn societe_piste(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
+    letter(&state, headers, ViewId::Societe, views::societe::piste).await
+}
+
 pub async fn societe_pay(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
     letter(&state, headers, ViewId::Societe, views::societe::pay).await
 }
@@ -937,7 +941,7 @@ pub async fn societe_statement(
     };
     let today = state.today();
     // La lettre se rafraîchit elle-même (hx-swap outerHTML, sans cible #content).
-    // On ne l'habille du bureau que pour la page et pour un remplacement de #content.
+    // On ne l'habille du plateau que pour la page et pour un remplacement de #content.
     let frame = fragment == views::societe::ReleveFragment::Letter
         && (!is_htmx_request(&headers) || target == "content" || target == "#content");
     let content = state

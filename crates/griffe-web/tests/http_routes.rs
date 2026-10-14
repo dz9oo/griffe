@@ -1855,7 +1855,7 @@ async fn le_jour_nomme_les_conversations_et_le_dossier_note_fiche_estimation_ren
 }
 
 #[tokio::test]
-async fn la_societe_shows_the_landscape_chapters_and_a_closed_dividend() {
+async fn la_societe_opens_on_the_plateau_and_folds_each_chapter() {
     let db_path = test_db_path("letter-societe");
     let state = unlocked_state(&db_path)
         .await
@@ -1946,8 +1946,15 @@ async fn la_societe_shows_the_landscape_chapters_and_a_closed_dividend() {
     )
     .await;
     assert!(home.contains("data-view=\"societe\""), "{home}");
-    assert!(home.contains("class=\"bureau\""), "bureau : {home}");
-    assert!(home.contains("class=\"landscape\""), "paysage : {home}");
+    assert!(home.contains("class=\"plateau\""), "plateau : {home}");
+    assert!(!home.contains("bureau-pane"), "accueil sans volet : {home}");
+    assert!(!home.contains("bureau-columns"), "{home}");
+    assert!(
+        !home.contains("class=\"landscape\""),
+        "la piste n'est plus l'accueil : {home}"
+    );
+    assert!(!home.contains("Revenir au menu"), "{home}");
+    assert!(home.contains("href=\"/societe/piste\""), "{home}");
     assert!(home.contains("Tenir"), "{home}");
     assert!(home.contains("Te payer"), "{home}");
     assert!(
@@ -1956,12 +1963,8 @@ async fn la_societe_shows_the_landscape_chapters_and_a_closed_dividend() {
     );
     assert!(home.contains("Les réglages"), "{home}");
     assert!(home.contains("La piste"), "{home}");
-    let piste_at = home.find("La piste").expect("La piste");
-    let piste_tag = &home[piste_at.saturating_sub(500)..piste_at];
-    assert!(
-        piste_tag.contains("aria-current=\"true\""),
-        "la piste est la ligne courante : {piste_tag}"
-    );
+    assert!(home.contains("Les échéances"), "{home}");
+    assert!(home.contains("La maison"), "{home}");
     assert!(home.contains("Entre toi et la société"), "{home}");
     assert!(home.contains("/societe/payer"), "{home}");
     assert!(home.contains("Les papiers"), "{home}");
@@ -1970,7 +1973,7 @@ async fn la_societe_shows_the_landscape_chapters_and_a_closed_dividend() {
     assert!(home.contains("/societe/courrier"), "{home}");
     assert!(
         home.contains("/affaires/phrases?depuis=societe"),
-        "les phrases restent dans le bureau : {home}"
+        "les phrases restent au plateau : {home}"
     );
     assert!(
         !home.contains("freeflow "),
@@ -1981,53 +1984,83 @@ async fn la_societe_shows_the_landscape_chapters_and_a_closed_dividend() {
         "pas de sigle : {home}"
     );
 
-    let payer = body_text(
-        router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/societe/payer")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap(),
-    )
-    .await;
-    assert!(payer.contains("Te payer"), "{payer}");
-    assert!(
-        payer.contains("n'est pas clos") || payer.contains("n&#x27;est pas clos"),
-        "dividende fermé : {payer}"
-    );
-    assert!(!payer.contains("CA3"), "{payer}");
-
-    let releve = body_text(
-        router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/societe/releve")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap(),
-    )
-    .await;
-    assert!(
-        releve.contains("class=\"bureau\""),
-        "le relevé s'ouvre dans le bureau : {releve}"
-    );
-    assert!(releve.contains("Leroy"), "{releve}");
-    assert!(
-        releve.contains("dette") || releve.contains("pas une charge"),
-        "Leroy = dette : {releve}"
-    );
-    assert!(!releve.contains("freeflow "), "{releve}");
-    assert!(
-        !releve.to_lowercase().contains("c'est moi que je me paie"),
-        "{releve}"
-    );
+    let chapters = [
+        "/societe/piste",
+        "/societe/releve",
+        "/societe/payer",
+        "/societe/compte",
+        "/societe/annee",
+        "/societe/impots",
+        "/societe/cloture",
+        "/societe/identite",
+        "/societe/courrier",
+        "/societe/papiers",
+        "/affaires/phrases?depuis=societe",
+    ];
+    for uri in chapters {
+        let page = body_text(
+            router
+                .clone()
+                .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap(),
+        )
+        .await;
+        let family = if uri.contains("piste") || uri.contains("releve") {
+            "tenir"
+        } else if uri.contains("payer") || uri.contains("compte") || uri.contains("annee") {
+            "payer"
+        } else if uri.contains("impots") || uri.contains("cloture") {
+            "etat"
+        } else {
+            "reglages"
+        };
+        assert!(page.contains("Revenir au menu"), "{uri} : {page}");
+        assert!(
+            !page.contains("bureau-columns") && !page.contains("bureau-pane"),
+            "{uri}"
+        );
+        assert!(
+            page.contains(&format!("data-family=\"{family}\"")),
+            "{uri} famille {family} : {page}"
+        );
+        assert!(!page.contains("freeflow "), "{uri}");
+        assert!(
+            !page.contains("CA3") && !page.contains("3514") && !page.contains("2777"),
+            "{uri}"
+        );
+        match uri {
+            "/societe/piste" => {
+                assert!(page.contains("class=\"landscape\""), "{page}");
+                assert!(page.contains("aria-current=\"page\""), "{page}");
+            }
+            "/societe/payer" => {
+                assert!(
+                    page.contains("n'est pas clos") || page.contains("n&#x27;est pas clos"),
+                    "dividende fermé : {page}"
+                );
+            }
+            "/societe/releve" => {
+                assert!(page.contains("Leroy"), "{page}");
+                assert!(
+                    page.contains("dette") || page.contains("pas une charge"),
+                    "Leroy = dette : {page}"
+                );
+                assert!(
+                    !page.to_lowercase().contains("c'est moi que je me paie"),
+                    "{page}"
+                );
+            }
+            "/affaires/phrases?depuis=societe" => {
+                assert!(
+                    page.contains("data-piece=\"societe\" aria-current=\"page\""),
+                    "le soulignement reste La société : {page}"
+                );
+                assert!(page.contains("phrase-desk"), "{page}");
+            }
+            _ => {}
+        }
+    }
 
     let papers = body_text(
         router
@@ -2045,8 +2078,8 @@ async fn la_societe_shows_the_landscape_chapters_and_a_closed_dividend() {
     )
     .await;
     assert!(
-        papers.contains("class=\"bureau\"") && papers.contains("Les papiers."),
-        "les papiers restent au bureau : {papers}"
+        papers.contains("Revenir au menu") && papers.contains("Les papiers."),
+        "les papiers restent dans le pli : {papers}"
     );
     let slip = body_text(
         router
@@ -2064,8 +2097,10 @@ async fn la_societe_shows_the_landscape_chapters_and_a_closed_dividend() {
     )
     .await;
     assert!(
-        slip.contains("Les papiers.") && !slip.contains("class=\"bureau\""),
-        "le rafraîchissement de la lettre ne redessine pas les colonnes : {slip}"
+        slip.contains("Les papiers.")
+            && !slip.contains("plateau")
+            && !slip.contains("Revenir au menu"),
+        "le rafraîchissement de la lettre ne redessine pas le pli : {slip}"
     );
 
     let phrases = body_text(
@@ -2073,9 +2108,8 @@ async fn la_societe_shows_the_landscape_chapters_and_a_closed_dividend() {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/affaires/phrases?depuis=societe")
+                    .uri("/affaires/phrases?depuis=lettre")
                     .header("HX-Request", "true")
-                    .header("HX-Target", "content")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -2084,8 +2118,8 @@ async fn la_societe_shows_the_landscape_chapters_and_a_closed_dividend() {
     )
     .await;
     assert!(
-        phrases.contains("class=\"bureau\"") && phrases.contains("phrase-desk"),
-        "les phrases s'ouvrent dans le bureau : {phrases}"
+        !phrases.contains("data-family=\"reglages\""),
+        "ouvertes depuis une affaire, les phrases restent dans Les affaires : {phrases}"
     );
 
     let old = body_text(
@@ -2105,7 +2139,7 @@ async fn la_societe_shows_the_landscape_chapters_and_a_closed_dividend() {
 }
 
 #[tokio::test]
-async fn la_societe_bureau_bar_clears_the_word() {
+async fn la_societe_plateau_presses_a_line_into_its_family() {
     let state = unlocked_state(&test_db_path("bureau-css")).await;
     let css = body_text(
         griffe_web::router(state)
@@ -2119,20 +2153,51 @@ async fn la_societe_bureau_bar_clears_the_word() {
             .unwrap(),
     )
     .await;
+    assert!(!css.contains(".bureau-line"), "plus de gouttière : {css}");
+    assert!(css.contains("background: #e6dfd2"), "{css}");
+    for tint in [
+        "#fbf7f0", "#f4ead6", "#f8f1e2", "#f6e4dc", "#f8ebe4", "#efe6d6", "#f3ecdf", "#f3ece0",
+        "#ead9bc", "#f0d2c6", "#e6d9c4",
+    ] {
+        assert!(css.contains(tint), "{tint} manque : {css}");
+    }
     assert!(
-        css.contains(".bureau-line") && css.contains("padding: 6px 8px 6px 14px"),
-        "{css}"
+        css.contains(".plateau-line .who {\n  font-family: var(--sans);\n  font-size: 15px;"),
+        "les lignes du plateau ne sont pas des titres d'affiche : {css}"
     );
     assert!(
-        css.contains(".bureau-line[aria-current=\"true\"]")
-            && css.contains("inset 3px 0 0 var(--seal)"),
-        "{css}"
+        css.contains(
+            ".plateau-family[data-family=\"payer\"] .plateau-line:hover { background: #ead9bc; }"
+        ),
+        "le survol reste dans la famille : {css}"
     );
     assert!(
-        css.contains(".bureau-line .who {\n  font-family: var(--sans);\n  font-size: 15px;"),
-        "les lignes du bureau ne sont pas des titres d'affiche : {css}"
+        !css.contains("a.plateau-line:hover .who { color: var(--seal)"),
+        "le survol n'emprunte pas le sceau : {css}"
     );
+    assert!(
+        css.contains(".plateau-open[data-family] .plateau-pill[aria-current=\"page\"]"),
+        "la pastille courante est en encre : {css}"
+    );
+    assert!(css.contains("background: var(--ink);"), "{css}");
     assert!(css.contains("accent-color: var(--ink)"), "{css}");
+
+    let js = body_text(
+        griffe_web::router(unlocked_state(&test_db_path("plateau-js")).await)
+            .oneshot(
+                Request::builder()
+                    .uri("/assets/app.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        js.contains("Échap, sur un chapitre") && js.contains("data-plateau-home"),
+        "Échap revient au menu depuis app.js : {js}"
+    );
 }
 
 #[tokio::test]
@@ -2215,6 +2280,17 @@ async fn society_duty_letter_shows_the_amount_and_the_2571_path() {
     );
     assert!(!page.contains("freeflow "), "{page}");
     assert!(page.contains("impots.gouv.fr"), "{page}");
+    assert!(page.contains("Revenir au menu"), "{page}");
+    assert!(
+        page.contains("Les échéances") && page.contains("href=\"/societe/impots\""),
+        "le parent est Les échéances : {page}"
+    );
+    assert!(page.contains("Clore"), "le voisin est Clore : {page}");
+    assert!(page.contains("data-family=\"etat\""), "{page}");
+    assert!(
+        !page.contains("bureau-columns") && !page.contains("bureau-pane"),
+        "{page}"
+    );
 
     let unknown = router
         .clone()
@@ -3256,6 +3332,10 @@ async fn going_back_from_the_statement_keeps_content_inner_html() {
     assert!(
         releve.contains("hx-disinherit"),
         "le letter du relevé ne doit pas léguer outerHTML à ses enfants : {releve}"
+    );
+    assert!(
+        !releve.contains("Revenir au menu"),
+        "ce fragment ne redessine pas le pli : {releve}"
     );
     assert!(!releve.contains("<!DOCTYPE html>"), "{releve}");
 }
@@ -11880,8 +11960,8 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
     )
     .await;
     assert!(
-        chapter.contains("class=\"bureau\""),
-        "le courrier reste au bureau : {chapter}"
+        chapter.contains("class=\"plateau plateau-open\"") && chapter.contains("Revenir au menu"),
+        "le courrier reste dans le pli : {chapter}"
     );
     assert!(chapter.contains("Le courrier."), "{chapter}");
     assert!(
