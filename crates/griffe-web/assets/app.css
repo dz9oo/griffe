@@ -811,6 +811,15 @@ details.pile[open] > summary .stopped-hint { display: none; }
 .duties-done[open] summary { margin-bottom: 4px; }
 
 .block { margin: 32px 0; }
+.aide-file {
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.55;
+  background: var(--paper-2);
+  padding: 12px 14px;
+  margin: 12px 0 0;
+  white-space: pre-wrap;
+}
 .block h3, .panel-title {
   font-size: 11px;
   letter-spacing: 0.2em;
@@ -1486,6 +1495,43 @@ tr.row-clickable:hover td { background: var(--paper-2); }
   margin: 18px auto 0;
 }
 .letter-stage { min-width: 0; margin: 0 0 8px; }
+.letter-frame {
+  display: block;
+  width: 100%;
+  min-height: 16rem;
+  border: 0;
+  background: transparent;
+}
+.mail-pane {
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  margin: 0 0 4px;
+}
+.mail-head {
+  padding: 14px 16px 12px;
+  border-bottom: 1px solid var(--rule);
+}
+.mail-from {
+  margin: 0;
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.35;
+}
+.mail-addr {
+  margin: 2px 0 0;
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--ink-2);
+}
+.mail-subject {
+  margin: 10px 0 0;
+  font-family: var(--serif);
+  font-size: 20px;
+  letter-spacing: -0.02em;
+  line-height: 1.3;
+}
+.mail-pane .letter-stage { margin: 0; }
 .letter-stage a:hover { text-decoration: underline !important; text-underline-offset: 2px; }
 .letter-stage-subject {
   font-family: var(--serif);
@@ -1518,23 +1564,43 @@ tr.row-clickable:hover td { background: var(--paper-2); }
 }
 .courrier-formula .field-help { margin-top: 0; }
 .courrier-formula textarea { min-height: 7.5rem; }
-.courrier-send { margin-top: 8px; }
+.courrier-block {
+  margin-top: 28px;
+  padding-top: 22px;
+  border-top: 1px solid var(--rule);
+}
+.courrier-block .panel-title {
+  font-family: var(--serif);
+  font-size: 22px;
+  font-weight: 400;
+  letter-spacing: -0.02em;
+  text-transform: none;
+  color: var(--ink);
+  margin: 0 0 10px;
+}
+.sheet-note { margin-top: 16px; }
+.sheet-note .field-help {
+  margin-top: 10px;
+  font-size: 14px;
+  line-height: 1.45;
+}
+.sheet-note .field-help a { color: var(--ink); }
+.courrier-send { margin-top: 18px; }
 .courrier-send .field input[type="text"] {
   height: 36px;
   padding: 0 10px;
   border: 1px solid var(--rule);
   box-sizing: border-box;
 }
-.courrier-account { margin-top: 40px; }
+.courrier-account { margin-top: 0; }
 .courrier-account-line {
   margin: 0 0 12px;
   font-size: 15px;
   line-height: 1.45;
 }
 .courrier-sheet {
-  max-width: 40rem;
-  border: 1px solid var(--rule);
-  padding: 8px 20px 16px;
+  border: 0;
+  padding: 4px 0 0;
 }
 .courrier-sheet > summary { cursor: pointer; margin: 8px 0 12px; }
 .courrier-grid {
@@ -1568,15 +1634,6 @@ tr.row-clickable:hover td { background: var(--paper-2); }
 .courrier-secret .seal { align-self: end; }
 @container courrier (min-width: 640px) {
   .courrier-grid { grid-template-columns: 1fr 1fr; }
-}
-@container courrier (min-width: 860px) {
-  .courrier-read { grid-template-columns: minmax(0, 560px) minmax(16rem, 1fr); }
-}
-.courrier-jour {
-  max-width: 40rem;
-  margin-top: 64px;
-  padding-top: 28px;
-  border-top: 1px solid var(--rule);
 }
 .depart {
   display: flex;
@@ -2218,6 +2275,7 @@ textarea.travaux-source:focus { border-color: var(--ink); }
 }
 
 /* Les affaires — la lentille. Même papier, même encre, même sceau que le reste. */
+
 .content:has(.lens) {
   overflow: hidden;
   padding: 0;
@@ -2376,13 +2434,28 @@ textarea.travaux-source:focus { border-color: var(--ink); }
   border-left: 1px solid var(--line);
 }
 .lens-panel:not(:has(.lens-bar)) { display: none; }
-.lens.full .lens-panel {
+.lens.full .lens-panel,
+.lens.phrases-open .lens-panel {
   position: absolute;
   inset: 0;
   width: auto;
   z-index: 4;
   border-left: 0;
   box-shadow: none;
+}
+.lens:not(.full):not(.phrases-open) .phrase-stage {
+  grid-template-columns: 1fr;
+}
+.lens-body .phrase-desk {
+  max-width: none;
+  margin: 0;
+  width: 100%;
+}
+.lens-panel .phrase-chronicle {
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.45;
+  max-width: none;
 }
 .lens-bar {
   flex: none;
@@ -2426,7 +2499,7 @@ textarea.travaux-source:focus { border-color: var(--ink); }
 @media (max-width: 960px) {
   .lens-top { flex-direction: column; align-items: stretch; }
   .lens-sentence { white-space: normal; flex-wrap: wrap; min-width: 0; }
-  .lens-panel, .lens.full .lens-panel {
+  .lens-panel, .lens.full .lens-panel, .lens.phrases-open .lens-panel {
     position: fixed;
     inset: 72px 0 48px;
     width: auto;
@@ -2480,6 +2553,7 @@ input[type="checkbox"] {
   color: var(--ink);
   background-color: var(--paper);
 }
+
 .content:has(.bureau) {
   overflow: hidden;
   display: flex;
@@ -2579,8 +2653,8 @@ a.bureau-line:hover .who { color: var(--seal); }
   padding: 16px 0 24px;
 }
 .bureau-pane .letter,
-.bureau-pane .phrase-desk,
-.bureau-pane .courrier-desk { max-width: none; margin: 0; width: 100%; }
+.bureau-pane .phrase-desk { max-width: none; margin: 0; width: 100%; }
+.bureau-pane .courrier-desk { max-width: 40rem; margin: 0; width: 100%; }
 .bureau-pane .back { display: none; }
 .bureau-pane h1 {
   font-family: var(--sans);

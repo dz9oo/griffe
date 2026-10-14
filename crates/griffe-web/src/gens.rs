@@ -85,6 +85,21 @@ fn phrases_view(depuis: &str) -> ViewId {
     }
 }
 
+fn dress_phrases(
+    store: &griffe_core::store::Store,
+    today: time::Date,
+    depuis: &str,
+    headers: &HeaderMap,
+    inner: Markup,
+) -> Markup {
+    if !is_htmx(headers) && matches!(depuis.trim(), "lettre" | "fiche") {
+        return gens::render_with_panel(store, today, inner).unwrap_or_else(|error| {
+            html! { div class="empty-state" { (error.to_string()) } }
+        });
+    }
+    frame_phrases(store, today, depuis, inner)
+}
+
 fn frame_phrases(
     store: &griffe_core::store::Store,
     today: time::Date,
@@ -328,7 +343,10 @@ pub async fn phrases_get(
 ) -> Html<String> {
     let today = state.today();
     let content = state
-        .with_store(|store| phrases_markup(store, &query, today, None, None, None, None))
+        .with_store(|store| {
+            let inner = phrases_markup(store, &query, today, None, None, None, None);
+            dress_phrases(store, today, &query.depuis, &headers, inner)
+        })
         .await
         .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
     page_in(&state, &headers, phrases_view(&query.depuis), content)
@@ -380,7 +398,7 @@ pub async fn phrases_post(
         Some(Err(error)) => {
             let content = state
                 .with_store(|store| {
-                    phrases_markup(
+                    let inner = phrases_markup(
                         store,
                         &query,
                         today,
@@ -388,7 +406,8 @@ pub async fn phrases_post(
                         None,
                         Some(&fields),
                         Some(&fields),
-                    )
+                    );
+                    dress_phrases(store, today, &query.depuis, &headers, inner)
                 })
                 .await
                 .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
@@ -398,7 +417,10 @@ pub async fn phrases_post(
             let mut shown = query.clone();
             shown.genre.clear();
             let content = state
-                .with_store(|store| phrases_markup(store, &shown, today, None, None, None, None))
+                .with_store(|store| {
+                    let inner = phrases_markup(store, &shown, today, None, None, None, None);
+                    dress_phrases(store, today, &shown.depuis, &headers, inner)
+                })
                 .await
                 .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
             with_push(
@@ -411,7 +433,7 @@ pub async fn phrases_post(
         Some(Ok(false)) => {
             let content = state
                 .with_store(|store| {
-                    phrases_markup(
+                    let inner = phrases_markup(
                         store,
                         &query,
                         today,
@@ -419,7 +441,8 @@ pub async fn phrases_post(
                         Some("Les phrases sont enregistrées.".to_string()),
                         None,
                         Some(&fields),
-                    )
+                    );
+                    dress_phrases(store, today, &query.depuis, &headers, inner)
                 })
                 .await
                 .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
@@ -458,7 +481,7 @@ pub async fn genre_new_get(
                 "",
                 None,
             );
-            frame_phrases(store, today, &query.depuis, inner)
+            dress_phrases(store, today, &query.depuis, &headers, inner)
         })
         .await
         .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
@@ -501,7 +524,7 @@ pub async fn genre_new_post(
                         &form.name,
                         Some(&error.to_string()),
                     );
-                    frame_phrases(store, today, &query.depuis, inner)
+                    dress_phrases(store, today, &query.depuis, &headers, inner)
                 })
                 .await
                 .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
@@ -522,7 +545,10 @@ pub async fn genre_new_post(
                 genre: genre.id.clone(),
             };
             let content = state
-                .with_store(|store| phrases_markup(store, &shown, today, None, None, None, None))
+                .with_store(|store| {
+                    let inner = phrases_markup(store, &shown, today, None, None, None, None);
+                    dress_phrases(store, today, &shown.depuis, &headers, inner)
+                })
                 .await
                 .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
             let mut response =
@@ -702,10 +728,9 @@ fn phrases_markup(
     fields: Option<&HashMap<String, String>>,
     navigation: Option<&HashMap<String, String>>,
 ) -> Markup {
-    let inner = gens::phrases_page(&assemble_phrases(
+    gens::phrases_page(&assemble_phrases(
         store, query, today, banner, status, fields, navigation,
-    ));
-    frame_phrases(store, today, &query.depuis, inner)
+    ))
 }
 
 fn phrases_sheet(
@@ -938,7 +963,7 @@ fn phrase_reading(
     );
     let href = gens::person_href(&dossier.name);
     let (back_href, back_label) = if depuis == "lettre" {
-        (format!("{href}/ecrire"), dossier.name.clone())
+        (href.clone(), dossier.name.clone())
     } else if depuis == "fiche" {
         (format!("{href}/fiche"), dossier.name.clone())
     } else {

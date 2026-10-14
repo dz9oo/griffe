@@ -52,7 +52,7 @@ Les phrases prennent aussi `<nom>`, `<genre>`, et une formule
 restent visibles.
 
 Le courrier s’ouvre sur la lettre d’essai, pour un prénom fictif. La
-formule est à côté, et la carte suit la frappe. Enregistrer l’écrit dans
+formule est sous la lettre, dans la même mesure, et la lettre suit la frappe. Enregistrer l’écrit dans
 le coffre. D’où elles partent tient sur une ligne une fois le serveur
 connu : le nom, l’adresse, le serveur, et si la liaison répond. Modifier
 ouvre la feuille. L’identifiant du serveur n’apparaît que lorsqu’il
@@ -74,10 +74,28 @@ et à l’envoi. Elle n’est pas recopiée dans la zone d’écriture. À l’�
 ses lignes se tiennent un peu plus serrées, et restent lisibles. Vide, la
 lettre se termine par Bien à vous, le nom, la société. Un mail, un
 numéro ou une adresse, seuls sur leur ligne, restent cliquables, dans
-l’encre de la lettre, sans soulignement. L’adresse se lit sans ?utm_….
+la couleur de la feuille, sans soulignement. L’adresse se lit sans ?utm_….
 Le lien garde cette partie. La lettre d’essai part vers l’adresse
 choisie. La fenêtre dit Courrier envoyé. Cela ne promet pas la boîte du
 destinataire.
+
+Deux feuilles : Clair, un ivoire, et Sauge, un vert pâle. Le choix est sous la lettre d’essai.
+La lettre au-dessus est la page qui part : le papier remplit le message, l’encre
+et les liens sont ceux de la feuille. Changer de feuille la repeint.
+Une troisième peut venir d’un fichier sur la machine, jamais du dépôt.
+Il se nomme `lettre.toml`, dans le dossier `griffe` de la configuration
+(`XDG_CONFIG_HOME`, sinon `~/.config`). Cinq lignes, pas davantage :
+
+```
+nom = Atelier
+marge = #f3f1ec
+papier = #fffcf8
+encre = #2a2622
+lien = #3d5c66
+```
+
+La marge et le papier peuvent être la même couleur : le message est alors une seule page. L’encre et le lien restent lisibles sur le papier. Un fichier illisible
+laisse Clair.
 
 ## Les mots
 

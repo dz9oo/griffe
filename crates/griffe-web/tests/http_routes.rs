@@ -8645,6 +8645,59 @@ label_close=Dernier+mot&subject_close=Fin&body_close=Un+dernier+mot.&revision_cl
 }
 
 #[tokio::test]
+async fn phrases_from_a_letter_stay_in_the_dossier_lens() {
+    let db_path = test_db_path("phrases-lens");
+    let state = unlocked_state(&db_path).await;
+    let router = griffe_web::router(state);
+    router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/affaires/nouvelle")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from("who=Camille+Rivi%C3%A8re&phrase=accompagnement"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let href = "/affaires/phrases?depuis=lettre&pour=Camille%20Rivi%C3%A8re";
+    let back = "class=\"back\" href=\"/affaires/Camille%20Rivi%C3%A8re\"";
+    let full = body_text(
+        router
+            .clone()
+            .oneshot(Request::builder().uri(href).body(Body::empty()).unwrap())
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(full.contains("class=\"lens\""), "{full}");
+    assert!(full.contains("id=\"affaire\""), "{full}");
+    assert!(full.contains(back), "{full}");
+    assert!(
+        !full.contains("class=\"back\" href=\"/affaires/Camille%20Rivi%C3%A8re/ecrire\""),
+        "{full}"
+    );
+    let fragment = body_text(
+        router
+            .oneshot(
+                Request::builder()
+                    .uri(href)
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(!fragment.contains("class=\"lens\""), "{fragment}");
+    assert!(fragment.contains("class=\"phrase-desk"), "{fragment}");
+    assert!(fragment.contains(back), "{fragment}");
+}
+
+#[tokio::test]
 async fn an_enseigne_is_not_greeted_with_its_article() {
     let db_path = test_db_path("enseigne-prenom");
     let state = unlocked_state(&db_path).await;
@@ -11847,6 +11900,46 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
     assert!(chapter.contains("courrier-desk"), "{chapter}");
     assert!(chapter.contains("courrier-read"), "{chapter}");
     assert!(chapter.contains("class=\"letter-stage\""), "{chapter}");
+    assert!(chapter.contains("class=\"letter-frame\""), "{chapter}");
+    let frame_at = chapter.find("class=\"letter-frame\"").unwrap();
+    let close_at = chapter.find("</iframe>").unwrap_or(usize::MAX);
+    assert!(
+        close_at < chapter.len(),
+        "l'iframe se ferme, sinon le navigateur cache la suite : {chapter}"
+    );
+    for marker in [
+        "La feuille",
+        "courrier-send",
+        "courrier-formula",
+        "courrier-account",
+        "courrier-jour",
+    ] {
+        let at = chapter.find(marker).unwrap_or(usize::MAX);
+        assert!(
+            close_at < at,
+            "{marker} doit rester après </iframe> : {chapter}"
+        );
+    }
+    assert!(frame_at < close_at, "{chapter}");
+    assert!(
+        chapter.contains("&lt;!DOCTYPE html&gt;") || chapter.contains("<!DOCTYPE html>"),
+        "{chapter}"
+    );
+    assert!(chapter.contains(">Clair<"), "{chapter}");
+    assert!(chapter.contains(">Sauge<"), "{chapter}");
+    assert!(chapter.contains("class=\"mail-pane\""), "{chapter}");
+    assert!(chapter.contains("class=\"mail-subject\""), "{chapter}");
+    assert!(chapter.contains("hx-get=\"/aide/courrier\""), "{chapter}");
+    assert!(chapter.contains("Une autre feuille"), "{chapter}");
+    let pane_at = chapter.find("class=\"mail-pane\"").unwrap_or(usize::MAX);
+    let formula_at = chapter.find("courrier-formula").unwrap_or(0);
+    assert!(pane_at < formula_at, "{chapter}");
+    assert!(chapter.contains("#f6f0e4"), "{chapter}");
+    assert!(chapter.contains("#2c2418"), "{chapter}");
+    assert!(
+        chapter.contains("hx-post=\"/societe/courrier/apparence\""),
+        "{chapter}"
+    );
     assert!(
         chapter.contains("hx-post=\"/societe/courrier/apercu\""),
         "{chapter}"
@@ -11934,9 +12027,24 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
         "{preview_body}"
     );
     assert!(
-        preview_body.contains(">https://atelier.example/page<"),
+        preview_body.contains("&gt;https://atelier.example/page&lt;")
+            || preview_body.contains(">https://atelier.example/page<"),
         "{preview_body}"
     );
+    assert!(
+        preview_body.contains("&lt;!DOCTYPE html&gt;") || preview_body.contains("<!DOCTYPE html>"),
+        "{preview_body}"
+    );
+    let preview_open = preview_body
+        .find("class=\"letter-frame\"")
+        .unwrap_or(usize::MAX);
+    let preview_close = preview_body.find("</iframe>").unwrap_or(usize::MAX);
+    assert!(
+        preview_open < preview_close && preview_close < preview_body.len(),
+        "l'aperçu ferme l'iframe : {preview_body}"
+    );
+    assert!(preview_body.contains("#f6f0e4"), "{preview_body}");
+    assert!(preview_body.contains("#8a3e24"), "{preview_body}");
     assert!(
         preview_body.contains("text-decoration:none"),
         "{preview_body}"
@@ -11955,7 +12063,7 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
                 .header("content-type", "application/x-www-form-urlencoded")
                 .header("HX-Request", "true")
                 .body(Body::from(
-                    "ink=sceau&metier=Atelier&site=https%3A%2F%2Fatelier.example&signature=Atelier+Nord",
+                    "ink=sauge&metier=Atelier&site=https%3A%2F%2Fatelier.example&signature=Atelier+Nord%0Ahttps%3A%2F%2Fatelier.example",
                 ))
                 .unwrap(),
         )
@@ -11967,6 +12075,8 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
         lire_body.contains("La lettre est enregistrée."),
         "{lire_body}"
     );
+    assert!(lire_body.contains("#1e6b45"), "{lire_body}");
+    assert!(lire_body.contains("#e5eee6"), "{lire_body}");
     assert!(!lire_body.contains("#9f3218"), "{lire_body}");
     assert!(
         !lire_body.contains("text-decoration:underline"),

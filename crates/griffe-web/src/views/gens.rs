@@ -2003,7 +2003,7 @@ pub fn phrases_page(view: &PhrasesView) -> Markup {
         .join(",");
     let preview = phrase_preview_href(&view.action);
     html! {
-        div class="phrase-desk" data-view=(ViewId::Gens.slug()) {
+        div class="phrase-desk phrase-open" data-view=(ViewId::Gens.slug()) {
             a class="back" href=(view.back_href) hx-get=(view.back_href) hx-target="#content" hx-push-url="true" {
                 "← " (view.back_label)
             }
@@ -2776,7 +2776,7 @@ pub fn new_genre_page(
     banner: Option<&str>,
 ) -> Markup {
     html! {
-        div class="letter" data-view=(ViewId::Gens.slug()) {
+        div class="letter phrase-open" data-view=(ViewId::Gens.slug()) {
             a class="back" href=(back_href) hx-get=(back_href) hx-target="#content" hx-push-url="true" {
                 "← " (back_label)
             }

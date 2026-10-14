@@ -67,7 +67,9 @@ pub(super) const COURRIER: Letter = Letter {
     steps: &[
         "D'où elles partent : le nom affiché, l'adresse qui signe, le serveur, le port. Enregistrer et essayer la liaison dit si le serveur accepte l'identifiant. Le mot de passe reste dans le coffre. La page ne le réécrit pas. Le laisser vide le garde.",
         "Deux ports, tous deux chiffrés : 587, ou 465. iCloud remplit le serveur. L'identifiant est alors l'adresse, et le mot de passe est un mot de passe d'application.",
-        "La formule s'écrit une fois, à côté de la lettre d'essai. Enregistrer la range. Vide, la lettre se termine par Bien à vous, le nom, la société.",
+        "La formule s'écrit sous la lettre d'essai, dans la même mesure. Enregistrer la range. Vide, la lettre se termine par Bien à vous, le nom, la société.",
+        "Deux feuilles : Clair, un ivoire, et Sauge, un vert pâle. Le choix est sous la lettre d'essai. Changer de feuille repeint la lettre telle qu'elle part.",
+        "Une autre feuille peut venir d'un fichier sur cette machine. Les cinq lignes sont plus bas.",
         "Envoyer l'essai laisse cinq secondes. La fenêtre dit Courrier envoyé. Cela ne promet pas la boîte du destinataire.",
         "L'envoi du jour est éteint. L'activer poste, coffre ouvert, les lettres dont la date prévue est aujourd'hui. Une lettre de la veille reste à envoyer à la main.",
     ],

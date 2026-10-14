@@ -5,10 +5,11 @@ use serde::{Deserialize, Serialize};
 use time::{Date, Duration, OffsetDateTime};
 
 use super::error::MailError;
-use super::model::{ICLOUD_HOST, LetterInk, MailPreset, PROBE_OK_SENTENCE, TlsMode, UNDO_SECS};
+use super::model::{ICLOUD_HOST, MailPreset, PROBE_OK_SENTENCE, TlsMode, UNDO_SECS};
 use super::present::close_letter;
 use super::secret::MailSecret;
 use super::store::{self, NewLetter};
+use super::theme::LetterTheme;
 use crate::app::{AppError, Command};
 use crate::domain::parse_email;
 use crate::follow_up::SetFollowUpSender;
@@ -302,7 +303,7 @@ impl Command for SaveLetterface {
     const NAME: &'static str = "mail.save_letterface";
 
     fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
-        let ink = LetterInk::parse(self.ink.trim()).ok_or(MailError::Ink)?;
+        let ink = LetterTheme::parse(self.ink.trim()).ok_or(MailError::Ink)?;
         let metier = checked_metier(&self.metier)?;
         let site = checked_site(&self.site)?;
         store::save_letterface(conn, ink.as_str(), &metier, &site, &now_stamp()?)

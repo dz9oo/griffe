@@ -244,6 +244,17 @@ fn recipe_letter(recipe: &Letter) -> Markup {
                 (chapter_link("/aide/papiers", "Les papiers.", "ce qui se fige ici, ce que vous apportez"))
             }
         },
+        "courrier" => html! {
+            div class="block" {
+                h3 { "Votre feuille." }
+                p class="prose" {
+                    "Le fichier se nomme lettre.toml, dans le dossier griffe de la configuration. Si XDG_CONFIG_HOME est posé, c'est là. Sinon, ~/.config. Cinq lignes, pas davantage. L'encre et le lien restent lisibles sur le papier. Un fichier illisible laisse Clair."
+                }
+                pre class="aide-file" {
+                    "nom = Atelier\nmarge = #f3f1ec\npapier = #fffcf8\nencre = #2a2622\nlien = #3d5c66"
+                }
+            }
+        },
         "papiers" => html! {
             div class="block" {
                 h3 { "Ce que Griffe écrit." }

@@ -30,7 +30,7 @@ pub(crate) struct ArmArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct LetterfaceArgs {
-    /// `vert`, `encre` ou `sceau`.
+    /// `clair`, `sauge` ou `fichier`. `vert`, `encre` et `sceau` se lisent comme clair.
     ink: String,
     /// Ligne sous le nom. Vide : pas de ligne.
     metier: String,
@@ -129,7 +129,7 @@ impl FreeflowServer {
 
     #[tool(
         name = "mail.save_letterface",
-        description = "Enregistre la couleur des liens, le métier et le site de la lettre.",
+        description = "Enregistre la feuille, le métier et le site de la lettre.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,

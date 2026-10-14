@@ -9,7 +9,7 @@ use griffe_core::app::{AppError, Executor};
 use griffe_core::mail::{
     ArmOutbound, CancelOutbound, ClearMailSecret, MailSecret, RecordMailProbe, ResolveUncertain,
     RetryOutbound, SaveLetterface, SaveMailAccount, SaveMailSecret, SaveMailSignature,
-    SetAutomaticSend, UNDO_SECS, probe_material,
+    SetAutomaticSend, UNDO_SECS, probe_material, profile,
 };
 use maud::{Markup, html};
 use serde::Deserialize;
@@ -389,10 +389,6 @@ pub struct SignatureForm {
 pub struct LetterfaceForm {
     #[serde(default)]
     ink: String,
-    #[serde(default)]
-    metier: String,
-    #[serde(default)]
-    site: String,
 }
 
 pub async fn save_apparence(
@@ -402,11 +398,12 @@ pub async fn save_apparence(
 ) -> Response {
     let result = state
         .with_store_mut(|store| {
+            let account = profile(store.connection())?;
             Executor::new(store).execute(
                 &SaveLetterface {
                     ink: form.ink.clone(),
-                    metier: form.metier.clone(),
-                    site: form.site.clone(),
+                    metier: account.metier,
+                    site: account.site,
                 },
                 &AppState::human_ctx(),
             )
@@ -432,7 +429,7 @@ pub async fn save_apparence(
             courrier_markup(
                 &state,
                 Some(&CourrierForm {
-                    notice: Some("L'allure est enregistrée.".into()),
+                    notice: Some("La feuille est enregistrée.".into()),
                     ..CourrierForm::blank()
                 }),
             )

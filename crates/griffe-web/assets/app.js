@@ -132,7 +132,28 @@ document.body.addEventListener("input", (event) => {
   if (field.name.startsWith("label_") || field.name.startsWith("ecart_")) refreshChronicle(desk);
 });
 
+function fitLetterFrame(frame) {
+  const fit = () => {
+    const doc = frame.contentDocument;
+    const root = doc && doc.documentElement;
+    if (!root) return;
+    const body = doc.body;
+    const height = Math.max(root.scrollHeight, body ? body.scrollHeight : 0);
+    if (height > 0) frame.style.height = `${height}px`;
+  };
+  frame.addEventListener("load", fit);
+  fit();
+}
+
+function fitLetterFrames(root) {
+  const scope = root && root.querySelectorAll ? root : document;
+  scope.querySelectorAll("iframe.letter-frame").forEach(fitLetterFrame);
+}
+
+document.addEventListener("DOMContentLoaded", () => fitLetterFrames(document));
+
 document.body.addEventListener("htmx:afterSwap", (event) => {
+  fitLetterFrames(event.detail?.target || document);
   if (event.detail?.target?.id !== "content") return;
   const slug = viewSlugFrom(event.detail.target);
   if (slug) markNav(slug);
@@ -787,6 +808,19 @@ document.body.addEventListener("keydown", (event) => {
     return Boolean(overlay && overlay.classList.contains("open"));
   }
 
+  function queryValue(url, key) {
+    try {
+      return new URL(url, location.origin).searchParams.get(key) || "";
+    } catch {
+      return "";
+    }
+  }
+
+  function dossierPhrases(url) {
+    const depuis = queryValue(url, "depuis");
+    return depuis === "lettre" || depuis === "fiche";
+  }
+
   function affairePath(url) {
     if (!url || url.charAt(0) === "#") return false;
     let path = url;
@@ -798,7 +832,9 @@ document.body.addEventListener("keydown", (event) => {
     if (path === "/affaires" || path === "/affaires/") return false;
     if (!path.startsWith("/affaires/")) return false;
     if (path === "/affaires/types" || path.startsWith("/affaires/types/")) return false;
-    if (path === "/affaires/phrases" || path.startsWith("/affaires/phrases/")) return false;
+    if (path === "/affaires/phrases" || path.startsWith("/affaires/phrases/")) {
+      return dossierPhrases(url);
+    }
     return true;
   }
 
@@ -828,6 +864,7 @@ document.body.addEventListener("keydown", (event) => {
       full = false;
     }
     lens.classList.toggle("full", full);
+    lens.classList.toggle("phrases-open", Boolean(lens.querySelector(".phrase-open")));
     const span = lens.querySelector("[data-lens-span]");
     if (span) span.textContent = full ? "Réduire" : "Pleine largeur";
     const close = lens.querySelector(".lens-close");

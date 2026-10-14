@@ -2,14 +2,15 @@
 
 use griffe_core::app::AppError;
 use griffe_core::mail::{
-    LetterChrome, MailPreset, MailProfile, OutboundView, TrialLetter, profile,
+    LetterChrome, LetterParts, MailPreset, MailProfile, OutboundView, TrialLetter, close_letter,
+    letter_choices, letter_html, profile, selected_sheet,
 };
 use griffe_core::store::Store;
 use maud::{Markup, html};
 use time::OffsetDateTime;
 
 use crate::layout::ViewId;
-use crate::views::gens::{depart_markup, letter_stage};
+use crate::views::gens::depart_markup;
 
 pub struct CourrierForm {
     pub from_name: String,
@@ -101,8 +102,15 @@ fn markup(
                 div class="courrier-letter-col" {
                     p class="courrier-kicker" { "Une lettre d'essai. Le prénom est fictif." }
                     div id="letter-card" {
-                        (card_column(&letter.subject, &letter.body, &chrome))
+                        (card_column(
+                            &letter.subject,
+                            from_name,
+                            from_address,
+                            &letter.body,
+                            &chrome,
+                        ))
                     }
+                    (sheet_choice(account))
                     form class="courrier-send" {
                         div class="field" {
                             label for="to" { "Vers" }
@@ -117,7 +125,7 @@ fn markup(
                         ))
                     }
                 }
-                form class="courrier-formula" hx-post="/societe/courrier/signature" hx-target="#content" hx-push-url="true" {
+                form class="courrier-formula courrier-block" hx-post="/societe/courrier/signature" hx-target="#content" hx-push-url="true" {
                     h3 class="panel-title" { "Ce qui ferme la lettre" }
                     p class="field-help" {
                         "Ces lignes ferment chaque lettre. On les écrit ici une fois. Par exemple : Ingénieur logiciel indépendant, sur sa ligne. Un mail, un numéro ou une adresse, seuls sur leur ligne, restent cliquables. L'adresse se lit sans ?utm_…."
@@ -136,7 +144,7 @@ fn markup(
                     }
                 }
             }
-            section class="courrier-account" {
+            section class="courrier-account courrier-block" {
                 h3 class="panel-title" { "D'où elles partent" }
                 @if known {
                     (account_line(from_name, from_address, preset, host, account))
@@ -247,7 +255,7 @@ fn markup(
                     }
                 }
             }
-            div class="courrier-jour" {
+            div class="courrier-jour courrier-block" {
                 h3 class="panel-title" { "L'envoi du jour" }
                 p class="prose" {
                     "Pendant que le coffre est ouvert, Griffe envoie les lettres dont la date prévue est aujourd'hui. Une lettre d'hier reste un geste à la main."
@@ -275,13 +283,91 @@ pub fn preview_card(store: &Store, signature: &str) -> Result<Markup, AppError> 
     let letter = griffe_core::mail::trial_with_closing(store.connection(), signature)?;
     let mut chrome = LetterChrome::from_profile(&account);
     chrome.signature = signature.to_string();
-    Ok(card_column(&letter.subject, &letter.body, &chrome))
+    Ok(card_column(
+        &letter.subject,
+        &account.from_name,
+        &account.from_address,
+        &letter.body,
+        &chrome,
+    ))
 }
 
-fn card_column(subject: &str, body: &str, chrome: &LetterChrome) -> Markup {
+fn sheet_choice(account: &MailProfile) -> Markup {
+    let selected = selected_sheet(account.link_ink);
     html! {
-        p class="phrase-sheet-subject" { (subject) }
-        (letter_stage(subject, body, chrome, true, false))
+        div class="sheet-note" {
+            fieldset class="word-choice" {
+                legend { "La feuille" }
+                div class="word-choice-row" {
+                    @for choice in letter_choices() {
+                        label {
+                            input type="radio" name="ink" value=(choice.id)
+                                  checked[choice.id == selected]
+                                  hx-post="/societe/courrier/apparence"
+                                  hx-trigger="change"
+                                  hx-target="#content"
+                                  hx-vals=(format!("{{\"ink\":\"{}\"}}", choice.id))
+                                  hx-push-url="true";
+                            (choice.label)
+                        }
+                    }
+                }
+            }
+            p class="field-help" {
+                "Une autre feuille peut venir d'un fichier sur cette machine. "
+                a href="/aide/courrier"
+                  hx-get="/aide/courrier"
+                  hx-target="#content"
+                  hx-push-url="true"
+                  hx-swap="innerHTML" { "L'aide dit comment." }
+            }
+        }
+    }
+}
+
+/// Sujet, puis la page telle qu'elle part. L'atelier ne la repeint pas.
+///
+/// Le bloc de l'iframe est vide exprès. Maud n'écrit `</iframe>` que pour un
+/// élément qui a un bloc. Sans cette fermeture, le navigateur prend tout le
+/// chapitre pour le repli de la lettre et le cache.
+fn card_column(
+    subject: &str,
+    from_name: &str,
+    from_address: &str,
+    body: &str,
+    chrome: &LetterChrome,
+) -> Markup {
+    let text = close_letter(body, &chrome.signature);
+    let document = letter_html(&LetterParts {
+        subject,
+        body: &text,
+        chrome,
+    });
+    let name = from_name.trim();
+    let address = from_address.trim();
+    let shown = if name.is_empty() { address } else { name };
+    let extra = if !name.is_empty() && !address.is_empty() && address != name {
+        address
+    } else {
+        ""
+    };
+    html! {
+        div class="mail-pane" {
+            div class="mail-head" {
+                @if !shown.is_empty() {
+                    p class="mail-from" { (shown) }
+                }
+                @if !extra.is_empty() {
+                    p class="mail-addr" { (extra) }
+                }
+                @if !subject.trim().is_empty() {
+                    p class="mail-subject" { (subject) }
+                }
+            }
+            div class="letter-stage" {
+                iframe class="letter-frame" title="La lettre telle qu'elle part" srcdoc=(document) {}
+            }
+        }
     }
 }
 

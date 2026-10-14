@@ -7,11 +7,12 @@ use std::path::PathBuf;
 use clap::{ArgGroup, Subcommand};
 use griffe_core::app::{ExecutionContext, Executor};
 use griffe_core::mail::{
-    ArmOutbound, CancelOutbound, ClearMailSecret, DeliveryOutcome, MailPreset, MailSecret,
-    RecordMailProbe, RememberImapUsername, SaveLetterface, SaveMailAccount, SaveMailSecret,
-    SaveMailSignature, SentCopyStatus, SetAutomaticSend, SubmissionBatch, UNDO_SECS, abandon_held,
-    commit_outbound, french_submit_error, hourly_pause, probe_material, profile, record_copies,
-    record_deliveries, take_copies, take_due, trial_letter,
+    ArmOutbound, CancelOutbound, ClearMailSecret, DeliveryOutcome, LetterTheme, MailPreset,
+    MailSecret, RecordMailProbe, RememberImapUsername, SaveLetterface, SaveMailAccount,
+    SaveMailSecret, SaveMailSignature, SentCopyStatus, SetAutomaticSend, SubmissionBatch,
+    UNDO_SECS, abandon_held, commit_outbound, french_submit_error, hourly_pause, probe_material,
+    profile, read_custom_letter, record_copies, record_deliveries, take_copies, take_due,
+    trial_letter,
 };
 use griffe_core::store::Store;
 use time::OffsetDateTime;
@@ -66,11 +67,11 @@ pub enum MailCommand {
         #[arg(long)]
         off: bool,
     },
-    /// Couleur, métier et site de la lettre. Sans drapeau, montre l'allure.
+    /// Feuille de la lettre. Sans drapeau, montre l'allure.
     Apparence {
-        /// `vert`, `encre` ou `sceau`. Absent : inchangé.
+        /// `clair`, `sauge` ou `fichier`. Absent : inchangé.
         #[arg(long)]
-        encre: Option<String>,
+        theme: Option<String>,
         /// Ligne sous le nom. Chaîne vide : retire la ligne.
         #[arg(long)]
         metier: Option<String>,
@@ -119,10 +120,10 @@ pub fn run(
     match command {
         MailCommand::Show => show(store, json),
         MailCommand::Apparence {
-            encre,
+            theme,
             metier,
             site,
-        } => apparence(store, ctx, json, encre, metier, site),
+        } => apparence(store, ctx, json, theme, metier, site),
         MailCommand::Save {
             from_address,
             username,
@@ -229,7 +230,7 @@ fn show(store: &Store, json: bool) -> Result<String, CliError> {
             },
         ),
         ("liaison", liaison_line(&account)),
-        ("encre", account.link_ink.as_str().to_string()),
+        ("feuille", feuille_label(&account)),
         ("métier", or_empty(account.metier.clone())),
         ("site", or_empty(account.site.clone())),
     ]);
@@ -507,18 +508,30 @@ fn envoyer(
     }))
 }
 
+fn feuille_label(account: &griffe_core::mail::MailProfile) -> String {
+    let word = account.link_ink.as_str();
+    if account.link_ink == LetterTheme::Fichier
+        && let Some(custom) = read_custom_letter()
+    {
+        let name = &custom.name;
+        format!("{word} · {name}")
+    } else {
+        word.to_string()
+    }
+}
+
 fn apparence(
     store: &mut Store,
     ctx: &ExecutionContext,
     json: bool,
-    encre: Option<String>,
+    theme: Option<String>,
     metier: Option<String>,
     site: Option<String>,
 ) -> Result<String, CliError> {
     let account = profile(store.connection())?;
-    if encre.is_none() && metier.is_none() && site.is_none() {
+    if theme.is_none() && metier.is_none() && site.is_none() {
         let text = key_values(&[
-            ("encre", account.link_ink.as_str().to_string()),
+            ("feuille", feuille_label(&account)),
             ("métier", or_empty(account.metier.clone())),
             ("site", or_empty(account.site.clone())),
         ]);
@@ -534,7 +547,7 @@ fn apparence(
     }
     let outcome = Executor::new(store).execute(
         &SaveLetterface {
-            ink: encre.unwrap_or_else(|| account.link_ink.as_str().to_string()),
+            ink: theme.unwrap_or_else(|| account.link_ink.as_str().to_string()),
             metier: metier.unwrap_or(account.metier),
             site: site.unwrap_or(account.site),
         },
