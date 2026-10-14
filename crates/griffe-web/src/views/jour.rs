@@ -64,8 +64,8 @@ pub fn render(store: &Store, today: Date) -> Result<Markup, AppError> {
 
     Ok(html! {
         div class="pupitre letter spread" data-view=(ViewId::Jour.slug()) {
-            div class={ "mast" @if alarming { " alarm" } } {
-                p class="pupitre-sentence" { (morning_sentence(gestes.len(), title, &mast)) }
+            article class={ "mast plateau-status" @if alarming { " alarm" } } {
+                p class="plateau-sentence" { (morning_sentence(gestes.len(), title, &mast)) }
                 @if let Some(text) = note {
                     p class="mast-note" id="next-step" { (text) }
                 } @else if !setup.is_done() {

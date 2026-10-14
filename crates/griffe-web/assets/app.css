@@ -2512,23 +2512,28 @@ textarea.travaux-source:focus { border-color: var(--ink); }
   }
 }
 
-/* Le jour — le pupitre. Même bureau que la lentille, la question du matin. */
-.content:has(.pupitre) { padding: 18px 28px 48px; }
-.content > .pupitre.letter.spread { max-width: none; width: 100%; }
-.pupitre-sentence {
-  margin: 0;
-  font-size: 22px;
-  letter-spacing: -0.02em;
-  line-height: 1.35;
+/* Le jour — le pupitre. Bureau du plateau, phrase sur la carte de statut. */
+.content:has(.pupitre) {
+  padding: 18px 28px 48px;
+  background: #e6dfd2;
 }
-.pupitre-sentence b { font-weight: 600; }
-.pupitre-sentence b.bad { color: var(--seal); }
-.pupitre .lede { margin: 10px 0 18px; }
+.content > .pupitre.letter.spread { max-width: none; width: 100%; }
+.pupitre .plateau-status {
+  margin: 0 0 22px;
+  border: 0;
+}
+.pupitre .plateau-status .mast-note { margin-top: 10px; }
+.pupitre .lede,
+.pupitre .courrier-notes,
+.pupitre .day-others { margin-left: 18px; margin-right: 18px; }
+.pupitre .lede { margin-top: 0; margin-bottom: 18px; }
 .pupitre-head, .pupitre .geste {
   display: grid;
   grid-template-columns: minmax(140px, 1.1fr) minmax(140px, 1.2fr) minmax(160px, 1.8fr) 140px;
   gap: 8px 16px;
   align-items: baseline;
+  padding-left: 18px;
+  padding-right: 18px;
 }
 .pupitre-head {
   min-height: 32px;
@@ -2544,6 +2549,7 @@ textarea.travaux-source:focus { border-color: var(--ink); }
 }
 .pupitre ol.gestes { margin: 0; padding: 0; font-size: inherit; }
 .pupitre ol.gestes > li { margin-top: 0; }
+.pupitre .unfold { padding: 0 18px 16px; }
 
 /* La société — le plateau. Quatre cartes, un chapitre replié. */
 select,
@@ -3119,16 +3125,40 @@ input[type="checkbox"] {
 }
 .pupitre .geste {
   min-height: 44px;
-  padding: 10px 0;
+  padding-top: 10px;
+  padding-bottom: 10px;
 }
 .pupitre .geste .verb { font-weight: 600; }
 .pupitre .geste .cue { color: var(--ink-2); }
 .pupitre .geste .amt.alarm { color: var(--seal); }
 .pupitre .geste:hover { background: var(--paper-2); }
 .pupitre .geste:hover .verb { color: var(--seal); }
-.pupitre .month { margin-top: 40px; }
-.pupitre .month h2 { font-size: clamp(26px, 3vw, 32px); }
+.pupitre .month {
+  margin-top: 28px;
+  padding: 16px 18px 8px;
+  background: var(--paper);
+  border-radius: 16px;
+  border-top: 0;
+}
+.pupitre .month h2 {
+  font-family: var(--serif);
+  font-weight: 400;
+  font-size: clamp(26px, 3vw, 32px);
+  letter-spacing: -0.03em;
+  color: var(--ink);
+}
 .pupitre .cal .d, .pupitre .cal .d.pad { min-height: 36px; padding: 4px 4px 6px; }
+.pupitre .cal .dow,
+.pupitre .agenda .kind,
+.pupitre .track .end { color: var(--ink-2); }
+.pupitre .cal .d.today { color: var(--seal); box-shadow: inset 0 -1px 0 var(--seal); }
+.pupitre .cal .d .mark { background: var(--seal); }
+.pupitre .cal .d.legal .mark,
+.pupitre .cal .d.meet .mark { background: var(--ink); }
+.pupitre .rail { background: var(--paper-2); }
+.pupitre .rail .bar { background: var(--ink); }
+.pupitre .rail .now,
+.pupitre .rail .tick { background: var(--seal); }
 @media (max-width: 960px) {
   .pupitre-head span:nth-child(3),
   .pupitre .geste .cue { display: none; }

@@ -162,10 +162,9 @@ phrase. La colonne **est** la mesure.
 
 Ordre de la page, toujours :
 
-1. **Date** (jour de la semaine réel — la maquette a corrigé mercredi → samedi 5 sept. 2026)
-2. **Mât** — une phrase, puis l'alarme éventuelle
-3. **Gestes** — cinq lignes au plus, la langue de la lentille
-4. **Le mois** — grille, bandes de missions, agenda
+1. **Carte de statut** — la phrase du matin, puis l'alarme éventuelle. La date du jour reste dans la chrome.
+2. **Gestes** — cinq lignes au plus, la langue de la lentille
+3. **Le mois** — grille, bandes de missions, agenda
 
 Le bureau a la largeur de Les affaires. Le compte « N prospects / M clients » reste dans le livre.
 
@@ -226,6 +225,34 @@ Sources du mois (à agréger **dans le cœur**, une query) :
 - rencontres posées (interactions datées à venir, si on en saisit)
 
 Pas de nouveau module « calendrier » dans la nav.
+
+### Cartes de Le jour
+
+La date du jour reste dans la chrome. Elle ne revient pas en tête de page.
+
+La phrase du matin est la carte de statut déjà dessinée sur le plateau :
+`article.plateau-status` et `p.plateau-sentence`, fond `#fbf7f0`. Le texte
+est en encre. Un fait alarmant reste en sceau (`b.bad`, et `.mast-note`
+dans la carte). Ce n'est pas une carte de chapitre. Ce ne sont pas les
+teintes des quatre familles. Le bureau de la page est `#e6dfd2`, le même
+que le plateau, pour que cette carte se lise comme elle est dessinée.
+« Rien n'est dû ce matin. » reste le lede sous la carte quand aucun geste
+n'est dû. Les notes du courrier restent sous la carte.
+
+Les gestes restent sur la page, sous la carte. Quatre cellules, cinq lignes
+au plus. Le dépli est `.unfold`, sur place : une action, pas un chapitre.
+Il n'y a pas de second dépli, et pas de panneau latéral. Ouvrir la
+destination d'un geste charge cette destination. Un lien vers La société
+arrive sur le chapitre replié. Une lettre `/societe/impots/{kind}` reste
+une lettre. Le lien « et N autres » ouvre Les affaires.
+
+Le mois reste sous les gestes. La grille, les bandes et l'agenda tiennent
+sur une surface `--paper`, rayon 16 px. L'encre, le filet et le sceau sont
+les tokens communs. Le mois ne devient pas un tableau de bord : pas une
+tuile par chiffre. Le défilement de la page reste permis.
+
+Les queries `day_mast`, gestes et mois ne changent pas. Aucun montant
+nouveau. Les boutons de mutation restent dans leur formulaire.
 
 ## 7. Les affaires
 

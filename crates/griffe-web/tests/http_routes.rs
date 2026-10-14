@@ -902,7 +902,10 @@ async fn the_day_letter_shows_the_mast_gestures_and_the_month_grid() {
     )
     .await;
     assert!(jour.contains("data-view=\"jour\""), "{jour}");
-    assert!(jour.contains("class=\"mast\""), "mât visible : {jour}");
+    assert!(
+        jour.contains("class=\"mast plateau-status\""),
+        "mât visible : {jour}"
+    );
     assert!(jour.contains("class=\"pupitre"), "{jour}");
     assert!(
         jour.contains("Ce matin, un geste")
@@ -971,7 +974,10 @@ async fn the_day_letter_shows_the_mast_gestures_and_the_month_grid() {
     )
     .await;
     assert!(fragment.contains("data-view=\"jour\""), "{fragment}");
-    assert!(fragment.contains("class=\"mast\""), "{fragment}");
+    assert!(
+        fragment.contains("class=\"mast plateau-status\""),
+        "{fragment}"
+    );
     assert!(fragment.contains("class=\"pupitre"), "{fragment}");
 }
 
