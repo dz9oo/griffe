@@ -22,7 +22,7 @@ use maud::{Markup, PreEscaped, html};
 use time::Date;
 
 use crate::layout::ViewId;
-use crate::views::copy::{duty_occurrence_fr, letter_date, month_fr, year_end_fr};
+use crate::views::copy::{duty_occurrence_fr, month_fr, year_end_fr};
 use crate::views::form;
 
 /// Les phrases ouvertes depuis le bureau. Le paramètre garde les colonnes
@@ -67,7 +67,6 @@ fn bureau_with(
     let courrier_sub =
         crate::views::societe::courrier_subtitle(&griffe_core::mail::profile(store.connection())?);
     Ok(bureau_markup(
-        today,
         active,
         home,
         &mast,
@@ -87,7 +86,6 @@ fn piste_pane(home: &SocietyHome) -> Markup {
 }
 
 fn bureau_markup(
-    today: Date,
     active: &str,
     home: &SocietyHome,
     mast: &Mast,
@@ -136,7 +134,6 @@ fn bureau_markup(
     html! {
         div class="bureau" data-view=(ViewId::Societe.slug()) {
             div class="bureau-head" {
-                p class="date" { "La société · " (letter_date(today)) }
                 p class="bureau-sentence" {
                     (bureau_sentence(mast, home.next_duty.as_ref()))
                 }

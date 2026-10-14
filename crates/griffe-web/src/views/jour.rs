@@ -22,8 +22,8 @@ use griffe_core::society::{VatRefundStatus, duty_briefing};
 
 use crate::layout::ViewId;
 use crate::views::copy::{
-    deadline_fr, duty_href, duty_occurrence_fr, event_kind_fr, gestes_title, is_vat, letter_date,
-    month_fr, month_title,
+    deadline_fr, duty_href, duty_occurrence_fr, event_kind_fr, gestes_title, is_vat, month_fr,
+    month_title,
 };
 use crate::views::gens::{href_for_party, person_href};
 
@@ -64,7 +64,6 @@ pub fn render(store: &Store, today: Date) -> Result<Markup, AppError> {
 
     Ok(html! {
         div class="pupitre letter spread" data-view=(ViewId::Jour.slug()) {
-            div class="date" { (letter_date(today)) }
             div class={ "mast" @if alarming { " alarm" } } {
                 p class="pupitre-sentence" { (morning_sentence(gestes.len(), title, &mast)) }
                 @if let Some(text) = note {

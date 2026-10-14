@@ -126,6 +126,9 @@ Chiffres d’argent : sans, tabular si disponible. Pas de mono type console sur 
 
 ### Chrome et page
 
+- La chrome est la même sur Le jour, Les affaires, La société, l’aide et la console : le wordmark (nom et paraphe), les trois pièces au centre, la date du jour à droite. La date est `letter_date` (jour de semaine réel). Elle vit hors du fragment htmx, donc une navigation ne la redessine pas.
+- La date du jour n’est pas répétée en tête de lettre. Une date qui est le sujet (échéance, histoire, mois) reste dans la page.
+- Chrome et pied prennent toute la largeur, avec le même retrait, quelle que soit la pièce.
 - Le jour, Les affaires et l’accueil de La société prennent toute la largeur du bureau. Les autres lettres restent à **760 px**.
 - Padding page ~40 px (20 px sous 700 px).
 - Pas de rail d’audit visible par défaut.

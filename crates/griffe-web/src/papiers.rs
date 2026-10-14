@@ -164,7 +164,7 @@ pub async fn chapter(
     if is_htmx_request(&headers) {
         Html(content.into_string())
     } else {
-        Html(layout::page(ViewId::Societe, "déverrouillé", content).into_string())
+        Html(layout::page(ViewId::Societe, "déverrouillé", today, content).into_string())
     }
 }
 

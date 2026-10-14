@@ -288,6 +288,19 @@ async fn an_htmx_boosted_navigation_returns_only_the_view_fragment() {
     );
 }
 
+fn chrome_today(body: &str) -> &str {
+    let marker = "class=\"today\">";
+    let start = body
+        .find(marker)
+        .unwrap_or_else(|| panic!("date de chrome absente : {body}"))
+        + marker.len();
+    let rest = &body[start..];
+    let end = rest
+        .find('<')
+        .unwrap_or_else(|| panic!("date de chrome non fermée : {rest}"));
+    rest[..end].trim()
+}
+
 #[tokio::test]
 async fn the_atelier_chrome_has_three_pieces_and_vendored_fonts() {
     let state = unlocked_state(&test_db_path("atelier-chrome")).await;
@@ -377,6 +390,41 @@ async fn the_atelier_chrome_has_three_pieces_and_vendored_fonts() {
     assert!(societe.contains("Te payer"), "{societe}");
     assert!(societe.contains("Le relevé"), "{societe}");
     assert!(societe.contains("La carte"), "{societe}");
+    let date = chrome_today(&jour);
+    assert_eq!(
+        chrome_today(&gens),
+        date,
+        "Les affaires porte la même date que Le jour"
+    );
+    assert_eq!(
+        chrome_today(&societe),
+        date,
+        "La société porte la même date que Le jour"
+    );
+    assert_eq!(jour.matches("class=\"today\"").count(), 1);
+    assert!(
+        jour.contains("viewBox=\"0 0 128 22\""),
+        "le wordmark embarque le paraphe : {jour}"
+    );
+
+    let societe_fragment = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/societe")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        !societe_fragment.contains("class=\"today\"") && !societe_fragment.contains("<header"),
+        "un fragment htmx ne réécrit pas la chrome : {societe_fragment}"
+    );
 
     let css = body_text(
         router

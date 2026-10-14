@@ -112,13 +112,24 @@ button { font-family: inherit; color: inherit; cursor: pointer; background: none
 }
 
 .chrome {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  padding: 24px 40px 0;
-  max-width: 960px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 16px;
+  padding: 16px 28px 8px;
+  max-width: none;
   width: 100%;
-  margin: 0 auto;
+  margin: 0;
+}
+.chrome .mark { justify-self: start; }
+.chrome nav { justify-self: center; }
+.chrome .today {
+  justify-self: end;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  white-space: nowrap;
 }
 .chrome .mark {
   font-family: var(--serif);
@@ -171,10 +182,10 @@ button { font-family: inherit; color: inherit; cursor: pointer; background: none
 }
 
 .foot {
-  padding: 12px 40px 24px;
-  max-width: 960px;
+  padding: 12px 28px 20px;
+  max-width: none;
   width: 100%;
-  margin: 0 auto;
+  margin: 0;
   font-size: 12px;
   color: var(--ink-2);
   display: flex;
@@ -2178,6 +2189,14 @@ textarea.travaux-source:focus { border-color: var(--ink); }
 }
 @media (max-width: 700px) {
   .chrome, .content, .foot { padding-left: 20px; padding-right: 20px; }
+  .chrome {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "mark date" "nav nav";
+    row-gap: 8px;
+  }
+  .chrome .mark { grid-area: mark; }
+  .chrome nav { grid-area: nav; justify-self: start; }
+  .chrome .today { grid-area: date; }
   .geste { grid-template-columns: 1fr; }
   .geste .num { font-size: 24px; }
   .places { grid-template-columns: 1fr; column-gap: 0; }
@@ -2199,10 +2218,6 @@ textarea.travaux-source:focus { border-color: var(--ink); }
 }
 
 /* Les affaires — la lentille. Même papier, même encre, même sceau que le reste. */
-body:has(.lens) .chrome,
-body:has(.lens) .foot,
-body:has(.pupitre) .chrome,
-body:has(.pupitre) .foot { max-width: none; }
 .content:has(.lens) {
   overflow: hidden;
   padding: 0;
@@ -2465,8 +2480,6 @@ input[type="checkbox"] {
   color: var(--ink);
   background-color: var(--paper);
 }
-body:has(.bureau) .chrome,
-body:has(.bureau) .foot { max-width: none; }
 .content:has(.bureau) {
   overflow: hidden;
   display: flex;
