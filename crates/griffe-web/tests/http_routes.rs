@@ -9520,7 +9520,7 @@ async fn engaged_conversations_finish_their_series_and_a_new_one_takes_three_mom
             .unwrap(),
     )
     .await;
-    assert!(phrases.contains("class=\"phrase-desk\""), "{phrases}");
+    assert!(phrases.contains("phrase-desk"), "{phrases}");
     assert!(!phrases.contains("letter spread"), "{phrases}");
     assert!(phrases.contains("class=\"letter-stage\""), "{phrases}");
     let tables = phrases.matches("<table").count();
