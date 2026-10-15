@@ -12510,10 +12510,12 @@ async fn work_kinds_filter_the_affaires_and_leave_on_the_second_gesture() {
     assert!(!port_page.contains("value=\"site\""), "{port_page}");
 
     let check = Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
-    assert!(
+    assert_eq!(
         prospect_genre_for(check.connection(), quai)
             .unwrap()
-            .is_none()
+            .expect("la série reste")
+            .name,
+        "Mairie"
     );
 }
 
