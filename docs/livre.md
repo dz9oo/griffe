@@ -54,6 +54,9 @@ La série choisie en écrivant donne les mots. On les écrit dans
 La société, Les phrases. Le type du dossier ne les choisit pas.
 Les affaires ne réécrivent pas les phrases.
 
+L'écart entre deux moments compte les jours du lundi au vendredi.
+Un courrier parti un vendredi, à trois jours, se rappelle le mercredi.
+
 Les phrases prennent aussi `<nom>`, `<genre>`, et une formule
 `<Monsieur le Maire/Madame la Maire>`. `<genre>` suit Monsieur ou
 Madame. Sans genre, les deux côtés restent visibles.

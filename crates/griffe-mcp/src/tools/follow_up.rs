@@ -99,7 +99,7 @@ pub(crate) struct AddMomentArgs {
     subject: Option<String>,
     /// Corps. Défaut : une lettre courte.
     body: Option<String>,
-    /// Jours après le précédent. Défaut : 7.
+    /// Jours ouvrés après le précédent, du lundi au vendredi. Défaut : 7.
     days: Option<i64>,
     #[serde(default)]
     dry_run: bool,
@@ -127,7 +127,7 @@ pub(crate) struct MoveMomentArgs {
 pub(crate) struct SetGapArgs {
     /// Identifiant du moment.
     key: String,
-    /// Jours après le précédent.
+    /// Jours ouvrés après le précédent, du lundi au vendredi.
     days: i64,
     #[serde(default)]
     dry_run: bool,
@@ -361,7 +361,7 @@ impl FreeflowServer {
         execute_arrange(&mut store, drafts, &self.ctx(args.dry_run))
     }
 
-    /// Règle l'écart d'un moment, en jours après le précédent.
+    /// Règle l'écart d'un moment, en jours ouvrés après le précédent.
     #[tool(
         name = "follow_up.set_gap",
         annotations(

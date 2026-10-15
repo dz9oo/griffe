@@ -9619,7 +9619,8 @@ async fn engaged_conversations_finish_their_series_and_a_new_one_takes_three_mom
     )
     .await;
     assert!(
-        listed.contains("premier contact · à reprendre aujourd'hui") && listed.contains("Camille"),
+        listed.contains("premier contact · prochain pas le 7 septembre 2026")
+            && listed.contains("Camille"),
         "{listed}"
     );
 
@@ -9667,6 +9668,8 @@ async fn engaged_conversations_finish_their_series_and_a_new_one_takes_three_mom
         phrases.contains("Premier message le jour du dossier."),
         "{phrases}"
     );
+    assert!(phrases.contains("jours ouvrés"), "{phrases}");
+    assert!(phrases.contains("Jours ouvrés avant"), "{phrases}");
     assert!(
         phrases.contains("Les conversations déjà engagées finissent leur série."),
         "{phrases}"
@@ -9748,9 +9751,9 @@ label_close=Derni%C3%A8re+relance&subject_close=Fin&body_close=Le+dernier+mot.&r
     )
     .await;
     assert!(
-        listed.contains("premier contact · à reprendre aujourd'hui")
+        listed.contains("premier contact · prochain pas le 7 septembre 2026")
             && listed.contains("Camille")
-            && !listed.contains("12 septembre"),
+            && !listed.contains("16 septembre"),
         "{listed}"
     );
 

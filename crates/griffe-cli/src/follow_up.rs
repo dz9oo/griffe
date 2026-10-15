@@ -310,7 +310,7 @@ pub enum MomentsCommand {
         body: Option<String>,
         #[arg(long, conflicts_with = "body")]
         body_file: Option<PathBuf>,
-        /// Jours après le précédent. Défaut : 7.
+        /// Jours ouvrés après le précédent, du lundi au vendredi. Défaut : 7.
         #[arg(long)]
         days: Option<i64>,
     },
@@ -329,7 +329,7 @@ pub enum MomentsCommand {
         /// Identifiant du moment.
         key: String,
     },
-    /// Règle l'écart, en jours après le précédent.
+    /// Règle l'écart, en jours ouvrés après le précédent.
     Gap {
         /// Identifiant du moment.
         key: String,
@@ -425,7 +425,7 @@ fn format_phrase(phrase: &ProspectPhrase) -> String {
     let gap = if phrase.position == 0 {
         "le jour déjà posé".to_string()
     } else {
-        format!("{} jours après le précédent", phrase.offset_days)
+        format!("{} jours ouvrés après le précédent", phrase.offset_days)
     };
     format!(
         "{label}\n{gap}\nsujet : {subject}\n{body}",

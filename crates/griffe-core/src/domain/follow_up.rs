@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use time::{Date, Duration, OffsetDateTime, Weekday};
 
+use super::calendar::add_weekdays;
+
 use super::client::Civility;
 use super::ids::{FollowUpEventId, InteractionId, InvoiceId, OpportunityId};
 use super::money::Money;
@@ -133,6 +135,9 @@ impl FromStr for FollowUpFact {
 }
 
 /// Une étape de cadence : écart en jours et modèles de message.
+///
+/// Pour une conversation, l'écart compte les jours du lundi au vendredi.
+/// Pour une facture, il compte les jours de calendrier depuis l'échéance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CadenceStep {
     pub key: &'static str,
@@ -152,7 +157,8 @@ impl CadenceStep {
     }
 }
 
-/// Premier message dès la date déjà posée, puis +3 / +7 / +14 depuis le dernier geste.
+/// Premier message dès la date déjà posée, puis +3 / +7 / +14 jours ouvrés
+/// (du lundi au vendredi) depuis le dernier geste.
 pub const PROSPECT_CADENCE: [CadenceStep; 4] = [
     CadenceStep {
         key: "hello",
@@ -328,6 +334,10 @@ pub fn derive_cursor(
 
 /// Dérive où l'on en est. `anchor` = `next_action_at` (prospect) ou `due_on` (facture).
 /// `steps` est la série de cette conversation : les phrases du coffre, ou la cadence facture.
+///
+/// Après un envoi ou un saut, l'écart d'une conversation avance en jours du lundi au
+/// vendredi. L'écart d'une facture reste un nombre de jours de calendrier. Un report
+/// ou une date posée à la main l'emporte sur les deux.
 #[must_use]
 pub fn derive_cursor_with(
     kind: FollowUpKind,
@@ -363,11 +373,7 @@ pub fn derive_cursor_with(
     } else if kind == FollowUpKind::Invoice {
         Some(anchor.saturating_add(Duration::days(cadence[position].offset_days)))
     } else if let Some(adv) = last_advancing {
-        Some(
-            adv.at
-                .date()
-                .saturating_add(Duration::days(cadence[position].offset_days)),
-        )
+        Some(add_weekdays(adv.at.date(), cadence[position].offset_days))
     } else {
         Some(anchor)
     };
@@ -873,7 +879,7 @@ pub fn chronicle(moments: &[(&str, i64)]) -> String {
 fn apres(days: i64) -> String {
     let word = match days {
         0 => return "Le même jour".to_string(),
-        1 => return "Un jour après".to_string(),
+        1 => return "Un jour ouvré après".to_string(),
         2 => "deux",
         3 => "trois",
         4 => "quatre",
@@ -889,9 +895,9 @@ fn apres(days: i64) -> String {
         14 => "quatorze",
         15 => "quinze",
         16 => "seize",
-        n => return format!("{n} jours après"),
+        n => return format!("{n} jours ouvrés après"),
     };
-    format!("{} jours après", capitalize_word(word))
+    format!("{} jours ouvrés après", capitalize_word(word))
 }
 
 fn capitalize_word(word: &str) -> String {
@@ -1321,6 +1327,16 @@ mod tests {
             .assume_offset(UtcOffset::UTC)
     }
 
+    fn phrase(key: &str, offset_days: i64) -> PhraseStep {
+        PhraseStep {
+            key: key.to_string(),
+            offset_days,
+            label: key.to_string(),
+            subject: "s".to_string(),
+            body: "b".to_string(),
+        }
+    }
+
     fn event(fact: FollowUpFact, day: u8, until: Option<Date>) -> FollowUpEvent {
         FollowUpEvent {
             id: FollowUpEventId::new(),
@@ -1355,7 +1371,49 @@ mod tests {
         let cursor = derive_cursor(FollowUpKind::Prospect, &[sent], anchor, today);
         assert_eq!(cursor.position, 1);
         assert_eq!(cursor.step.as_ref().map(|s| s.key.as_str()), Some("bump"));
-        assert_eq!(cursor.due_on, Some(date(2026, Month::September, 8)));
+        // Samedi 5 septembre 2026, écart 3 : lundi 7, mardi 8, mercredi 9.
+        assert_eq!(cursor.due_on, Some(date(2026, Month::September, 9)));
+    }
+
+    #[test]
+    fn a_friday_send_waits_three_weekdays() {
+        let today = date(2026, Month::September, 4);
+        let anchor = date(2026, Month::September, 1);
+        let sent = event(FollowUpFact::MarkedSent, 4, None);
+        let cursor = derive_cursor(FollowUpKind::Prospect, &[sent], anchor, today);
+        // Vendredi 4 septembre 2026, écart 3 : mercredi 9.
+        assert_eq!(cursor.due_on, Some(date(2026, Month::September, 9)));
+    }
+
+    #[test]
+    fn a_monday_send_keeps_three_weekdays_inside_the_week() {
+        let today = date(2026, Month::September, 7);
+        let anchor = date(2026, Month::September, 1);
+        let sent = event(FollowUpFact::MarkedSent, 7, None);
+        let cursor = derive_cursor(FollowUpKind::Prospect, &[sent], anchor, today);
+        // Lundi 7 septembre 2026, écart 3 : jeudi 10.
+        assert_eq!(cursor.due_on, Some(date(2026, Month::September, 10)));
+    }
+
+    #[test]
+    fn a_wednesday_send_skips_the_weekend() {
+        let today = date(2026, Month::September, 2);
+        let anchor = date(2026, Month::September, 1);
+        let sent = event(FollowUpFact::MarkedSent, 2, None);
+        let cursor = derive_cursor(FollowUpKind::Prospect, &[sent], anchor, today);
+        // Mercredi 2 septembre 2026, écart 3 : lundi 7.
+        assert_eq!(cursor.due_on, Some(date(2026, Month::September, 7)));
+    }
+
+    #[test]
+    fn a_zero_gap_stays_on_the_friday_it_was_sent() {
+        let today = date(2026, Month::September, 4);
+        let friday = date(2026, Month::September, 4);
+        let anchor = date(2026, Month::September, 1);
+        let steps = [phrase("hello", 0), phrase("same", 0)];
+        let sent = event(FollowUpFact::MarkedSent, 4, None);
+        let cursor = derive_cursor_with(FollowUpKind::Prospect, &steps, &[sent], anchor, today);
+        assert_eq!(cursor.due_on, Some(friday));
     }
 
     #[test]
@@ -1379,7 +1437,8 @@ mod tests {
         let skip = event(FollowUpFact::StepSkipped, 5, None);
         let cursor = derive_cursor(FollowUpKind::Prospect, &[skip], anchor, today);
         assert_eq!(cursor.position, 1);
-        assert_eq!(cursor.due_on, Some(date(2026, Month::September, 8)));
+        // Samedi 5 septembre 2026, écart 3 : mercredi 9.
+        assert_eq!(cursor.due_on, Some(date(2026, Month::September, 9)));
     }
 
     #[test]
@@ -1503,12 +1562,12 @@ mod tests {
         ]);
         assert_eq!(
             sentence,
-            "Premier message le jour du dossier. Trois jours après, petit rappel. Sept jours après, relance utile. Quatorze jours après, dernier mot."
+            "Premier message le jour du dossier. Trois jours ouvrés après, petit rappel. Sept jours ouvrés après, relance utile. Quatorze jours ouvrés après, dernier mot."
         );
         assert_eq!(chronicle(&[("Seul", 0)]), "Seul le jour du dossier.");
         assert_eq!(
             chronicle(&[("Premier message", 0), ("Suite", 1), ("Bien plus tard", 21)]),
-            "Premier message le jour du dossier. Un jour après, suite. 21 jours après, bien plus tard."
+            "Premier message le jour du dossier. Un jour ouvré après, suite. 21 jours ouvrés après, bien plus tard."
         );
     }
 

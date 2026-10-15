@@ -969,7 +969,10 @@ fn follow_up_moments_set_a_gap_add_a_moment_and_refuse_the_first() {
         .clone();
     let listed = String::from_utf8(listed).unwrap();
     assert!(listed.contains("le jour déjà posé"), "{listed}");
-    assert!(listed.contains("3 jours après le précédent"), "{listed}");
+    assert!(
+        listed.contains("3 jours ouvrés après le précédent"),
+        "{listed}"
+    );
     assert!(
         !listed.contains("cadence") && !listed.contains("template"),
         "{listed}"
@@ -987,7 +990,10 @@ fn follow_up_moments_set_a_gap_add_a_moment_and_refuse_the_first() {
         .stdout
         .clone();
     let widened = String::from_utf8(widened).unwrap();
-    assert!(widened.contains("10 jours après le précédent"), "{widened}");
+    assert!(
+        widened.contains("10 jours ouvrés après le précédent"),
+        "{widened}"
+    );
 
     unlocked(&db)
         .args(["follow-up", "moments", "gap", "hello", "--days", "4"])

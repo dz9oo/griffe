@@ -15,8 +15,8 @@ une date est demandée (pas de recyclage silencieux).
 
 ## Deux horloges
 
-- Prospect : écarts depuis le dernier geste (0 / 3 / 7 / 14). `next_action_at` est la
-  projection écrite à chaque fait qui change l’échéance.
+- Prospect : écarts en jours ouvrés (lundi–vendredi) depuis le dernier geste (0 / 3 / 7 / 14).
+  `next_action_at` est la projection écrite à chaque fait qui change l’échéance.
 - Impayé : `due_on + J+n` (0 / 7 / 15 / 30). Un report n’est qu’une exception.
 
 ## Commandes

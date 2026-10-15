@@ -118,7 +118,7 @@ pub(super) const PHRASES: Letter = Letter {
     title: "Les phrases.",
     lede: "Les mots des lettres de prospection. On les écrit dans La société, Les phrases.",
     steps: &[
-        "Une frise règle les moments, leur nombre et l'écart entre eux. Enregistrer écrit la série. Rien ne part.",
+        "Une frise règle les moments, leur nombre et l'écart entre eux. L'écart compte les jours du lundi au vendredi. Enregistrer écrit la série. Rien ne part.",
         "La série choisie en écrivant donne les mots. Changer de série ne change pas le moment. Un brouillon déjà prêt garde son texte.",
         "Réécrire un moment change la prochaine lettre. Une lettre déjà classée, ou un brouillon déjà prêt, garde son texte.",
         "Les conversations déjà engagées finissent leur série.",

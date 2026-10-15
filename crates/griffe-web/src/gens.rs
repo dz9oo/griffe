@@ -854,7 +854,7 @@ fn posted_gap(phrase: &ProspectPhrase, fields: &HashMap<String, String>) -> Resu
         Some(raw) => raw
             .trim()
             .parse()
-            .map_err(|_| "L'écart se compte en jours.".to_string()),
+            .map_err(|_| "L'écart se compte en jours ouvrés.".to_string()),
     }
 }
 

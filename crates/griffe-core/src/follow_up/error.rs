@@ -58,7 +58,7 @@ pub enum FollowUpError {
     #[error("Ce moment est en double.")]
     DuplicateMoment,
 
-    #[error("L'écart se compte en jours.")]
+    #[error("L'écart se compte en jours ouvrés.")]
     GapNotANumber,
 
     #[error("Le premier moment est le jour déjà posé sur le dossier.")]

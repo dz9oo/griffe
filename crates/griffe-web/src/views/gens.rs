@@ -2330,8 +2330,8 @@ pub fn phrases_page(view: &PhrasesView) -> Markup {
                                               type="text"
                                               inputmode="numeric"
                                               value=(moment.gap)
-                                              aria-label=(format!("Jours avant {}", moment.label));
-                                        span { "j" }
+                                              aria-label=(format!("Jours ouvrés avant {}", moment.label));
+                                        span { "ouvrés" }
                                     }
                                 }
                             }
