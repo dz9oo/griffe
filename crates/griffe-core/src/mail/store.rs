@@ -1016,6 +1016,16 @@ fn follow_open(
     Ok(count > 0)
 }
 
+pub(super) fn departing_anchors(conn: &Connection) -> Result<Vec<String>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT anchor FROM outbound_mail
+          WHERE status IN ('armed', 'held', 'sending')
+            AND anchor <> ''",
+    )?;
+    let rows = stmt.query_map([], |row| row.get(0))?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+}
+
 pub(super) fn for_anchor(
     conn: &Connection,
     anchor: &str,

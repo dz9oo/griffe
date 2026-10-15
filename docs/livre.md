@@ -31,15 +31,17 @@ nomme l’adresse qui partira, et le compte s’affiche, une seconde après
 l’autre. Si l’adresse manque, elle dit que la lettre ne partira pas. Au
 bout, Annuler s’efface, la ligne dit Courrier envoyé, et le bouton revient.
 Fermer la fenêtre pendant ces cinq secondes retient la lettre. C’est parti
-classe le double dans l’historique et ne contacte pas le serveur.
+n’est là que lorsqu’aucun serveur n’est configuré. Il classe le double dans
+l’historique et ne contacte pas le serveur. En cours dit alors que cela
+suppose un envoi hors de Griffe, et ouvre Le courrier.
 
 La lettre part en page, et le texte seul reste pour les boîtes qui ne
 lisent pas la page. Une adresse suivie de ?utm_… se lit sans cette
 partie. Le lien la garde. Un navigateur peut la retirer en ouvrant
 la page. La barre d’adresse est alors plus courte que le lien parti.
 
-Dans Les affaires, on écrit, puis on relit. Relire montre la lettre
-telle qu’elle part. La zone d’écriture reprend le texte sans le perdre.
+Dans Les affaires, Écrire s’ouvre sur la lettre telle qu’elle part.
+Éditer reprend le texte. Relire y revient. Le texte tapé reste.
 Une lettre déjà classée s’ouvre sur ce qui a été gardé : la formule
 d’aujourd’hui ne s’y ajoute pas.
 

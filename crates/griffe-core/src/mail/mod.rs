@@ -62,6 +62,15 @@ pub fn outbound_for_anchor(
     store::for_anchor(conn, anchor, now)
 }
 
+/// Ancres dont une lettre est armée, retenue ou en route.
+///
+/// # Errors
+///
+/// Lecture impossible.
+pub fn departing_anchors(conn: &rusqlite::Connection) -> Result<Vec<String>, AppError> {
+    store::departing_anchors(conn)
+}
+
 use time::{Date, OffsetDateTime};
 
 use crate::app::{AppError, ExecutionContext, Executor};

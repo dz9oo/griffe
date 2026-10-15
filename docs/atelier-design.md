@@ -271,7 +271,15 @@ côte à côte n'est plus là.
 Pastilles, dans l'ordre du dossier : En cours, Écrire, La fiche, L'estimation,
 Les travaux, Noter une rencontre. Reporter, Arrêter et C'est un client restent
 des actions dans En cours. Le projet, les papiers, les notes et l'histoire
-restent le corps d'En cours. Depuis une pastille, « Revenir » rentre vers la liste.
+restent le corps d'En cours. « Revenir au menu » rentre vers la liste. La
+pastille En cours rentre au dossier. Le lien « ← nom » sous les pastilles
+n'est plus là. Arrêter, C'est un client et Ils reviennent gardent le leur :
+ces pages n'ont pas la barre.
+
+Écrire s'ouvre sur la lettre telle qu'elle part. « Éditer » ouvre le texte,
+« Relire » y revient. « Envoyer » part quand Le courrier est branché.
+« C'est parti » n'est là que sans serveur. Après ce geste, En cours dit que
+la lettre a été envoyée hors de Griffe, et lie Le courrier.
 
 `/affaires/types` et la nouvelle conversation utilisent la même barre. Les routes
 `/affaires/{référence}/fiche`, `/estimation`, `/ecrire`, `/travaux`, `/rencontre`

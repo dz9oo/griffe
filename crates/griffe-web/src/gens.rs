@@ -300,6 +300,8 @@ pub(crate) struct SerieForm {
     recipient: String,
     #[serde(default)]
     serie: String,
+    #[serde(default)]
+    face: String,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -1309,7 +1311,10 @@ pub async fn write_get(
                 card.as_ref(),
                 today,
                 None,
-                &gens::KeepUi::default(),
+                &gens::KeepUi {
+                    reading: true,
+                    ..gens::KeepUi::default()
+                },
                 &list,
             )
             .unwrap_or_else(|err| html! { div class="empty-state" { (err.to_string()) } })
@@ -1406,27 +1411,30 @@ fn kept_after_series(
     posted_subject: &str,
     posted_body: &str,
     recipient: String,
+    face: &str,
 ) -> gens::KeepUi {
+    let reading = face.trim() != "ecrire";
     let blank = posted_subject.trim().is_empty() && posted_body.trim().is_empty();
     let untouched =
         posted_subject.trim() == old_subject.trim() && posted_body.trim() == old_body.trim();
     if drafted && blank {
         return gens::KeepUi {
+            reading,
             subject: Some(old_subject.to_string()),
             body: Some(old_body.to_string()),
             recipient,
-            ..gens::KeepUi::default()
         };
     }
     if drafted || (!blank && !untouched) {
         return gens::KeepUi {
+            reading,
             subject: Some(posted_subject.to_string()),
             body: Some(posted_body.to_string()),
             recipient,
-            ..gens::KeepUi::default()
         };
     }
     gens::KeepUi {
+        reading,
         recipient,
         ..gens::KeepUi::default()
     }
@@ -1485,6 +1493,7 @@ pub async fn serie(
                 &form.subject_line,
                 &form.body,
                 form.recipient.clone(),
+                &form.face,
             );
             if !matches!(subject, FollowUpSubject::Opportunity(_)) || serie_id.is_empty() {
                 return Ok(SerieStep {
@@ -1527,6 +1536,7 @@ pub async fn serie(
                 &form.subject_line,
                 &form.body,
                 form.recipient.clone(),
+                &form.face,
             ),
             notice: Some(error.to_string()),
             saved: false,
@@ -1622,7 +1632,14 @@ pub async fn sent(
         Some(Ok(_)) => {
             let content = state
                 .with_store(|store| {
-                    gens::dossier_page(store, &reference, today).unwrap_or_else(|err| {
+                    let ready = griffe_core::mail::profile(store.connection())
+                        .is_ok_and(|account| account.ready);
+                    let page = if ready {
+                        gens::dossier_page(store, &reference, today)
+                    } else {
+                        gens::dossier_after_own_send(store, &reference, today)
+                    };
+                    page.unwrap_or_else(|err| {
                         html! { div class="empty-state" { (err.to_string()) } }
                     })
                 })
