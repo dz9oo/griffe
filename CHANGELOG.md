@@ -2,6 +2,15 @@
 
 Ce qui change pour qui se sert de Griffe. Une section par version publiée.
 
+## 0.3.14
+
+- Les phrases se rangent en séries. On les nomme dans La société, Les phrases. La ligne montre ces noms, puis « Une autre ». La série ouverte est en encre, et la carte porte son nom. Sans série encore, la page dit « Aucune série. » Des mots déjà écrits sans nom demandent un nom : il les garde.
+- En écrivant, on choisit la série. Ses mots remplissent la lettre. Une correction faite à la main reste. Un brouillon déjà prêt garde son texte. Une lettre déjà classée garde son texte. Le moment de la conversation reste le même.
+- Le type du dossier et la série se règlent chacun de leur côté. Ouvrir cette version aligne les noms une fois : un type sans série en reçoit une, une série sans type en reçoit un. Un dossier qui avait un type et pas encore de série prend celle du premier type, par le nom.
+- Une adresse suivie de ?utm_… se lit sans cette partie. Le lien la garde. Un navigateur peut la retirer en ouvrant la page.
+- Sur Le courrier, le fichier `lettre.toml` apparaît à côté de Clair et de Sauge, marqué votre feuille. Lisible, on peut le choisir. Illisible, la ligne le dit, et la lettre reste sur Clair ou sur Sauge.
+- Ouvrir un coffre déjà créé avance son schéma. La version précédente ne peut plus l'ouvrir.
+
 ## 0.3.13
 
 - Le bandeau est le même sur Le jour, Les affaires et La société : le nom, les trois pièces, la date du jour à droite.
