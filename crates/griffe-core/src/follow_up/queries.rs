@@ -373,7 +373,7 @@ pub fn latest_prospect_genre(conn: &Connection) -> Result<Option<row::ProspectGe
     row::latest_genre(conn)
 }
 
-/// Le genre du dossier, s'il en a un.
+/// La série posée sur le dossier, s'il y en a une. Le type ne la choisit pas.
 ///
 /// # Errors
 pub fn prospect_genre_for(

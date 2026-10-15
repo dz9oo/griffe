@@ -5,9 +5,9 @@ use super::model::LetterChrome;
 use super::theme::LetterPalette;
 use crate::domain::{display_phone, parse_email, tel_href};
 
-/// Phrase sous la zone d'écriture. Une adresse de suivi se tape en entier.
-pub const LINK_HINT: &str = "Une adresse suivie de ?utm_… reste cliquable en entier. \
-La personne lit l'adresse sans cette partie.";
+/// Phrase sous la zone d'écriture. On lit l'adresse sans `?utm_…`. Le lien la garde.
+pub const LINK_HINT: &str = "Une adresse suivie de ?utm_… se lit sans cette partie. Le lien la garde. \
+Un navigateur peut la retirer en ouvrant la page.";
 
 const SERIF: &str =
     "Georgia,'Iowan Old Style','Palatino Linotype',Palatino,'Times New Roman',serif";
@@ -93,7 +93,7 @@ pub fn close_letter(body: &str, signature: &str) -> String {
 }
 
 /// Le même texte, avec chaque adresse de suivi écrite sans ses paramètres `utm_`.
-/// Sert à l'aperçu. Le texte envoyé aux clients sans HTML garde l'adresse entière.
+/// Lecture à part. Dans la page, le lien garde l'adresse entière et le texte la montre sans ces paramètres.
 #[must_use]
 pub fn readable_links(text: &str) -> String {
     let mut out = String::new();
@@ -155,7 +155,7 @@ fn signature_block(html: &mut String, signature: &str, palette: &LetterPalette) 
 
 fn signature_content(html: &mut String, line: &str, palette: &LetterPalette) {
     if let Some(url) = whole_url(line) {
-        html.push_str(&anchor(&url, &without_utm(&url), &palette.link));
+        html.push_str(&anchor(&url, &link_label(&url), &palette.link));
     } else if whole_email(line) {
         html.push_str(&anchor(&format!("mailto:{line}"), line, &palette.link));
     } else if let Some(href) = tel_href(line) {
@@ -226,7 +226,7 @@ fn linked_line(html: &mut String, line: &str, ink: &str) {
     for piece in pieces(line) {
         match piece {
             Piece::Gap(gap) => html.push_str(&escape(&gap)),
-            Piece::Url(url) => html.push_str(&anchor(&url, &without_utm(&url), ink)),
+            Piece::Url(url) => html.push_str(&anchor(&url, &link_label(&url), ink)),
         }
     }
 }
@@ -264,6 +264,28 @@ fn peel_signature<'a>(body: &'a str, signature: &str) -> (&'a str, Option<&'a st
     };
     let signature_in_body = &trimmed[head.len()..];
     (head.trim_end(), Some(signature_in_body))
+}
+
+/// Liant sans chasse, collé après `://` dans le texte d'un lien suivi.
+const GLUE: char = '\u{2060}';
+
+/// Texte du lien. L'adresse se lit sans les paramètres `utm_`.
+///
+/// Quand cette lecture diffère de la cible, [`GLUE`] suit `://`.
+/// Il n'a ni chasse ni coupure. Le client de messagerie ne prend plus le
+/// texte pour une autre adresse, et le clic garde les paramètres.
+fn link_label(url: &str) -> String {
+    let shown = without_utm(url);
+    if shown == url {
+        return shown;
+    }
+    if let Some(rest) = shown.strip_prefix("https://") {
+        format!("https://{GLUE}{rest}")
+    } else if let Some(rest) = shown.strip_prefix("http://") {
+        format!("http://{GLUE}{rest}")
+    } else {
+        shown
+    }
 }
 
 /// Adresse affichée : le même lien, sans les paramètres dont le nom commence par `utm_`.
@@ -373,7 +395,7 @@ fn escape(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{close_letter, letter_html, readable_links, without_utm};
+    use super::{close_letter, letter_html, link_label, readable_links, without_utm};
     use crate::mail::{LetterChrome, LetterPalette, LetterParts};
 
     const TRACKED: &str = "https://atelier.example/conformite?utm_source=mairie&utm_medium=email&utm_campaign=automne-2026";
@@ -393,6 +415,14 @@ mod tests {
         let read = readable_links(&sentence);
         assert!(read.contains("https://atelier.example/conformite."));
         assert!(!read.contains("utm_"));
+        assert_eq!(
+            link_label("https://atelier.example/conformite"),
+            "https://atelier.example/conformite"
+        );
+        assert_eq!(
+            link_label(TRACKED),
+            "https://\u{2060}atelier.example/conformite"
+        );
     }
 
     #[test]
@@ -411,8 +441,12 @@ mod tests {
             body: &body,
             chrome: &chrome,
         });
-        assert!(html.contains("href=\"https://atelier.example/conformite?utm_source=mairie&amp;utm_medium=email&amp;utm_campaign=automne-2026\""));
-        assert!(html.contains(">https://atelier.example/conformite</a>"));
+        let linked = "https://atelier.example/conformite?utm_source=mairie&amp;utm_medium=email&amp;utm_campaign=automne-2026";
+        let label = link_label(TRACKED);
+        assert!(html.contains(&format!("href=\"{linked}\"")));
+        assert!(html.contains(&format!(">{label}</a>")));
+        assert!(!html.contains(&format!(">{linked}</a>")));
+        assert!(!label.contains("utm_"));
         assert!(html.contains("&lt;script&gt;"));
         assert!(!html.contains("<script>"));
         assert!(!html.contains("<img"));
@@ -458,15 +492,16 @@ https://atelier.example/conformite?utm_source=mairie&utm_medium=email&utm_campai
         assert_eq!(html.matches("Nicolas COLLIER").count(), 1);
         assert!(!html.contains("font-size:22px"));
         assert_eq!(html.matches("Ingénieur logiciel indépendant").count(), 1);
-        assert_eq!(
-            html.matches("https://atelier.example/conformite").count(),
-            2
-        );
+        assert_eq!(html.matches("atelier.example/conformite").count(), 2);
         assert!(html.contains("href=\"mailto:hello@atelier.example\""));
         assert!(html.contains("href=\"tel:+33670123260\""));
         assert!(html.contains(">06 70 12 32 60</a>"));
-        assert!(html.contains("href=\"https://atelier.example/conformite?utm_source=mairie&amp;utm_medium=email&amp;utm_campaign=automne-2026\""));
-        assert!(html.contains(">https://atelier.example/conformite</a>"));
+        let linked = "https://atelier.example/conformite?utm_source=mairie&amp;utm_medium=email&amp;utm_campaign=automne-2026";
+        let label = link_label(TRACKED);
+        assert!(html.contains(&format!("href=\"{linked}\"")));
+        assert!(html.contains(&format!(">{label}</a>")));
+        assert!(!html.contains(&format!(">{linked}</a>")));
+        assert!(!label.contains("utm_"));
         assert!(html.contains("#1e6b45"));
         assert!(html.contains("#e5eee6"));
         assert!(!html.contains("#9f3218"));

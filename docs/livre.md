@@ -34,8 +34,9 @@ Fermer la fenêtre pendant ces cinq secondes retient la lettre. C’est parti
 classe le double dans l’historique et ne contacte pas le serveur.
 
 La lettre part en page, et le texte seul reste pour les boîtes qui ne
-lisent pas la page. Une adresse suivie de ?utm_… reste cliquable en
-entier. La personne lit l’adresse sans cette partie.
+lisent pas la page. Une adresse suivie de ?utm_… se lit sans cette
+partie. Le lien la garde. Un navigateur peut la retirer en ouvrant
+la page. La barre d’adresse est alors plus courte que le lien parti.
 
 Dans Les affaires, on écrit, puis on relit. Relire montre la lettre
 telle qu’elle part. La zone d’écriture reprend le texte sans le perdre.
@@ -47,9 +48,13 @@ le prénom, le nom, et Monsieur ou Madame. Courriel et Téléphone restent
 ceux du standard, ou de l’accueil. En écrivant, on choisit le standard,
 ou le courriel de la personne lorsqu’il est là.
 
+La série choisie en écrivant donne les mots. On les écrit dans
+La société, Les phrases. Le type du dossier ne les choisit pas.
+Les affaires ne réécrivent pas les phrases.
+
 Les phrases prennent aussi `<nom>`, `<genre>`, et une formule
-`<Monsieur le Maire/Madame la Maire>`. Sans genre, les deux côtés
-restent visibles.
+`<Monsieur le Maire/Madame la Maire>`. `<genre>` suit Monsieur ou
+Madame. Sans genre, les deux côtés restent visibles.
 
 Le courrier s’ouvre sur la lettre d’essai, pour un prénom fictif. La
 formule est sous la lettre, dans la même mesure, et la lettre suit la frappe. Enregistrer l’écrit dans
@@ -74,8 +79,8 @@ et à l’envoi. Elle n’est pas recopiée dans la zone d’écriture. À l’�
 ses lignes se tiennent un peu plus serrées, et restent lisibles. Vide, la
 lettre se termine par Bien à vous, le nom, la société. Un mail, un
 numéro ou une adresse, seuls sur leur ligne, restent cliquables, dans
-la couleur de la feuille, sans soulignement. L’adresse se lit sans ?utm_….
-Le lien garde cette partie. La lettre d’essai part vers l’adresse
+la couleur de la feuille, sans soulignement. Une adresse suivie de
+?utm_… se lit sans cette partie. Le lien la garde. La lettre d’essai part vers l’adresse
 choisie. La fenêtre dit Courrier envoyé. Cela ne promet pas la boîte du
 destinataire.
 
@@ -94,8 +99,7 @@ encre = #2a2622
 lien = #3d5c66
 ```
 
-La marge et le papier peuvent être la même couleur : le message est alors une seule page. L’encre et le lien restent lisibles sur le papier. Un fichier illisible
-laisse Clair.
+La marge et le papier peuvent être la même couleur : le message est alors une seule page. L’encre et le lien restent lisibles sur le papier. Sur Le courrier, ce fichier apparaît à côté de Clair et de Sauge, marqué votre feuille. Lisible, on peut le choisir. Illisible, la ligne le dit, et la lettre reste sur Clair ou sur Sauge.
 
 ## Les mots
 

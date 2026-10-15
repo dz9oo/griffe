@@ -25,8 +25,7 @@ use crate::layout::ViewId;
 use crate::views::copy::{duty_occurrence_fr, month_fr, year_end_fr};
 use crate::views::form;
 
-/// Les phrases ouvertes depuis La société. Le paramètre garde le pli
-/// pendant qu'on change de genre.
+/// Les phrases ouvertes depuis La société. Le paramètre garde le pli.
 pub const PHRASES_LINE: &str = "/affaires/phrases?depuis=societe";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2158,7 +2157,7 @@ fn identity_markup(card: &IdentityCard, phrases: &str) -> Markup {
                       hx-push-url="true" {
                         "Les phrases"
                     }
-                    " — comment tu leur écris, selon qui ils sont."
+                    " — les séries de lettres."
                 }
             }
             div class="row-actions" {

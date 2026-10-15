@@ -1609,6 +1609,32 @@ tr.row-clickable:hover td { background: var(--paper-2); }
   line-height: 1.45;
 }
 .sheet-note .field-help a { color: var(--ink); }
+.sheet-own-mark {
+  margin-left: 0.4em;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  color: var(--ink-2);
+}
+.sheet-swatch {
+  display: inline-block;
+  width: 0.55em;
+  height: 0.55em;
+  margin-right: 0.35em;
+  border-radius: 50%;
+  vertical-align: 0.05em;
+  box-shadow: inset 0 0 0 1px rgba(28, 24, 20, 0.25);
+}
+.sheet-status {
+  margin: 8px 0 0;
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--ok);
+}
+.sheet-status.is-bad { color: var(--seal); }
+.word-choice label.sheet-own:has(input:disabled) {
+  color: var(--ink-2);
+  cursor: default;
+}
 .courrier-send { margin-top: 18px; }
 .courrier-send .field input[type="text"] {
   height: 36px;
@@ -1754,8 +1780,17 @@ tr.row-clickable:hover td { background: var(--paper-2); }
   color: var(--ink-2);
   margin: 0 0 18px;
 }
+.phrase-line a,
+.phrase-line .current {
+  font-family: var(--sans);
+  font-size: 16px;
+  text-decoration: none;
+}
 .phrase-line a { color: var(--ink-2); }
-.phrase-line .current { color: var(--ink); }
+.phrase-line .current {
+  color: var(--ink);
+  box-shadow: inset 0 -1px 0 var(--ink);
+}
 .phrase-line span, .phrase-line a { min-width: 0; overflow-wrap: anywhere; }
 /* Mots cochés, un ou plusieurs : l'input est dans le label.
    .word-other-toggle découvre la ligne. */
@@ -1846,6 +1881,12 @@ fieldset.respondent > legend {
 }
 .word-choice a {
   color: inherit;
+  text-decoration: none;
+}
+.word-choice-row > a {
+  font-family: var(--sans);
+  font-size: 16px;
+  color: var(--ink-2);
   text-decoration: none;
 }
 .word-choice .word-other[aria-invalid="true"] {
@@ -3122,6 +3163,7 @@ input[type="checkbox"] {
 }
 .reglages-desk > .mast,
 .reglages-desk > .row-actions,
+.reglages-desk > .word-choice,
 .reglages-desk > .phrase-line,
 .reglages-desk > form,
 .reglages-desk > .places,

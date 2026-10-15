@@ -4,6 +4,7 @@
 //! (`xdg-open`). Poster la lettre passe par le courrier (`crate::mail`). « Envoyé » peut
 //! aussi être un fait marqué par l'humain.
 
+pub(crate) mod bind;
 mod commands;
 mod error;
 mod queries;
@@ -76,6 +77,7 @@ mod tests {
     };
     use crate::store::Store;
     use crate::store::testing::test_store;
+    use crate::work_kinds::{DeleteWorkKind, RenameWorkKind, SetDossierWorkKinds, work_kinds};
 
     fn reapply_signature_migration(conn: &rusqlite::Connection) {
         let sql = include_str!("store/migrations/0046_mail_signature_up.sql");
@@ -1368,6 +1370,156 @@ mod tests {
                 .contains("Je me permets de revenir")
         );
         assert_eq!(phrase_by_key(&store, "hello").subject, "{{sujet}}");
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn a_type_does_not_choose_the_phrase_series() {
+        let mut store = test_store("type-phrases");
+        let today = date(2026, Month::September, 5);
+        let (town_client, town) = seed_opportunity(&mut store, today);
+        let (_, other) = seed_opportunity(&mut store, today);
+        applied(
+            &mut store,
+            &SetDossierWorkKinds {
+                client: town_client,
+                names: vec!["Services publics".into()],
+            },
+        );
+        let FollowUpSubject::Opportunity(town_id) = town else {
+            panic!("conversation attendue");
+        };
+        let FollowUpSubject::Opportunity(other_id) = other else {
+            panic!("conversation attendue");
+        };
+        assert!(prospect_genres(store.connection()).unwrap().is_empty());
+        assert!(
+            prospect_genre_for(store.connection(), town_id)
+                .unwrap()
+                .is_none()
+        );
+
+        let services = applied(
+            &mut store,
+            &CreateProspectGenre {
+                name: "Services publics".into(),
+                copy_from: None,
+            },
+        );
+        assert_eq!(
+            work_kinds(store.connection())
+                .unwrap()
+                .iter()
+                .map(|kind| kind.name.clone())
+                .collect::<Vec<_>>(),
+            vec!["Services publics".to_string()]
+        );
+        applied(
+            &mut store,
+            &RewriteGenreWords {
+                genre_id: services.id.clone(),
+                words: vec![GenreWordDraft {
+                    key: "hello".into(),
+                    subject: "Pour la mairie".into(),
+                    body: "Bonjour {{prenom}},\n\nLa mairie.\n".into(),
+                }],
+            },
+        );
+        assert_ne!(
+            card_for(store.connection(), town, today)
+                .unwrap()
+                .preview_subject
+                .as_deref(),
+            Some("Pour la mairie")
+        );
+
+        applied(
+            &mut store,
+            &SetDossierGenre {
+                subject: town,
+                name: "Services publics".into(),
+            },
+        );
+        applied(
+            &mut store,
+            &SetDossierGenre {
+                subject: other,
+                name: "Commerces".into(),
+            },
+        );
+        assert_eq!(
+            card_for(store.connection(), town, today)
+                .unwrap()
+                .preview_subject
+                .as_deref(),
+            Some("Pour la mairie")
+        );
+        assert_ne!(
+            card_for(store.connection(), other, today)
+                .unwrap()
+                .preview_subject
+                .as_deref(),
+            Some("Pour la mairie")
+        );
+        assert_eq!(
+            prospect_genre_for(store.connection(), other_id)
+                .unwrap()
+                .expect("série posée")
+                .name,
+            "Commerces"
+        );
+        assert_eq!(
+            work_kinds(store.connection())
+                .unwrap()
+                .iter()
+                .map(|kind| kind.name.clone())
+                .collect::<Vec<_>>(),
+            vec!["Services publics".to_string()]
+        );
+
+        let kind = work_kinds(store.connection())
+            .unwrap()
+            .into_iter()
+            .find(|kind| kind.name == "Services publics")
+            .expect("type posé");
+        applied(
+            &mut store,
+            &RenameWorkKind {
+                id: kind.id.clone(),
+                name: "Collectivités".into(),
+            },
+        );
+        assert_eq!(
+            card_for(store.connection(), town, today)
+                .unwrap()
+                .preview_subject
+                .as_deref(),
+            Some("Pour la mairie")
+        );
+        assert_eq!(
+            prospect_genre_for(store.connection(), town_id)
+                .unwrap()
+                .expect("série gardée")
+                .name,
+            "Services publics"
+        );
+
+        applied(&mut store, &DeleteWorkKind { id: kind.id });
+        assert!(work_kinds(store.connection()).unwrap().is_empty());
+        assert_eq!(
+            prospect_genre_for(store.connection(), town_id)
+                .unwrap()
+                .expect("la série reste")
+                .name,
+            "Services publics"
+        );
+        assert_eq!(
+            card_for(store.connection(), town, today)
+                .unwrap()
+                .preview_subject
+                .as_deref(),
+            Some("Pour la mairie")
+        );
     }
 
     #[test]

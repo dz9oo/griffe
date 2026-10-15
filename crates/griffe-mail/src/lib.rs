@@ -468,6 +468,79 @@ mod tests {
     }
 
     #[test]
+    fn a_tracked_address_stays_in_the_plain_part_and_in_the_link() {
+        let url = "https://atelier.example/conformite?utm_source=mairie&utm_medium=email&utm_campaign=automne-2026";
+        let chrome = LetterChrome {
+            signature: format!("Ada\n{url}"),
+            ..Default::default()
+        };
+        let message = OutboundMessage {
+            from_name: Some("Ada".into()),
+            from_address: "ada@studio.test".into(),
+            to_address: "marie@acme.test".into(),
+            subject: "Bonjour".into(),
+            text: "Une ligne, déjà.".into(),
+            chrome,
+            message_id: "<lettre@griffe.local>".into(),
+            at: time::OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap(),
+        };
+        let raw = String::from_utf8(compose(&message).unwrap().formatted()).unwrap();
+        let decoded = decode_transfer(&raw);
+        assert!(
+            decoded.contains(url),
+            "le texte seul garde l'adresse : {decoded}"
+        );
+        let href = url.replace('&', "&amp;");
+        assert!(
+            decoded.contains(&format!("href=\"{href}\"")),
+            "le clic garde l'adresse : {decoded}"
+        );
+        assert!(
+            decoded.contains(">\u{2060}atelier.example/conformite</a>")
+                || decoded.contains(">https://\u{2060}atelier.example/conformite</a>"),
+            "le texte se lit sans les paramètres : {decoded}"
+        );
+        assert!(
+            !decoded.contains(&format!(">{href}</a>")),
+            "le texte ne reprend pas les paramètres : {decoded}"
+        );
+    }
+
+    fn decode_transfer(raw: &str) -> String {
+        let bytes = raw.as_bytes();
+        let mut out = Vec::new();
+        let mut index = 0;
+        while index < bytes.len() {
+            if bytes[index] == b'=' && index + 1 < bytes.len() && bytes[index + 1] == b'\n' {
+                index += 2;
+                continue;
+            }
+            if bytes[index] == b'='
+                && index + 2 < bytes.len()
+                && bytes[index + 1] == b'\r'
+                && bytes[index + 2] == b'\n'
+            {
+                index += 3;
+                continue;
+            }
+            if bytes[index] == b'='
+                && index + 2 < bytes.len()
+                && bytes[index + 1].is_ascii_hexdigit()
+                && bytes[index + 2].is_ascii_hexdigit()
+            {
+                let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).unwrap_or("3D");
+                let value = u8::from_str_radix(hex, 16).unwrap_or(b'=');
+                out.push(value);
+                index += 3;
+                continue;
+            }
+            out.push(bytes[index]);
+            index += 1;
+        }
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    #[test]
     fn building_the_transport_does_not_connect() {
         let secret = MailSecret::new("secret-value").unwrap();
         let transport = open_transport(&endpoint(587, TlsMode::StartTls), &secret);

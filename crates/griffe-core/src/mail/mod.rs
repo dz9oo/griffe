@@ -25,8 +25,9 @@ pub use model::{
 pub use present::{LINK_HINT, LetterParts, close_letter, letter_card, letter_html, readable_links};
 pub use secret::MailSecret;
 pub use theme::{
-    CustomLetter, LetterFileError, LetterPalette, LetterTheme, letter_choices, parse_letter_file,
-    read_custom_letter, selected_sheet,
+    CustomLetter, CustomSheet, LetterChoice, LetterFileError, LetterPalette, LetterTheme,
+    OwnSheetNote, custom_sheet, letter_choices, own_sheet_note, parse_letter_file,
+    read_custom_letter, selected_id, selected_sheet, sheet_choices, sheet_from_text,
 };
 
 /// Compte d'envoi, sans le secret.

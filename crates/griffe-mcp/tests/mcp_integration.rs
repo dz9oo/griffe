@@ -3077,8 +3077,13 @@ async fn work_kinds_follow_a_fiche_and_an_agent_delete_waits() {
     let id = created["result"]["id"].as_str().unwrap().to_string();
 
     let listed = json_of(&call(&client, "people.work_kinds", json!(null)).await);
-    assert_eq!(listed.as_array().unwrap().len(), 1);
-    assert_eq!(listed[0]["name"], "site web");
+    let listed_names: Vec<&str> = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|kind| kind["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(listed_names, ["site web"]);
 
     let set = json_of(
         &call(
@@ -3187,10 +3192,13 @@ async fn work_kinds_follow_a_fiche_and_an_agent_delete_waits() {
         .into_iter()
         .find(|item| item.name == "Affaire du quai")
         .unwrap();
-    let genre = griffe_core::follow_up::prospect_genre_for(check.connection(), affaire.id)
-        .unwrap()
-        .unwrap();
-    assert_eq!(genre.name, "Mairie");
+    assert_eq!(
+        griffe_core::follow_up::prospect_genre_for(check.connection(), affaire.id)
+            .unwrap()
+            .unwrap()
+            .name,
+        "Mairie"
+    );
 
     client.cancel().await.unwrap();
 }

@@ -1,4 +1,4 @@
-//! Types de travaux d'un dossier. Le genre classe les phrases. Le type dit le métier.
+//! Types d'un dossier. Une série de phrases se choisit à part.
 //! Plusieurs types tiennent sur une même fiche. Le catalogue reste quand on décoche.
 
 use rusqlite::{Connection, OptionalExtension, params};
@@ -639,6 +639,13 @@ mod tests {
         let site_id = created[0].id.clone();
         let created_at = created[0].created_at.clone();
         assert_eq!(
+            prospect_genre_for(store.connection(), quai_affaire)
+                .unwrap()
+                .unwrap()
+                .name,
+            "Mairie"
+        );
+        assert_eq!(
             work_kinds(store.connection())
                 .unwrap()
                 .into_iter()
@@ -677,6 +684,13 @@ mod tests {
         assert_eq!(renamed.id, site_id);
         assert_eq!(renamed.created_at, created_at);
         assert_eq!(renamed.name, "site");
+        assert_eq!(
+            prospect_genre_for(store.connection(), quai_affaire)
+                .unwrap()
+                .unwrap()
+                .name,
+            "Mairie"
+        );
         assert_eq!(kind_names(&store, quai), vec!["site".to_string()]);
         assert_eq!(
             kind_names(&store, port),

@@ -3,7 +3,7 @@
 use griffe_core::app::AppError;
 use griffe_core::mail::{
     LetterChrome, LetterParts, MailPreset, MailProfile, OutboundView, TrialLetter, close_letter,
-    letter_choices, letter_html, profile, selected_sheet,
+    custom_sheet, letter_html, own_sheet_note, profile, selected_id, sheet_choices,
 };
 use griffe_core::store::Store;
 use maud::{Markup, html};
@@ -128,7 +128,7 @@ fn markup(
             form class="reglages-card courrier-formula courrier-block" hx-post="/societe/courrier/signature" hx-target="#content" hx-push-url="true" {
                     h3 class="panel-title" { "Ce qui ferme la lettre" }
                     p class="field-help" {
-                        "Ces lignes ferment chaque lettre. On les écrit ici une fois. Par exemple : Ingénieur logiciel indépendant, sur sa ligne. Un mail, un numéro ou une adresse, seuls sur leur ligne, restent cliquables. L'adresse se lit sans ?utm_…."
+                        "Ces lignes ferment chaque lettre. On les écrit ici une fois. Par exemple : Ingénieur logiciel indépendant, sur sa ligne. Un mail, un numéro ou une adresse, seuls sur leur ligne, restent cliquables. Une adresse suivie de ?utm_… se lit sans cette partie. Le lien la garde."
                     }
                     div class="field" {
                         label for="signature" { "La formule" }
@@ -294,33 +294,60 @@ pub fn preview_card(store: &Store, signature: &str) -> Result<Markup, AppError> 
 }
 
 fn sheet_choice(account: &MailProfile) -> Markup {
-    let selected = selected_sheet(account.link_ink);
+    let sheet = custom_sheet();
+    let selected = selected_id(account.link_ink, &sheet);
+    let note = own_sheet_note(&sheet, selected);
     html! {
         div class="sheet-note" {
             fieldset class="word-choice" {
                 legend { "La feuille" }
                 div class="word-choice-row" {
-                    @for choice in letter_choices() {
-                        label {
-                            input type="radio" name="ink" value=(choice.id)
-                                  checked[choice.id == selected]
-                                  hx-post="/societe/courrier/apparence"
-                                  hx-trigger="change"
-                                  hx-target="#content"
-                                  hx-vals=(format!("{{\"ink\":\"{}\"}}", choice.id))
-                                  hx-push-url="true";
+                    @for choice in sheet_choices(&sheet) {
+                        label class=(if choice.own { "sheet-own" } else { "" }) {
+                            @if choice.selectable {
+                                input type="radio" name="ink" value=(choice.id)
+                                      checked[choice.id == selected]
+                                      hx-post="/societe/courrier/apparence"
+                                      hx-trigger="change"
+                                      hx-target="#content"
+                                      hx-vals=(format!("{{\"ink\":\"{}\"}}", choice.id))
+                                      hx-push-url="true";
+                            } @else {
+                                input type="radio" name="ink" value=(choice.id) disabled;
+                            }
+                            @if let Some(swatch) = &choice.swatch {
+                                span class="sheet-swatch" style=(format!("background:{swatch}")) {}
+                            }
                             (choice.label)
+                            @if choice.own && choice.label != "Votre feuille" {
+                                span class="sheet-own-mark" { "votre feuille" }
+                            }
                         }
                     }
                 }
             }
+            @if let Some(note) = &note {
+                p class=(if note.readable { "sheet-status" } else { "sheet-status is-bad" }) {
+                    (note.sentence)
+                }
+            }
             p class="field-help" {
-                "Une autre feuille peut venir d'un fichier sur cette machine. "
-                a href="/aide/courrier"
-                  hx-get="/aide/courrier"
-                  hx-target="#content"
-                  hx-push-url="true"
-                  hx-swap="innerHTML" { "L'aide dit comment." }
+                @if note.is_some() {
+                    "Les cinq lignes sont dans "
+                    a href="/aide/courrier"
+                      hx-get="/aide/courrier"
+                      hx-target="#content"
+                      hx-push-url="true"
+                      hx-swap="innerHTML" { "l'aide" }
+                    "."
+                } @else {
+                    "Une autre feuille peut venir d'un fichier sur cette machine. "
+                    a href="/aide/courrier"
+                      hx-get="/aide/courrier"
+                      hx-target="#content"
+                      hx-push-url="true"
+                      hx-swap="innerHTML" { "L'aide dit comment." }
+                }
             }
         }
     }

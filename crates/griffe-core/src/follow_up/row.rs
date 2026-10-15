@@ -418,24 +418,6 @@ pub(super) fn genre_by_id(conn: &Connection, id: &str) -> Result<Option<Prospect
     .map_err(AppError::from)
 }
 
-pub(super) fn genre_by_name(
-    conn: &Connection,
-    name: &str,
-) -> Result<Option<ProspectGenre>, AppError> {
-    conn.query_row(
-        "SELECT id, name FROM prospect_genres WHERE name = ?1",
-        [name],
-        |row| {
-            Ok(ProspectGenre {
-                id: row.get(0)?,
-                name: row.get(1)?,
-            })
-        },
-    )
-    .optional()
-    .map_err(AppError::from)
-}
-
 pub(super) fn genre_of_opportunity(
     conn: &Connection,
     opportunity_id: OpportunityId,

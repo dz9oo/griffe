@@ -358,7 +358,7 @@ impl Command for CreateProspectGenre {
 
     fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
         let name = trimmed_genre_name(&self.name)?;
-        if row::genre_by_name(conn, &name)?.is_some() {
+        if super::bind::phrase_genre_named(conn, &name)?.is_some() {
             return Err(FollowUpError::DuplicateGenre.into());
         }
         let source = blank_id(self.copy_from.as_deref());
@@ -389,7 +389,8 @@ impl Command for DropProspectGenre {
         if row::genre_by_id(conn, id)?.is_none() {
             return Err(FollowUpError::UnknownGenre.into());
         }
-        row::delete_genre(conn, id)
+        row::delete_genre(conn, id)?;
+        Ok(())
     }
 }
 
@@ -428,7 +429,8 @@ impl Command for SetDossierGenre {
                 created: false,
             });
         }
-        let (genre, created) = if let Some(existing) = row::genre_by_name(conn, name)? {
+        let (genre, created) = if let Some(existing) = super::bind::phrase_genre_named(conn, name)?
+        {
             (existing, false)
         } else {
             let created = row::insert_genre(conn, name)?;

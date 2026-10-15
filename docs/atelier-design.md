@@ -319,8 +319,9 @@ Une lettre `/societe/impots/{kind}` a pour parent « Les échéances » (lien ve
 `/societe/impots`) et pour voisins « L’État » et « Clore ». « Revenir au menu »
 rentre à `/societe`.
 
-Les phrases `?depuis=societe` portent la famille Les réglages et le soulignement
-La société. Ouvertes depuis une affaire, elles restent dans Les affaires.
+Les phrases portent la famille Les réglages et le soulignement La société,
+y compris ouvertes depuis une lettre ou une fiche (`depuis=lettre`,
+`depuis=fiche`, ou un `pour`).
 
 ### Cartes de Te payer
 
@@ -506,19 +507,28 @@ du jour » ou « Couper l’envoi du jour », dans le form.
 
 **Les phrases** (`/affaires/phrases?depuis=societe`). L’habillage du bureau
 reste : `frame_phrases`, famille Les réglages, soulignement La société.
-`?depuis=lettre` et `?depuis=fiche` restent dans la lentille des affaires,
-avec leur lien retour. Le fil porte « Les phrases ». Le `h1` « Les phrases. »
-sort. Le titre « {genre}. » reste une phrase dans la carte. Le lien « ← … »
-du gabarit partagé reste dans le gabarit. La ligne des genres (« Les
-phrases », chaque genre, « Un autre genre ») reste une ligne, pas une carte.
+`?depuis=lettre`, `?depuis=fiche` et un `pour` non vide ouvrent ce même pli.
+Le retour vers la lettre est `/{dossier}/ecrire`, et `depuis` comme `pour`
+restent sur les liens. Le fil porte « Les phrases ». Le `h1` « Les phrases. »
+sort. Le mot est « série ». La ligne, sous la légende « Série », ne nomme que
+les séries, puis « Une autre ». La série ouverte est en encre, avec le même
+filet qu’un mot coché, et les autres ne sont pas soulignés. Sans série, la
+carte dit « Aucune série. » et n’affiche pas les mots de départ. Si ces mots
+ont déjà été réécrits, une ligne demande un nom. Le titre dans la carte est
+le nom, « Services publics. ». Le lede : « Les mots de cette série. »
 Une carte pour l’entrée déjà écrite : le lede, la chronique, « Les
 conversations déjà engagées finissent leur série. » Un seul formulaire
 ensuite, pas une carte par moment. La frise et la feuille gardent la grille
 `phrase-stage` (frise | feuille, une colonne sous 800 px). Les boutons
 Monter, Descendre, Retirer, Ajouter un moment, Enregistrer les phrases et
-Retirer ce genre restent dans ce form. Les jetons restent des boutons
+Retirer cette série restent dans ce form. Les jetons restent des boutons
 `type="button"`. L’aperçu reste `#phrase-sheet`, remplacé en innerHTML,
-delay 600 ms. La feuille reste une figure dans le formulaire.
+delay 600 ms. La feuille reste une figure dans le formulaire. La page
+« Une autre série. » pose le titre et le lede dans la carte quand le pli est
+là, et le formulaire en dehors. Sur Écrire, pour une conversation, les mêmes
+mots se cochent au-dessus de la lettre et posent la série sur le dossier.
+Une facture n’a pas ce choix. « Une autre » ouvre la création dans La société
+et, au retour d’une lettre, la série est posée sur le dossier.
 
 **Les papiers** (`/societe/papiers`). Le `h1` « Les papiers. » sort. Le lien
 « ← La société » reste, le pli le masque. La racine qui se rafraîchit sur
