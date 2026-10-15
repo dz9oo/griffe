@@ -470,8 +470,10 @@ mod tests {
     #[test]
     fn a_tracked_address_stays_in_the_plain_part_and_in_the_link() {
         let url = "https://atelier.example/conformite?utm_source=mairie&utm_medium=email&utm_campaign=automne-2026";
-        let mut chrome = LetterChrome::default();
-        chrome.signature = format!("Ada\n{url}");
+        let chrome = LetterChrome {
+            signature: format!("Ada\n{url}"),
+            ..Default::default()
+        };
         let message = OutboundMessage {
             from_name: Some("Ada".into()),
             from_address: "ada@studio.test".into(),
