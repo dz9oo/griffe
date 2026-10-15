@@ -835,7 +835,7 @@ async fn the_help_catalog_covers_each_situation_and_hides_an_empty_shelf() {
         (
             "phrases",
             "Les conversations déjà engagées finissent leur série.",
-            Some("/affaires/phrases"),
+            Some("/affaires/phrases?depuis=societe"),
         ),
         ("gestes", "Ils reviennent", Some("/affaires")),
         ("jour", "mois de piste", Some("/jour")),
