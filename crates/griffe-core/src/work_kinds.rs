@@ -1,4 +1,4 @@
-//! Types d'un dossier. Le même nom choisit les phrases.
+//! Types d'un dossier. Une série de phrases se choisit à part.
 //! Plusieurs types tiennent sur une même fiche. Le catalogue reste quand on décoche.
 
 use rusqlite::{Connection, OptionalExtension, params};
@@ -232,7 +232,6 @@ impl Command for RenameWorkKind {
             "UPDATE work_kinds SET name = ?1 WHERE id = ?2",
             params![name, current.id],
         )?;
-        align_phrase_name(conn, &current.name, &name)?;
         Ok(WorkKind { name, ..current })
     }
 }
@@ -273,9 +272,6 @@ impl Command for ReviseWorkKind {
             "UPDATE work_kinds SET name = ?1, note = ?2, tint = ?3 WHERE id = ?4",
             params![name, note, tint.slug(), current.id],
         )?;
-        if current.name != name {
-            align_phrase_name(conn, &current.name, &name)?;
-        }
         Ok(WorkKind {
             name,
             tint,
@@ -301,16 +297,11 @@ impl Command for DeleteWorkKind {
 
     fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
         let id = self.id.trim();
-        let Some(current) = work_kind_by_id(conn, id)? else {
+        if work_kind_by_id(conn, id)?.is_none() {
             return Err(WorkKindError::Unknown.into());
-        };
-        let clients = crate::follow_up::bind::clients_of_type_named(conn, &current.name)?;
+        }
         conn.execute("DELETE FROM dossier_work_kinds WHERE kind_id = ?1", [id])?;
         conn.execute("DELETE FROM work_kinds WHERE id = ?1", [id])?;
-        crate::follow_up::bind::drop_phrase_genre_named(conn, &current.name)?;
-        for client in clients {
-            crate::follow_up::bind::phrases_follow_types(conn, client)?;
-        }
         Ok(())
     }
 }
@@ -354,7 +345,6 @@ impl Command for SetDossierWorkKinds {
                 params![self.client.to_string(), id],
             )?;
         }
-        crate::follow_up::bind::phrases_follow_types(conn, self.client)?;
         dossier_work_kinds(conn, self.client)
     }
 }
@@ -488,16 +478,7 @@ fn insert_kind(
             kind.created_at
         ],
     )?;
-    crate::follow_up::bind::ensure_phrase_genre(conn, &kind.name)?;
     Ok(kind)
-}
-
-fn align_phrase_name(conn: &Connection, from: &str, to: &str) -> Result<(), AppError> {
-    crate::follow_up::bind::rename_phrase_genre(conn, from, to)?;
-    for client in crate::follow_up::bind::clients_of_type_named(conn, to)? {
-        crate::follow_up::bind::phrases_follow_types(conn, client)?;
-    }
-    Ok(())
 }
 
 fn checked_name(raw: &str) -> Result<String, WorkKindError> {
@@ -662,7 +643,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .name,
-            "site web"
+            "Mairie"
         );
         assert_eq!(
             work_kinds(store.connection())
@@ -670,7 +651,7 @@ mod tests {
                 .into_iter()
                 .map(|kind| kind.name)
                 .collect::<Vec<_>>(),
-            vec!["Mairie".to_string(), "site web".to_string()]
+            vec!["site web".to_string()]
         );
         let listed = dossiers_of_work_kind(store.connection(), &site_id).unwrap();
         assert_eq!(listed.len(), 1);
@@ -691,7 +672,7 @@ mod tests {
             vec!["backend", "site web"]
         );
         assert_eq!(kind_names(&store, quai), vec!["site web".to_string()]);
-        assert_eq!(work_kinds(store.connection()).unwrap().len(), 3);
+        assert_eq!(work_kinds(store.connection()).unwrap().len(), 2);
 
         let renamed = applied(
             &mut store,
@@ -708,7 +689,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .name,
-            "site"
+            "Mairie"
         );
         assert_eq!(kind_names(&store, quai), vec!["site".to_string()]);
         assert_eq!(
@@ -747,10 +728,12 @@ mod tests {
         );
         let missing = dossiers_of_work_kind(store.connection(), &site_id).unwrap_err();
         assert!(matches!(missing, AppError::Domain(message) if message == "Ce type n'existe pas."));
-        assert!(
+        assert_eq!(
             prospect_genre_for(store.connection(), quai_affaire)
                 .unwrap()
-                .is_none()
+                .unwrap()
+                .name,
+            "Mairie"
         );
     }
 

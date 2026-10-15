@@ -4733,7 +4733,7 @@ fn work_kinds_follow_a_fiche_through_rename_and_wait_for_confirmation() {
         .iter()
         .map(|kind| kind["name"].as_str().unwrap())
         .collect();
-    assert_eq!(listed_names, ["Mairie", "site web"]);
+    assert_eq!(listed_names, ["site web"]);
 
     unlocked(&db)
         .args(["people", "types", "set", "Atelier Quai", "site web"])
@@ -4865,7 +4865,7 @@ fn work_kinds_follow_a_fiche_through_rename_and_wait_for_confirmation() {
         .iter()
         .map(|kind| kind["name"].as_str().unwrap())
         .collect();
-    assert_eq!(left_names, ["backend", "Mairie"]);
+    assert_eq!(left_names, ["backend"]);
     assert!(left.as_array().unwrap().iter().all(|kind| kind["id"] != id));
     let quai = json_result(
         &unlocked(&db)
@@ -4905,9 +4905,11 @@ fn work_kinds_follow_a_fiche_through_rename_and_wait_for_confirmation() {
         .into_iter()
         .find(|item| item.name == "Affaire du quai")
         .unwrap();
-    assert!(
+    assert_eq!(
         griffe_core::follow_up::prospect_genre_for(store.connection(), affaire.id)
             .unwrap()
-            .is_none()
+            .unwrap()
+            .name,
+        "Mairie"
     );
 }

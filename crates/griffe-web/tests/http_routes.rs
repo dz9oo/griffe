@@ -2259,22 +2259,23 @@ async fn la_societe_opens_on_the_plateau_and_folds_each_chapter() {
                 assert!(page.contains("phrase-desk"), "{page}");
                 assert!(page.contains("reglages-desk"), "{page}");
                 assert_eq!(page.matches("reglages-card").count(), 1, "{page}");
-                assert!(page.contains("class=\"phrase-line\""), "{page}");
-                assert!(page.contains("class=\"phrase-stage\""), "{page}");
-                assert!(page.contains("id=\"phrase-sheet\""), "{page}");
                 assert!(
-                    page.contains("Les conversations déjà engagées finissent leur série."),
+                    page.contains("class=\"word-choice-row phrase-line\""),
                     "{page}"
                 );
+                assert!(page.contains(">Série<"), "{page}");
+                assert!(page.contains("Aucune série."), "{page}");
+                assert!(page.contains(">Une autre<"), "{page}");
+                assert!(!page.contains("class=\"phrase-stage\""), "{page}");
+                assert!(!page.contains("id=\"phrase-sheet\""), "{page}");
+                assert!(!page.contains("Enregistrer les phrases"), "{page}");
                 assert!(!page.contains("<h1"), "{page}");
                 assert!(!page.contains("hx-on"), "{page}");
-                let line = page.find("class=\"phrase-line\"").expect("genres");
+                let line = page
+                    .find("class=\"word-choice-row phrase-line\"")
+                    .expect("séries");
                 let card = page.find("reglages-card").expect("carte");
-                let form = page.find("<form").expect("formulaire");
-                assert!(
-                    line < card && card < form,
-                    "la ligne, puis la carte, puis le formulaire : {page}"
-                );
+                assert!(line < card, "la ligne, puis la carte : {page}");
             }
             "/societe/identite" => {
                 assert!(page.contains("class=\"letter reglages-desk\""), "{page}");
@@ -2285,7 +2286,7 @@ async fn la_societe_opens_on_the_plateau_and_folds_each_chapter() {
                 assert!(page.contains(">Le coffre<"), "{page}");
                 assert!(page.contains("Modifier la carte"), "{page}");
                 assert!(page.contains("href=\"/view/societe\""), "{page}");
-                assert!(page.contains("selon leur type"), "{page}");
+                assert!(page.contains("les séries de lettres"), "{page}");
                 assert!(!page.contains("<h1"), "{page}");
                 assert!(
                     !page.contains("<form"),
@@ -2386,8 +2387,8 @@ async fn la_societe_opens_on_the_plateau_and_folds_each_chapter() {
     )
     .await;
     assert!(
-        !phrases.contains("data-family=\"reglages\""),
-        "ouvertes depuis une affaire, les phrases restent dans Les affaires : {phrases}"
+        phrases.contains("data-family=\"reglages\""),
+        "ouvertes depuis une lettre, les phrases restent dans La société : {phrases}"
     );
 
     let old = body_text(
@@ -9198,7 +9199,29 @@ async fn phrases_are_a_letter_and_the_next_unopened_mail_uses_them() {
             .unwrap(),
     )
     .await;
-    assert!(page.contains("Les phrases."), "{page}");
+    assert!(page.contains("Aucune série."), "{page}");
+    assert!(page.contains(">Une autre<"), "{page}");
+    assert!(page.contains(">Série<"), "{page}");
+    assert!(!page.contains("class=\"phrase-frise\""), "{page}");
+    assert!(!page.contains("Enregistrer les phrases"), "{page}");
+
+    let accueil = create_genre(&router, "Accueil").await;
+    let page = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/affaires/phrases?genre={accueil}"))
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(page.contains("Accueil."), "{page}");
+    assert!(page.contains("Les mots de cette série."), "{page}");
     assert!(page.contains("Premier message"), "{page}");
     assert!(
         page.contains("Premier message le jour du dossier."),
@@ -9238,10 +9261,10 @@ async fn phrases_are_a_letter_and_the_next_unopened_mail_uses_them() {
             .unwrap(),
     )
     .await;
-    assert!(
-        letter.contains("Pas encore de type · Premier message"),
-        "{letter}"
-    );
+    assert!(letter.contains("Accueil"), "{letter}");
+    assert!(letter.contains("Premier message"), "{letter}");
+    assert!(!letter.contains("Aucune série."), "{letter}");
+    assert!(!letter.contains("Pas encore de type"), "{letter}");
     assert!(!letter.contains("Pas encore de genre"), "{letter}");
     assert!(!letter.contains("Garder ces mots"), "{letter}");
     assert!(letter.contains("C'est parti"), "{letter}");
@@ -9252,7 +9275,7 @@ async fn phrases_are_a_letter_and_the_next_unopened_mail_uses_them() {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/affaires/phrases")
+                    .uri(format!("/affaires/phrases?genre={accueil}"))
                     .header("content-type", "application/x-www-form-urlencoded")
                     .header("HX-Request", "true")
                     .body(Body::from(
@@ -9270,6 +9293,13 @@ label_close=Dernier+mot&subject_close=Fin&body_close=Un+dernier+mot.&revision_cl
     assert!(saved.contains("Les phrases sont enregistrées."), "{saved}");
     assert!(saved.contains("Premier contact"), "{saved}");
     assert!(saved.contains("Un premier mot réécrit."), "{saved}");
+
+    post_form(
+        &router,
+        "/affaires/Camille%20Rivi%C3%A8re/serie",
+        &format!("serie={accueil}"),
+    )
+    .await;
 
     let next = body_text(
         router
@@ -9303,7 +9333,7 @@ label_close=Dernier+mot&subject_close=Fin&body_close=Un+dernier+mot.&revision_cl
     )
     .await;
     assert!(
-        identity.contains("Les phrases") && identity.contains("selon leur type"),
+        identity.contains("Les phrases") && identity.contains("les séries de lettres"),
         "{identity}"
     );
 }
@@ -9338,7 +9368,13 @@ async fn phrases_opened_from_a_dossier_land_in_la_societe() {
     .await;
     assert!(full.contains("Revenir au menu"), "{full}");
     assert!(full.contains("phrase-desk"), "{full}");
-    assert!(full.contains("depuis=societe"), "{full}");
+    assert!(full.contains("data-family=\"reglages\""), "{full}");
+    assert!(full.contains("depuis=lettre"), "{full}");
+    assert!(full.contains("pour=Camille"), "{full}");
+    assert!(
+        full.contains("href=\"/affaires/Camille%20Rivi%C3%A8re/ecrire\""),
+        "{full}"
+    );
     assert!(!full.contains(dossier), "{full}");
     let fragment = body_text(
         router
@@ -9355,7 +9391,13 @@ async fn phrases_opened_from_a_dossier_land_in_la_societe() {
     .await;
     assert!(fragment.contains("Revenir au menu"), "{fragment}");
     assert!(fragment.contains("phrase-desk"), "{fragment}");
-    assert!(fragment.contains("depuis=societe"), "{fragment}");
+    assert!(fragment.contains("data-family=\"reglages\""), "{fragment}");
+    assert!(fragment.contains("depuis=lettre"), "{fragment}");
+    assert!(fragment.contains("pour=Camille"), "{fragment}");
+    assert!(
+        fragment.contains("href=\"/affaires/Camille%20Rivi%C3%A8re/ecrire\""),
+        "{fragment}"
+    );
     assert!(!fragment.contains(dossier), "{fragment}");
     assert!(!fragment.contains("Garder ces mots"), "{fragment}");
 }
@@ -9395,7 +9437,8 @@ async fn an_enseigne_is_not_greeted_with_its_article() {
     .await;
     assert!(page.contains("Bonjour,"), "{page}");
     assert!(!page.contains("Bonjour Le"), "{page}");
-    assert!(page.contains("Pas encore de type"), "{page}");
+    assert!(page.contains("Aucune série."), "{page}");
+    assert!(!page.contains("Pas encore de type"), "{page}");
 }
 
 #[tokio::test]
@@ -9508,7 +9551,7 @@ async fn engaged_conversations_finish_their_series_and_a_new_one_takes_three_mom
         "{listed}"
     );
 
-    let phrases = body_text(
+    let bare = body_text(
         router
             .clone()
             .oneshot(
@@ -9522,7 +9565,25 @@ async fn engaged_conversations_finish_their_series_and_a_new_one_takes_three_mom
             .unwrap(),
     )
     .await;
+    assert!(bare.contains("Aucune série."), "{bare}");
+    assert!(!bare.contains("class=\"phrase-frise\""), "{bare}");
+    let courant = create_genre(&router, "Courant").await;
+    let phrases = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/affaires/phrases?genre={courant}"))
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
     assert!(phrases.contains("phrase-desk"), "{phrases}");
+    assert!(phrases.contains("Courant."), "{phrases}");
     assert!(!phrases.contains("letter spread"), "{phrases}");
     assert!(phrases.contains("class=\"letter-stage\""), "{phrases}");
     let tables = phrases.matches("<table").count();
@@ -9563,7 +9624,7 @@ async fn engaged_conversations_finish_their_series_and_a_new_one_takes_three_mom
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/affaires/phrases")
+                    .uri(format!("/affaires/phrases?genre={courant}"))
                     .header("content-type", "application/x-www-form-urlencoded")
                     .header("HX-Request", "true")
                     .body(Body::from(
@@ -9634,20 +9695,7 @@ label_close=Derni%C3%A8re+relance&subject_close=Fin&body_close=Le+dernier+mot.&r
         )
         .await
         .unwrap();
-    let nina = body_text(
-        router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/affaires/Nina/ecrire")
-                    .header("HX-Request", "true")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap(),
-    )
-    .await;
+    let nina = post_form(&router, "/affaires/Nina/serie", &format!("serie={courant}")).await;
     assert!(nina.contains("Premier contact"), "{nina}");
     assert!(nina.contains("Un premier mot réécrit."), "{nina}");
     assert_eq!(nina.matches("class=\"seal\"").count(), 1, "{nina}");
@@ -9841,10 +9889,11 @@ async fn the_genre_changes_only_the_words() {
         "{services_page}"
     );
     assert!(
-        services_page.contains("Les phrases que tu répètes à ce type de gens."),
+        services_page.contains("Les mots de cette série."),
         "{services_page}"
     );
-    assert!(services_page.contains("Un autre type"), "{services_page}");
+    assert!(services_page.contains(">Une autre<"), "{services_page}");
+    assert!(services_page.contains(">Série<"), "{services_page}");
     assert!(
         services_page.contains("Griffe n'envoie pas")
             || services_page.contains("Griffe n&#x27;envoie pas"),
@@ -9854,7 +9903,10 @@ async fn the_genre_changes_only_the_words() {
         services_page.contains("Enregistrer les phrases"),
         "{services_page}"
     );
-    assert!(services_page.contains("Retirer ce type"), "{services_page}");
+    assert!(
+        services_page.contains("Retirer cette série"),
+        "{services_page}"
+    );
     assert!(
         services_page.contains("Les conversations déjà engagées finissent leur série."),
         "{services_page}"
@@ -9872,8 +9924,13 @@ async fn the_genre_changes_only_the_words() {
     )
     .await;
 
-    post_form(&router, "/affaires/Camille/types", "kind=Services+publics").await;
-    post_form(&router, "/affaires/Nina/types", "kind=Commerces").await;
+    post_form(
+        &router,
+        "/affaires/Camille/serie",
+        &format!("serie={services}"),
+    )
+    .await;
+    post_form(&router, "/affaires/Nina/serie", &format!("serie={shops}")).await;
 
     let camille = body_text(
         router
@@ -9918,17 +9975,18 @@ async fn the_genre_changes_only_the_words() {
     )
     .await;
     assert!(camille.contains("Pour la mairie"), "{camille}");
-    assert!(
-        camille.contains("Services publics · Premier message"),
-        "{camille}"
-    );
+    assert!(camille.contains("Services publics"), "{camille}");
+    assert!(camille.contains("Premier message"), "{camille}");
+    assert!(camille.contains("name=\"serie\""), "{camille}");
+    assert!(!camille.contains("Pas encore de type"), "{camille}");
     assert!(nina.contains("Pour le commerce"), "{nina}");
-    assert!(nina.contains("Commerces · Premier message"), "{nina}");
+    assert!(nina.contains("Commerces"), "{nina}");
     assert!(!camille.contains("Pour le commerce"), "{camille}");
-    assert!(
-        leo.contains("Pas encore de type · Premier message"),
-        "{leo}"
-    );
+    assert!(leo.contains("name=\"serie\""), "{leo}");
+    assert!(leo.contains(">Une autre<"), "{leo}");
+    assert!(!leo.contains("Aucune série."), "{leo}");
+    assert!(leo.contains("Premier message"), "{leo}");
+    assert!(!leo.contains("Pas encore de type"), "{leo}");
     assert!(!leo.contains("Pas encore de genre"), "{leo}");
     assert!(!leo.contains("Pour la mairie"), "{leo}");
     assert!(leo.contains("atelier"), "{leo}");
@@ -9936,6 +9994,23 @@ async fn the_genre_changes_only_the_words() {
     assert!(leo.contains("C'est parti"), "{leo}");
     assert!(!leo.contains("Garder ces mots"), "{leo}");
     assert!(!leo.contains("Les phrases"), "{leo}");
+
+    let by_hand = post_form(
+        &router,
+        "/affaires/Camille/serie",
+        &format!("serie={shops}&subject_line=Texte+%C3%A0+la+main&body=Pas+le+mod%C3%A8le."),
+    )
+    .await;
+    assert!(by_hand.contains("Texte à la main"), "{by_hand}");
+    assert!(by_hand.contains("Pas le modèle"), "{by_hand}");
+    assert!(by_hand.contains("Commerces"), "{by_hand}");
+    assert!(!by_hand.contains("value=\"Pour le commerce\""), "{by_hand}");
+    post_form(
+        &router,
+        "/affaires/Camille/serie",
+        &format!("serie={services}"),
+    )
+    .await;
     for forbidden in [
         "template", "cadence", "step", "campagne", "workflow", "pipeline",
     ] {
@@ -10047,7 +10122,11 @@ async fn the_genre_changes_only_the_words() {
         "{camille_followed}"
     );
     assert!(
-        camille_followed.contains("Services publics · Premier message"),
+        camille_followed.contains("Services publics"),
+        "{camille_followed}"
+    );
+    assert!(
+        camille_followed.contains("Premier message"),
         "{camille_followed}"
     );
     assert!(
@@ -10066,7 +10145,7 @@ async fn the_genre_changes_only_the_words() {
     post_form(&router, "/affaires/Camille/types", "kind=Commerces").await;
     assert_eq!(opportunity_due(&db_path, "accompagnement"), due_on_bump);
     assert_ne!(due_on_bump, before_due);
-    let camille_next = body_text(
+    let camille_typed = body_text(
         router
             .clone()
             .oneshot(
@@ -10081,9 +10160,41 @@ async fn the_genre_changes_only_the_words() {
     )
     .await;
     assert!(
-        camille_next.contains("Commerces · Petit rappel"),
+        camille_typed.contains("Services publics"),
+        "{camille_typed}"
+    );
+    assert!(camille_typed.contains("Petit rappel"), "{camille_typed}");
+    assert!(
+        camille_typed.contains("Lettre de Camille"),
+        "{camille_typed}"
+    );
+    assert!(
+        !camille_typed.contains("Pour le commerce"),
+        "{camille_typed}"
+    );
+    assert!(
+        !camille_typed.contains("Mot de la société"),
+        "{camille_typed}"
+    );
+    post_form(
+        &router,
+        &format!("/affaires/phrases?genre={shops}"),
+        "subject_bump=Rappel+des+commerces",
+    )
+    .await;
+    let camille_next = post_form(
+        &router,
+        "/affaires/Camille/serie",
+        &format!("serie={shops}"),
+    )
+    .await;
+    assert_eq!(opportunity_due(&db_path, "accompagnement"), due_on_bump);
+    assert!(
+        camille_next.contains("Rappel des commerces"),
         "{camille_next}"
     );
+    assert!(camille_next.contains("Commerces"), "{camille_next}");
+    assert!(camille_next.contains("Petit rappel"), "{camille_next}");
     assert!(camille_next.contains("Lettre de Camille"), "{camille_next}");
     assert!(
         !camille_next.contains("Mot de la société"),
@@ -10092,8 +10203,12 @@ async fn the_genre_changes_only_the_words() {
     assert!(!camille_next.contains("Pour la mairie"), "{camille_next}");
 
     let ateliers = create_genre(&router, "Ateliers").await;
-    let leo_typed = post_form(&router, "/affaires/L%C3%A9o/types", "kind=Ateliers").await;
-    assert!(leo_typed.contains("Ateliers"), "{leo_typed}");
+    post_form(
+        &router,
+        "/affaires/L%C3%A9o/serie",
+        &format!("serie={ateliers}"),
+    )
+    .await;
     post_form(
         &router,
         &format!("/affaires/phrases?genre={ateliers}"),
@@ -10114,12 +10229,35 @@ async fn the_genre_changes_only_the_words() {
             .unwrap(),
     )
     .await;
-    assert!(
-        leo_plain.contains("Pas encore de type · Petit rappel"),
-        "{leo_plain}"
-    );
+    assert!(leo_plain.contains("name=\"serie\""), "{leo_plain}");
+    assert!(!leo_plain.contains("Ateliers"), "{leo_plain}");
+    assert!(!leo_plain.contains("Aucune série."), "{leo_plain}");
+    assert!(leo_plain.contains("Petit rappel"), "{leo_plain}");
+    assert!(!leo_plain.contains("Pas encore de type"), "{leo_plain}");
     assert!(!leo_plain.contains("Pas encore de genre"), "{leo_plain}");
     assert!(leo_plain.contains("Lettre classée"), "{leo_plain}");
+
+    let born = create_genre_for(&router, "Mairie", "lettre", "Camille").await;
+    let camille_born = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Camille/ecrire")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    let needle = format!("value=\"{born}\"");
+    let at = camille_born.find(&needle).expect("la série créée");
+    let end = (at + needle.len() + 120).min(camille_born.len());
+    let window = &camille_born[at..end];
+    assert!(window.contains("checked"), "{window}");
+    assert!(camille_born.contains("Mairie"), "{camille_born}");
 
     let identity = body_text(
         router
@@ -10136,7 +10274,8 @@ async fn the_genre_changes_only_the_words() {
     )
     .await;
     assert!(identity.contains("genre="), "{identity}");
-    assert!(identity.contains("selon leur type"), "{identity}");
+    assert!(identity.contains("les séries de lettres"), "{identity}");
+    assert!(!identity.contains("selon leur type"), "{identity}");
 
     let nina_kept = body_text(
         router
@@ -10152,8 +10291,22 @@ async fn the_genre_changes_only_the_words() {
             .unwrap(),
     )
     .await;
-    assert!(nina_kept.contains("Commerces · "), "{nina_kept}");
+    assert!(nina_kept.contains("Commerces"), "{nina_kept}");
     assert!(nina_kept.contains("Brouillon figé"), "{nina_kept}");
+    let nina_moved = post_form(
+        &router,
+        "/affaires/Nina/serie",
+        &format!("serie={services}&subject_line=Brouillon+fig%C3%A9&body=Ce+brouillon+reste."),
+    )
+    .await;
+    assert!(nina_moved.contains("Brouillon figé"), "{nina_moved}");
+    assert!(!nina_moved.contains("Mot de la société"), "{nina_moved}");
+    post_form(
+        &router,
+        "/affaires/Nina/serie",
+        &format!("serie={shops}&subject_line=Brouillon+fig%C3%A9&body=Ce+brouillon+reste."),
+    )
+    .await;
     post_form(&router, "/affaires/Nina/types", "x=").await;
     let nina_plain = body_text(
         router
@@ -10169,9 +10322,11 @@ async fn the_genre_changes_only_the_words() {
             .unwrap(),
     )
     .await;
-    assert!(nina_plain.contains("Pas encore de type"), "{nina_plain}");
-    assert!(!nina_plain.contains("Pas encore de genre"), "{nina_plain}");
+    assert!(nina_plain.contains("Commerces"), "{nina_plain}");
     assert!(nina_plain.contains("Brouillon figé"), "{nina_plain}");
+    assert!(!nina_plain.contains("Aucune série."), "{nina_plain}");
+    assert!(!nina_plain.contains("Pas encore de type"), "{nina_plain}");
+    assert!(!nina_plain.contains("Pas encore de genre"), "{nina_plain}");
 
     let css = body_text(
         router
@@ -10205,6 +10360,20 @@ async fn the_genre_changes_only_the_words() {
             && !chosen.contains("background"),
         "le mot choisi est encre, souligné, sans fond : {chosen}"
     );
+    let opened = css
+        .split(".phrase-line .current {")
+        .nth(2)
+        .and_then(|rest| rest.split('}').next())
+        .expect("filet de la série ouverte");
+    assert!(
+        opened.contains("color: var(--ink)")
+            && opened.contains("box-shadow: inset 0 -1px 0 var(--ink)"),
+        "la série ouverte a le filet : {opened}"
+    );
+    assert!(
+        css.contains("text-decoration: none"),
+        "les autres séries ne sont pas soulignées : {css}"
+    );
     assert!(
         css.contains(".word-choice:has(.word-other-toggle:checked) .word-other"),
         "la ligne suit le mot « un autre »"
@@ -10212,12 +10381,21 @@ async fn the_genre_changes_only_the_words() {
 }
 
 async fn create_genre(router: &axum::Router, name: &str) -> String {
+    create_genre_for(router, name, "", "").await
+}
+
+async fn create_genre_for(router: &axum::Router, name: &str, depuis: &str, pour: &str) -> String {
+    let uri = if depuis.is_empty() && pour.is_empty() {
+        "/affaires/phrases/nouveau".to_string()
+    } else {
+        format!("/affaires/phrases/nouveau?depuis={depuis}&pour={pour}")
+    };
     let response = router
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/affaires/phrases/nouveau")
+                .uri(uri)
                 .header("content-type", "application/x-www-form-urlencoded")
                 .header("HX-Request", "true")
                 .body(Body::from(format!("name={}", name.replace(' ', "+"))))

@@ -86,6 +86,7 @@ fn people_routes() -> Router<AppState> {
             "/{reference}/ecrire",
             get(gens::write_get).post(gens::write),
         )
+        .route("/{reference}/serie", post(gens::serie))
         .route("/{reference}/relire", post(gens::relire))
         .route("/{reference}/envoye", post(gens::sent))
         .route("/{reference}/envoyer", post(gens::send_letter))

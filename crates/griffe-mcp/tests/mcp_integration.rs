@@ -3083,7 +3083,7 @@ async fn work_kinds_follow_a_fiche_and_an_agent_delete_waits() {
         .iter()
         .map(|kind| kind["name"].as_str().unwrap())
         .collect();
-    assert_eq!(listed_names, ["Mairie", "site web"]);
+    assert_eq!(listed_names, ["site web"]);
 
     let set = json_of(
         &call(
@@ -3192,10 +3192,12 @@ async fn work_kinds_follow_a_fiche_and_an_agent_delete_waits() {
         .into_iter()
         .find(|item| item.name == "Affaire du quai")
         .unwrap();
-    assert!(
+    assert_eq!(
         griffe_core::follow_up::prospect_genre_for(check.connection(), affaire.id)
             .unwrap()
-            .is_none()
+            .unwrap()
+            .name,
+        "Mairie"
     );
 
     client.cancel().await.unwrap();

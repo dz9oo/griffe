@@ -48,8 +48,9 @@ le prénom, le nom, et Monsieur ou Madame. Courriel et Téléphone restent
 ceux du standard, ou de l’accueil. En écrivant, on choisit le standard,
 ou le courriel de la personne lorsqu’il est là.
 
-Le type posé sur le dossier choisit les phrases. On les écrit dans
-La société, Les phrases. Les affaires ne les réécrit pas.
+La série choisie en écrivant donne les mots. On les écrit dans
+La société, Les phrases. Le type du dossier ne les choisit pas.
+Les affaires ne réécrivent pas les phrases.
 
 Les phrases prennent aussi `<nom>`, `<genre>`, et une formule
 `<Monsieur le Maire/Madame la Maire>`. `<genre>` suit Monsieur ou

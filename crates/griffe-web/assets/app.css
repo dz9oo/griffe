@@ -1780,8 +1780,17 @@ tr.row-clickable:hover td { background: var(--paper-2); }
   color: var(--ink-2);
   margin: 0 0 18px;
 }
+.phrase-line a,
+.phrase-line .current {
+  font-family: var(--sans);
+  font-size: 16px;
+  text-decoration: none;
+}
 .phrase-line a { color: var(--ink-2); }
-.phrase-line .current { color: var(--ink); }
+.phrase-line .current {
+  color: var(--ink);
+  box-shadow: inset 0 -1px 0 var(--ink);
+}
 .phrase-line span, .phrase-line a { min-width: 0; overflow-wrap: anywhere; }
 /* Mots cochés, un ou plusieurs : l'input est dans le label.
    .word-other-toggle découvre la ligne. */
@@ -1872,6 +1881,12 @@ fieldset.respondent > legend {
 }
 .word-choice a {
   color: inherit;
+  text-decoration: none;
+}
+.word-choice-row > a {
+  font-family: var(--sans);
+  font-size: 16px;
+  color: var(--ink-2);
   text-decoration: none;
 }
 .word-choice .word-other[aria-invalid="true"] {
@@ -3148,6 +3163,7 @@ input[type="checkbox"] {
 }
 .reglages-desk > .mast,
 .reglages-desk > .row-actions,
+.reglages-desk > .word-choice,
 .reglages-desk > .phrase-line,
 .reglages-desk > form,
 .reglages-desk > .places,

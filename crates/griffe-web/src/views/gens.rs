@@ -9,7 +9,9 @@ use griffe_core::domain::{
     display_phone, fiche_channels, format_date, format_date_fr, letter_address,
 };
 use griffe_core::dossier_work::DossierWork;
-use griffe_core::follow_up::{FollowUpCard, card_for, follow_up_sender, prospect_genre_for};
+use griffe_core::follow_up::{
+    FollowUpCard, card_for, follow_up_sender, prospect_genre_for, prospect_genres,
+};
 use griffe_core::mail::{
     LINK_HINT, LetterChrome, LetterParts, OutboundStatus, OutboundView, close_letter, letter_card,
 };
@@ -2176,8 +2178,14 @@ pub struct PhrasesView {
     pub chrome: LetterChrome,
     pub banner: Option<String>,
     pub status: Option<String>,
-    /// Ouvert depuis La société : le fil porte le titre, l'entrée est une carte.
+    /// Ouvert dans le pli de La société : le fil porte le titre, l'entrée est une carte.
     pub reglages: bool,
+    /// Pas de série ouverte : ni frise, ni feuille.
+    pub bare: bool,
+    /// Les mots vivants ont été réécrits et n'ont pas encore de nom.
+    pub ask_name: bool,
+    /// Une série est ouverte : le formulaire des moments est là.
+    pub editor: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -2193,14 +2201,30 @@ pub struct KeepUi {
 
 fn phrases_entry(view: &PhrasesView) -> Markup {
     html! {
-        p class="lede" { (view.lede) }
-        p class="phrase-chronicle" id="phrase-chronicle" { (view.chronicle) }
-        p class="phrase-when" { "Les conversations déjà engagées finissent leur série." }
+        @if !view.lede.is_empty() {
+            p class="lede" { (view.lede) }
+        }
+        @if !view.bare {
+            p class="phrase-chronicle" id="phrase-chronicle" { (view.chronicle) }
+            p class="phrase-when" { "Les conversations déjà engagées finissent leur série." }
+        }
         @if let Some(msg) = &view.banner {
             p class="mast-note" role="alert" { (msg) }
         }
         @if let Some(msg) = &view.status {
             p class="mast-note" role="status" { (msg) }
+        }
+    }
+}
+
+fn name_series_form(view: &PhrasesView) -> Markup {
+    html! {
+        form hx-post=(view.action) hx-target="#content" hx-push-url="true" {
+            p class="lede" { "Ces mots n'ont pas de série. Un nom les garde." }
+            (form::text("nommer", "Nom", "", None))
+            div class="row-actions" {
+                button class="seal" type="submit" { "Nommer" }
+            }
         }
     }
 }
@@ -2213,39 +2237,48 @@ pub fn phrases_page(view: &PhrasesView) -> Markup {
         .collect::<Vec<_>>()
         .join(",");
     let preview = phrase_preview_href(&view.action);
-    let genre_title = view.reglages && view.title != "Les phrases.";
     html! {
         div class={ "phrase-desk phrase-open" @if view.reglages { " reglages-desk" } } data-view=(ViewId::Gens.slug()) {
             a class="back" href=(view.back_href) hx-get=(view.back_href) hx-target="#content" hx-push-url="true" {
                 "← " (view.back_label)
             }
-            @if !view.reglages {
+            @if !view.reglages && !view.title.is_empty() {
                 h1 { (view.title) }
             }
-            p class="phrase-line" {
-                @for link in &view.links {
-                    @if link.current {
-                        span class="current" { (link.label) }
-                    } @else {
-                        a href=(link.href) hx-get=(link.href) hx-target="#content" hx-push-url="true" {
-                            (link.label)
+            fieldset class="word-choice" {
+                legend { "Série" }
+                div class="word-choice-row phrase-line" {
+                    @for link in &view.links {
+                        @if link.current {
+                            span class="current" { (link.label) }
+                        } @else {
+                            a href=(link.href) hx-get=(link.href) hx-target="#content" hx-push-url="true" {
+                                (link.label)
+                            }
                         }
                     }
-                }
-                a href=(view.other_href) hx-get=(view.other_href) hx-target="#content" hx-push-url="true" {
-                    "Un autre type"
+                    a href=(view.other_href) hx-get=(view.other_href) hx-target="#content" hx-push-url="true" {
+                        "Une autre"
+                    }
                 }
             }
             @if view.reglages {
                 article class="reglages-card" {
-                    @if genre_title {
+                    @if !view.title.is_empty() {
                         p { (view.title) }
                     }
                     (phrases_entry(view))
+                    @if view.ask_name {
+                        (name_series_form(view))
+                    }
                 }
             } @else {
                 (phrases_entry(view))
+                @if view.ask_name {
+                    (name_series_form(view))
+                }
             }
+            @if view.editor {
             form hx-post=(view.action) hx-target="#content" hx-push-url="true" {
                 input type="hidden" name="order" value=(order);
                 div class="phrase-stage" {
@@ -2316,9 +2349,10 @@ pub fn phrases_page(view: &PhrasesView) -> Markup {
                     button class="quiet" type="submit" name="add" value="1" { "Ajouter un moment" }
                     button class="seal" type="submit" { "Enregistrer les phrases" }
                     @if view.drop {
-                        button class="quiet" type="submit" name="retirer_genre" value="1" { "Retirer ce type" }
+                        button class="quiet" type="submit" name="retirer_genre" value="1" { "Retirer cette série" }
                     }
                 }
+            }
             }
         }
     }
@@ -2695,11 +2729,13 @@ pub fn letter_page_kept(
         .transpose()?
         .flatten();
     let moment = card.and_then(|c| c.step_label.clone());
-    let type_name = genre
-        .as_ref()
-        .map(|item| item.name.clone())
-        .filter(|name| !name.is_empty())
-        .or_else(|| dossier.work_kinds.first().cloned());
+    let series = if opportunity.is_some() {
+        prospect_genres(store.connection())?
+    } else {
+        Vec::new()
+    };
+    let serie_href = list.on(&format!("{href}/serie"));
+    let another_series = new_genre_href("lettre", &dossier.name, "");
     let previous: Vec<&HistoryEvent> = dossier
         .history
         .iter()
@@ -2733,16 +2769,47 @@ pub fn letter_page_kept(
             @if let Some(msg) = flash {
                 p class="mast-note" role="status" { (msg) }
             }
-            @if let Some(label) = &moment {
-                p class="phrase-line" {
-                    @if opportunity.is_some() {
-                        span { (type_name.as_deref().unwrap_or("Pas encore de type")) " · " (label) }
-                    } @else {
+            @if opportunity.is_none() {
+                @if let Some(label) = &moment {
+                    p class="phrase-line" {
                         span { (label) }
                     }
                 }
             }
             form class="letter-compose" {
+                @if opportunity.is_some() {
+                    fieldset class="word-choice" {
+                        legend { "Série" }
+                        div class="word-choice-row" {
+                            @if series.is_empty() {
+                                span { "Aucune série." }
+                            } @else {
+                                @for item in &series {
+                                    label {
+                                        input type="radio" name="serie" value=(item.id)
+                                            checked[genre.as_ref().is_some_and(|current| current.id == item.id)]
+                                            hx-post=(serie_href)
+                                            hx-trigger="change"
+                                            hx-target="#content"
+                                            hx-include="closest form"
+                                            hx-swap="innerHTML"
+                                            hx-push-url="false";
+                                        (item.name)
+                                    }
+                                }
+                            }
+                            a href=(another_series)
+                              hx-get=(another_series)
+                              hx-target="#content"
+                              hx-push-url="true" {
+                                "Une autre"
+                            }
+                        }
+                    }
+                    @if let Some(label) = &moment {
+                        p class="phrase-caption" { (label) }
+                    }
+                }
                 input class="letter-face-pick" type="radio" name="face" id="face-write" value="ecrire" checked[!keep.reading];
                 input class="letter-face-pick" type="radio" name="face" id="face-read" value="relire" checked[keep.reading];
                 div class="letter-faces" {
@@ -2811,18 +2878,33 @@ pub fn new_genre_page(
     action: &str,
     name: &str,
     banner: Option<&str>,
+    from_series: bool,
+    framed: bool,
 ) -> Markup {
+    let lede = if from_series {
+        "Un nom suffit. Les mots de la série d'où tu viens sont copiés, pour avoir quelque chose à corriger. Griffe n'envoie pas."
+    } else {
+        "Un nom suffit. Les mots de départ sont copiés, pour avoir quelque chose à corriger. Griffe n'envoie pas."
+    };
     html! {
-        div class="letter phrase-open" data-view=(ViewId::Gens.slug()) {
+        div class={ "letter phrase-open" @if framed { " reglages-desk" } } data-view=(ViewId::Gens.slug()) {
             a class="back" href=(back_href) hx-get=(back_href) hx-target="#content" hx-push-url="true" {
                 "← " (back_label)
             }
-            h1 { "Un autre type." }
-            p class="lede" {
-                "Un nom suffit. Les phrases de la page d'où tu viens sont copiées, pour avoir quelque chose à corriger. Griffe n'envoie pas."
-            }
-            @if let Some(msg) = banner {
-                p class="mast-note" role="alert" { (msg) }
+            @if framed {
+                article class="reglages-card" {
+                    p { "Une autre série." }
+                    p class="lede" { (lede) }
+                    @if let Some(msg) = banner {
+                        p class="mast-note" role="alert" { (msg) }
+                    }
+                }
+            } @else {
+                h1 { "Une autre série." }
+                p class="lede" { (lede) }
+                @if let Some(msg) = banner {
+                    p class="mast-note" role="alert" { (msg) }
+                }
             }
             form hx-post=(action) hx-target="#content" hx-push-url="true" {
                 (form::text("name", "Nom", name, None))
