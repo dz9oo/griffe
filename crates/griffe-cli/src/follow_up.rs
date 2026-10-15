@@ -437,7 +437,7 @@ fn format_phrase(phrase: &ProspectPhrase) -> String {
 
 fn render_genres(genres: &[ProspectGenre]) -> String {
     if genres.is_empty() {
-        return "Pas encore de genre.".to_string();
+        return "Pas encore de type.".to_string();
     }
     genres
         .iter()

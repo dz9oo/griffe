@@ -380,7 +380,7 @@ pub fn prospect_genre_for(
     conn: &Connection,
     opportunity_id: crate::domain::OpportunityId,
 ) -> Result<Option<row::ProspectGenre>, AppError> {
-    row::genre_of_opportunity(conn, opportunity_id)
+    row::effective_genre(conn, opportunity_id)
 }
 
 /// La série vivante, avec les mots de ce genre à la place des phrases par défaut.

@@ -358,7 +358,7 @@ impl Command for CreateProspectGenre {
 
     fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
         let name = trimmed_genre_name(&self.name)?;
-        if row::genre_by_name(conn, &name)?.is_some() {
+        if super::bind::phrase_genre_named(conn, &name)?.is_some() {
             return Err(FollowUpError::DuplicateGenre.into());
         }
         let source = blank_id(self.copy_from.as_deref());
@@ -369,6 +369,7 @@ impl Command for CreateProspectGenre {
         }
         let genre = row::insert_genre(conn, &name)?;
         row::copy_genre_words(conn, &genre.id, source)?;
+        super::bind::ensure_type_named(conn, &genre.name)?;
         Ok(genre)
     }
 }
@@ -386,10 +387,16 @@ impl Command for DropProspectGenre {
 
     fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
         let id = self.id.trim();
-        if row::genre_by_id(conn, id)?.is_none() {
+        let Some(genre) = row::genre_by_id(conn, id)? else {
             return Err(FollowUpError::UnknownGenre.into());
+        };
+        let clients = super::bind::clients_of_type_named(conn, &genre.name)?;
+        row::delete_genre(conn, id)?;
+        super::bind::drop_type_named(conn, &genre.name)?;
+        for client in clients {
+            super::bind::phrases_follow_types(conn, client)?;
         }
-        row::delete_genre(conn, id)
+        Ok(())
     }
 }
 
@@ -414,11 +421,12 @@ impl Command for SetDossierGenre {
 
     fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
         let opportunity_id = opportunity_subject(self.subject)?;
-        if opportunity_by_id(conn, opportunity_id)?.is_none() {
+        let Some(opportunity) = opportunity_by_id(conn, opportunity_id)? else {
             return Err(FollowUpError::UnknownConversation.into());
-        }
+        };
         let name = self.name.trim();
         if name.is_empty() {
+            super::bind::clear_dossier_types(conn, opportunity.client_id)?;
             if !row::set_opportunity_genre(conn, opportunity_id, None)? {
                 return Err(FollowUpError::UnknownConversation.into());
             }
@@ -428,16 +436,19 @@ impl Command for SetDossierGenre {
                 created: false,
             });
         }
-        let (genre, created) = if let Some(existing) = row::genre_by_name(conn, name)? {
+        let (genre, created) = if let Some(existing) = super::bind::phrase_genre_named(conn, name)?
+        {
             (existing, false)
         } else {
             let created = row::insert_genre(conn, name)?;
             row::copy_genre_words(conn, &created.id, None)?;
+            super::bind::ensure_type_named(conn, &created.name)?;
             (created, true)
         };
         if !row::set_opportunity_genre(conn, opportunity_id, Some(&genre.id))? {
             return Err(FollowUpError::UnknownConversation.into());
         }
+        super::bind::link_type(conn, opportunity.client_id, &genre.name)?;
         Ok(GenreAssignment {
             id: Some(genre.id),
             name: Some(genre.name),

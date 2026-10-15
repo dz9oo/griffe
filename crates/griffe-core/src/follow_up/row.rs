@@ -346,7 +346,7 @@ pub(super) fn steps_for_opportunity(
     } else {
         phrase_steps(conn)?
     };
-    if let Some(genre) = genre_of_opportunity(conn, opportunity_id)? {
+    if let Some(genre) = effective_genre(conn, opportunity_id)? {
         let words = genre_words(conn, &genre.id)?;
         for step in &mut steps {
             if let Some(word) = words.iter().find(|word| word.key == step.key) {
@@ -418,12 +418,59 @@ pub(super) fn genre_by_id(conn: &Connection, id: &str) -> Result<Option<Prospect
     .map_err(AppError::from)
 }
 
-pub(super) fn genre_by_name(
+fn folded_name(name: &str) -> String {
+    name.to_lowercase()
+}
+
+/// Les phrases que cette conversation lit.
+///
+/// Les types du dossier gagnent. Le genre déjà posé reste s'il est encore l'un
+/// de ces types. Sans type, le genre posé seul continue de fournir les mots.
+pub(super) fn effective_genre(
     conn: &Connection,
-    name: &str,
+    opportunity_id: OpportunityId,
 ) -> Result<Option<ProspectGenre>, AppError> {
+    let stored = genre_of_opportunity(conn, opportunity_id)?;
+    let types = type_names_for_opportunity(conn, opportunity_id)?;
+    if types.is_empty() {
+        return Ok(stored);
+    }
+    let name = stored
+        .as_ref()
+        .filter(|genre| {
+            types
+                .iter()
+                .any(|name| folded_name(name) == folded_name(&genre.name))
+        })
+        .map_or_else(|| types[0].clone(), |genre| genre.name.clone());
+    if let Some(genre) = genre_by_folded_name(conn, &name)? {
+        return Ok(Some(genre));
+    }
+    Ok(stored.filter(|genre| folded_name(&genre.name) == folded_name(&name)))
+}
+
+fn type_names_for_opportunity(
+    conn: &Connection,
+    opportunity_id: OpportunityId,
+) -> Result<Vec<String>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT k.name
+           FROM opportunities AS o
+           JOIN dossier_work_kinds AS l ON l.client_id = o.client_id
+           JOIN work_kinds AS k ON k.id = l.kind_id
+          WHERE o.id = ?1
+          ORDER BY k.name COLLATE NOCASE ASC, k.id ASC",
+    )?;
+    let rows = stmt.query_map([opportunity_id.to_string()], |row| row.get(0))?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+}
+
+fn genre_by_folded_name(conn: &Connection, name: &str) -> Result<Option<ProspectGenre>, AppError> {
     conn.query_row(
-        "SELECT id, name FROM prospect_genres WHERE name = ?1",
+        "SELECT id, name FROM prospect_genres
+          WHERE name = ?1 COLLATE NOCASE
+          ORDER BY name ASC, id ASC
+          LIMIT 1",
         [name],
         |row| {
             Ok(ProspectGenre {

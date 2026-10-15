@@ -2285,7 +2285,7 @@ async fn la_societe_opens_on_the_plateau_and_folds_each_chapter() {
                 assert!(page.contains(">Le coffre<"), "{page}");
                 assert!(page.contains("Modifier la carte"), "{page}");
                 assert!(page.contains("href=\"/view/societe\""), "{page}");
-                assert!(page.contains("selon qui ils sont"), "{page}");
+                assert!(page.contains("selon leur type"), "{page}");
                 assert!(!page.contains("<h1"), "{page}");
                 assert!(
                     !page.contains("<form"),
@@ -9238,8 +9238,12 @@ async fn phrases_are_a_letter_and_the_next_unopened_mail_uses_them() {
             .unwrap(),
     )
     .await;
-    assert!(letter.contains("Premier message"), "{letter}");
-    assert!(letter.contains("Les phrases"), "{letter}");
+    assert!(
+        letter.contains("Pas encore de type · Premier message"),
+        "{letter}"
+    );
+    assert!(!letter.contains("Pas encore de genre"), "{letter}");
+    assert!(!letter.contains("Garder ces mots"), "{letter}");
     assert!(letter.contains("C'est parti"), "{letter}");
 
     let saved = body_text(
@@ -9299,13 +9303,13 @@ label_close=Dernier+mot&subject_close=Fin&body_close=Un+dernier+mot.&revision_cl
     )
     .await;
     assert!(
-        identity.contains("Les phrases") && identity.contains("selon qui ils sont"),
+        identity.contains("Les phrases") && identity.contains("selon leur type"),
         "{identity}"
     );
 }
 
 #[tokio::test]
-async fn phrases_from_a_letter_stay_in_the_dossier_lens() {
+async fn phrases_opened_from_a_dossier_land_in_la_societe() {
     let db_path = test_db_path("phrases-lens");
     let state = unlocked_state(&db_path).await;
     let router = griffe_web::router(state);
@@ -9323,7 +9327,7 @@ async fn phrases_from_a_letter_stay_in_the_dossier_lens() {
         .await
         .unwrap();
     let href = "/affaires/phrases?depuis=lettre&pour=Camille%20Rivi%C3%A8re";
-    let back = "class=\"back\" href=\"/affaires/Camille%20Rivi%C3%A8re\"";
+    let dossier = "href=\"/affaires/Camille%20Rivi%C3%A8re\"";
     let full = body_text(
         router
             .clone()
@@ -9332,14 +9336,10 @@ async fn phrases_from_a_letter_stay_in_the_dossier_lens() {
             .unwrap(),
     )
     .await;
-    assert!(full.contains("class=\"lens lens-open\""), "{full}");
-    assert!(!full.contains("id=\"affaire\""), "{full}");
     assert!(full.contains("Revenir au menu"), "{full}");
-    assert!(full.contains(back), "{full}");
-    assert!(
-        !full.contains("class=\"back\" href=\"/affaires/Camille%20Rivi%C3%A8re/ecrire\""),
-        "{full}"
-    );
+    assert!(full.contains("phrase-desk"), "{full}");
+    assert!(full.contains("depuis=societe"), "{full}");
+    assert!(!full.contains(dossier), "{full}");
     let fragment = body_text(
         router
             .oneshot(
@@ -9353,9 +9353,11 @@ async fn phrases_from_a_letter_stay_in_the_dossier_lens() {
             .unwrap(),
     )
     .await;
-    assert!(!fragment.contains("class=\"lens\""), "{fragment}");
+    assert!(fragment.contains("Revenir au menu"), "{fragment}");
     assert!(fragment.contains("phrase-desk"), "{fragment}");
-    assert!(fragment.contains(back), "{fragment}");
+    assert!(fragment.contains("depuis=societe"), "{fragment}");
+    assert!(!fragment.contains(dossier), "{fragment}");
+    assert!(!fragment.contains("Garder ces mots"), "{fragment}");
 }
 
 #[tokio::test]
@@ -9382,7 +9384,7 @@ async fn an_enseigne_is_not_greeted_with_its_article() {
         router
             .oneshot(
                 Request::builder()
-                    .uri("/affaires/phrases?pour=Le%20porc%20de%20Val%20de%20la%20Sens%C3%A9e")
+                    .uri("/affaires/Le%20porc%20de%20Val%20de%20la%20Sens%C3%A9e/ecrire")
                     .header("HX-Request", "true")
                     .body(Body::empty())
                     .unwrap(),
@@ -9393,7 +9395,7 @@ async fn an_enseigne_is_not_greeted_with_its_article() {
     .await;
     assert!(page.contains("Bonjour,"), "{page}");
     assert!(!page.contains("Bonjour Le"), "{page}");
-    assert!(page.contains("Pas de prénom pour cette enseigne"), "{page}");
+    assert!(page.contains("Pas encore de type"), "{page}");
 }
 
 #[tokio::test]
@@ -9809,15 +9811,17 @@ async fn the_genre_changes_only_the_words() {
             .unwrap(),
     )
     .await;
+    assert!(bare.contains("name=\"civility\""), "{bare}");
+    assert!(bare.contains(">Genre<"), "{bare}");
+    assert!(bare.contains("Monsieur"), "{bare}");
+    assert!(bare.contains("Madame"), "{bare}");
+    assert!(!bare.contains("name=\"genre\""), "{bare}");
+    assert!(!bare.contains("name=\"genre_other\""), "{bare}");
     assert!(
-        bare.contains("Le premier nom servira aux phrases."),
+        !bare.contains("Le premier nom servira aux phrases."),
         "{bare}"
     );
-    assert!(bare.contains("name=\"genre_other\""), "{bare}");
-    assert!(bare.contains("name=\"civility\""), "{bare}");
     assert!(!bare.contains("<select"), "{bare}");
-    assert!(!bare.contains("name=\"genre\" type=\"text\""), "{bare}");
-    assert!(!bare.contains("name=\"genre\" value="), "{bare}");
 
     let services = create_genre(&router, "Services publics").await;
     let shops = create_genre(&router, "Commerces").await;
@@ -9836,10 +9840,10 @@ async fn the_genre_changes_only_the_words() {
         "{services_page}"
     );
     assert!(
-        services_page.contains("Les phrases que tu répètes à ce genre de gens.")
-            || services_page.contains("Les phrases que tu répètes à ce genre de gens."),
+        services_page.contains("Les phrases que tu répètes à ce type de gens."),
         "{services_page}"
     );
+    assert!(services_page.contains("Un autre type"), "{services_page}");
     assert!(
         services_page.contains("Griffe n'envoie pas")
             || services_page.contains("Griffe n&#x27;envoie pas"),
@@ -9849,10 +9853,7 @@ async fn the_genre_changes_only_the_words() {
         services_page.contains("Enregistrer les phrases"),
         "{services_page}"
     );
-    assert!(
-        services_page.contains("Retirer ce genre"),
-        "{services_page}"
-    );
+    assert!(services_page.contains("Retirer ce type"), "{services_page}");
     assert!(
         services_page.contains("Les conversations déjà engagées finissent leur série."),
         "{services_page}"
@@ -9870,92 +9871,8 @@ async fn the_genre_changes_only_the_words() {
     )
     .await;
 
-    let camille_fiche = body_text(
-        router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/affaires/Camille/fiche")
-                    .header("HX-Request", "true")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap(),
-    )
-    .await;
-    assert!(
-        camille_fiche.contains("class=\"word-choice\""),
-        "{camille_fiche}"
-    );
-    assert!(
-        camille_fiche.contains("type=\"radio\" name=\"genre\""),
-        "{camille_fiche}"
-    );
-    assert!(
-        camille_fiche.contains("Services publics"),
-        "{camille_fiche}"
-    );
-    assert!(camille_fiche.contains("Commerces"), "{camille_fiche}");
-    assert!(camille_fiche.contains(">un autre<"), "{camille_fiche}");
-    assert!(
-        camille_fiche.contains("word-other-toggle"),
-        "{camille_fiche}"
-    );
-    assert!(camille_fiche.contains("value=\"autre\""), "{camille_fiche}");
-    assert!(
-        camille_fiche.contains("name=\"genre_other\""),
-        "{camille_fiche}"
-    );
-    assert!(!camille_fiche.contains("aucun"), "{camille_fiche}");
-    assert!(
-        !camille_fiche.contains("name=\"genre\" type=\"text\""),
-        "{camille_fiche}"
-    );
-    assert!(!camille_fiche.contains("<select"), "{camille_fiche}");
-    assert!(
-        !camille_fiche.contains("Le premier nom servira aux phrases."),
-        "{camille_fiche}"
-    );
-    for forbidden in [
-        "template", "cadence", "step", "campagne", "workflow", "pipeline",
-    ] {
-        assert!(
-            !camille_fiche.contains(forbidden),
-            "{forbidden} : {camille_fiche}"
-        );
-    }
-    post_form(
-        &router,
-        "/affaires/Camille/fiche",
-        &fiche_post_body(
-            &camille_fiche,
-            "Camille",
-            "camille@exemple.fr",
-            "genre=Services+publics",
-        ),
-    )
-    .await;
-    let nina_fiche = body_text(
-        router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/affaires/Nina/fiche")
-                    .header("HX-Request", "true")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap(),
-    )
-    .await;
-    post_form(
-        &router,
-        "/affaires/Nina/fiche",
-        &fiche_post_body(&nina_fiche, "Nina", "nina@exemple.fr", "genre=Commerces"),
-    )
-    .await;
+    post_form(&router, "/affaires/Camille/types", "kind=Services+publics").await;
+    post_form(&router, "/affaires/Nina/types", "kind=Commerces").await;
 
     let camille = body_text(
         router
@@ -10008,14 +9925,16 @@ async fn the_genre_changes_only_the_words() {
     assert!(nina.contains("Commerces · Premier message"), "{nina}");
     assert!(!camille.contains("Pour le commerce"), "{camille}");
     assert!(
-        leo.contains("Pas encore de genre · Premier message"),
+        leo.contains("Pas encore de type · Premier message"),
         "{leo}"
     );
+    assert!(!leo.contains("Pas encore de genre"), "{leo}");
     assert!(!leo.contains("Pour la mairie"), "{leo}");
     assert!(leo.contains("atelier"), "{leo}");
     assert_eq!(leo.matches("class=\"seal\"").count(), 1, "{leo}");
     assert!(leo.contains("C'est parti"), "{leo}");
-    assert!(leo.contains("Garder ces mots"), "{leo}");
+    assert!(!leo.contains("Garder ces mots"), "{leo}");
+    assert!(!leo.contains("Les phrases"), "{leo}");
     for forbidden in [
         "template", "cadence", "step", "campagne", "workflow", "pipeline",
     ] {
@@ -10036,23 +9955,10 @@ async fn the_genre_changes_only_the_words() {
     )
     .await;
 
-    let ask = post_form(
-        &router,
-        "/affaires/Camille/mots",
-        "subject_line=Pour+la+mairie&body=La+lettre+affich%C3%A9e.&garder=1",
-    )
-    .await;
-    assert!(
-        ask.contains("Ces mots remplaceront le premier message des services publics."),
-        "{ask}"
-    );
-    assert!(ask.contains("Oui, remplacer le premier message"), "{ask}");
-    assert_eq!(ask.matches("class=\"seal\"").count(), 1, "{ask}");
-    assert!(ask.contains("C'est parti"), "{ask}");
     post_form(
         &router,
-        "/affaires/Camille/mots",
-        "subject_line=Mot+gard%C3%A9&body=Le+mot+gard%C3%A9.&confirmer=1",
+        &format!("/affaires/phrases?depuis=societe&genre={services}"),
+        "subject_hello=Mot+de+la+soci%C3%A9t%C3%A9&body_hello=Le+mot+de+la+soci%C3%A9t%C3%A9.",
     )
     .await;
     let services_after = body_text(
@@ -10083,9 +9989,12 @@ async fn the_genre_changes_only_the_words() {
             .unwrap(),
     )
     .await;
-    assert!(services_after.contains("Mot gardé"), "{services_after}");
+    assert!(
+        services_after.contains("Mot de la société"),
+        "{services_after}"
+    );
     assert!(shops_after.contains("Pour le commerce"), "{shops_after}");
-    assert!(!shops_after.contains("Mot gardé"), "{shops_after}");
+    assert!(!shops_after.contains("Mot de la société"), "{shops_after}");
     assert!(services_after.contains("value=\"3\""), "{services_after}");
     let nina_after = body_text(
         router
@@ -10118,14 +10027,12 @@ async fn the_genre_changes_only_the_words() {
     .await;
     assert!(leo_after.contains("Lettre classée"), "{leo_after}");
     assert!(leo_after.contains("Petit rappel"), "{leo_after}");
-
-    let before_due = opportunity_due(&db_path, "accompagnement");
-    let camille_fiche = body_text(
+    let camille_followed = body_text(
         router
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/affaires/Camille/fiche")
+                    .uri("/affaires/Camille/ecrire")
                     .header("HX-Request", "true")
                     .body(Body::empty())
                     .unwrap(),
@@ -10134,11 +10041,20 @@ async fn the_genre_changes_only_the_words() {
             .unwrap(),
     )
     .await;
-    assert!(camille_fiche.contains(">aucun<"), "{camille_fiche}");
     assert!(
-        camille_fiche.contains("value=\"Services publics\" checked"),
-        "{camille_fiche}"
+        camille_followed.contains("Mot de la société"),
+        "{camille_followed}"
     );
+    assert!(
+        camille_followed.contains("Services publics · Premier message"),
+        "{camille_followed}"
+    );
+    assert!(
+        !camille_followed.contains("Garder ces mots"),
+        "{camille_followed}"
+    );
+
+    let before_due = opportunity_due(&db_path, "accompagnement");
     post_form(
         &router,
         "/affaires/Camille/envoye",
@@ -10146,17 +10062,7 @@ async fn the_genre_changes_only_the_words() {
     )
     .await;
     let due_on_bump = opportunity_due(&db_path, "accompagnement");
-    post_form(
-        &router,
-        "/affaires/Camille/fiche",
-        &fiche_post_body(
-            &camille_fiche,
-            "Camille",
-            "camille@exemple.fr",
-            "genre=Commerces",
-        ),
-    )
-    .await;
+    post_form(&router, "/affaires/Camille/types", "kind=Commerces").await;
     assert_eq!(opportunity_due(&db_path, "accompagnement"), due_on_bump);
     assert_ne!(due_on_bump, before_due);
     let camille_next = body_text(
@@ -10178,41 +10084,15 @@ async fn the_genre_changes_only_the_words() {
         "{camille_next}"
     );
     assert!(camille_next.contains("Lettre de Camille"), "{camille_next}");
-    assert!(!camille_next.contains("Mot gardé"), "{camille_next}");
-
-    let leo_fiche = body_text(
-        router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/affaires/L%C3%A9o/fiche")
-                    .header("HX-Request", "true")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap(),
-    )
-    .await;
-    let created = post_form(
-        &router,
-        "/affaires/L%C3%A9o/fiche",
-        &fiche_post_body(
-            &leo_fiche,
-            "L%C3%A9o",
-            "leo@exemple.fr",
-            "genre_other=Ateliers",
-        ),
-    )
-    .await;
-    assert!(created.contains("Ateliers"), "{created}");
-    assert!(created.contains("value=\"Ateliers\" checked"), "{created}");
     assert!(
-        created.contains("Ce genre n'existe pas encore. La fiche le crée."),
-        "{created}"
+        !camille_next.contains("Mot de la société"),
+        "{camille_next}"
     );
-    assert!(created.contains("Écrire les phrases"), "{created}");
-    let ateliers = genre_id_from(&created);
+    assert!(!camille_next.contains("Pour la mairie"), "{camille_next}");
+
+    let ateliers = create_genre(&router, "Ateliers").await;
+    let leo_typed = post_form(&router, "/affaires/L%C3%A9o/types", "kind=Ateliers").await;
+    assert!(leo_typed.contains("Ateliers"), "{leo_typed}");
     post_form(
         &router,
         &format!("/affaires/phrases?genre={ateliers}"),
@@ -10234,9 +10114,10 @@ async fn the_genre_changes_only_the_words() {
     )
     .await;
     assert!(
-        leo_plain.contains("Pas encore de genre · Petit rappel"),
+        leo_plain.contains("Pas encore de type · Petit rappel"),
         "{leo_plain}"
     );
+    assert!(!leo_plain.contains("Pas encore de genre"), "{leo_plain}");
     assert!(leo_plain.contains("Lettre classée"), "{leo_plain}");
 
     let identity = body_text(
@@ -10254,31 +10135,8 @@ async fn the_genre_changes_only_the_words() {
     )
     .await;
     assert!(identity.contains("genre="), "{identity}");
-    assert!(identity.contains("selon qui ils sont"), "{identity}");
+    assert!(identity.contains("selon leur type"), "{identity}");
 
-    let nina_fiche = body_text(
-        router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/affaires/Nina/fiche")
-                    .header("HX-Request", "true")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap(),
-    )
-    .await;
-    assert!(nina_fiche.contains(">aucun<"), "{nina_fiche}");
-    let unnamed = post_form(
-        &router,
-        "/affaires/Nina/fiche",
-        &fiche_post_body(&nina_fiche, "Nina", "nina@exemple.fr", "genre=autre"),
-    )
-    .await;
-    assert!(unnamed.contains("Nomme le genre."), "{unnamed}");
-    assert!(unnamed.contains(">aucun<"), "{unnamed}");
     let nina_kept = body_text(
         router
             .clone()
@@ -10293,17 +10151,9 @@ async fn the_genre_changes_only_the_words() {
             .unwrap(),
     )
     .await;
-    assert!(
-        nina_kept.contains("Commerces · Premier message") || nina_kept.contains("Commerces · "),
-        "{nina_kept}"
-    );
+    assert!(nina_kept.contains("Commerces · "), "{nina_kept}");
     assert!(nina_kept.contains("Brouillon figé"), "{nina_kept}");
-    post_form(
-        &router,
-        "/affaires/Nina/fiche",
-        &fiche_post_body(&unnamed, "Nina", "nina@exemple.fr", "genre="),
-    )
-    .await;
+    post_form(&router, "/affaires/Nina/types", "x=").await;
     let nina_plain = body_text(
         router
             .clone()
@@ -10318,7 +10168,8 @@ async fn the_genre_changes_only_the_words() {
             .unwrap(),
     )
     .await;
-    assert!(nina_plain.contains("Pas encore de genre"), "{nina_plain}");
+    assert!(nina_plain.contains("Pas encore de type"), "{nina_plain}");
+    assert!(!nina_plain.contains("Pas encore de genre"), "{nina_plain}");
     assert!(nina_plain.contains("Brouillon figé"), "{nina_plain}");
 
     let css = body_text(
@@ -10570,17 +10421,6 @@ async fn the_fiche_names_the_matter_and_who_answers() {
             || letter.contains("checked value=\"switchboard\""),
         "{letter}"
     );
-}
-
-/// Rejoue l'envoi du formulaire de fiche, jeton de contact compris.
-/// Sans ce jeton, le coffre refuse : la fiche a un correspondant.
-fn fiche_post_body(page: &str, who: &str, email: &str, extra: &str) -> String {
-    format!(
-        "who={who}&client_revision={}&contact_id={}&contact_revision={}&email={email}&{extra}",
-        hidden_value(page, "client_revision"),
-        hidden_value(page, "contact_id"),
-        hidden_value(page, "contact_revision"),
-    )
 }
 
 fn genre_id_from(page: &str) -> String {
@@ -12491,10 +12331,11 @@ async fn work_kinds_filter_the_affaires_and_leave_on_the_second_gesture() {
     assert!(!port_page.contains("value=\"site\""), "{port_page}");
 
     let check = Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
-    let genre = prospect_genre_for(check.connection(), quai)
-        .unwrap()
-        .unwrap();
-    assert_eq!(genre.name, "Mairie");
+    assert!(
+        prospect_genre_for(check.connection(), quai)
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[tokio::test]

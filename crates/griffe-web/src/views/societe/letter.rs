@@ -2158,7 +2158,7 @@ fn identity_markup(card: &IdentityCard, phrases: &str) -> Markup {
                       hx-push-url="true" {
                         "Les phrases"
                     }
-                    " — comment tu leur écris, selon qui ils sont."
+                    " — comment tu leur écris, selon leur type."
                 }
             }
             div class="row-actions" {

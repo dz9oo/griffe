@@ -506,19 +506,20 @@ du jour » ou « Couper l’envoi du jour », dans le form.
 
 **Les phrases** (`/affaires/phrases?depuis=societe`). L’habillage du bureau
 reste : `frame_phrases`, famille Les réglages, soulignement La société.
-`?depuis=lettre` et `?depuis=fiche` restent dans la lentille des affaires,
-avec leur lien retour. Le fil porte « Les phrases ». Le `h1` « Les phrases. »
-sort. Le titre « {genre}. » reste une phrase dans la carte. Le lien « ← … »
-du gabarit partagé reste dans le gabarit. La ligne des genres (« Les
-phrases », chaque genre, « Un autre genre ») reste une ligne, pas une carte.
-Une carte pour l’entrée déjà écrite : le lede, la chronique, « Les
-conversations déjà engagées finissent leur série. » Un seul formulaire
-ensuite, pas une carte par moment. La frise et la feuille gardent la grille
-`phrase-stage` (frise | feuille, une colonne sous 800 px). Les boutons
-Monter, Descendre, Retirer, Ajouter un moment, Enregistrer les phrases et
-Retirer ce genre restent dans ce form. Les jetons restent des boutons
-`type="button"`. L’aperçu reste `#phrase-sheet`, remplacé en innerHTML,
-delay 600 ms. La feuille reste une figure dans le formulaire.
+`?depuis=lettre`, `?depuis=fiche` et un `pour` non vide ouvrent cette même
+page : les phrases ne s’éditent pas dans la lentille des affaires. Le fil
+porte « Les phrases ». Le `h1` « Les phrases. » sort. Le titre « {type}. »
+reste une phrase dans la carte. Le lien « ← … » du gabarit partagé reste
+dans le gabarit. La ligne des types (« Les phrases », chaque type, « Un
+autre type ») reste une ligne, pas une carte. Une carte pour l’entrée déjà
+écrite : le lede, la chronique, « Les conversations déjà engagées finissent
+leur série. » Un seul formulaire ensuite, pas une carte par moment. La frise
+et la feuille gardent la grille `phrase-stage` (frise | feuille, une colonne
+sous 800 px). Les boutons Monter, Descendre, Retirer, Ajouter un moment,
+Enregistrer les phrases et Retirer ce type restent dans ce form. Les jetons
+restent des boutons `type="button"`. L’aperçu reste `#phrase-sheet`, remplacé
+en innerHTML, delay 600 ms. La feuille reste une figure dans le formulaire.
+Sur Écrire, la ligne nomme le type et le moment. Elle ne mène pas aux phrases.
 
 **Les papiers** (`/societe/papiers`). Le `h1` « Les papiers. » sort. Le lien
 « ← La société » reste, le pli le masque. La racine qui se rafraîchit sur

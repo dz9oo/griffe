@@ -93,7 +93,6 @@ fn people_routes() -> Router<AppState> {
         .route("/{reference}/envoi/annuler", post(gens::send_cancel))
         .route("/{reference}/envoi/reessayer", post(gens::send_retry))
         .route("/{reference}/envoi/decision", post(gens::send_decision))
-        .route("/{reference}/mots", post(gens::keep_words))
         .route(
             "/{reference}/rencontre",
             get(gens::meeting_get).post(gens::meeting_post),

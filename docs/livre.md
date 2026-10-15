@@ -47,9 +47,12 @@ le prénom, le nom, et Monsieur ou Madame. Courriel et Téléphone restent
 ceux du standard, ou de l’accueil. En écrivant, on choisit le standard,
 ou le courriel de la personne lorsqu’il est là.
 
+Le type posé sur le dossier choisit les phrases. On les écrit dans
+La société, Les phrases. Les affaires ne les réécrit pas.
+
 Les phrases prennent aussi `<nom>`, `<genre>`, et une formule
-`<Monsieur le Maire/Madame la Maire>`. Sans genre, les deux côtés
-restent visibles.
+`<Monsieur le Maire/Madame la Maire>`. `<genre>` suit Monsieur ou
+Madame. Sans genre, les deux côtés restent visibles.
 
 Le courrier s’ouvre sur la lettre d’essai, pour un prénom fictif. La
 formule est sous la lettre, dans la même mesure, et la lettre suit la frappe. Enregistrer l’écrit dans

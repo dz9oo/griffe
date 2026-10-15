@@ -4,6 +4,7 @@
 //! (`xdg-open`). Poster la lettre passe par le courrier (`crate::mail`). « Envoyé » peut
 //! aussi être un fait marqué par l'humain.
 
+pub(crate) mod bind;
 mod commands;
 mod error;
 mod queries;
@@ -76,6 +77,7 @@ mod tests {
     };
     use crate::store::Store;
     use crate::store::testing::test_store;
+    use crate::work_kinds::{RenameWorkKind, SetDossierWorkKinds, work_kinds};
 
     fn reapply_signature_migration(conn: &rusqlite::Connection) {
         let sql = include_str!("store/migrations/0046_mail_signature_up.sql");
@@ -1368,6 +1370,108 @@ mod tests {
                 .contains("Je me permets de revenir")
         );
         assert_eq!(phrase_by_key(&store, "hello").subject, "{{sujet}}");
+    }
+
+    #[test]
+    fn the_type_on_the_dossier_supplies_the_phrases() {
+        let mut store = test_store("type-phrases");
+        let today = date(2026, Month::September, 5);
+        let (town_client, town) = seed_opportunity(&mut store, today);
+        let (_, other) = seed_opportunity(&mut store, today);
+        applied(
+            &mut store,
+            &SetDossierWorkKinds {
+                client: town_client,
+                names: vec!["Services publics".into()],
+            },
+        );
+        let FollowUpSubject::Opportunity(town_id) = town else {
+            panic!("conversation attendue");
+        };
+        let genre = prospect_genres(store.connection())
+            .unwrap()
+            .into_iter()
+            .find(|genre| genre.name == "Services publics")
+            .expect("phrases du type");
+        assert_eq!(
+            prospect_genre_for(store.connection(), town_id)
+                .unwrap()
+                .expect("type posé")
+                .name,
+            "Services publics"
+        );
+
+        applied(
+            &mut store,
+            &RewriteGenreWords {
+                genre_id: genre.id.clone(),
+                words: vec![GenreWordDraft {
+                    key: "hello".into(),
+                    subject: "Pour la mairie".into(),
+                    body: "Bonjour {{prenom}},\n\nLa mairie.\n".into(),
+                }],
+            },
+        );
+        assert_eq!(
+            card_for(store.connection(), town, today)
+                .unwrap()
+                .preview_subject
+                .as_deref(),
+            Some("Pour la mairie")
+        );
+        assert_ne!(
+            card_for(store.connection(), other, today)
+                .unwrap()
+                .preview_subject
+                .as_deref(),
+            Some("Pour la mairie")
+        );
+
+        applied(
+            &mut store,
+            &RewriteGenreWords {
+                genre_id: genre.id,
+                words: vec![GenreWordDraft {
+                    key: "hello".into(),
+                    subject: "Pour le service".into(),
+                    body: "Bonjour {{prenom}},\n\nLe service.\n".into(),
+                }],
+            },
+        );
+        assert_eq!(
+            card_for(store.connection(), town, today)
+                .unwrap()
+                .preview_subject
+                .as_deref(),
+            Some("Pour le service")
+        );
+
+        let kind = work_kinds(store.connection())
+            .unwrap()
+            .into_iter()
+            .find(|kind| kind.name == "Services publics")
+            .expect("type posé");
+        applied(
+            &mut store,
+            &RenameWorkKind {
+                id: kind.id,
+                name: "Collectivités".into(),
+            },
+        );
+        assert_eq!(
+            card_for(store.connection(), town, today)
+                .unwrap()
+                .preview_subject
+                .as_deref(),
+            Some("Pour le service")
+        );
+        assert_eq!(
+            prospect_genre_for(store.connection(), town_id)
+                .unwrap()
+                .expect("type renommé")
+                .name,
+            "Collectivités"
+        );
     }
 
     #[test]
