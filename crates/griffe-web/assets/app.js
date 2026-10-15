@@ -132,7 +132,28 @@ document.body.addEventListener("input", (event) => {
   if (field.name.startsWith("label_") || field.name.startsWith("ecart_")) refreshChronicle(desk);
 });
 
+function fitLetterFrame(frame) {
+  const fit = () => {
+    const doc = frame.contentDocument;
+    const root = doc && doc.documentElement;
+    if (!root) return;
+    const body = doc.body;
+    const height = Math.max(root.scrollHeight, body ? body.scrollHeight : 0);
+    if (height > 0) frame.style.height = `${height}px`;
+  };
+  frame.addEventListener("load", fit);
+  fit();
+}
+
+function fitLetterFrames(root) {
+  const scope = root && root.querySelectorAll ? root : document;
+  scope.querySelectorAll("iframe.letter-frame").forEach(fitLetterFrame);
+}
+
+document.addEventListener("DOMContentLoaded", () => fitLetterFrames(document));
+
 document.body.addEventListener("htmx:afterSwap", (event) => {
+  fitLetterFrames(event.detail?.target || document);
   if (event.detail?.target?.id !== "content") return;
   const slug = viewSlugFrom(event.detail.target);
   if (slug) markNav(slug);
@@ -766,7 +787,7 @@ document.body.addEventListener("keydown", (event) => {
   });
 })();
 
-// Les affaires, la lentille. Le dossier se charge dans #affaire ; la liste reste.
+// Les affaires. La liste est le menu. Un nom ouvre le dossier sur toute la largeur.
 (() => {
   const FULL_KEY = "griffe-lens-full";
 
@@ -787,6 +808,19 @@ document.body.addEventListener("keydown", (event) => {
     return Boolean(overlay && overlay.classList.contains("open"));
   }
 
+  function queryValue(url, key) {
+    try {
+      return new URL(url, location.origin).searchParams.get(key) || "";
+    } catch {
+      return "";
+    }
+  }
+
+  function dossierPhrases(url) {
+    const depuis = queryValue(url, "depuis");
+    return depuis === "lettre" || depuis === "fiche";
+  }
+
   function affairePath(url) {
     if (!url || url.charAt(0) === "#") return false;
     let path = url;
@@ -798,7 +832,9 @@ document.body.addEventListener("keydown", (event) => {
     if (path === "/affaires" || path === "/affaires/") return false;
     if (!path.startsWith("/affaires/")) return false;
     if (path === "/affaires/types" || path.startsWith("/affaires/types/")) return false;
-    if (path === "/affaires/phrases" || path.startsWith("/affaires/phrases/")) return false;
+    if (path === "/affaires/phrases" || path.startsWith("/affaires/phrases/")) {
+      return dossierPhrases(url);
+    }
     return true;
   }
 
@@ -828,6 +864,7 @@ document.body.addEventListener("keydown", (event) => {
       full = false;
     }
     lens.classList.toggle("full", full);
+    lens.classList.toggle("phrases-open", Boolean(lens.querySelector(".phrase-open")));
     const span = lens.querySelector("[data-lens-span]");
     if (span) span.textContent = full ? "Réduire" : "Pleine largeur";
     const close = lens.querySelector(".lens-close");
@@ -965,7 +1002,7 @@ document.body.addEventListener("keydown", (event) => {
       return;
     }
     if (event.key === "e" || event.key === "E") {
-      const write = lens.querySelector('.lens-body a.seal[href$="/ecrire"]');
+      const write = lens.querySelector('a.lens-pill[href*="/ecrire"], .lens-body a.seal[href$="/ecrire"]');
       if (!write) return;
       event.preventDefault();
       write.click();
@@ -994,3 +1031,17 @@ document.body.addEventListener("keydown", (event) => {
     }
   });
 })();
+
+// Échap, sur un chapitre de La société, revient au menu.
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || event.defaultPrevented) return;
+  if (paletteOverlay?.classList.contains("open")) return;
+  if (panel && panel.childElementCount > 0) return;
+  if (document.querySelector(".date-pick-pop:not([hidden])")) return;
+  const target = event.target;
+  if (target instanceof Element && target.closest("input, textarea, select")) return;
+  const home = document.querySelector("[data-plateau-home]");
+  if (!home) return;
+  event.preventDefault();
+  home.click();
+}, true);

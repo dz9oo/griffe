@@ -53,27 +53,15 @@ fn is_htmx(headers: &HeaderMap) -> bool {
     headers.contains_key("hx-request")
 }
 
-fn hx_target_id(headers: &HeaderMap) -> &str {
-    headers
-        .get("hx-target")
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("")
+fn page(state: &AppState, headers: &HeaderMap, content: Markup) -> Html<String> {
+    page_in(state, headers, ViewId::Gens, content)
 }
 
-fn page(headers: &HeaderMap, content: Markup) -> Html<String> {
-    page_in(headers, ViewId::Gens, content)
-}
-
-fn page_in(headers: &HeaderMap, view: ViewId, content: Markup) -> Html<String> {
-    let content = if hx_target_id(headers) == "affaire" {
-        gens::panel_chrome(content)
-    } else {
-        content
-    };
+fn page_in(state: &AppState, headers: &HeaderMap, view: ViewId, content: Markup) -> Html<String> {
     if is_htmx(headers) {
         Html(content.into_string())
     } else {
-        Html(crate::layout::page(view, "déverrouillé", content).into_string())
+        Html(crate::layout::page(view, "déverrouillé", state.today(), content).into_string())
     }
 }
 
@@ -83,6 +71,26 @@ fn phrases_view(depuis: &str) -> ViewId {
     } else {
         ViewId::Gens
     }
+}
+
+fn dress_phrases(
+    store: &griffe_core::store::Store,
+    today: time::Date,
+    depuis: &str,
+    pour: &str,
+    headers: &HeaderMap,
+    inner: Markup,
+) -> Markup {
+    let origin = depuis.trim();
+    if !is_htmx(headers) && matches!(origin, "lettre" | "fiche") && !pour.trim().is_empty() {
+        let door = if origin == "fiche" {
+            gens::DossierDoor::Fiche
+        } else {
+            gens::DossierDoor::Ecrire
+        };
+        return gens::phrases_in_dossier(pour.trim(), door, inner);
+    }
+    frame_phrases(store, today, depuis, inner)
 }
 
 fn frame_phrases(
@@ -98,68 +106,88 @@ fn frame_phrases(
         .unwrap_or_else(|error| html! { div class="empty-state" { (error.to_string()) } })
 }
 
-fn locked(headers: &HeaderMap) -> Html<String> {
+fn locked(state: &AppState, headers: &HeaderMap) -> Html<String> {
     page(
+        state,
         headers,
         html! { div class="empty-state" { "coffre verrouillé — rechargez la page" } },
     )
 }
 
-fn saved_page(headers: &HeaderMap, content: Markup) -> Response {
-    let mut response = page(headers, content).into_response();
+fn saved_page(state: &AppState, headers: &HeaderMap, content: Markup) -> Response {
+    let mut response = page(state, headers, content).into_response();
     response
         .headers_mut()
         .insert("HX-Trigger", HeaderValue::from_static("griffe:saved"));
     response
 }
 
-fn with_push(headers: &HeaderMap, url: &str, content: Markup) -> Response {
-    let mut response = page(headers, content).into_response();
+fn with_push(state: &AppState, headers: &HeaderMap, url: &str, content: Markup) -> Response {
+    let mut response = page(state, headers, content).into_response();
     if let Ok(value) = HeaderValue::from_str(url) {
         response.headers_mut().insert("HX-Push-Url", value);
     }
     response
 }
 
+#[derive(Debug, Deserialize, Default)]
+pub struct KeptQuery {
+    #[serde(default)]
+    vue: String,
+    #[serde(default)]
+    q: String,
+    #[serde(default, rename = "type")]
+    type_id: String,
+}
+
+impl KeptQuery {
+    fn keep(&self) -> gens::ListKeep {
+        gens::ListKeep {
+            vue: self.vue.clone(),
+            q: self.q.clone(),
+            type_id: self.type_id.clone(),
+        }
+    }
+}
+
 pub async fn show(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(reference): Path<String>,
+    Query(kept): Query<KeptQuery>,
 ) -> Html<String> {
     let today = state.today();
-    let htmx = is_htmx(&headers);
+    let list = kept.keep();
     let content = state
-        .with_store(|store| {
-            let dossier = match resolve_person(store.connection(), &reference) {
-                Ok(RefMatch::NotFound) => gens::not_found(&reference, today),
-                Ok(RefMatch::Ambiguous(choices)) => gens::several(&reference, &choices),
-                Ok(RefMatch::Unique(_)) => gens::dossier_page(store, &reference, today)
+        .with_store(
+            |store| match resolve_person(store.connection(), &reference) {
+                Ok(RefMatch::NotFound) => gens::not_found_kept(&reference, today, &list),
+                Ok(RefMatch::Ambiguous(choices)) => gens::several_kept(&reference, &choices, &list),
+                Ok(RefMatch::Unique(_)) => gens::dossier_kept(store, &reference, today, &list)
                     .unwrap_or_else(|e| {
                         if e.to_string().contains("introuvable") {
-                            gens::not_found(&reference, today)
+                            gens::not_found_kept(&reference, today, &list)
                         } else {
                             html! { div class="empty-state" { (e.to_string()) } }
                         }
                     }),
                 Err(e) => html! { div class="empty-state" { (e.to_string()) } },
-            };
-            if htmx {
-                dossier
-            } else {
-                gens::render_with_panel(store, today, dossier).unwrap_or_else(|err| {
-                    html! { div class="empty-state" { (err.to_string()) } }
-                })
-            }
-        })
+            },
+        )
         .await
         .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
-    page(&headers, content)
+    page(&state, &headers, content)
 }
 
-pub async fn new_get(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
+pub async fn new_get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(kept): Query<KeptQuery>,
+) -> Html<String> {
     page(
+        &state,
         &headers,
-        gens::new_conversation(state.today(), "", "", None, None, None),
+        gens::new_conversation_kept(state.today(), "", "", None, None, None, &kept.keep()),
     )
 }
 
@@ -181,6 +209,7 @@ pub async fn new_post(
     let phrase = form.phrase.trim();
     if who.is_empty() {
         return page(
+            &state,
             &headers,
             gens::new_conversation(
                 today,
@@ -195,6 +224,7 @@ pub async fn new_post(
     }
     if phrase.is_empty() {
         return page(
+            &state,
             &headers,
             gens::new_conversation(
                 today,
@@ -223,8 +253,9 @@ pub async fn new_post(
         .with_store_mut(|store| Executor::new(store).execute(&cmd, &AppState::human_ctx()))
         .await;
     match result {
-        None => locked(&headers).into_response(),
+        None => locked(&state, &headers).into_response(),
         Some(Err(e)) => page(
+            &state,
             &headers,
             gens::new_conversation(today, who, phrase, None, None, Some(&e.to_string())),
         )
@@ -239,7 +270,7 @@ pub async fn new_post(
                 })
                 .await
                 .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
-            with_push(&headers, &href, content)
+            with_push(&state, &headers, &href, content)
         }
     }
 }
@@ -323,10 +354,13 @@ pub async fn phrases_get(
 ) -> Html<String> {
     let today = state.today();
     let content = state
-        .with_store(|store| phrases_markup(store, &query, today, None, None, None, None))
+        .with_store(|store| {
+            let inner = phrases_markup(store, &query, today, None, None, None, None);
+            dress_phrases(store, today, &query.depuis, &query.pour, &headers, inner)
+        })
         .await
         .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
-    page_in(&headers, phrases_view(&query.depuis), content)
+    page_in(&state, &headers, phrases_view(&query.depuis), content)
 }
 
 pub async fn phrases_post(
@@ -371,11 +405,11 @@ pub async fn phrases_post(
         .await;
     let today = state.today();
     match result {
-        None => locked(&headers).into_response(),
+        None => locked(&state, &headers).into_response(),
         Some(Err(error)) => {
             let content = state
                 .with_store(|store| {
-                    phrases_markup(
+                    let inner = phrases_markup(
                         store,
                         &query,
                         today,
@@ -383,20 +417,25 @@ pub async fn phrases_post(
                         None,
                         Some(&fields),
                         Some(&fields),
-                    )
+                    );
+                    dress_phrases(store, today, &query.depuis, &query.pour, &headers, inner)
                 })
                 .await
                 .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
-            page_in(&headers, phrases_view(&query.depuis), content).into_response()
+            page_in(&state, &headers, phrases_view(&query.depuis), content).into_response()
         }
         Some(Ok(true)) => {
             let mut shown = query.clone();
             shown.genre.clear();
             let content = state
-                .with_store(|store| phrases_markup(store, &shown, today, None, None, None, None))
+                .with_store(|store| {
+                    let inner = phrases_markup(store, &shown, today, None, None, None, None);
+                    dress_phrases(store, today, &shown.depuis, &shown.pour, &headers, inner)
+                })
                 .await
                 .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
             with_push(
+                &state,
                 &headers,
                 &gens::phrases_href(&shown.depuis, &shown.pour, ""),
                 content,
@@ -405,7 +444,7 @@ pub async fn phrases_post(
         Some(Ok(false)) => {
             let content = state
                 .with_store(|store| {
-                    phrases_markup(
+                    let inner = phrases_markup(
                         store,
                         &query,
                         today,
@@ -413,11 +452,12 @@ pub async fn phrases_post(
                         Some("Les phrases sont enregistrées.".to_string()),
                         None,
                         Some(&fields),
-                    )
+                    );
+                    dress_phrases(store, today, &query.depuis, &query.pour, &headers, inner)
                 })
                 .await
                 .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
-            page_in(&headers, phrases_view(&query.depuis), content).into_response()
+            page_in(&state, &headers, phrases_view(&query.depuis), content).into_response()
         }
     }
 }
@@ -452,11 +492,11 @@ pub async fn genre_new_get(
                 "",
                 None,
             );
-            frame_phrases(store, today, &query.depuis, inner)
+            dress_phrases(store, today, &query.depuis, &query.pour, &headers, inner)
         })
         .await
         .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
-    page_in(&headers, phrases_view(&query.depuis), content)
+    page_in(&state, &headers, phrases_view(&query.depuis), content)
 }
 
 pub async fn genre_new_post(
@@ -483,7 +523,7 @@ pub async fn genre_new_post(
         .await;
     let today = state.today();
     match result {
-        None => locked(&headers).into_response(),
+        None => locked(&state, &headers).into_response(),
         Some(Err(error)) => {
             let content = state
                 .with_store(|store| {
@@ -495,15 +535,16 @@ pub async fn genre_new_post(
                         &form.name,
                         Some(&error.to_string()),
                     );
-                    frame_phrases(store, today, &query.depuis, inner)
+                    dress_phrases(store, today, &query.depuis, &query.pour, &headers, inner)
                 })
                 .await
                 .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
-            page_in(&headers, phrases_view(&query.depuis), content).into_response()
+            page_in(&state, &headers, phrases_view(&query.depuis), content).into_response()
         }
         Some(Ok(outcome)) => {
             let Outcome::Applied(genre) = outcome else {
                 return page(
+                    &state,
                     &headers,
                     html! { div class="empty-state" { "le genre n'a pas été créé" } },
                 )
@@ -515,11 +556,14 @@ pub async fn genre_new_post(
                 genre: genre.id.clone(),
             };
             let content = state
-                .with_store(|store| phrases_markup(store, &shown, today, None, None, None, None))
+                .with_store(|store| {
+                    let inner = phrases_markup(store, &shown, today, None, None, None, None);
+                    dress_phrases(store, today, &shown.depuis, &shown.pour, &headers, inner)
+                })
                 .await
                 .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
             let mut response =
-                page_in(&headers, phrases_view(&shown.depuis), content).into_response();
+                page_in(&state, &headers, phrases_view(&shown.depuis), content).into_response();
             if let Ok(value) = HeaderValue::from_str(&gens::phrases_href(
                 &shown.depuis,
                 &shown.pour,
@@ -695,10 +739,9 @@ fn phrases_markup(
     fields: Option<&HashMap<String, String>>,
     navigation: Option<&HashMap<String, String>>,
 ) -> Markup {
-    let inner = gens::phrases_page(&assemble_phrases(
+    gens::phrases_page(&assemble_phrases(
         store, query, today, banner, status, fields, navigation,
-    ));
-    frame_phrases(store, today, &query.depuis, inner)
+    ))
 }
 
 fn phrases_sheet(
@@ -802,6 +845,7 @@ fn assemble_phrases(
         chrome: reading.chrome,
         banner,
         status,
+        reglages: query.depuis.trim() == "societe",
     }
 }
 
@@ -931,7 +975,7 @@ fn phrase_reading(
     );
     let href = gens::person_href(&dossier.name);
     let (back_href, back_label) = if depuis == "lettre" {
-        (format!("{href}/ecrire"), dossier.name.clone())
+        (href.clone(), dossier.name.clone())
     } else if depuis == "fiche" {
         (format!("{href}/fiche"), dossier.name.clone())
     } else {
@@ -1050,10 +1094,11 @@ pub async fn relire(
 ) -> Html<String> {
     let today = state.today();
     let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
-        return page(&headers, gens::not_found(&reference, today));
+        return page(&state, &headers, gens::not_found(&reference, today));
     };
     let Some(_) = dossier.follow_up_subject else {
         return page(
+            &state,
             &headers,
             gens::dossier_markup(&dossier, today, Some("rien à écrire pour l'instant")),
         );
@@ -1067,6 +1112,7 @@ pub async fn relire(
         ..gens::KeepUi::default()
     };
     page(
+        &state,
         &headers,
         render_letter(&state, &dossier, today, None, &keep).await,
     )
@@ -1076,33 +1122,47 @@ pub async fn write_get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(reference): Path<String>,
+    Query(kept): Query<KeptQuery>,
 ) -> Html<String> {
     let today = state.today();
+    let list = kept.keep();
     let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
-        return page(&headers, gens::not_found(&reference, today));
+        return page(
+            &state,
+            &headers,
+            gens::not_found_kept(&reference, today, &list),
+        );
     };
     let Some(subject) = dossier.follow_up_subject else {
         return page(
+            &state,
             &headers,
-            gens::dossier_markup(&dossier, today, Some("rien à écrire pour l'instant")),
+            gens::dossier_marked(
+                &dossier,
+                today,
+                Some("rien à écrire pour l'instant"),
+                &list,
+                gens::DossierDoor::Ecrire,
+            ),
         );
     };
     let content = state
         .with_store(|store| {
             let card = gens::load_card(store, subject, today).ok().flatten();
-            gens::letter_page(
+            gens::letter_page_kept(
                 store,
                 &dossier,
                 card.as_ref(),
                 today,
                 None,
                 &gens::KeepUi::default(),
+                &list,
             )
             .unwrap_or_else(|err| html! { div class="empty-state" { (err.to_string()) } })
         })
         .await
         .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
-    page(&headers, content)
+    page(&state, &headers, content)
 }
 
 pub async fn write(
@@ -1113,10 +1173,11 @@ pub async fn write(
 ) -> Html<String> {
     let today = state.today();
     let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
-        return page(&headers, gens::not_found(&reference, today));
+        return page(&state, &headers, gens::not_found(&reference, today));
     };
     let Some(subject) = dossier.follow_up_subject else {
         return page(
+            &state,
             &headers,
             gens::dossier_markup(&dossier, today, Some("rien à écrire pour l'instant")),
         );
@@ -1149,8 +1210,9 @@ pub async fn write(
         })
         .await;
     match result {
-        None => locked(&headers),
+        None => locked(&state, &headers),
         Some(Err(e)) => page(
+            &state,
             &headers,
             gens::dossier_markup(&dossier, today, Some(&e.to_string())),
         ),
@@ -1172,7 +1234,7 @@ pub async fn write(
                 })
                 .await
                 .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
-            page(&headers, content)
+            page(&state, &headers, content)
         }
     }
 }
@@ -1185,16 +1247,18 @@ pub async fn keep_words(
 ) -> Html<String> {
     let today = state.today();
     let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
-        return page(&headers, gens::not_found(&reference, today));
+        return page(&state, &headers, gens::not_found(&reference, today));
     };
     let Some(subject) = dossier.follow_up_subject else {
         return page(
+            &state,
             &headers,
             gens::dossier_markup(&dossier, today, Some("rien à écrire pour l'instant")),
         );
     };
     let FollowUpSubject::Opportunity(_) = subject else {
         return page(
+            &state,
             &headers,
             gens::dossier_markup(
                 &dossier,
@@ -1242,12 +1306,14 @@ pub async fn keep_words(
             }
         };
         return page(
+            &state,
             &headers,
             render_letter(&state, &dossier, today, None, &keep).await,
         );
     }
     if !has_genre && proposed.is_empty() {
         return page(
+            &state,
             &headers,
             render_letter(
                 &state,
@@ -1281,8 +1347,9 @@ pub async fn keep_words(
         })
         .await;
     match result {
-        None => locked(&headers),
+        None => locked(&state, &headers),
         Some(Err(error)) => page(
+            &state,
             &headers,
             render_letter(
                 &state,
@@ -1299,6 +1366,7 @@ pub async fn keep_words(
                 .and_then(Result::ok)
                 .unwrap_or(dossier);
             page(
+                &state,
                 &headers,
                 render_letter(
                     &state,
@@ -1338,13 +1406,18 @@ pub async fn sent(
     headers: HeaderMap,
     Path(reference): Path<String>,
     Form(form): Form<LetterForm>,
-) -> Html<String> {
+) -> Response {
     let today = state.today();
     let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
-        return page(&headers, gens::not_found(&reference, today));
+        return page(&state, &headers, gens::not_found(&reference, today)).into_response();
     };
     let Some(subject) = dossier.follow_up_subject else {
-        return page(&headers, gens::dossier_markup(&dossier, today, None));
+        return page(
+            &state,
+            &headers,
+            gens::dossier_markup(&dossier, today, None),
+        )
+        .into_response();
     };
     let subject_line = optional_letter_field(form.subject_line);
     let body = optional_letter_field(form.body);
@@ -1362,11 +1435,13 @@ pub async fn sent(
         })
         .await;
     match result {
-        None => locked(&headers),
+        None => locked(&state, &headers).into_response(),
         Some(Err(e)) => page(
+            &state,
             &headers,
             gens::dossier_markup(&dossier, today, Some(&e.to_string())),
-        ),
+        )
+        .into_response(),
         Some(Ok(_)) => {
             let content = state
                 .with_store(|store| {
@@ -1376,7 +1451,11 @@ pub async fn sent(
                 })
                 .await
                 .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
-            page(&headers, content)
+            let mut response = page(&state, &headers, content).into_response();
+            response
+                .headers_mut()
+                .insert("HX-Trigger", HeaderValue::from_static("griffe:saved"));
+            response
         }
     }
 }
@@ -1397,7 +1476,7 @@ pub async fn send_letter(
 ) -> Response {
     let today = state.today();
     let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
-        return page(&headers, gens::not_found(&reference, today)).into_response();
+        return page(&state, &headers, gens::not_found(&reference, today)).into_response();
     };
     let name = dossier.name.clone();
     let subject_line = form.subject_line.trim().to_string();
@@ -1409,7 +1488,7 @@ pub async fn send_letter(
             Some("La lettre n'a pas de sujet, ou pas de texte."),
         )
         .await;
-        return mail_fragment(&headers, markup, false);
+        return mail_fragment(&state, &headers, markup, false);
     }
     let token = state.mail_session().to_string();
     let subject = dossier.follow_up_subject;
@@ -1433,15 +1512,15 @@ pub async fn send_letter(
         })
         .await;
     match result {
-        None => locked(&headers).into_response(),
+        None => locked(&state, &headers).into_response(),
         Some(Err(error)) => {
             let note = mail_notice(&error);
             let markup = depart_for(&state, &name, Some(&note)).await;
-            mail_fragment(&headers, markup, false)
+            mail_fragment(&state, &headers, markup, false)
         }
         Some(Ok(())) => {
             let markup = depart_for(&state, &name, None).await;
-            mail_fragment(&headers, markup, true)
+            mail_fragment(&state, &headers, markup, true)
         }
     }
 }
@@ -1453,10 +1532,10 @@ pub async fn send_status(
 ) -> Response {
     let today = state.today();
     let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
-        return page(&headers, gens::not_found(&reference, today)).into_response();
+        return page(&state, &headers, gens::not_found(&reference, today)).into_response();
     };
     let (markup, polling) = depart_poll_for(&state, &dossier.name).await;
-    mail_status(&headers, markup, polling)
+    mail_status(&state, &headers, markup, polling)
 }
 
 pub async fn send_cancel(
@@ -1529,24 +1608,24 @@ async fn gesture(
 ) -> Response {
     let today = state.today();
     let Some(Ok(dossier)) = load_dossier(state, reference).await else {
-        return page(headers, gens::not_found(reference, today)).into_response();
+        return page(state, headers, gens::not_found(reference, today)).into_response();
     };
     if id.trim().is_empty() {
         let markup = depart_for(state, &dossier.name, Some("Cette lettre est introuvable.")).await;
-        return mail_fragment(headers, markup, false);
+        return mail_fragment(state, headers, markup, false);
     }
     let name = dossier.name.clone();
     let result = state.with_store_mut(|store| apply(store, id)).await;
     match result {
-        None => locked(headers).into_response(),
+        None => locked(state, headers).into_response(),
         Some(Err(error)) => {
             let note = mail_notice(&error);
             let markup = depart_for(state, &name, Some(&note)).await;
-            mail_fragment(headers, markup, false)
+            mail_fragment(state, headers, markup, false)
         }
         Some(Ok(())) => {
             let markup = depart_for(state, &name, None).await;
-            mail_fragment(headers, markup, true)
+            mail_fragment(state, headers, markup, true)
         }
     }
 }
@@ -1707,7 +1786,12 @@ async fn fiche_again(
     posted_genre: &gens::GenrePost,
 ) -> Response {
     let genre = load_genre_field(state, dossier, Some(posted_genre), false).await;
-    page(headers, gens::fiche_page(dossier, values, errors, &genre)).into_response()
+    page(
+        state,
+        headers,
+        gens::fiche_page(dossier, values, errors, &genre),
+    )
+    .into_response()
 }
 
 async fn depart_for(state: &AppState, name: &str, note: Option<&str>) -> Markup {
@@ -1768,8 +1852,8 @@ async fn depart_poll_for(state: &AppState, name: &str) -> (Markup, bool) {
         .unwrap_or_else(|| (html! { div id="depart" { "coffre verrouillé" } }, false))
 }
 
-fn mail_status(headers: &HeaderMap, content: Markup, polling: bool) -> Response {
-    let mut response = mail_fragment(headers, content, false);
+fn mail_status(state: &AppState, headers: &HeaderMap, content: Markup, polling: bool) -> Response {
+    let mut response = mail_fragment(state, headers, content, false);
     response.headers_mut().insert(
         axum::http::header::CACHE_CONTROL,
         HeaderValue::from_static("no-store, no-cache, must-revalidate"),
@@ -1782,11 +1866,11 @@ fn mail_status(headers: &HeaderMap, content: Markup, polling: bool) -> Response 
     response
 }
 
-fn mail_fragment(headers: &HeaderMap, content: Markup, saved: bool) -> Response {
+fn mail_fragment(state: &AppState, headers: &HeaderMap, content: Markup, saved: bool) -> Response {
     let mut response = if is_htmx(headers) {
         Html(content.into_string()).into_response()
     } else {
-        page(headers, content).into_response()
+        page(state, headers, content).into_response()
     };
     if saved {
         response
@@ -1813,11 +1897,21 @@ pub async fn meeting_get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(reference): Path<String>,
+    Query(kept): Query<KeptQuery>,
 ) -> Html<String> {
     let today = state.today();
+    let list = kept.keep();
     match load_dossier(&state, &reference).await {
-        Some(Ok(dossier)) => page(&headers, gens::meeting_form(&dossier, today, "", "", None)),
-        _ => page(&headers, gens::not_found(&reference, today)),
+        Some(Ok(dossier)) => page(
+            &state,
+            &headers,
+            gens::meeting_form_kept(&dossier, today, "", "", None, &list),
+        ),
+        _ => page(
+            &state,
+            &headers,
+            gens::not_found_kept(&reference, today, &list),
+        ),
     }
 }
 
@@ -1839,10 +1933,11 @@ pub async fn meeting_post(
 ) -> Response {
     let today = state.today();
     let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
-        return page(&headers, gens::not_found(&reference, today)).into_response();
+        return page(&state, &headers, gens::not_found(&reference, today)).into_response();
     };
     let Some(opportunity_id) = dossier.current.opportunity_id else {
         return page(
+            &state,
             &headers,
             gens::meeting_form(
                 &dossier,
@@ -1858,6 +1953,7 @@ pub async fn meeting_post(
         Ok(kind) => kind,
         Err(_) => {
             return page(
+                &state,
                 &headers,
                 gens::meeting_form(
                     &dossier,
@@ -1885,8 +1981,9 @@ pub async fn meeting_post(
         .with_store_mut(|store| Executor::new(store).execute(&cmd, &AppState::human_ctx()))
         .await;
     match result {
-        None => locked(&headers).into_response(),
+        None => locked(&state, &headers).into_response(),
         Some(Err(e)) => page(
+            &state,
             &headers,
             gens::meeting_form(
                 &dossier,
@@ -1907,7 +2004,7 @@ pub async fn meeting_post(
                 })
                 .await
                 .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
-            with_push(&headers, &href, content)
+            with_push(&state, &headers, &href, content)
         }
     }
 }
@@ -1919,8 +2016,8 @@ pub async fn stop_get(
 ) -> Html<String> {
     let today = state.today();
     match load_dossier(&state, &reference).await {
-        Some(Ok(dossier)) => page(&headers, gens::stop_page(&dossier, "", "", None)),
-        _ => page(&headers, gens::not_found(&reference, today)),
+        Some(Ok(dossier)) => page(&state, &headers, gens::stop_page(&dossier, "", "", None)),
+        _ => page(&state, &headers, gens::not_found(&reference, today)),
     }
 }
 
@@ -1940,10 +2037,11 @@ pub async fn stop_post(
 ) -> Response {
     let today = state.today();
     let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
-        return page(&headers, gens::not_found(&reference, today)).into_response();
+        return page(&state, &headers, gens::not_found(&reference, today)).into_response();
     };
     let Some(opportunity_id) = dossier.current.opportunity_id else {
         return page(
+            &state,
             &headers,
             gens::stop_page(
                 &dossier,
@@ -1958,6 +2056,7 @@ pub async fn stop_post(
         Ok(reason) => reason,
         Err(msg) => {
             return page(
+                &state,
                 &headers,
                 gens::stop_page(&dossier, &form.reason, &form.detail, Some(&msg)),
             )
@@ -1966,6 +2065,7 @@ pub async fn stop_post(
     };
     if matches!(reason, griffe_core::domain::LossReason::Other(ref text) if text.is_empty()) {
         return page(
+            &state,
             &headers,
             gens::stop_page(
                 &dossier,
@@ -1984,8 +2084,9 @@ pub async fn stop_post(
         .with_store_mut(|store| Executor::new(store).execute(&cmd, &AppState::human_ctx()))
         .await;
     match result {
-        None => locked(&headers).into_response(),
+        None => locked(&state, &headers).into_response(),
         Some(Err(e)) => page(
+            &state,
             &headers,
             gens::stop_page(&dossier, &form.reason, &form.detail, Some(&e.to_string())),
         )
@@ -2002,10 +2103,11 @@ pub async fn win_get(
     let today = state.today();
     match load_dossier(&state, &reference).await {
         Some(Ok(dossier)) => page(
+            &state,
             &headers,
             gens::win_page(&dossier, &format_date(today), None),
         ),
-        _ => page(&headers, gens::not_found(&reference, today)),
+        _ => page(&state, &headers, gens::not_found(&reference, today)),
     }
 }
 
@@ -2023,10 +2125,11 @@ pub async fn win_post(
 ) -> Response {
     let today = state.today();
     let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
-        return page(&headers, gens::not_found(&reference, today)).into_response();
+        return page(&state, &headers, gens::not_found(&reference, today)).into_response();
     };
     let Some(opportunity_id) = dossier.current.opportunity_id else {
         return page(
+            &state,
             &headers,
             gens::win_page(&dossier, &form.started_on, Some("pas de conversation")),
         )
@@ -2038,6 +2141,7 @@ pub async fn win_post(
         .is_none_or(|amount| amount.cents() == 0)
     {
         return page(
+            &state,
             &headers,
             gens::win_page(
                 &dossier,
@@ -2056,8 +2160,9 @@ pub async fn win_post(
         .with_store_mut(|store| Executor::new(store).execute(&cmd, &AppState::human_ctx()))
         .await;
     match result {
-        None => locked(&headers).into_response(),
+        None => locked(&state, &headers).into_response(),
         Some(Err(e)) => page(
+            &state,
             &headers,
             gens::win_page(&dossier, &form.started_on, Some(&e.to_string())),
         )
@@ -2074,10 +2179,11 @@ pub async fn reopen_get(
     let today = state.today();
     match load_dossier(&state, &reference).await {
         Some(Ok(dossier)) => page(
+            &state,
             &headers,
             gens::reopen_page(&dossier, &format_date(today), None),
         ),
-        _ => page(&headers, gens::not_found(&reference, today)),
+        _ => page(&state, &headers, gens::not_found(&reference, today)),
     }
 }
 
@@ -2095,10 +2201,11 @@ pub async fn reopen_post(
 ) -> Response {
     let today = state.today();
     let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
-        return page(&headers, gens::not_found(&reference, today)).into_response();
+        return page(&state, &headers, gens::not_found(&reference, today)).into_response();
     };
     let Some(opportunity_id) = dossier.current.opportunity_id else {
         return page(
+            &state,
             &headers,
             gens::reopen_page(&dossier, &form.when, Some("pas de conversation arrêtée")),
         )
@@ -2113,8 +2220,9 @@ pub async fn reopen_post(
         .with_store_mut(|store| Executor::new(store).execute(&cmd, &AppState::human_ctx()))
         .await;
     match result {
-        None => locked(&headers).into_response(),
+        None => locked(&state, &headers).into_response(),
         Some(Err(e)) => page(
+            &state,
             &headers,
             gens::reopen_page(&dossier, &form.when, Some(&e.to_string())),
         )
@@ -2138,7 +2246,7 @@ async fn dossier_after(
         })
         .await
         .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
-    with_push(headers, &href, content)
+    with_push(state, headers, &href, content)
 }
 
 fn blank(value: &str) -> Option<String> {
@@ -2273,15 +2381,28 @@ pub async fn fiche_get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(reference): Path<String>,
+    Query(kept): Query<KeptQuery>,
 ) -> Html<String> {
     let today = state.today();
+    let list = kept.keep();
     let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
-        return page(&headers, gens::not_found(&reference, today));
+        return page(
+            &state,
+            &headers,
+            gens::not_found_kept(&reference, today, &list),
+        );
     };
     let PersonKey::Client { id } = dossier.key else {
         return page(
+            &state,
             &headers,
-            gens::dossier_markup(&dossier, today, Some("cette chemise n'a pas de fiche")),
+            gens::dossier_marked(
+                &dossier,
+                today,
+                Some("cette chemise n'a pas de fiche"),
+                &list,
+                gens::DossierDoor::Fiche,
+            ),
         );
     };
     let loaded = state
@@ -2294,17 +2415,31 @@ pub async fn fiche_get(
         })
         .await;
     match loaded {
-        None => locked(&headers),
+        None => locked(&state, &headers),
         Some(Err(e)) => page(
+            &state,
             &headers,
-            gens::dossier_markup(&dossier, today, Some(&e.to_string())),
+            gens::dossier_marked(
+                &dossier,
+                today,
+                Some(&e.to_string()),
+                &list,
+                gens::DossierDoor::Fiche,
+            ),
         ),
         Some(Ok((client, contact, matter))) => {
             let values = fiche_values_from(&client, contact.as_ref(), matter.as_ref());
             let genre = load_genre_field(&state, &dossier, None, false).await;
             page(
+                &state,
                 &headers,
-                gens::fiche_page(&dossier, &values, &gens::FicheErrors::default(), &genre),
+                gens::fiche_page_kept(
+                    &dossier,
+                    &values,
+                    &gens::FicheErrors::default(),
+                    &genre,
+                    &list,
+                ),
             )
         }
     }
@@ -2382,10 +2517,11 @@ pub async fn fiche_post(
 ) -> Response {
     let today = state.today();
     let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
-        return page(&headers, gens::not_found(&reference, today)).into_response();
+        return page(&state, &headers, gens::not_found(&reference, today)).into_response();
     };
     let PersonKey::Client { id } = dossier.key else {
         return page(
+            &state,
             &headers,
             gens::dossier_markup(&dossier, today, Some("cette chemise n'a pas de fiche")),
         )
@@ -2461,6 +2597,7 @@ pub async fn fiche_post(
     }
     let Some(client_revision) = form.client_revision.parse::<i64>().ok() else {
         return page(
+            &state,
             &headers,
             gens::dossier_markup(&dossier, today, Some("la fiche a changé, rechargez")),
         )
@@ -2605,7 +2742,7 @@ pub async fn fiche_post(
         })
         .await;
     match result {
-        None => locked(&headers).into_response(),
+        None => locked(&state, &headers).into_response(),
         Some(Err(e)) => {
             fiche_again(
                 &state,
@@ -2638,13 +2775,14 @@ pub async fn fiche_post(
                 })
                 .await;
             match rendered {
-                None => locked(&headers).into_response(),
+                None => locked(&state, &headers).into_response(),
                 Some(Err(e)) => page(
+                    &state,
                     &headers,
                     gens::dossier_markup(&dossier, today, Some(&e.to_string())),
                 )
                 .into_response(),
-                Some(Ok((href, markup))) => with_push(&headers, &href, markup),
+                Some(Ok((href, markup))) => with_push(&state, &headers, &href, markup),
             }
         }
         Some(Ok(false)) => {
@@ -2657,13 +2795,14 @@ pub async fn fiche_post(
                 })
                 .await;
             match rendered {
-                None => locked(&headers).into_response(),
+                None => locked(&state, &headers).into_response(),
                 Some(Err(e)) => page(
+                    &state,
                     &headers,
                     gens::dossier_markup(&dossier, today, Some(&e.to_string())),
                 )
                 .into_response(),
-                Some(Ok((href, markup))) => with_push(&headers, &href, markup),
+                Some(Ok((href, markup))) => with_push(&state, &headers, &href, markup),
             }
         }
     }
@@ -2673,10 +2812,16 @@ pub async fn estimate_get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(reference): Path<String>,
+    Query(kept): Query<KeptQuery>,
 ) -> Html<String> {
     let today = state.today();
+    let list = kept.keep();
     let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
-        return page(&headers, gens::not_found(&reference, today));
+        return page(
+            &state,
+            &headers,
+            gens::not_found_kept(&reference, today, &list),
+        );
     };
     let values = state
         .with_store(|store| -> Result<gens::EstimateValues, AppError> {
@@ -2712,14 +2857,22 @@ pub async fn estimate_get(
         })
         .await;
     match values {
-        None => locked(&headers),
+        None => locked(&state, &headers),
         Some(Err(e)) => page(
+            &state,
             &headers,
-            gens::dossier_markup(&dossier, today, Some(&e.to_string())),
+            gens::dossier_marked(
+                &dossier,
+                today,
+                Some(&e.to_string()),
+                &list,
+                gens::DossierDoor::Estimation,
+            ),
         ),
         Some(Ok(values)) => page(
+            &state,
             &headers,
-            gens::estimate_page(
+            gens::estimate_page_kept(
                 &dossier,
                 &values,
                 &gens::EstimateErrors {
@@ -2727,6 +2880,7 @@ pub async fn estimate_get(
                     lines: None,
                     banner: None,
                 },
+                &list,
             ),
         ),
     }
@@ -2757,10 +2911,11 @@ pub async fn estimate_post(
 ) -> Response {
     let today = state.today();
     let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
-        return page(&headers, gens::not_found(&reference, today)).into_response();
+        return page(&state, &headers, gens::not_found(&reference, today)).into_response();
     };
     let PersonKey::Client { id: client_id } = dossier.key else {
         return page(
+            &state,
             &headers,
             gens::dossier_markup(&dossier, today, Some("cette chemise n'est pas une cliente")),
         )
@@ -2790,6 +2945,7 @@ pub async fn estimate_post(
             revision: form.revision,
         };
         return page(
+            &state,
             &headers,
             gens::estimate_page(
                 &dossier,
@@ -2836,7 +2992,12 @@ pub async fn estimate_post(
             },
             revision: form.revision,
         };
-        return page(&headers, gens::estimate_page(&dossier, &values, &errors)).into_response();
+        return page(
+            &state,
+            &headers,
+            gens::estimate_page(&dossier, &values, &errors),
+        )
+        .into_response();
     }
     let opportunity_id = dossier.current.opportunity_id;
     let revision = form.revision.parse::<i64>().ok();
@@ -2881,7 +3042,7 @@ pub async fn estimate_post(
         })
         .await;
     match result {
-        None => locked(&headers).into_response(),
+        None => locked(&state, &headers).into_response(),
         Some(Err(e)) => {
             let values = gens::EstimateValues {
                 phrase,
@@ -2889,7 +3050,12 @@ pub async fn estimate_post(
                 revision: form.revision,
             };
             errors.banner = Some(e.to_string());
-            page(&headers, gens::estimate_page(&dossier, &values, &errors)).into_response()
+            page(
+                &state,
+                &headers,
+                gens::estimate_page(&dossier, &values, &errors),
+            )
+            .into_response()
         }
         Some(Ok(())) => {
             let href = person_href(&dossier.name);
@@ -2901,7 +3067,7 @@ pub async fn estimate_post(
                 })
                 .await
                 .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
-            with_push(&headers, &href, content)
+            with_push(&state, &headers, &href, content)
         }
     }
 }
@@ -2937,16 +3103,25 @@ pub async fn snooze(
 ) -> Response {
     let today = state.today();
     let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
-        return page(&headers, gens::not_found(&reference, today)).into_response();
+        return page(&state, &headers, gens::not_found(&reference, today)).into_response();
     };
     let Some(subject) = dossier.follow_up_subject else {
-        return page(&headers, gens::dossier_markup(&dossier, today, None)).into_response();
+        return page(
+            &state,
+            &headers,
+            gens::dossier_markup(&dossier, today, None),
+        )
+        .into_response();
     };
     let until = match posted_snooze_until(today, &form.days, &form.until) {
         Ok(date) => date,
         Err(msg) => {
-            return page(&headers, gens::dossier_markup(&dossier, today, Some(&msg)))
-                .into_response();
+            return page(
+                &state,
+                &headers,
+                gens::dossier_markup(&dossier, today, Some(&msg)),
+            )
+            .into_response();
         }
     };
     let result = state
@@ -2962,8 +3137,9 @@ pub async fn snooze(
         })
         .await;
     match result {
-        None => locked(&headers).into_response(),
+        None => locked(&state, &headers).into_response(),
         Some(Err(e)) => page(
+            &state,
             &headers,
             gens::dossier_markup(&dossier, today, Some(&e.to_string())),
         )
@@ -2977,7 +3153,7 @@ pub async fn snooze(
                 })
                 .await
                 .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
-            saved_page(&headers, content)
+            saved_page(&state, &headers, content)
         }
     }
 }
@@ -3011,10 +3187,11 @@ pub async fn attach_note(
 ) -> Response {
     let today = state.today();
     let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
-        return page(&headers, gens::not_found(&reference, today)).into_response();
+        return page(&state, &headers, gens::not_found(&reference, today)).into_response();
     };
     let Some(id) = expense_id.parse::<ExpenseId>().ok() else {
         return page(
+            &state,
             &headers,
             gens::dossier_markup(&dossier, today, Some("cette note est introuvable")),
         )
@@ -3040,6 +3217,7 @@ pub async fn attach_note(
     }
     if filename.is_empty() || content.is_empty() {
         return page(
+            &state,
             &headers,
             gens::dossier_markup(&dossier, today, Some("choisissez un papier à joindre")),
         )
@@ -3047,6 +3225,7 @@ pub async fn attach_note(
     }
     let Some(rev) = revision else {
         return page(
+            &state,
             &headers,
             gens::dossier_markup(&dossier, today, Some("la note a changé, rechargez")),
         )
@@ -3072,10 +3251,14 @@ pub async fn attach_note(
         )
         .await;
     let archived = match archived {
-        None => return locked(&headers).into_response(),
+        None => return locked(&state, &headers).into_response(),
         Some(Err(msg)) => {
-            return page(&headers, gens::dossier_markup(&dossier, today, Some(&msg)))
-                .into_response();
+            return page(
+                &state,
+                &headers,
+                gens::dossier_markup(&dossier, today, Some(&msg)),
+            )
+            .into_response();
         }
         Some(Ok(a)) => a,
     };
@@ -3089,8 +3272,9 @@ pub async fn attach_note(
         .with_store_mut(|store| Executor::new(store).execute(&cmd, &AppState::human_ctx()))
         .await;
     match result {
-        None => locked(&headers).into_response(),
+        None => locked(&state, &headers).into_response(),
         Some(Err(e)) => page(
+            &state,
             &headers,
             gens::dossier_markup(&dossier, today, Some(&e.to_string())),
         )
@@ -3104,7 +3288,7 @@ pub async fn attach_note(
                 })
                 .await
                 .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
-            page(&headers, content).into_response()
+            page(&state, &headers, content).into_response()
         }
     }
 }
@@ -3133,12 +3317,15 @@ pub async fn import_invoice(
 ) -> Response {
     let today = state.today();
     let dossier = match load_dossier(&state, &reference).await {
-        None => return locked(&headers).into_response(),
-        Some(Err(_)) => return page(&headers, gens::not_found(&reference, today)).into_response(),
+        None => return locked(&state, &headers).into_response(),
+        Some(Err(_)) => {
+            return page(&state, &headers, gens::not_found(&reference, today)).into_response();
+        }
         Some(Ok(dossier)) => dossier,
     };
     if dossier.not_yet_client {
         return page(
+            &state,
             &headers,
             gens::dossier_markup(
                 &dossier,
@@ -3150,6 +3337,7 @@ pub async fn import_invoice(
     }
     let PersonKey::Client { id: client_id } = dossier.key else {
         return page(
+            &state,
             &headers,
             gens::dossier_markup(&dossier, today, Some("cette chemise n'est pas une cliente")),
         )
@@ -3185,6 +3373,7 @@ pub async fn import_invoice(
 
     if fields.filename.is_empty() || fields.content.is_empty() {
         return page(
+            &state,
             &headers,
             gens::dossier_markup(&dossier, today, Some("choisissez le PDF")),
         )
@@ -3194,8 +3383,12 @@ pub async fn import_invoice(
     let parsed = match parse_import_fields(&fields) {
         Ok(parsed) => parsed,
         Err(msg) => {
-            return page(&headers, gens::dossier_markup(&dossier, today, Some(&msg)))
-                .into_response();
+            return page(
+                &state,
+                &headers,
+                gens::dossier_markup(&dossier, today, Some(&msg)),
+            )
+            .into_response();
         }
     };
 
@@ -3241,10 +3434,13 @@ pub async fn import_invoice(
         })
         .await;
     match result {
-        None => locked(&headers).into_response(),
-        Some(Err(msg)) => {
-            page(&headers, gens::dossier_markup(&dossier, today, Some(&msg))).into_response()
-        }
+        None => locked(&state, &headers).into_response(),
+        Some(Err(msg)) => page(
+            &state,
+            &headers,
+            gens::dossier_markup(&dossier, today, Some(&msg)),
+        )
+        .into_response(),
         Some(Ok(flash)) => {
             let content = state
                 .with_store(
@@ -3255,7 +3451,7 @@ pub async fn import_invoice(
                 )
                 .await
                 .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
-            page(&headers, content).into_response()
+            page(&state, &headers, content).into_response()
         }
     }
 }
@@ -3356,12 +3552,15 @@ pub async fn write_off_receivable(
 ) -> Response {
     let today = state.today();
     let dossier = match load_dossier(&state, &reference).await {
-        None => return locked(&headers).into_response(),
-        Some(Err(_)) => return page(&headers, gens::not_found(&reference, today)).into_response(),
+        None => return locked(&state, &headers).into_response(),
+        Some(Err(_)) => {
+            return page(&state, &headers, gens::not_found(&reference, today)).into_response();
+        }
         Some(Ok(dossier)) => dossier,
     };
     let Ok(invoice_id) = invoice_id.parse::<InvoiceId>() else {
         return page(
+            &state,
             &headers,
             gens::dossier_markup(&dossier, today, Some("cette facture est introuvable")),
         )
@@ -3373,6 +3572,7 @@ pub async fn write_off_receivable(
         .any(|p| p.invoice_id == Some(invoice_id))
     {
         return page(
+            &state,
             &headers,
             gens::dossier_markup(
                 &dossier,
@@ -3385,8 +3585,12 @@ pub async fn write_off_receivable(
     let written_off_on = match parse_on(&form.on, today) {
         Ok(on) => on,
         Err(msg) => {
-            return page(&headers, gens::dossier_markup(&dossier, today, Some(&msg)))
-                .into_response();
+            return page(
+                &state,
+                &headers,
+                gens::dossier_markup(&dossier, today, Some(&msg)),
+            )
+            .into_response();
         }
     };
     let cmd = WriteOffReceivable {
@@ -3431,12 +3635,15 @@ pub async fn retract_write_off(
 ) -> Response {
     let today = state.today();
     let dossier = match load_dossier(&state, &reference).await {
-        None => return locked(&headers).into_response(),
-        Some(Err(_)) => return page(&headers, gens::not_found(&reference, today)).into_response(),
+        None => return locked(&state, &headers).into_response(),
+        Some(Err(_)) => {
+            return page(&state, &headers, gens::not_found(&reference, today)).into_response();
+        }
         Some(Ok(dossier)) => dossier,
     };
     let Ok(invoice_id) = invoice_id.parse::<InvoiceId>() else {
         return page(
+            &state,
             &headers,
             gens::dossier_markup(&dossier, today, Some("cette facture est introuvable")),
         )
@@ -3448,6 +3655,7 @@ pub async fn retract_write_off(
         .find(|p| p.invoice_id == Some(invoice_id));
     let Some(paper) = paper else {
         return page(
+            &state,
             &headers,
             gens::dossier_markup(
                 &dossier,
@@ -3461,6 +3669,7 @@ pub async fn retract_write_off(
         Ok(id) => id,
         Err(_) => {
             return page(
+                &state,
                 &headers,
                 gens::dossier_markup(&dossier, today, Some("cette perte est introuvable")),
             )
@@ -3469,6 +3678,7 @@ pub async fn retract_write_off(
     };
     if paper.write_off_id != Some(write_off_id) {
         return page(
+            &state,
             &headers,
             gens::dossier_markup(
                 &dossier,
@@ -3481,8 +3691,12 @@ pub async fn retract_write_off(
     let retracted_on = match parse_on(&form.on, today) {
         Ok(on) => on,
         Err(msg) => {
-            return page(&headers, gens::dossier_markup(&dossier, today, Some(&msg)))
-                .into_response();
+            return page(
+                &state,
+                &headers,
+                gens::dossier_markup(&dossier, today, Some(&msg)),
+            )
+            .into_response();
         }
     };
     let cmd = RetractWriteOff {
@@ -3512,10 +3726,13 @@ async fn dossier_flash(
     result: Option<Result<String, String>>,
 ) -> Response {
     match result {
-        None => locked(headers).into_response(),
-        Some(Err(msg)) => {
-            page(headers, gens::dossier_markup(dossier, today, Some(&msg))).into_response()
-        }
+        None => locked(state, headers).into_response(),
+        Some(Err(msg)) => page(
+            state,
+            headers,
+            gens::dossier_markup(dossier, today, Some(&msg)),
+        )
+        .into_response(),
         Some(Ok(flash)) => {
             let content = state
                 .with_store(|store| match person(store.connection(), reference, today) {
@@ -3524,7 +3741,7 @@ async fn dossier_flash(
                 })
                 .await
                 .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
-            page(headers, content).into_response()
+            page(state, headers, content).into_response()
         }
     }
 }
@@ -3543,16 +3760,18 @@ pub async fn travaux_get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(reference): Path<String>,
+    Query(kept): Query<KeptQuery>,
 ) -> Html<String> {
-    travaux_show(&state, &headers, &reference, false).await
+    travaux_show(&state, &headers, &reference, false, &kept.keep()).await
 }
 
 pub async fn travaux_edit_get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(reference): Path<String>,
+    Query(kept): Query<KeptQuery>,
 ) -> Html<String> {
-    travaux_show(&state, &headers, &reference, true).await
+    travaux_show(&state, &headers, &reference, true, &kept.keep()).await
 }
 
 async fn travaux_show(
@@ -3560,25 +3779,46 @@ async fn travaux_show(
     headers: &HeaderMap,
     reference: &str,
     editing: bool,
+    list: &gens::ListKeep,
 ) -> Html<String> {
     let today = state.today();
     let Some(Ok(dossier)) = load_dossier(state, reference).await else {
-        return page(headers, gens::not_found(reference, today));
+        return page(state, headers, gens::not_found_kept(reference, today, list));
     };
     match load_travaux(state, &dossier).await {
-        TravauxLoad::Locked => locked(headers),
+        TravauxLoad::Locked => locked(state, headers),
         TravauxLoad::NotAFiche => page(
+            state,
             headers,
-            gens::dossier_markup(&dossier, today, Some("Les travaux tiennent sur une fiche.")),
+            gens::dossier_marked(
+                &dossier,
+                today,
+                Some("Les travaux tiennent sur une fiche."),
+                list,
+                gens::DossierDoor::Travaux,
+            ),
         ),
-        TravauxLoad::Failed(msg) => {
-            page(headers, gens::dossier_markup(&dossier, today, Some(&msg)))
-        }
+        TravauxLoad::Failed(msg) => page(
+            state,
+            headers,
+            gens::dossier_marked(
+                &dossier,
+                today,
+                Some(&msg),
+                list,
+                gens::DossierDoor::Travaux,
+            ),
+        ),
         TravauxLoad::Ready(note) if editing => page(
+            state,
             headers,
-            gens::travaux_edit(&dossier, &note, &note.body, None, false),
+            gens::travaux_edit_kept(&dossier, &note, &note.body, None, false, list),
         ),
-        TravauxLoad::Ready(note) => page(headers, gens::travaux_page(&dossier, &note)),
+        TravauxLoad::Ready(note) => page(
+            state,
+            headers,
+            gens::travaux_page_kept(&dossier, &note, list),
+        ),
     }
 }
 
@@ -3590,14 +3830,14 @@ pub async fn travaux_post(
 ) -> Response {
     let today = state.today();
     let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
-        return page(&headers, gens::not_found(&reference, today)).into_response();
+        return page(&state, &headers, gens::not_found(&reference, today)).into_response();
     };
     let before = match load_travaux(&state, &dossier).await {
         TravauxLoad::Ready(note) => note,
-        other => return travaux_closed(&headers, &dossier, today, other),
+        other => return travaux_closed(&state, &headers, &dossier, today, other),
     };
     let PersonKey::Client { id } = dossier.key else {
-        return travaux_closed(&headers, &dossier, today, TravauxLoad::NotAFiche);
+        return travaux_closed(&state, &headers, &dossier, today, TravauxLoad::NotAFiche);
     };
     // Une révision illisible ne bloque pas : on repart de celle du coffre, lue à l'instant.
     let revision = form.revision.parse::<i64>().unwrap_or(before.revision);
@@ -3612,15 +3852,16 @@ pub async fn travaux_post(
         .await;
     let read = format!("{}/travaux", gens::person_href(&dossier.name));
     match result {
-        None => locked(&headers).into_response(),
+        None => locked(&state, &headers).into_response(),
         Some(Err(error)) => travaux_refused(
-            &headers, &dossier, &before, &form.body, revision, reread, &error,
+            &state, &headers, &dossier, &before, &form.body, revision, reread, &error,
         ),
         Some(Ok(outcome)) => match outcome {
             Outcome::Applied(note) | Outcome::AlreadyApplied(note) => {
                 let wrote = note.revision != before.revision;
                 if reread {
                     travaux_ok(
+                        &state,
                         &headers,
                         gens::travaux_page(&dossier, &note),
                         note.revision,
@@ -3629,6 +3870,7 @@ pub async fn travaux_post(
                     )
                 } else {
                     travaux_ok(
+                        &state,
                         &headers,
                         gens::travaux_kept(note.revision),
                         note.revision,
@@ -3638,6 +3880,7 @@ pub async fn travaux_post(
                 }
             }
             Outcome::DryRun | Outcome::PendingConfirmation(_) => travaux_refused(
+                &state,
                 &headers,
                 &dossier,
                 &before,
@@ -3651,21 +3894,26 @@ pub async fn travaux_post(
 }
 
 fn travaux_closed(
+    state: &AppState,
     headers: &HeaderMap,
     dossier: &griffe_core::people::PersonDossier,
     today: time::Date,
     load: TravauxLoad,
 ) -> Response {
     match load {
-        TravauxLoad::Locked | TravauxLoad::Ready(_) => locked(headers).into_response(),
+        TravauxLoad::Locked | TravauxLoad::Ready(_) => locked(state, headers).into_response(),
         TravauxLoad::NotAFiche => page(
+            state,
             headers,
             gens::dossier_markup(dossier, today, Some("Les travaux tiennent sur une fiche.")),
         )
         .into_response(),
-        TravauxLoad::Failed(msg) => {
-            page(headers, gens::dossier_markup(dossier, today, Some(&msg))).into_response()
-        }
+        TravauxLoad::Failed(msg) => page(
+            state,
+            headers,
+            gens::dossier_markup(dossier, today, Some(&msg)),
+        )
+        .into_response(),
     }
 }
 
@@ -3681,7 +3929,9 @@ fn travaux_refusal(error: &AppError) -> (String, bool, &'static str) {
     }
 }
 
+#[allow(clippy::too_many_arguments)] // le refus rejoue le récit saisi, sa révision, et le message
 fn travaux_refused(
+    state: &AppState,
     headers: &HeaderMap,
     dossier: &griffe_core::people::PersonDossier,
     before: &DossierWork,
@@ -3701,17 +3951,18 @@ fn travaux_refused(
     } else {
         gens::travaux_notice(&message, offer_vault.then_some(edit.as_str()))
     };
-    travaux_marked(headers, markup, mark)
+    travaux_marked(state, headers, markup, mark)
 }
 
 fn travaux_ok(
+    state: &AppState,
     headers: &HeaderMap,
     body: Markup,
     revision: i64,
     trigger: bool,
     push: Option<&str>,
 ) -> Response {
-    let mut response = travaux_marked(headers, body, "ok");
+    let mut response = travaux_marked(state, headers, body, "ok");
     if let Ok(value) = HeaderValue::from_str(&revision.to_string()) {
         response
             .headers_mut()
@@ -3730,8 +3981,13 @@ fn travaux_ok(
     response
 }
 
-fn travaux_marked(headers: &HeaderMap, body: Markup, mark: &'static str) -> Response {
-    let mut response = page(headers, body).into_response();
+fn travaux_marked(
+    state: &AppState,
+    headers: &HeaderMap,
+    body: Markup,
+    mark: &'static str,
+) -> Response {
+    let mut response = page(state, headers, body).into_response();
     response
         .headers_mut()
         .insert("X-Griffe-Travaux", HeaderValue::from_static(mark));
@@ -3794,6 +4050,22 @@ pub(crate) struct TypeGesteForm {
 pub(crate) struct TypesQuery {
     #[serde(default)]
     ouvert: String,
+    #[serde(default)]
+    vue: String,
+    #[serde(default)]
+    q: String,
+    #[serde(default, rename = "type")]
+    type_id: String,
+}
+
+impl TypesQuery {
+    fn keep(&self) -> gens::ListKeep {
+        gens::ListKeep {
+            vue: self.vue.clone(),
+            q: self.q.clone(),
+            type_id: self.type_id.clone(),
+        }
+    }
 }
 
 fn dossier_types_form(pairs: &[(String, String)]) -> DossierTypesForm {
@@ -3815,20 +4087,26 @@ pub async fn dossier_types(
     let form = dossier_types_form(&pairs);
     let today = state.today();
     let Some(loaded) = load_dossier(&state, &reference).await else {
-        return locked(&headers).into_response();
+        return locked(&state, &headers).into_response();
     };
     let dossier = match loaded {
         Ok(dossier) => dossier,
         Err(error) => {
             let message = error.to_string();
             if message.contains("introuvable") {
-                return page(&headers, gens::not_found(&reference, today)).into_response();
+                return page(&state, &headers, gens::not_found(&reference, today)).into_response();
             }
-            return page(&headers, html! { div class="empty-state" { (message) } }).into_response();
+            return page(
+                &state,
+                &headers,
+                html! { div class="empty-state" { (message) } },
+            )
+            .into_response();
         }
     };
     let PersonKey::Client { id } = dossier.key else {
         return page(
+            &state,
             &headers,
             gens::dossier_markup(&dossier, today, Some("Les types tiennent sur une fiche.")),
         )
@@ -3843,23 +4121,27 @@ pub async fn dossier_types(
         .with_store_mut(|store| Executor::new(store).execute(&cmd, &AppState::human_ctx()))
         .await;
     match result {
-        None => locked(&headers).into_response(),
+        None => locked(&state, &headers).into_response(),
         Some(Err(error)) => {
             let message = error.to_string();
             page(
+                &state,
                 &headers,
                 gens::dossier_with_kinds(&dossier, today, Some(&message), &posted),
             )
             .into_response()
         }
         Some(Ok(_)) => match load_dossier(&state, &dossier.name).await {
-            None => locked(&headers).into_response(),
+            None => locked(&state, &headers).into_response(),
             Some(Err(error)) => page(
+                &state,
                 &headers,
                 html! { div class="empty-state" { (error.to_string()) } },
             )
             .into_response(),
-            Some(Ok(fresh)) => saved_page(&headers, gens::dossier_markup(&fresh, today, None)),
+            Some(Ok(fresh)) => {
+                saved_page(&state, &headers, gens::dossier_markup(&fresh, today, None))
+            }
         },
     }
 }
@@ -3869,13 +4151,14 @@ pub async fn types_get(
     headers: HeaderMap,
     Query(query): Query<TypesQuery>,
 ) -> Html<String> {
-    match types_markup(&state, &query.ouvert, None, None, None).await {
-        None => locked(&headers),
+    match types_markup(&state, &query.ouvert, None, None, None, &query.keep()).await {
+        None => locked(&state, &headers),
         Some(Err(error)) => page(
+            &state,
             &headers,
             html! { div class="empty-state" { (error.to_string()) } },
         ),
-        Some(Ok(markup)) => page(&headers, markup),
+        Some(Ok(markup)) => page(&state, &headers, markup),
     }
 }
 
@@ -3893,7 +4176,7 @@ pub async fn types_create(
         .with_store_mut(|store| Executor::new(store).execute(&cmd, &AppState::human_ctx()))
         .await;
     match result {
-        None => locked(&headers).into_response(),
+        None => locked(&state, &headers).into_response(),
         Some(Err(error)) => {
             let message = error.to_string();
             types_response(
@@ -3924,8 +4207,9 @@ pub async fn types_geste(
             })
             .await;
         return match known {
-            None => locked(&headers).into_response(),
+            None => locked(&state, &headers).into_response(),
             Some(Err(error)) => page(
+                &state,
                 &headers,
                 html! { div class="empty-state" { (error.to_string()) } },
             )
@@ -3953,7 +4237,7 @@ pub async fn types_geste(
             .with_store_mut(|store| Executor::new(store).execute(&cmd, &AppState::human_ctx()))
             .await;
         return match result {
-            None => locked(&headers).into_response(),
+            None => locked(&state, &headers).into_response(),
             Some(Err(error)) => {
                 let message = error.to_string();
                 types_response(&state, &headers, "", None, Some(&message), None, false).await
@@ -3971,7 +4255,7 @@ pub async fn types_geste(
         .with_store_mut(|store| Executor::new(store).execute(&cmd, &AppState::human_ctx()))
         .await;
     match result {
-        None => locked(&headers).into_response(),
+        None => locked(&state, &headers).into_response(),
         Some(Err(error)) => {
             let message = error.to_string();
             types_response(
@@ -3995,11 +4279,14 @@ async fn types_markup(
     draft: Option<(&str, &str, &str)>,
     banner: Option<&str>,
     confirming: Option<&str>,
+    list: &gens::ListKeep,
 ) -> Option<Result<Markup, AppError>> {
     state
         .with_store(|store| {
             let kinds = work_kinds(store.connection())?;
-            Ok(gens::types_page(&kinds, open, draft, banner, confirming))
+            Ok(gens::types_page_kept(
+                &kinds, open, draft, banner, confirming, list,
+            ))
         })
         .await
 }
@@ -4013,22 +4300,32 @@ async fn types_response(
     confirming: Option<&str>,
     saved: bool,
 ) -> Response {
-    match types_markup(state, open, draft, banner, confirming).await {
-        None => locked(headers).into_response(),
+    match types_markup(
+        state,
+        open,
+        draft,
+        banner,
+        confirming,
+        &gens::ListKeep::default(),
+    )
+    .await
+    {
+        None => locked(state, headers).into_response(),
         Some(Err(error)) => page(
+            state,
             headers,
             html! { div class="empty-state" { (error.to_string()) } },
         )
         .into_response(),
         Some(Ok(markup)) => {
             if saved {
-                let mut response = saved_page(headers, markup);
+                let mut response = saved_page(state, headers, markup);
                 if let Ok(value) = HeaderValue::from_str("/affaires/types") {
                     response.headers_mut().insert("HX-Push-Url", value);
                 }
                 response
             } else {
-                page(headers, markup).into_response()
+                page(state, headers, markup).into_response()
             }
         }
     }

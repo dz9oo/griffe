@@ -51,11 +51,16 @@ fn locked_markup(active: ViewId) -> Markup {
     }
 }
 
-async fn respond(headers: HeaderMap, active: ViewId, content: Markup) -> Html<String> {
+async fn respond(
+    state: &AppState,
+    headers: HeaderMap,
+    active: ViewId,
+    content: Markup,
+) -> Html<String> {
     if is_htmx_request(&headers) {
         Html(content.into_string())
     } else {
-        Html(layout::page(active, "déverrouillé", content).into_string())
+        Html(layout::page(active, "déverrouillé", state.today(), content).into_string())
     }
 }
 
@@ -72,7 +77,7 @@ pub async fn jour_page(state: &AppState) -> String {
         })
         .await
         .unwrap_or_else(|| locked_markup(ViewId::Jour));
-    layout::page(ViewId::Jour, "déverrouillé", content).into_string()
+    layout::page(ViewId::Jour, "déverrouillé", today, content).into_string()
 }
 
 /// Alias conservé : le déverrouillage historique atterrissait sur le tableau de bord.
@@ -94,7 +99,7 @@ async fn letter(
         .with_store(|store| render(store, today).unwrap_or_else(|e| error_markup(active, e)))
         .await
         .unwrap_or_else(|| locked_markup(active));
-    respond(headers, active, content).await
+    respond(state, headers, active, content).await
 }
 
 pub async fn jour(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
@@ -131,6 +136,10 @@ pub async fn gens(
 
 pub async fn societe_piece(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
     letter(&state, headers, ViewId::Societe, views::societe::piece).await
+}
+
+pub async fn societe_piste(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
+    letter(&state, headers, ViewId::Societe, views::societe::piste).await
 }
 
 pub async fn societe_pay(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
@@ -260,9 +269,14 @@ pub async fn societe_duties_catch_up(
         })
         .await;
     if let Some(Err(e)) = result {
-        return respond(headers, ViewId::Societe, error_markup(ViewId::Societe, e))
-            .await
-            .into_response();
+        return respond(
+            &state,
+            headers,
+            ViewId::Societe,
+            error_markup(ViewId::Societe, e),
+        )
+        .await
+        .into_response();
     }
     letter(&state, headers, ViewId::Societe, views::societe::duties)
         .await
@@ -306,9 +320,14 @@ async fn mark_duty_filed(
         })
         .await;
     if let Some(Err(e)) = result {
-        return respond(headers, ViewId::Societe, error_markup(ViewId::Societe, e))
-            .await
-            .into_response();
+        return respond(
+            state,
+            headers,
+            ViewId::Societe,
+            error_markup(ViewId::Societe, e),
+        )
+        .await
+        .into_response();
     }
     let mut response = letter(state, headers, ViewId::Societe, move |store, today| {
         views::societe::duty(store, today, kind, period.as_deref())
@@ -447,9 +466,14 @@ async fn request_vat_refund(
         })
         .await;
     if let Some(Err(e)) = result {
-        return respond(headers, ViewId::Societe, error_markup(ViewId::Societe, e))
-            .await
-            .into_response();
+        return respond(
+            state,
+            headers,
+            ViewId::Societe,
+            error_markup(ViewId::Societe, e),
+        )
+        .await
+        .into_response();
     }
     let mut response = letter(state, headers, ViewId::Societe, move |store, today| {
         views::societe::duty(store, today, kind, period.as_deref())
@@ -486,9 +510,14 @@ async fn retract_vat_refund(
         })
         .await;
     if let Some(Err(e)) = result {
-        return respond(headers, ViewId::Societe, error_markup(ViewId::Societe, e))
-            .await
-            .into_response();
+        return respond(
+            state,
+            headers,
+            ViewId::Societe,
+            error_markup(ViewId::Societe, e),
+        )
+        .await
+        .into_response();
     }
     let mut response = letter(state, headers, ViewId::Societe, move |store, today| {
         views::societe::duty(store, today, kind, period.as_deref())
@@ -571,9 +600,14 @@ async fn record_vat_reversal(
         })
         .await;
     if let Some(Err(e)) = result {
-        return respond(headers, ViewId::Societe, error_markup(ViewId::Societe, e))
-            .await
-            .into_response();
+        return respond(
+            state,
+            headers,
+            ViewId::Societe,
+            error_markup(ViewId::Societe, e),
+        )
+        .await
+        .into_response();
     }
     let mut response = letter(state, headers, ViewId::Societe, move |store, today| {
         views::societe::duty(store, today, kind, period.as_deref())
@@ -627,9 +661,14 @@ async fn record_vat_liquidation(
         })
         .await;
     if let Some(Err(e)) = result {
-        return respond(headers, ViewId::Societe, error_markup(ViewId::Societe, e))
-            .await
-            .into_response();
+        return respond(
+            state,
+            headers,
+            ViewId::Societe,
+            error_markup(ViewId::Societe, e),
+        )
+        .await
+        .into_response();
     }
     let mut response = letter(state, headers, ViewId::Societe, move |store, today| {
         views::societe::duty(store, today, kind, period.as_deref())
@@ -666,9 +705,14 @@ async fn retract_vat_reversal(
         })
         .await;
     if let Some(Err(e)) = result {
-        return respond(headers, ViewId::Societe, error_markup(ViewId::Societe, e))
-            .await
-            .into_response();
+        return respond(
+            state,
+            headers,
+            ViewId::Societe,
+            error_markup(ViewId::Societe, e),
+        )
+        .await
+        .into_response();
     }
     let mut response = letter(state, headers, ViewId::Societe, move |store, today| {
         views::societe::duty(store, today, kind, period.as_deref())
@@ -805,9 +849,14 @@ async fn retract_duty_filed(
         })
         .await;
     if let Some(Err(e)) = result {
-        return respond(headers, ViewId::Societe, error_markup(ViewId::Societe, e))
-            .await
-            .into_response();
+        return respond(
+            state,
+            headers,
+            ViewId::Societe,
+            error_markup(ViewId::Societe, e),
+        )
+        .await
+        .into_response();
     }
     let mut response = letter(state, headers, ViewId::Societe, move |store, today| {
         views::societe::duty(store, today, kind, period.as_deref())
@@ -892,7 +941,7 @@ pub async fn societe_statement(
     };
     let today = state.today();
     // La lettre se rafraîchit elle-même (hx-swap outerHTML, sans cible #content).
-    // On ne l'habille du bureau que pour la page et pour un remplacement de #content.
+    // On ne l'habille du plateau que pour la page et pour un remplacement de #content.
     let frame = fragment == views::societe::ReleveFragment::Letter
         && (!is_htmx_request(&headers) || target == "content" || target == "#content");
     let content = state
@@ -908,7 +957,7 @@ pub async fn societe_statement(
         )
         .await
         .unwrap_or_else(|| locked_markup(ViewId::Societe));
-    respond(headers, ViewId::Societe, content).await
+    respond(&state, headers, ViewId::Societe, content).await
 }
 
 pub async fn societe_identity(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
@@ -968,23 +1017,27 @@ pub async fn societe(State(state): State<AppState>, headers: HeaderMap) -> Html<
         })
         .await
         .unwrap_or_else(|| locked_markup(ViewId::Societe));
-    respond(headers, ViewId::Societe, content).await
+    respond(&state, headers, ViewId::Societe, content).await
 }
 
-pub async fn aide(headers: HeaderMap) -> Html<String> {
-    respond(headers, ViewId::Aide, views::aide::index()).await
+pub async fn aide(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
+    respond(&state, headers, ViewId::Aide, views::aide::index()).await
 }
 
-pub async fn aide_recipe(headers: HeaderMap, Path(slug): Path<String>) -> Html<String> {
-    respond(headers, ViewId::Aide, views::aide::page(&slug)).await
+pub async fn aide_recipe(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(slug): Path<String>,
+) -> Html<String> {
+    respond(&state, headers, ViewId::Aide, views::aide::page(&slug)).await
 }
 
-pub async fn lexique(headers: HeaderMap) -> Html<String> {
-    respond(headers, ViewId::Aide, views::aide::page("lexique")).await
+pub async fn lexique(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
+    respond(&state, headers, ViewId::Aide, views::aide::page("lexique")).await
 }
 
-pub async fn console(headers: HeaderMap) -> Html<String> {
-    respond(headers, ViewId::Console, views::console::render()).await
+pub async fn console(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
+    respond(&state, headers, ViewId::Console, views::console::render()).await
 }
 
 pub async fn index(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {

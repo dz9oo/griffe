@@ -352,7 +352,7 @@ fn places(period: i32, receipts_dir: &str) -> Markup {
     html! {
         h2 { "Deux endroits." }
         div class="places" {
-            div class="place" {
+            article class="place reglages-card" {
                 p class="kicker" { "chiffré" }
                 h3 { "Au coffre" }
                 p class="prose" {
@@ -362,7 +362,7 @@ fn places(period: i32, receipts_dir: &str) -> Markup {
                 p class="path" title=(receipts_dir) { (receipts_dir) }
             }
             div class="places-rule" aria-hidden="true" {}
-            div class="place" {
+            article class="place reglages-card" {
                 p class="kicker" { "en clair" }
                 h3 { "Pour un contrôle" }
                 p class="prose" {
@@ -430,14 +430,13 @@ fn chapter_markup(
     let selected = default_kind(checklist);
     let later = later_born_here_line(&checklist.items);
     html! {
-        div class="letter" id="papiers-letter" data-view=(ViewId::Societe.slug())
+        div class="letter reglages-desk" id="papiers-letter" data-view=(ViewId::Societe.slug())
             hx-get=(href)
             hx-trigger="griffe:saved from:body"
             hx-swap="outerHTML"
             hx-disinherit="hx-swap" {
             (back())
             (mast(period, today, millesimes))
-            h1 { "Les papiers." }
             p class="lede" {
                 "Les originaux nés ici restent ici. Ce que Griffe ne produit pas "
                 "(Kbis, statuts, accusé de dépôt), vous le déposez."
@@ -448,23 +447,27 @@ fn chapter_markup(
             @if let Some(msg) = note {
                 p class="mast-note" { (msg) }
             }
-            h2 { "Ce que Griffe écrit." }
-            @if let Some(line) = later {
-                p class="prose later-line" {
-                    (line)
-                    " "
-                    a href="/aide/papiers"
-                      hx-get="/aide/papiers"
-                      hx-target="#content"
-                      hx-push-url="true" {
-                        "Lesquelles ?"
+            article class="reglages-card" {
+                h2 { "Ce que Griffe écrit." }
+                @if let Some(line) = later {
+                    p class="prose later-line" {
+                        (line)
+                        " "
+                        a href="/aide/papiers"
+                          hx-get="/aide/papiers"
+                          hx-target="#content"
+                          hx-push-url="true" {
+                            "Lesquelles ?"
+                        }
                     }
                 }
+                (paper_list(&checklist.items, papers, true, period))
             }
-            (paper_list(&checklist.items, papers, true, period))
-            h2 { "Ce que vous apportez." }
-            (paper_list(&checklist.items, papers, false, period))
-            (deposit_other(period, selected))
+            article class="reglages-card" {
+                h2 { "Ce que vous apportez." }
+                (paper_list(&checklist.items, papers, false, period))
+                (deposit_other(period, selected))
+            }
             (places(period, receipts_dir))
         }
     }

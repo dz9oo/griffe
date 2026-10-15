@@ -288,6 +288,19 @@ async fn an_htmx_boosted_navigation_returns_only_the_view_fragment() {
     );
 }
 
+fn chrome_today(body: &str) -> &str {
+    let marker = "class=\"today\">";
+    let start = body
+        .find(marker)
+        .unwrap_or_else(|| panic!("date de chrome absente : {body}"))
+        + marker.len();
+    let rest = &body[start..];
+    let end = rest
+        .find('<')
+        .unwrap_or_else(|| panic!("date de chrome non fermée : {rest}"));
+    rest[..end].trim()
+}
+
 #[tokio::test]
 async fn the_atelier_chrome_has_three_pieces_and_vendored_fonts() {
     let state = unlocked_state(&test_db_path("atelier-chrome")).await;
@@ -377,6 +390,41 @@ async fn the_atelier_chrome_has_three_pieces_and_vendored_fonts() {
     assert!(societe.contains("Te payer"), "{societe}");
     assert!(societe.contains("Le relevé"), "{societe}");
     assert!(societe.contains("La carte"), "{societe}");
+    let date = chrome_today(&jour);
+    assert_eq!(
+        chrome_today(&gens),
+        date,
+        "Les affaires porte la même date que Le jour"
+    );
+    assert_eq!(
+        chrome_today(&societe),
+        date,
+        "La société porte la même date que Le jour"
+    );
+    assert_eq!(jour.matches("class=\"today\"").count(), 1);
+    assert!(
+        jour.contains("viewBox=\"0 0 128 22\""),
+        "le wordmark embarque le paraphe : {jour}"
+    );
+
+    let societe_fragment = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/societe")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        !societe_fragment.contains("class=\"today\"") && !societe_fragment.contains("<header"),
+        "un fragment htmx ne réécrit pas la chrome : {societe_fragment}"
+    );
 
     let css = body_text(
         router
@@ -854,7 +902,10 @@ async fn the_day_letter_shows_the_mast_gestures_and_the_month_grid() {
     )
     .await;
     assert!(jour.contains("data-view=\"jour\""), "{jour}");
-    assert!(jour.contains("class=\"mast\""), "mât visible : {jour}");
+    assert!(
+        jour.contains("class=\"mast plateau-status\""),
+        "mât visible : {jour}"
+    );
     assert!(jour.contains("class=\"pupitre"), "{jour}");
     assert!(
         jour.contains("Ce matin, un geste")
@@ -923,7 +974,10 @@ async fn the_day_letter_shows_the_mast_gestures_and_the_month_grid() {
     )
     .await;
     assert!(fragment.contains("data-view=\"jour\""), "{fragment}");
-    assert!(fragment.contains("class=\"mast\""), "{fragment}");
+    assert!(
+        fragment.contains("class=\"mast plateau-status\""),
+        "{fragment}"
+    );
     assert!(fragment.contains("class=\"pupitre"), "{fragment}");
 }
 
@@ -1298,6 +1352,83 @@ async fn les_affaires_lists_three_chapters_and_opens_a_dossier() {
     assert!(found.contains("Camille"), "{found}");
     assert!(!found.contains("Plus tard"), "{found}");
     assert!(!found.contains("Aucun nom."), "{found}");
+    assert!(
+        found.contains("/affaires/Camille%20Rivi%C3%A8re?vue=tas&amp;q=cami"),
+        "{found}"
+    );
+    assert!(!found.contains("id=\"affaire\""), "{found}");
+
+    let opened = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Camille%20Rivi%C3%A8re?vue=tas&q=cami")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(opened.contains("Revenir au menu"), "{opened}");
+    assert!(
+        opened.contains("/affaires?vue=tas&amp;q=cami"),
+        "le retour garde la vue et la recherche : {opened}"
+    );
+    assert!(!opened.contains("id=\"affaire\""), "{opened}");
+    let mut rest = opened.as_str();
+    for label in [
+        "En cours",
+        "Écrire",
+        "La fiche",
+        "L'estimation",
+        "Les travaux",
+        "Noter une rencontre",
+    ] {
+        let at = rest
+            .find(label)
+            .or_else(|| rest.find("L&#x27;estimation"))
+            .unwrap_or_else(|| panic!("{label} manque : {opened}"));
+        let hit = if rest[at..].starts_with(label) {
+            label
+        } else {
+            "L&#x27;estimation"
+        };
+        rest = &rest[at + hit.len()..];
+    }
+    for (suffix, marker) in [
+        ("", "En cours"),
+        ("/ecrire", "Une lettre"),
+        ("/fiche", "La fiche."),
+        ("/estimation", "L'estimation."),
+        ("/travaux", "Les travaux."),
+        ("/rencontre", "Une rencontre."),
+    ] {
+        let door = body_text(
+            router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!(
+                            "/affaires/Camille%20Rivi%C3%A8re{suffix}?vue=tas&q=cami"
+                        ))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(
+            door.contains("Revenir au menu") && door.contains("/affaires?vue=tas&amp;q=cami"),
+            "{suffix} ne revient pas au filtre : {door}"
+        );
+        let marked = door.contains(marker)
+            || (suffix == "/estimation" && door.contains("L&#x27;estimation."))
+            || (suffix == "/travaux" && door.contains("tiennent sur une fiche"));
+        assert!(marked, "{suffix} n'ouvre pas sa page : {door}");
+    }
 
     let pile = body_text(
         router
@@ -1410,24 +1541,31 @@ async fn les_affaires_lists_three_chapters_and_opens_a_dossier() {
             .unwrap();
     }
 
-    let posted = body_text(
-        router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/affaires/Camille%20Rivi%C3%A8re/envoye")
-                    .header("content-type", "application/x-www-form-urlencoded")
-                    .header("HX-Request", "true")
-                    .body(Body::from(
-                        "subject_line=Bonjour&body=On+se+voit+mardi+pour+en+parler.",
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap(),
-    )
-    .await;
+    let posted_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/affaires/Camille%20Rivi%C3%A8re/envoye")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from(
+                    "subject_line=Bonjour&body=On+se+voit+mardi+pour+en+parler.",
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(posted_response.status(), StatusCode::OK);
+    assert_eq!(
+        posted_response
+            .headers()
+            .get("HX-Trigger")
+            .and_then(|value| value.to_str().ok()),
+        Some("griffe:saved"),
+        "C'est parti confirme l'enregistrement"
+    );
+    let posted = body_text(posted_response).await;
     assert!(
         posted.contains("On se voit mardi pour en parler."),
         "la lettre classée est dans l'historique : {posted}"
@@ -1807,7 +1945,7 @@ async fn le_jour_nomme_les_conversations_et_le_dossier_note_fiche_estimation_ren
 }
 
 #[tokio::test]
-async fn la_societe_shows_the_landscape_chapters_and_a_closed_dividend() {
+async fn la_societe_opens_on_the_plateau_and_folds_each_chapter() {
     let db_path = test_db_path("letter-societe");
     let state = unlocked_state(&db_path)
         .await
@@ -1898,8 +2036,15 @@ async fn la_societe_shows_the_landscape_chapters_and_a_closed_dividend() {
     )
     .await;
     assert!(home.contains("data-view=\"societe\""), "{home}");
-    assert!(home.contains("class=\"bureau\""), "bureau : {home}");
-    assert!(home.contains("class=\"landscape\""), "paysage : {home}");
+    assert!(home.contains("class=\"plateau\""), "plateau : {home}");
+    assert!(!home.contains("bureau-pane"), "accueil sans volet : {home}");
+    assert!(!home.contains("bureau-columns"), "{home}");
+    assert!(
+        !home.contains("class=\"landscape\""),
+        "la piste n'est plus l'accueil : {home}"
+    );
+    assert!(!home.contains("Revenir au menu"), "{home}");
+    assert!(home.contains("href=\"/societe/piste\""), "{home}");
     assert!(home.contains("Tenir"), "{home}");
     assert!(home.contains("Te payer"), "{home}");
     assert!(
@@ -1908,12 +2053,8 @@ async fn la_societe_shows_the_landscape_chapters_and_a_closed_dividend() {
     );
     assert!(home.contains("Les réglages"), "{home}");
     assert!(home.contains("La piste"), "{home}");
-    let piste_at = home.find("La piste").expect("La piste");
-    let piste_tag = &home[piste_at.saturating_sub(500)..piste_at];
-    assert!(
-        piste_tag.contains("aria-current=\"true\""),
-        "la piste est la ligne courante : {piste_tag}"
-    );
+    assert!(home.contains("Les échéances"), "{home}");
+    assert!(home.contains("La maison"), "{home}");
     assert!(home.contains("Entre toi et la société"), "{home}");
     assert!(home.contains("/societe/payer"), "{home}");
     assert!(home.contains("Les papiers"), "{home}");
@@ -1922,7 +2063,7 @@ async fn la_societe_shows_the_landscape_chapters_and_a_closed_dividend() {
     assert!(home.contains("/societe/courrier"), "{home}");
     assert!(
         home.contains("/affaires/phrases?depuis=societe"),
-        "les phrases restent dans le bureau : {home}"
+        "les phrases restent au plateau : {home}"
     );
     assert!(
         !home.contains("freeflow "),
@@ -1933,53 +2074,261 @@ async fn la_societe_shows_the_landscape_chapters_and_a_closed_dividend() {
         "pas de sigle : {home}"
     );
 
-    let payer = body_text(
-        router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/societe/payer")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap(),
-    )
-    .await;
-    assert!(payer.contains("Te payer"), "{payer}");
-    assert!(
-        payer.contains("n'est pas clos") || payer.contains("n&#x27;est pas clos"),
-        "dividende fermé : {payer}"
-    );
-    assert!(!payer.contains("CA3"), "{payer}");
-
-    let releve = body_text(
-        router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/societe/releve")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap(),
-    )
-    .await;
-    assert!(
-        releve.contains("class=\"bureau\""),
-        "le relevé s'ouvre dans le bureau : {releve}"
-    );
-    assert!(releve.contains("Leroy"), "{releve}");
-    assert!(
-        releve.contains("dette") || releve.contains("pas une charge"),
-        "Leroy = dette : {releve}"
-    );
-    assert!(!releve.contains("freeflow "), "{releve}");
-    assert!(
-        !releve.to_lowercase().contains("c'est moi que je me paie"),
-        "{releve}"
-    );
+    let chapters = [
+        "/societe/piste",
+        "/societe/releve",
+        "/societe/payer",
+        "/societe/compte",
+        "/societe/annee",
+        "/societe/impots",
+        "/societe/cloture",
+        "/societe/identite",
+        "/societe/courrier",
+        "/societe/papiers",
+        "/affaires/phrases?depuis=societe",
+    ];
+    for uri in chapters {
+        let page = body_text(
+            router
+                .clone()
+                .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap(),
+        )
+        .await;
+        let family = if uri.contains("piste") || uri.contains("releve") {
+            "tenir"
+        } else if uri.contains("payer") || uri.contains("compte") || uri.contains("annee") {
+            "payer"
+        } else if uri.contains("impots") || uri.contains("cloture") {
+            "etat"
+        } else {
+            "reglages"
+        };
+        assert!(page.contains("Revenir au menu"), "{uri} : {page}");
+        assert!(
+            !page.contains("bureau-columns") && !page.contains("bureau-pane"),
+            "{uri}"
+        );
+        assert!(
+            page.contains(&format!("data-family=\"{family}\"")),
+            "{uri} famille {family} : {page}"
+        );
+        assert!(!page.contains("freeflow "), "{uri}");
+        assert!(
+            !page.contains("CA3") && !page.contains("3514") && !page.contains("2777"),
+            "{uri}"
+        );
+        match uri {
+            "/societe/piste" => {
+                assert!(page.contains("class=\"landscape\""), "{page}");
+                assert!(page.contains("aria-current=\"page\""), "{page}");
+                assert_eq!(page.matches("class=\"tenir-card\"").count(), 1, "{page}");
+                let card = page.find("class=\"tenir-card\"").expect("carte");
+                assert!(
+                    page[card..].contains("class=\"landscape\""),
+                    "la figure reste dans la carte : {page}"
+                );
+                assert!(
+                    page.contains("stroke-dasharray"),
+                    "le pointillé reste : {page}"
+                );
+                assert!(
+                    page.contains("clôture dans 25 jours"),
+                    "la légende déjà écrite : {page}"
+                );
+                assert!(
+                    page.contains("aujourd'hui") || page.contains("aujourd&#x27;hui"),
+                    "{page}"
+                );
+                assert!(!page.contains("<h1"), "{page}");
+                let work = page.find("class=\"work\"").expect("volet");
+                let foot = page[work..].find("class=\"foot\"").expect("pied");
+                let pane = &page[work..work + foot];
+                assert!(!pane.contains("<form"), "pas de formulaire : {pane}");
+                assert!(!pane.contains("<button"), "pas de bouton inventé : {pane}");
+                assert!(!page.contains("hx-on"), "{page}");
+            }
+            "/societe/payer" => {
+                assert!(
+                    page.contains("n'est pas clos") || page.contains("n&#x27;est pas clos"),
+                    "dividende fermé : {page}"
+                );
+                assert!(page.contains("data-payer=\"mois\""), "{page}");
+                assert!(page.contains("Comme un salaire"), "{page}");
+                assert!(page.contains("Plus tard, en dividendes"), "{page}");
+                assert!(page.contains("Cette année, pour vivre"), "{page}");
+                assert!(page.contains("Ouverte"), "{page}");
+                assert!(page.contains("Fermée"), "{page}");
+                assert!(
+                    page.contains("Le prochain virement, depuis le relevé"),
+                    "{page}"
+                );
+                assert!(!page.contains("<form"), "pas de formulaire : {page}");
+                assert!(!page.contains("hx-on"), "{page}");
+            }
+            "/societe/compte" => {
+                assert!(page.contains("data-payer=\"compte\""), "{page}");
+                assert!(
+                    page.contains("Rien entre toi et la société")
+                        || page.contains("Rien entre toi et la soci&#xE9;t&#xE9;"),
+                    "{page}"
+                );
+                assert!(page.contains("avancés de ta poche"), "{page}");
+                assert!(page.contains("pris sur le compte de la société"), "{page}");
+                assert!(page.contains("mis sur le compte de la société"), "{page}");
+                assert!(page.contains(">Avancé<"), "{page}");
+                assert!(page.contains(">Pris<"), "{page}");
+                assert!(page.contains(">Apporté<"), "{page}");
+                assert!(!page.contains("<form"), "pas de formulaire : {page}");
+            }
+            "/societe/annee" => {
+                assert!(page.contains("data-payer=\"annee\""), "{page}");
+                assert!(page.contains(">Versé<"), "{page}");
+                assert!(page.contains(">Objectif<"), "{page}");
+                assert!(page.contains("class=\"meter\""), "{page}");
+                assert!(!page.contains("<form"), "pas de formulaire : {page}");
+            }
+            "/societe/impots" => {
+                assert!(page.contains("Pas des sigles"), "{page}");
+                assert!(page.contains("etat-desk"), "{page}");
+                assert!(page.contains(">Les échéances<"), "{page}");
+                assert!(!page.contains("Ce que tu dois"), "{page}");
+                assert!(!page.contains("<h1"), "{page}");
+                assert!(!page.contains("hx-on"), "{page}");
+            }
+            "/societe/cloture" => {
+                assert!(page.contains("class=\"etat-card\""), "{page}");
+                assert!(page.contains("ul class=\"hist\""), "{page}");
+                assert!(page.contains(">Clore<"), "{page}");
+                assert!(!page.contains("<h1"), "{page}");
+                assert!(
+                    !page.contains("<form"),
+                    "pas de formulaire inventé : {page}"
+                );
+                assert!(!page.contains("hx-on"), "{page}");
+            }
+            "/societe/releve" => {
+                assert!(page.contains("Leroy"), "{page}");
+                assert!(
+                    page.contains("dette") || page.contains("pas une charge"),
+                    "Leroy = dette : {page}"
+                );
+                assert!(
+                    !page.to_lowercase().contains("c'est moi que je me paie"),
+                    "{page}"
+                );
+                assert!(
+                    page.contains("class=\"letter spread tenir-desk\""),
+                    "{page}"
+                );
+                assert_eq!(page.matches("class=\"tenir-card\"").count(), 1, "{page}");
+                assert!(page.contains("Déposer un export"), "{page}");
+                let deposit = page.find("Déposer un export").expect("dépôt");
+                let opener = &page[deposit.saturating_sub(240)..deposit];
+                assert!(
+                    opener.contains("type=\"button\"")
+                        && opener.contains("hx-get=\"/banque/import\""),
+                    "le dépôt ouvre le volet : {opener}"
+                );
+                assert!(!opener.contains("<form"), "pas de form inventé : {opener}");
+                assert!(page.contains("class=\"releve-search\""), "{page}");
+                assert!(page.contains("class=\"block\""), "{page}");
+                assert!(
+                    page.contains("hx-trigger=\"griffe:saved from:body\""),
+                    "{page}"
+                );
+                assert!(!page.contains("<h1"), "{page}");
+                assert!(!page.contains("hx-on"), "{page}");
+                let card = page.find("class=\"tenir-card\"").expect("carte");
+                let card_end = page[card..]
+                    .find("</article>")
+                    .map(|end| card + end)
+                    .expect("fin de carte");
+                let search = page.find("class=\"releve-search\"").expect("recherche");
+                assert!(
+                    search > card_end,
+                    "la recherche n'est pas une carte : {page}"
+                );
+            }
+            "/affaires/phrases?depuis=societe" => {
+                assert!(
+                    page.contains("data-piece=\"societe\" aria-current=\"page\""),
+                    "le soulignement reste La société : {page}"
+                );
+                assert!(page.contains("phrase-desk"), "{page}");
+                assert!(page.contains("reglages-desk"), "{page}");
+                assert_eq!(page.matches("reglages-card").count(), 1, "{page}");
+                assert!(page.contains("class=\"phrase-line\""), "{page}");
+                assert!(page.contains("class=\"phrase-stage\""), "{page}");
+                assert!(page.contains("id=\"phrase-sheet\""), "{page}");
+                assert!(
+                    page.contains("Les conversations déjà engagées finissent leur série."),
+                    "{page}"
+                );
+                assert!(!page.contains("<h1"), "{page}");
+                assert!(!page.contains("hx-on"), "{page}");
+                let line = page.find("class=\"phrase-line\"").expect("genres");
+                let card = page.find("reglages-card").expect("carte");
+                let form = page.find("<form").expect("formulaire");
+                assert!(
+                    line < card && card < form,
+                    "la ligne, puis la carte, puis le formulaire : {page}"
+                );
+            }
+            "/societe/identite" => {
+                assert!(page.contains("class=\"letter reglages-desk\""), "{page}");
+                assert_eq!(page.matches("reglages-card").count(), 2, "{page}");
+                assert!(page.contains("ul class=\"people\""), "{page}");
+                assert!(page.contains("552100554"), "le SIREN déjà écrit : {page}");
+                assert!(page.contains("pas un formulaire de paramètres"), "{page}");
+                assert!(page.contains(">Le coffre<"), "{page}");
+                assert!(page.contains("Modifier la carte"), "{page}");
+                assert!(page.contains("href=\"/view/societe\""), "{page}");
+                assert!(page.contains("selon qui ils sont"), "{page}");
+                assert!(!page.contains("<h1"), "{page}");
+                assert!(
+                    !page.contains("<form"),
+                    "pas de formulaire inventé : {page}"
+                );
+                assert!(!page.contains("hx-on"), "{page}");
+                let people = page.find("ul class=\"people\"").expect("liste");
+                let coffre = page.find(">Le coffre<").expect("coffre");
+                let edit = page.find("Modifier la carte").expect("lien");
+                let cards: Vec<usize> = page
+                    .match_indices("reglages-card")
+                    .map(|(i, _)| i)
+                    .collect();
+                assert!(
+                    cards[0] < people && people < cards[1] && cards[1] < coffre && coffre < edit,
+                    "la liste, le coffre, puis le lien : {page}"
+                );
+            }
+            "/societe/courrier" => {
+                assert!(page.contains("courrier-desk"), "{page}");
+                assert_eq!(page.matches("reglages-card").count(), 4, "{page}");
+                assert!(
+                    page.contains("Pas encore branché") || page.contains("Prêt"),
+                    "{page}"
+                );
+                assert!(!page.contains("<h1"), "{page}");
+                assert!(!page.contains("hx-on"), "{page}");
+            }
+            "/societe/papiers" => {
+                assert!(page.contains("id=\"papiers-letter\""), "{page}");
+                assert!(page.contains("class=\"letter reglages-desk\""), "{page}");
+                assert!(page.contains("class=\"mast\""), "{page}");
+                assert!(page.contains("class=\"places\""), "{page}");
+                assert_eq!(page.matches("reglages-card").count(), 4, "{page}");
+                assert!(!page.contains("<h1"), "{page}");
+                assert!(!page.contains("hx-on"), "{page}");
+                let mast = page.find("class=\"mast\"").expect("mât");
+                let card = page.find("reglages-card").expect("carte");
+                assert!(mast < card, "le mât reste au-dessus des cartes : {page}");
+            }
+            _ => {}
+        }
+    }
 
     let papers = body_text(
         router
@@ -1997,8 +2346,8 @@ async fn la_societe_shows_the_landscape_chapters_and_a_closed_dividend() {
     )
     .await;
     assert!(
-        papers.contains("class=\"bureau\"") && papers.contains("Les papiers."),
-        "les papiers restent au bureau : {papers}"
+        papers.contains("Revenir au menu") && papers.contains("Les originaux nés ici restent ici."),
+        "les papiers restent dans le pli : {papers}"
     );
     let slip = body_text(
         router
@@ -2016,8 +2365,10 @@ async fn la_societe_shows_the_landscape_chapters_and_a_closed_dividend() {
     )
     .await;
     assert!(
-        slip.contains("Les papiers.") && !slip.contains("class=\"bureau\""),
-        "le rafraîchissement de la lettre ne redessine pas les colonnes : {slip}"
+        slip.contains("Les originaux nés ici restent ici.")
+            && !slip.contains("plateau")
+            && !slip.contains("Revenir au menu"),
+        "le rafraîchissement de la lettre ne redessine pas le pli : {slip}"
     );
 
     let phrases = body_text(
@@ -2025,9 +2376,8 @@ async fn la_societe_shows_the_landscape_chapters_and_a_closed_dividend() {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/affaires/phrases?depuis=societe")
+                    .uri("/affaires/phrases?depuis=lettre")
                     .header("HX-Request", "true")
-                    .header("HX-Target", "content")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -2036,8 +2386,8 @@ async fn la_societe_shows_the_landscape_chapters_and_a_closed_dividend() {
     )
     .await;
     assert!(
-        phrases.contains("class=\"bureau\"") && phrases.contains("phrase-desk"),
-        "les phrases s'ouvrent dans le bureau : {phrases}"
+        !phrases.contains("data-family=\"reglages\""),
+        "ouvertes depuis une affaire, les phrases restent dans Les affaires : {phrases}"
     );
 
     let old = body_text(
@@ -2053,11 +2403,14 @@ async fn la_societe_shows_the_landscape_chapters_and_a_closed_dividend() {
             .unwrap(),
     )
     .await;
-    assert!(old.contains("Le relevé"), "{old}");
+    assert!(
+        old.contains("Tu déposes l'export de la banque") && old.contains("Déposer un export"),
+        "l'ancienne adresse ouvre le relevé : {old}"
+    );
 }
 
 #[tokio::test]
-async fn la_societe_bureau_bar_clears_the_word() {
+async fn la_societe_plateau_presses_a_line_into_its_family() {
     let state = unlocked_state(&test_db_path("bureau-css")).await;
     let css = body_text(
         griffe_web::router(state)
@@ -2071,27 +2424,251 @@ async fn la_societe_bureau_bar_clears_the_word() {
             .unwrap(),
     )
     .await;
+    assert!(!css.contains(".bureau-line"), "plus de gouttière : {css}");
+    assert!(css.contains("background: #e6dfd2"), "{css}");
+    for tint in [
+        "#fbf7f0", "#f4ead6", "#f8f1e2", "#f6e4dc", "#f8ebe4", "#efe6d6", "#f3ecdf", "#f3ece0",
+        "#ead9bc", "#f0d2c6", "#e6d9c4",
+    ] {
+        assert!(css.contains(tint), "{tint} manque : {css}");
+    }
     assert!(
-        css.contains(".bureau-line") && css.contains("padding: 6px 8px 6px 14px"),
-        "{css}"
+        css.contains(".plateau-line .who {\n  font-family: var(--sans);\n  font-size: 15px;"),
+        "les lignes du plateau ne sont pas des titres d'affiche : {css}"
     );
     assert!(
-        css.contains(".bureau-line[aria-current=\"true\"]")
-            && css.contains("inset 3px 0 0 var(--seal)"),
-        "{css}"
+        css.contains(
+            ".plateau-family[data-family=\"payer\"] .plateau-line:hover { background: #ead9bc; }"
+        ),
+        "le survol reste dans la famille : {css}"
     );
     assert!(
-        css.contains(".bureau-line .who {\n  font-family: var(--sans);\n  font-size: 15px;"),
-        "les lignes du bureau ne sont pas des titres d'affiche : {css}"
+        !css.contains("a.plateau-line:hover .who { color: var(--seal)"),
+        "le survol n'emprunte pas le sceau : {css}"
     );
+    assert!(
+        css.contains(".plateau-open[data-family] .plateau-pill[aria-current=\"page\"]"),
+        "la pastille courante est en encre : {css}"
+    );
+    assert!(
+        css.contains(".payer-card {\n  background: #f8f1e2;"),
+        "la lecture de Te payer : {css}"
+    );
+    assert!(
+        css.contains(".payer-grid[data-payer=\"mois\"]"),
+        "la grille de Ce mois-ci : {css}"
+    );
+    assert!(
+        css.contains(".payer-card.on {\n  box-shadow: inset 3px 0 0 var(--ink)"),
+        "la porte ouverte est en encre : {css}"
+    );
+    assert!(
+        css.contains(".etat-card {\n  background: #f8ebe4;"),
+        "la lecture de L'État : {css}"
+    );
+    assert!(
+        css.contains(".plateau-family[data-family=\"etat\"] { background: #f6e4dc; }"),
+        "la teinte de menu de L'État reste : {css}"
+    );
+    assert!(
+        css.contains(
+            ".etat-grid[data-etat=\"1\"] {\n  grid-template-columns: minmax(min-content, 1fr);"
+        ),
+        "une carte, une colonne : {css}"
+    );
+    assert!(
+        css.contains(".etat-grid[data-etat=\"3\"] {\n  grid-template-columns: repeat(3, minmax(min-content, 1fr));"),
+        "trois cartes, trois colonnes : {css}"
+    );
+    assert!(
+        css.contains(
+            ".plateau-open[data-family=\"etat\"] .work:has(.etat-desk) {\n  display: flex;\n  flex-direction: column;\n  overflow: auto;"
+        ),
+        "le chapitre défile : {css}"
+    );
+    let etat_css = css
+        .split("/* L'État — cartes de lecture.")
+        .nth(1)
+        .expect("cartes de L'État");
+    let under_1100 = etat_css
+        .split("@media (max-width: 1100px)")
+        .nth(1)
+        .expect("palier 1100 des échéances");
+    assert!(
+        under_1100.contains(
+            ".etat-grid[data-etat=\"2\"],\n  .etat-grid[data-etat=\"3\"] {\n    grid-template-columns: repeat(2, minmax(min-content, 1fr));"
+        ),
+        "sous 1100 px, deux colonnes dès deux cartes : {under_1100}"
+    );
+    let under_700 = etat_css
+        .split("@media (max-width: 700px)")
+        .nth(1)
+        .expect("palier 700 des échéances");
+    assert!(
+        under_700.contains(
+            ".etat-grid[data-etat=\"1\"],\n  .etat-grid[data-etat=\"2\"],\n  .etat-grid[data-etat=\"3\"] {\n    grid-template-columns: minmax(min-content, 1fr);"
+        ),
+        "sous 700 px, une colonne : {under_700}"
+    );
+    assert!(
+        css.contains(".tenir-card {\n  background: #fbf7f0;"),
+        "la lecture de Tenir : {css}"
+    );
+    assert!(
+        css.contains(".plateau-family[data-family=\"tenir\"] { background: #fbf7f0; }"),
+        "la teinte de menu de Tenir reste : {css}"
+    );
+    assert!(
+        css.contains(".landscape svg { width: 100%; height: 160px;"),
+        "le paysage garde sa hauteur : {css}"
+    );
+    assert!(
+        css.contains(
+            ".plateau-open[data-family=\"tenir\"] .work:has(.tenir-desk) {\n  display: flex;\n  flex-direction: column;\n  overflow: auto;"
+        ),
+        "le chapitre défile : {css}"
+    );
+    let tenir_css = css
+        .split("/* Tenir — cartes de lecture.")
+        .nth(1)
+        .expect("cartes de Tenir");
+    let under_1100_tenir = tenir_css
+        .split("@media (max-width: 1100px)")
+        .nth(1)
+        .expect("palier 1100 de Tenir");
+    let rule_1100 = under_1100_tenir.split("@media").next().unwrap();
+    assert!(
+        rule_1100.contains(
+            ".tenir-desk,\n  .tenir-card {\n    display: flex;\n    flex-direction: column;\n    width: 100%;"
+        ),
+        "sous 1100 px, la carte reste seule : {rule_1100}"
+    );
+    assert!(
+        !rule_1100.contains("grid-template-columns") && !rule_1100.contains("repeat("),
+        "pas de grille à plusieurs colonnes : {rule_1100}"
+    );
+    let under_700_tenir = tenir_css
+        .split("@media (max-width: 700px)")
+        .nth(1)
+        .expect("palier 700 de Tenir");
+    let rule_700 = under_700_tenir.split("@media").next().unwrap();
+    assert!(
+        rule_700.contains(
+            ".tenir-desk,\n  .tenir-card {\n    display: flex;\n    flex-direction: column;\n    width: 100%;"
+        ),
+        "sous 700 px, la carte reste seule : {rule_700}"
+    );
+    assert!(
+        !rule_700.contains("grid-template-columns") && !rule_700.contains("repeat("),
+        "pas de grille à plusieurs colonnes : {rule_700}"
+    );
+    assert!(
+        css.contains(".reglages-card {\n  background: #f3ecdf;"),
+        "la lecture des réglages : {css}"
+    );
+    assert!(
+        css.contains(".plateau-family[data-family=\"reglages\"] { background: #efe6d6; }"),
+        "la teinte de menu des réglages reste : {css}"
+    );
+    assert!(
+        css.contains(".plateau .work .courrier-desk { max-width: none;"),
+        "le courrier prend la largeur du bureau : {css}"
+    );
+    assert!(
+        css.contains(
+            "@container courrier (min-width: 880px) {\n  .courrier-board { grid-template-columns: minmax(18rem, 42rem) minmax(16rem, 1fr); }"
+        ),
+        "la lecture et les autres cartes partagent la ligne : {css}"
+    );
+    assert!(
+        css.contains(".courrier-side > .courrier-formula { grid-column: 1; grid-row: 1; }"),
+        "la formule et l'envoi du jour tiennent sur une ligne : {css}"
+    );
+    assert!(
+        css.contains(
+            ".plateau-open[data-family=\"reglages\"] .work:has(.reglages-desk) {\n  display: flex;\n  flex-direction: column;\n  overflow: auto;"
+        ),
+        "le chapitre défile : {css}"
+    );
+    assert!(
+        css.contains("@container courrier (min-width: 640px)"),
+        "la grille du serveur reste une grille de champs : {css}"
+    );
+    let reglages_css = css
+        .split("/* Les réglages — cartes de lecture.")
+        .nth(1)
+        .expect("cartes des réglages");
+    let under_1100_reglages = reglages_css
+        .split("@media (max-width: 1100px)")
+        .nth(1)
+        .expect("palier 1100 des réglages");
+    let rule_1100_reglages = under_1100_reglages.split("@media").next().unwrap();
+    assert!(
+        rule_1100_reglages.contains(
+            ".reglages-desk,\n  .reglages-desk > .reglages-card {\n    display: flex;\n    flex-direction: column;\n    width: 100%;"
+        ),
+        "sous 1100 px, les cartes empilées restent une colonne : {rule_1100_reglages}"
+    );
+    assert!(
+        !rule_1100_reglages.contains("grid-template-columns")
+            && !rule_1100_reglages.contains("repeat("),
+        "pas de grille à plusieurs colonnes : {rule_1100_reglages}"
+    );
+    let under_700_reglages = reglages_css
+        .split("@media (max-width: 700px)")
+        .nth(1)
+        .expect("palier 700 des réglages");
+    let rule_700_reglages = under_700_reglages.split("@media").next().unwrap();
+    assert!(
+        rule_700_reglages.contains(
+            ".reglages-desk,\n  .reglages-desk > .reglages-card {\n    display: flex;\n    flex-direction: column;\n    width: 100%;"
+        ),
+        "sous 700 px, les cartes empilées restent une colonne : {rule_700_reglages}"
+    );
+    assert!(
+        !rule_700_reglages.contains("grid-template-columns")
+            && !rule_700_reglages.contains("repeat("),
+        "pas de grille à plusieurs colonnes : {rule_700_reglages}"
+    );
+    assert!(css.contains("background: var(--ink);"), "{css}");
     assert!(css.contains("accent-color: var(--ink)"), "{css}");
+
+    let js = body_text(
+        griffe_web::router(unlocked_state(&test_db_path("plateau-js")).await)
+            .oneshot(
+                Request::builder()
+                    .uri("/assets/app.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        js.contains("Échap, sur un chapitre") && js.contains("data-plateau-home"),
+        "Échap revient au menu depuis app.js : {js}"
+    );
 }
 
 #[tokio::test]
 async fn society_duties_stack_the_title_above_the_body() {
-    let state = unlocked_state(&test_db_path("letter-impots"))
+    let db_path = test_db_path("letter-impots");
+    let state = unlocked_state(&db_path)
         .await
         .with_today(time::macros::date!(2026 - 09 - 05));
+    {
+        let store = Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+        store
+            .connection()
+            .execute(
+                "INSERT INTO setup (id, declared_new_company, updated_at, created_on)
+                 VALUES (1, 0, '2026-01-01T00:00:00Z', '2026-12-01')
+                 ON CONFLICT (id) DO UPDATE SET created_on = '2026-12-01'",
+                [],
+            )
+            .unwrap();
+    }
     let router = griffe_web::router(state);
 
     let page = body_text(
@@ -2107,12 +2684,105 @@ async fn society_duties_stack_the_title_above_the_body() {
             .unwrap(),
     )
     .await;
-    assert!(page.contains("Ce que tu dois"), "{page}");
+    assert!(page.contains(">Les échéances<"), "{page}");
+    assert!(!page.contains("Ce que tu dois"), "{page}");
+    assert!(!page.contains("<h1"), "{page}");
+    assert!(
+        page.contains("Pas des sigles. Des dates, des montants, et où le déposer."),
+        "{page}"
+    );
+    assert!(
+        page.contains("data-etat=\"2\""),
+        "deux groupes dessinés : {page}"
+    );
+    assert_eq!(page.matches("class=\"etat-card\"").count(), 2, "{page}");
+    assert!(
+        !page.contains(">En retard<"),
+        "le groupe vide reste absent : {page}"
+    );
+    assert!(page.contains("ul class=\"chapters\""), "{page}");
     assert!(
         page.contains("acompte d'impôt sur les sociétés")
             || page.contains("acompte d&#x27;impôt sur les sociétés"),
         "{page}"
     );
+    assert!(
+        !page.contains("CA3") && !page.contains("3514") && !page.contains("2777"),
+        "{page}"
+    );
+    assert!(!page.contains("hx-on"), "{page}");
+    assert!(!page.contains("Aucune échéance dans l'horizon."), "{page}");
+    assert!(!page.contains("Rien à déposer pour l'instant."), "{page}");
+    let avant = page.find("Avant ce coffre").expect("carte de rattrapage");
+    let open = page[..avant].rfind("<article").expect("carte");
+    let close = page[avant..].find("</article>").expect("fin de carte") + avant;
+    let card = &page[open..close];
+    let form_at = card
+        .find("hx-post=\"/societe/impots/catch-up\"")
+        .expect("formulaire de rattrapage");
+    let form_end = card[form_at..].find("</form>").expect("fin de formulaire") + form_at;
+    let form = &card[form_at..form_end];
+    assert!(
+        form.contains("type=\"submit\"")
+            && (form.contains("Tout était à jour à l'échéance")
+                || form.contains("Tout était à jour à l&#x27;échéance")),
+        "le bouton reste dans le formulaire : {form}"
+    );
+    assert!(card.contains("ul class=\"chapters\""), "{card}");
+    let lede = page.find("Pas des sigles").expect("phrase d'entrée");
+    let grid = page.find("class=\"etat-grid\"").expect("grille");
+    assert!(lede < grid, "la phrase reste au-dessus de la grille");
+
+    let cloture = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/societe/cloture")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(cloture.contains(">Clore<"), "{cloture}");
+    assert!(!cloture.contains("<h1"), "{cloture}");
+    assert!(cloture.contains("Le parcours, en phrases."), "{cloture}");
+    assert!(cloture.contains("ul class=\"hist\""), "{cloture}");
+    assert!(cloture.contains(">fait<"), "{cloture}");
+    assert!(
+        cloture.contains("aujourd'hui") || cloture.contains("aujourd&#x27;hui"),
+        "{cloture}"
+    );
+    assert!(cloture.contains("ensuite"), "{cloture}");
+    let hist_at = cloture.find("ul class=\"hist\"").expect("parcours");
+    let hist_end = cloture[hist_at..].find("</ul>").expect("fin du parcours") + hist_at;
+    let hist = &cloture[hist_at..hist_end];
+    assert!(
+        hist.contains("Arrêter les comptes"),
+        "la phrase du parcours reste : {hist}"
+    );
+    assert!(
+        !hist.contains("hx-get=\"/cloture/new\""),
+        "le bouton n'apparaît que l'exercice écoulé : {hist}"
+    );
+    assert!(!hist.contains("<form"), "{hist}");
+    assert!(!cloture.contains("<form"), "{cloture}");
+    assert!(
+        !cloture.contains("CA3") && !cloture.contains("3514") && !cloture.contains("2777"),
+        "{cloture}"
+    );
+    let phrase = cloture
+        .find("Le parcours, en phrases.")
+        .expect("phrase d'exercice");
+    let phrase_open = cloture[..phrase].rfind("<article").expect("carte");
+    let phrase_close = cloture[phrase..].find("</article>").expect("fin") + phrase;
+    assert!(
+        cloture[phrase_open..phrase_close].contains("class=\"etat-card\""),
+        "{cloture}"
+    );
+    assert!(phrase_close < hist_at, "le parcours reste sous la carte");
 
     let css = body_text(
         router
@@ -2167,6 +2837,26 @@ async fn society_duty_letter_shows_the_amount_and_the_2571_path() {
     );
     assert!(!page.contains("freeflow "), "{page}");
     assert!(page.contains("impots.gouv.fr"), "{page}");
+    assert!(page.contains("Revenir au menu"), "{page}");
+    assert!(
+        page.contains("Les échéances") && page.contains("href=\"/societe/impots\""),
+        "le parent est Les échéances : {page}"
+    );
+    assert!(page.contains("Clore"), "le voisin est Clore : {page}");
+    assert!(page.contains("data-family=\"etat\""), "{page}");
+    assert!(page.contains("<h1"), "la lettre garde son titre : {page}");
+    assert!(
+        page.contains("class=\"block\""),
+        "la lettre garde ses blocs : {page}"
+    );
+    assert!(
+        !page.contains("etat-desk") && !page.contains("etat-card"),
+        "la lettre ne devient pas une carte : {page}"
+    );
+    assert!(
+        !page.contains("bureau-columns") && !page.contains("bureau-pane"),
+        "{page}"
+    );
 
     let unknown = router
         .clone()
@@ -2401,6 +3091,14 @@ async fn filing_september_ca3_does_not_clear_august() {
     assert!(
         list.contains("Déjà déposé"),
         "août a quitté En retard : {list}"
+    );
+    assert!(list.contains("ul class=\"chapters\""), "{list}");
+    assert!(list.contains("<details class=\"duties-done\""), "{list}");
+    let filed_at = list.find("<details").expect("repliable");
+    let last_card = list.rfind("</article>").expect("cartes");
+    assert!(
+        last_card < filed_at,
+        "Déjà déposé reste sous la grille : {list}"
     );
 
     let august = body_text(
@@ -3209,6 +3907,16 @@ async fn going_back_from_the_statement_keeps_content_inner_html() {
         releve.contains("hx-disinherit"),
         "le letter du relevé ne doit pas léguer outerHTML à ses enfants : {releve}"
     );
+    assert!(
+        !releve.contains("Revenir au menu"),
+        "ce fragment ne redessine pas le pli : {releve}"
+    );
+    assert!(
+        releve.contains("class=\"letter spread tenir-desk\""),
+        "{releve}"
+    );
+    assert!(releve.contains("class=\"tenir-card\""), "{releve}");
+    assert!(!releve.contains("<h1"), "{releve}");
     assert!(!releve.contains("<!DOCTYPE html>"), "{releve}");
 }
 
@@ -8597,6 +9305,60 @@ label_close=Dernier+mot&subject_close=Fin&body_close=Un+dernier+mot.&revision_cl
 }
 
 #[tokio::test]
+async fn phrases_from_a_letter_stay_in_the_dossier_lens() {
+    let db_path = test_db_path("phrases-lens");
+    let state = unlocked_state(&db_path).await;
+    let router = griffe_web::router(state);
+    router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/affaires/nouvelle")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from("who=Camille+Rivi%C3%A8re&phrase=accompagnement"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let href = "/affaires/phrases?depuis=lettre&pour=Camille%20Rivi%C3%A8re";
+    let back = "class=\"back\" href=\"/affaires/Camille%20Rivi%C3%A8re\"";
+    let full = body_text(
+        router
+            .clone()
+            .oneshot(Request::builder().uri(href).body(Body::empty()).unwrap())
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(full.contains("class=\"lens lens-open\""), "{full}");
+    assert!(!full.contains("id=\"affaire\""), "{full}");
+    assert!(full.contains("Revenir au menu"), "{full}");
+    assert!(full.contains(back), "{full}");
+    assert!(
+        !full.contains("class=\"back\" href=\"/affaires/Camille%20Rivi%C3%A8re/ecrire\""),
+        "{full}"
+    );
+    let fragment = body_text(
+        router
+            .oneshot(
+                Request::builder()
+                    .uri(href)
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(!fragment.contains("class=\"lens\""), "{fragment}");
+    assert!(fragment.contains("phrase-desk"), "{fragment}");
+    assert!(fragment.contains(back), "{fragment}");
+}
+
+#[tokio::test]
 async fn an_enseigne_is_not_greeted_with_its_article() {
     let db_path = test_db_path("enseigne-prenom");
     let state = unlocked_state(&db_path).await;
@@ -8758,7 +9520,7 @@ async fn engaged_conversations_finish_their_series_and_a_new_one_takes_three_mom
             .unwrap(),
     )
     .await;
-    assert!(phrases.contains("class=\"phrase-desk\""), "{phrases}");
+    assert!(phrases.contains("phrase-desk"), "{phrases}");
     assert!(!phrases.contains("letter spread"), "{phrases}");
     assert!(phrases.contains("class=\"letter-stage\""), "{phrases}");
     let tables = phrases.matches("<table").count();
@@ -9975,6 +10737,16 @@ async fn the_statement_pages_badges_and_search() {
         page.contains("40 mouvements ne sont pas encore traités, sur 41."),
         "{page}"
     );
+    assert_eq!(
+        page.matches("class=\"tenir-card\"").count(),
+        1,
+        "une carte, pas une par mouvement : {page}"
+    );
+    assert_eq!(
+        page.matches("class=\"block\"").count(),
+        40,
+        "chaque mouvement reste un article : {page}"
+    );
     assert!(
         page.contains("non traité") && page.contains("traité"),
         "{page}"
@@ -10359,6 +11131,24 @@ async fn october_first_declares_september_vat_and_closes_the_year_that_just_ende
         cloture.contains("hx-get=\"/cloture/new\""),
         "le bouton ouvre le formulaire : {cloture}"
     );
+    let hist_at = cloture.find("ul class=\"hist\"").expect("parcours");
+    let hist_end = cloture[hist_at..].find("</ul>").expect("fin du parcours") + hist_at;
+    let hist = &cloture[hist_at..hist_end];
+    assert!(
+        hist.contains("hx-get=\"/cloture/new\"") && hist.contains("hx-target=\"#panel\""),
+        "le bouton du parcours ouvre le volet : {hist}"
+    );
+    assert!(
+        !hist.contains("<form"),
+        "pas de formulaire inventé : {hist}"
+    );
+    assert!(cloture.contains("class=\"etat-card\""), "{cloture}");
+    assert!(!cloture.contains("<h1"), "{cloture}");
+    assert!(!cloture.contains("<form"), "{cloture}");
+    assert!(
+        !cloture.contains("CA3") && !cloture.contains("3514") && !cloture.contains("2777"),
+        "{cloture}"
+    );
     assert!(
         !cloture.contains("30 septembre 2027") && !cloture.contains("1 octobre 2027"),
         "2027 n'est pas l'exercice à clore : {cloture}"
@@ -10497,11 +11287,11 @@ async fn two_fiches_with_the_same_respondent_open_under_qui() {
     assert!(list.contains("Mairie de Hornaing"), "{list}");
     assert!(list.contains("Mairie de Somain"), "{list}");
     assert!(
-        list.contains("href=\"/affaires/Mairie%20de%20Hornaing\""),
+        list.contains("href=\"/affaires/Mairie%20de%20Hornaing?vue=tas\""),
         "{list}"
     );
     assert!(
-        list.contains("href=\"/affaires/Mairie%20de%20Somain\""),
+        list.contains("href=\"/affaires/Mairie%20de%20Somain?vue=tas\""),
         "{list}"
     );
     assert!(
@@ -11779,10 +12569,10 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
     )
     .await;
     assert!(
-        chapter.contains("class=\"bureau\""),
-        "le courrier reste au bureau : {chapter}"
+        chapter.contains("class=\"plateau plateau-open\"") && chapter.contains("Revenir au menu"),
+        "le courrier reste dans le pli : {chapter}"
     );
-    assert!(chapter.contains("Le courrier."), "{chapter}");
+    assert!(chapter.contains("Pas encore branché."), "{chapter}");
     assert!(
         chapter.contains("D'où elles partent") || chapter.contains("D&#x27;où elles partent"),
         "{chapter}"
@@ -11797,8 +12587,50 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
         "{chapter}"
     );
     assert!(chapter.contains("courrier-desk"), "{chapter}");
+    assert!(chapter.contains("courrier-board"), "{chapter}");
+    assert!(chapter.contains("courrier-side"), "{chapter}");
     assert!(chapter.contains("courrier-read"), "{chapter}");
     assert!(chapter.contains("class=\"letter-stage\""), "{chapter}");
+    assert!(chapter.contains("class=\"letter-frame\""), "{chapter}");
+    let frame_at = chapter.find("class=\"letter-frame\"").unwrap();
+    let close_at = chapter.find("</iframe>").unwrap_or(usize::MAX);
+    assert!(
+        close_at < chapter.len(),
+        "l'iframe se ferme, sinon le navigateur cache la suite : {chapter}"
+    );
+    for marker in [
+        "La feuille",
+        "courrier-send",
+        "courrier-formula",
+        "courrier-account",
+        "courrier-jour",
+    ] {
+        let at = chapter.find(marker).unwrap_or(usize::MAX);
+        assert!(
+            close_at < at,
+            "{marker} doit rester après </iframe> : {chapter}"
+        );
+    }
+    assert!(frame_at < close_at, "{chapter}");
+    assert!(
+        chapter.contains("&lt;!DOCTYPE html&gt;") || chapter.contains("<!DOCTYPE html>"),
+        "{chapter}"
+    );
+    assert!(chapter.contains(">Clair<"), "{chapter}");
+    assert!(chapter.contains(">Sauge<"), "{chapter}");
+    assert!(chapter.contains("class=\"mail-pane\""), "{chapter}");
+    assert!(chapter.contains("class=\"mail-subject\""), "{chapter}");
+    assert!(chapter.contains("hx-get=\"/aide/courrier\""), "{chapter}");
+    assert!(chapter.contains("Une autre feuille"), "{chapter}");
+    let pane_at = chapter.find("class=\"mail-pane\"").unwrap_or(usize::MAX);
+    let formula_at = chapter.find("courrier-formula").unwrap_or(0);
+    assert!(pane_at < formula_at, "{chapter}");
+    assert!(chapter.contains("#f6f0e4"), "{chapter}");
+    assert!(chapter.contains("#2c2418"), "{chapter}");
+    assert!(
+        chapter.contains("hx-post=\"/societe/courrier/apparence\""),
+        "{chapter}"
+    );
     assert!(
         chapter.contains("hx-post=\"/societe/courrier/apercu\""),
         "{chapter}"
@@ -11886,9 +12718,24 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
         "{preview_body}"
     );
     assert!(
-        preview_body.contains(">https://atelier.example/page<"),
+        preview_body.contains("&gt;https://atelier.example/page&lt;")
+            || preview_body.contains(">https://atelier.example/page<"),
         "{preview_body}"
     );
+    assert!(
+        preview_body.contains("&lt;!DOCTYPE html&gt;") || preview_body.contains("<!DOCTYPE html>"),
+        "{preview_body}"
+    );
+    let preview_open = preview_body
+        .find("class=\"letter-frame\"")
+        .unwrap_or(usize::MAX);
+    let preview_close = preview_body.find("</iframe>").unwrap_or(usize::MAX);
+    assert!(
+        preview_open < preview_close && preview_close < preview_body.len(),
+        "l'aperçu ferme l'iframe : {preview_body}"
+    );
+    assert!(preview_body.contains("#f6f0e4"), "{preview_body}");
+    assert!(preview_body.contains("#8a3e24"), "{preview_body}");
     assert!(
         preview_body.contains("text-decoration:none"),
         "{preview_body}"
@@ -11907,7 +12754,7 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
                 .header("content-type", "application/x-www-form-urlencoded")
                 .header("HX-Request", "true")
                 .body(Body::from(
-                    "ink=sceau&metier=Atelier&site=https%3A%2F%2Fatelier.example&signature=Atelier+Nord",
+                    "ink=sauge&metier=Atelier&site=https%3A%2F%2Fatelier.example&signature=Atelier+Nord%0Ahttps%3A%2F%2Fatelier.example",
                 ))
                 .unwrap(),
         )
@@ -11919,6 +12766,8 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
         lire_body.contains("La lettre est enregistrée."),
         "{lire_body}"
     );
+    assert!(lire_body.contains("#1e6b45"), "{lire_body}");
+    assert!(lire_body.contains("#e5eee6"), "{lire_body}");
     assert!(!lire_body.contains("#9f3218"), "{lire_body}");
     assert!(
         !lire_body.contains("text-decoration:underline"),

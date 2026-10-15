@@ -58,12 +58,7 @@ pub fn render_search(
     type_id: &str,
     vue: &str,
 ) -> Result<Markup, AppError> {
-    lens_page(store, today, query, type_id, vue, None)
-}
-
-/// La liste, avec un dossier déjà ouvert dans le panneau (rechargement direct).
-pub fn render_with_panel(store: &Store, today: Date, panel: Markup) -> Result<Markup, AppError> {
-    lens_page(store, today, "", "", "", Some(panel))
+    lens_page(store, today, query, type_id, vue)
 }
 
 fn lens_page(
@@ -72,7 +67,6 @@ fn lens_page(
     query: &str,
     type_id: &str,
     vue: &str,
-    panel: Option<Markup>,
 ) -> Result<Markup, AppError> {
     let list = people_list(store.connection(), today)?;
     let catalog = work_kinds(store.connection())?;
@@ -98,7 +92,6 @@ fn lens_page(
             allowed: allowed.as_ref(),
             vue: parse_vue(vue),
         },
-        panel,
     ))
 }
 
@@ -109,22 +102,6 @@ struct LensFilter<'a> {
     type_id: &'a str,
     allowed: Option<&'a HashSet<ClientId>>,
     vue: Vue,
-}
-
-/// Barre du panneau : fermer, ou couvrir la liste. Le fragment htmx la reçoit aussi.
-#[must_use]
-pub fn panel_chrome(inner: Markup) -> Markup {
-    html! {
-        div class="lens-bar" {
-            button class="lens-span" type="button" data-lens-span { "Pleine largeur" }
-            a class="lens-close" href="/affaires"
-              hx-get="/affaires" hx-target="#content" hx-swap="innerHTML" hx-push-url="true" {
-                "Fermer"
-            }
-            span class="lens-hint" { "Échap" }
-        }
-        div class="lens-body" { (inner) }
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -191,12 +168,125 @@ const VUES: [Vue; 6] = [
     Vue::Tout,
 ];
 
-fn lens_markup(
-    list: &PeopleList,
-    today: Date,
-    filter: &LensFilter<'_>,
-    panel: Option<Markup>,
+/// Vue, recherche et type à recoller sur le retour au menu et sur les pastilles.
+#[derive(Clone, Debug, Default)]
+pub struct ListKeep {
+    pub vue: String,
+    pub q: String,
+    pub type_id: String,
+}
+
+impl ListKeep {
+    #[must_use]
+    pub fn list_href(&self) -> String {
+        affaires_href(parse_vue(&self.vue), self.q.trim(), self.type_id.trim())
+    }
+
+    /// Le chemin, avec la requête de la liste quand elle en a une.
+    #[must_use]
+    pub fn on(&self, path: &str) -> String {
+        match self.list_href().split_once('?') {
+            Some((_, query)) if !query.is_empty() => format!("{path}?{query}"),
+            _ => path.to_string(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum DossierDoor {
+    Cours,
+    Ecrire,
+    Fiche,
+    Estimation,
+    Travaux,
+    Rencontre,
+}
+
+const DOORS: [DossierDoor; 6] = [
+    DossierDoor::Cours,
+    DossierDoor::Ecrire,
+    DossierDoor::Fiche,
+    DossierDoor::Estimation,
+    DossierDoor::Travaux,
+    DossierDoor::Rencontre,
+];
+
+fn door_label(door: DossierDoor) -> &'static str {
+    match door {
+        DossierDoor::Cours => "En cours",
+        DossierDoor::Ecrire => "Écrire",
+        DossierDoor::Fiche => "La fiche",
+        DossierDoor::Estimation => "L'estimation",
+        DossierDoor::Travaux => "Les travaux",
+        DossierDoor::Rencontre => "Noter une rencontre",
+    }
+}
+
+fn door_suffix(door: DossierDoor) -> &'static str {
+    match door {
+        DossierDoor::Cours => "",
+        DossierDoor::Ecrire => "/ecrire",
+        DossierDoor::Fiche => "/fiche",
+        DossierDoor::Estimation => "/estimation",
+        DossierDoor::Travaux => "/travaux",
+        DossierDoor::Rencontre => "/rencontre",
+    }
+}
+
+/// Phrases ouvertes depuis une lettre ou une fiche, en page entière :
+/// le dossier prend la largeur. Le fragment htmx reste la page des phrases.
+#[must_use]
+pub fn phrases_in_dossier(who: &str, door: DossierDoor, inner: Markup) -> Markup {
+    dress(
+        Some(who),
+        Some(door),
+        None,
+        &ListKeep::default(),
+        false,
+        inner,
+    )
+}
+
+fn dress(
+    who: Option<&str>,
+    door: Option<DossierDoor>,
+    title: Option<&str>,
+    list: &ListKeep,
+    no_history: bool,
+    inner: Markup,
 ) -> Markup {
+    let back = list.list_href();
+    html! {
+        div class="lens lens-open" data-view=(ViewId::Gens.slug()) data-list=(back)
+          hx-history=[no_history.then_some("false")] {
+            div class="lens-bar" {
+                a class="lens-close" href=(back)
+                  hx-get=(back) hx-target="#content" hx-swap="innerHTML" hx-push-url="true" {
+                    "Revenir au menu"
+                }
+                @if let Some(name) = who {
+                    strong class="lens-who" { (name) }
+                    nav class="lens-pills" aria-label="Dossier" {
+                        @for item in DOORS {
+                            @let href = list.on(&format!("{}{}", person_href(name), door_suffix(item)));
+                            @let current = door == Some(item);
+                            a class="lens-pill" href=(href)
+                              hx-get=(href) hx-target="#content" hx-swap="innerHTML" hx-push-url="true"
+                              aria-current=[current.then_some("page")] {
+                                (door_label(item))
+                            }
+                        }
+                    }
+                } @else if let Some(heading) = title {
+                    strong class="lens-who" { (heading) }
+                }
+            }
+            div class="lens-body" { (inner) }
+        }
+    }
+}
+
+fn lens_markup(list: &PeopleList, today: Date, filter: &LensFilter<'_>) -> Markup {
     let LensFilter {
         query,
         catalog,
@@ -257,72 +347,74 @@ fn lens_markup(
             rows
         }
     };
-    let href = affaires_href(vue, query, type_id);
+    let keep = ListKeep {
+        vue: vue_key(vue).to_string(),
+        q: query.to_string(),
+        type_id: type_id.to_string(),
+    };
+    let href = keep.list_href();
+    let fresh = keep.on("/affaires/nouvelle");
+    let types = keep.on("/affaires/types");
     let type_label = catalog
         .iter()
         .find(|kind| kind.id == type_id)
         .map_or("tout type", |kind| kind.name.as_str());
     html! {
         div class="lens" data-view=(ViewId::Gens.slug()) data-list=(href) {
-            div class="lens-top" {
-                div class="lens-sentence" {
-                    "Montre "
-                    (vue_menu(vue, query, type_id))
-                    @if !catalog.is_empty() {
-                        ", "
-                        (type_menu(catalog, vue, query, type_id, type_label))
+            article class="plateau-status" {
+                div class="lens-top" {
+                    div class="lens-sentence plateau-sentence" {
+                        "Montre "
+                        (vue_menu(vue, query, type_id))
+                        @if !catalog.is_empty() {
+                            ", "
+                            (type_menu(catalog, vue, query, type_id, type_label))
+                        }
+                        " — "
+                        span class="count" { (noms_fr(rows.len())) }
                     }
-                    " — "
-                    span class="count" { (noms_fr(rows.len())) }
-                }
-                form class="lens-find" action="/affaires" method="get"
-                  hx-get="/affaires" hx-target="#content" hx-swap="innerHTML" hx-push-url="true"
-                  hx-trigger="input changed delay:250ms, submit" {
-                    @if !vue_key(vue).is_empty() {
-                        input type="hidden" name="vue" value=(vue_key(vue));
+                    form class="lens-find" action="/affaires" method="get"
+                      hx-get="/affaires" hx-target="#content" hx-swap="innerHTML" hx-push-url="true"
+                      hx-trigger="input changed delay:250ms, submit" {
+                        @if !vue_key(vue).is_empty() {
+                            input type="hidden" name="vue" value=(vue_key(vue));
+                        }
+                        @if !type_id.is_empty() {
+                            input type="hidden" name="type" value=(type_id);
+                        }
+                        input id="q" class="lens-search" type="search" name="q" value=(query)
+                          placeholder="Un nom, une société" aria-label="Un nom, une société" autocomplete="off";
                     }
-                    @if !type_id.is_empty() {
-                        input type="hidden" name="type" value=(type_id);
+                    a class="lens-new" href=(fresh)
+                      hx-get=(fresh) hx-target="#content" hx-swap="innerHTML" hx-push-url="true" {
+                        "Nouvelle conversation"
                     }
-                    input id="q" class="lens-search" type="search" name="q" value=(query)
-                      placeholder="Un nom, une société" aria-label="Un nom, une société" autocomplete="off";
-                }
-                a class="lens-new" href="/affaires/nouvelle"
-                  hx-get="/affaires/nouvelle" hx-target="#affaire" hx-swap="innerHTML" hx-push-url="true" {
-                    "Nouvelle conversation"
-                }
-                a class="lens-quiet" href="/affaires/types"
-                  hx-get="/affaires/types" hx-target="#content" hx-push-url="true" {
-                    "Les types"
+                    a class="lens-quiet" href=(types)
+                      hx-get=(types) hx-target="#content" hx-push-url="true" {
+                        "Les types"
+                    }
                 }
             }
-            div class="lens-work" {
-                div class="lens-table" {
-                    @if conv_empty {
-                        p class="empty-state" { "Aucune conversation de ce type." }
-                    }
-                    @if mission_empty {
-                        p class="empty-state" { "Aucune mission de ce type." }
-                    }
-                    @if rows.is_empty() && query.is_empty() && !conv_empty && !mission_empty {
-                        p class="empty-state" { (empty_vue(vue)) }
-                    } @else if rows.is_empty() && !query.is_empty() {
-                        p class="empty-state" { "Aucun nom." }
-                    } @else if !rows.is_empty() {
-                        div class="lens-head" {
-                            span { "Nom" }
-                            span { "Où on en est" }
-                            span { "Prochain pas" }
-                            span class="amt" { "Montant" }
-                        }
-                        @for row in &rows {
-                            (lens_row(row, today, catalog))
-                        }
-                    }
+            div class="lens-board" {
+                @if conv_empty {
+                    p class="empty-state" { "Aucune conversation de ce type." }
                 }
-                aside id="affaire" class="lens-panel" {
-                    @if let Some(inner) = panel {
-                        (panel_chrome(inner))
+                @if mission_empty {
+                    p class="empty-state" { "Aucune mission de ce type." }
+                }
+                @if rows.is_empty() && query.is_empty() && !conv_empty && !mission_empty {
+                    p class="empty-state" { (empty_vue(vue)) }
+                } @else if rows.is_empty() && !query.is_empty() {
+                    p class="empty-state" { "Aucun nom." }
+                } @else if !rows.is_empty() {
+                    div class="lens-head" {
+                        span { "Nom" }
+                        span { "Où on en est" }
+                        span { "Prochain pas" }
+                        span class="amt" { "Montant" }
+                    }
+                    @for row in &rows {
+                        (lens_row(row, today, catalog, &keep))
                     }
                 }
             }
@@ -438,8 +530,8 @@ fn type_menu(catalog: &[WorkKind], vue: Vue, query: &str, active: &str, label: &
     }
 }
 
-fn lens_row(row: &PersonRow, today: Date, catalog: &[WorkKind]) -> Markup {
-    let href = person_href(&row.name);
+fn lens_row(row: &PersonRow, today: Date, catalog: &[WorkKind], keep: &ListKeep) -> Markup {
+    let href = keep.on(&person_href(&row.name));
     let alarm = row.cues.iter().any(|cue| {
         matches!(
             cue,
@@ -451,7 +543,7 @@ fn lens_row(row: &PersonRow, today: Date, catalog: &[WorkKind]) -> Markup {
     let amt_class = if alarm { "amt alarm" } else { "amt" };
     html! {
         a class="trow" href=(href)
-          hx-get=(href) hx-target="#affaire" hx-swap="innerHTML" hx-push-url="true" {
+          hx-get=(href) hx-target="#content" hx-swap="innerHTML" hx-push-url="true" {
             span class="who-cell" {
                 strong { (row.name) }
                 @if !row.party.is_empty() && fold_name(&row.party) != fold_name(&row.name) {
@@ -576,9 +668,26 @@ fn cue_fr(cue: &PersonCue) -> String {
 }
 
 pub fn dossier_page(store: &Store, needle: &str, today: Date) -> Result<Markup, AppError> {
+    dossier_kept(store, needle, today, &ListKeep::default())
+}
+
+pub fn dossier_kept(
+    store: &Store,
+    needle: &str,
+    today: Date,
+    list: &ListKeep,
+) -> Result<Markup, AppError> {
     let dossier = person(store.connection(), needle, today)?;
     let look = LetterLook::from_store(store);
-    Ok(dossier_body(&dossier, today, None, None, &look))
+    Ok(dossier_body(
+        &dossier,
+        today,
+        None,
+        None,
+        &look,
+        list,
+        DossierDoor::Cours,
+    ))
 }
 
 /// Habit de la lettre sur cet écran. Le dossier ne le porte pas : une relecture
@@ -637,8 +746,24 @@ pub struct KindFormState {
 }
 
 pub fn dossier_markup(dossier: &PersonDossier, today: Date, flash: Option<&str>) -> Markup {
+    dossier_marked(
+        dossier,
+        today,
+        flash,
+        &ListKeep::default(),
+        DossierDoor::Cours,
+    )
+}
+
+pub fn dossier_marked(
+    dossier: &PersonDossier,
+    today: Date,
+    flash: Option<&str>,
+    list: &ListKeep,
+    door: DossierDoor,
+) -> Markup {
     let look = LetterLook::plain();
-    dossier_body(dossier, today, flash, None, &look)
+    dossier_body(dossier, today, flash, None, &look, list, door)
 }
 
 pub fn dossier_with_kinds(
@@ -648,14 +773,28 @@ pub fn dossier_with_kinds(
     kinds: &KindFormState,
 ) -> Markup {
     let look = LetterLook::plain();
-    dossier_body(dossier, today, flash, Some(kinds), &look)
+    dossier_body(
+        dossier,
+        today,
+        flash,
+        Some(kinds),
+        &look,
+        &ListKeep::default(),
+        DossierDoor::Cours,
+    )
 }
 
-fn kinds_form(dossier: &PersonDossier, href: &str, posted: Option<&KindFormState>) -> Markup {
+fn kinds_form(
+    dossier: &PersonDossier,
+    href: &str,
+    posted: Option<&KindFormState>,
+    list: &ListKeep,
+) -> Markup {
     let selected = posted.map_or(dossier.work_kinds.as_slice(), |state| {
         state.selected.as_slice()
     });
     let action = format!("{href}/types");
+    let types = list.on("/affaires/types");
     let worn: Vec<&WorkKind> = dossier
         .work_kind_catalog
         .iter()
@@ -679,8 +818,8 @@ fn kinds_form(dossier: &PersonDossier, href: &str, posted: Option<&KindFormState
                                     span { (kind.name) }
                                 }
                             }
-                            a class="kind-manage" href="/affaires/types"
-                              hx-get="/affaires/types" hx-target="#content" hx-push-url="true" {
+                            a class="kind-manage" href=(types)
+                              hx-get=(types) hx-target="#content" hx-push-url="true" {
                                 "Les types"
                             }
                         }
@@ -731,42 +870,48 @@ fn row_pastilles(names: &[String], catalog: &[WorkKind]) -> Markup {
     }
 }
 
+fn stays_in_cours(action: &PersonAction) -> bool {
+    !matches!(
+        action,
+        PersonAction::Write { .. }
+            | PersonAction::Fiche { .. }
+            | PersonAction::Quote { .. }
+            | PersonAction::LogMeeting { .. }
+    )
+}
+
 fn dossier_body(
     dossier: &PersonDossier,
     today: Date,
     flash: Option<&str>,
     posted: Option<&KindFormState>,
     look: &LetterLook,
+    list: &ListKeep,
+    door: DossierDoor,
 ) -> Markup {
     let href = person_href(&dossier.name);
     let client_fiche = matches!(dossier.key, PersonKey::Client { .. });
-    let (daily, fate): (Vec<_>, Vec<_>) = dossier
+    let kept: Vec<_> = dossier
         .actions
         .iter()
+        .filter(|action| stays_in_cours(action))
+        .collect();
+    let (daily, fate): (Vec<_>, Vec<_>) = kept
+        .into_iter()
         .partition(|action| !matches!(action, PersonAction::Stop { .. }));
-    let has_snooze = daily
-        .iter()
-        .any(|action| matches!(action, PersonAction::Snooze { .. }));
-    html! {
+    let inner = html! {
         div class="letter" data-view=(ViewId::Gens.slug()) data-person=(dossier.name) {
-            div class="who" { (dossier.name) }
             p class="co" { (subtitle(dossier, today)) }
             @if client_fiche {
-                (kinds_form(dossier, &href, posted))
+                (kinds_form(dossier, &href, posted, list))
             }
             @if let Some(msg) = flash {
                 p class="mast-note" role="status" { (msg) }
             }
-            @if client_fiche || !daily.is_empty() {
+            @if !daily.is_empty() {
                 div class="row-actions" {
                     @for action in &daily {
-                        @if client_fiche && matches!(action, PersonAction::Snooze { .. }) {
-                            (travaux_link(&href))
-                        }
                         (action_button(action, &href))
-                    }
-                    @if client_fiche && !has_snooze {
-                        (travaux_link(&href))
                     }
                 }
             }
@@ -841,7 +986,8 @@ fn dossier_body(
                 }
             }
         }
-    }
+    };
+    dress(Some(&dossier.name), Some(door), None, list, false, inner)
 }
 
 fn subtitle(d: &PersonDossier, today: Date) -> String {
@@ -1367,16 +1513,6 @@ fn snooze_control(dossier_href: &str) -> Markup {
     }
 }
 
-fn travaux_link(dossier_href: &str) -> Markup {
-    let href = format!("{dossier_href}/travaux");
-    html! {
-        a class="quiet" href=(href)
-          hx-get=(href) hx-target="#content" hx-push-url="true" {
-            "Les travaux"
-        }
-    }
-}
-
 fn action_button(action: &PersonAction, dossier_href: &str) -> Markup {
     match action {
         PersonAction::Write { subject } => {
@@ -1548,11 +1684,29 @@ pub fn new_conversation(
     phrase_error: Option<&str>,
     banner: Option<&str>,
 ) -> Markup {
-    html! {
+    new_conversation_kept(
+        today,
+        who,
+        phrase,
+        who_error,
+        phrase_error,
+        banner,
+        &ListKeep::default(),
+    )
+}
+
+pub fn new_conversation_kept(
+    today: Date,
+    who: &str,
+    phrase: &str,
+    who_error: Option<&str>,
+    phrase_error: Option<&str>,
+    banner: Option<&str>,
+    list: &ListKeep,
+) -> Markup {
+    let back = list.list_href();
+    let inner = html! {
         div class="letter" data-view=(ViewId::Gens.slug()) {
-            a class="back" href="/affaires" hx-get="/affaires" hx-target="#content" hx-push-url="true" {
-                "← Les affaires"
-            }
             h1 { "Une conversation." }
             p class="lede" { "Un nom, une phrase. Le reste viendra — devis, projet, facture — quand ce sera vrai." }
             @if let Some(msg) = banner {
@@ -1564,13 +1718,14 @@ pub fn new_conversation(
                 input type="hidden" name="today" value=(format_date(today));
                 div class="row-actions" {
                     button class="seal" type="submit" { "Ouvrir la conversation" }
-                    a class="quiet" href="/affaires" hx-get="/affaires" hx-target="#content" hx-push-url="true" {
+                    a class="quiet" href=(back) hx-get=(back) hx-target="#content" hx-push-url="true" {
                         "Annuler"
                     }
                 }
             }
         }
-    }
+    };
+    dress(None, None, Some("Une conversation."), list, false, inner)
 }
 
 const MEETING_NATURES: &[(&str, &str)] = &[
@@ -1589,10 +1744,22 @@ pub fn meeting_form(
     note: &str,
     error: Option<&str>,
 ) -> Markup {
+    meeting_form_kept(dossier, today, kind, note, error, &ListKeep::default())
+}
+
+pub fn meeting_form_kept(
+    dossier: &PersonDossier,
+    today: Date,
+    kind: &str,
+    note: &str,
+    error: Option<&str>,
+    list: &ListKeep,
+) -> Markup {
     let href = person_href(&dossier.name);
-    html! {
+    let back = list.on(&href);
+    let inner = html! {
         div class="letter" data-view=(ViewId::Gens.slug()) {
-            a class="back" href=(href) hx-get=(href) hx-target="#content" hx-push-url="true" {
+            a class="back" href=(back) hx-get=(back) hx-target="#content" hx-push-url="true" {
                 "← " (dossier.name)
             }
             h1 { "Une rencontre." }
@@ -1609,7 +1776,15 @@ pub fn meeting_form(
                 }
             }
         }
-    }
+    };
+    dress(
+        Some(&dossier.name),
+        Some(DossierDoor::Rencontre),
+        None,
+        list,
+        false,
+        inner,
+    )
 }
 
 pub struct FicheValues {
@@ -1652,10 +1827,21 @@ pub fn fiche_page(
     errors: &FicheErrors,
     genre: &GenreField,
 ) -> Markup {
+    fiche_page_kept(dossier, values, errors, genre, &ListKeep::default())
+}
+
+pub fn fiche_page_kept(
+    dossier: &PersonDossier,
+    values: &FicheValues,
+    errors: &FicheErrors,
+    genre: &GenreField,
+    list: &ListKeep,
+) -> Markup {
     let href = person_href(&dossier.name);
-    html! {
+    let back = list.on(&href);
+    let inner = html! {
         div class="letter" data-view=(ViewId::Gens.slug()) {
-            a class="back" href=(href) hx-get=(href) hx-target="#content" hx-push-url="true" {
+            a class="back" href=(back) hx-get=(back) hx-target="#content" hx-push-url="true" {
                 "← " (dossier.name)
             }
             h1 { "La fiche." }
@@ -1688,7 +1874,15 @@ pub fn fiche_page(
                 }
             }
         }
-    }
+    };
+    dress(
+        Some(&dossier.name),
+        Some(DossierDoor::Fiche),
+        None,
+        list,
+        false,
+        inner,
+    )
 }
 
 fn respondent_fields(values: &FicheValues, errors: &FicheErrors) -> Markup {
@@ -1752,10 +1946,20 @@ pub fn estimate_page(
     values: &EstimateValues,
     errors: &EstimateErrors,
 ) -> Markup {
+    estimate_page_kept(dossier, values, errors, &ListKeep::default())
+}
+
+pub fn estimate_page_kept(
+    dossier: &PersonDossier,
+    values: &EstimateValues,
+    errors: &EstimateErrors,
+    list: &ListKeep,
+) -> Markup {
     let href = person_href(&dossier.name);
-    html! {
+    let back = list.on(&href);
+    let inner = html! {
         div class="letter spread" data-view=(ViewId::Gens.slug()) {
-            a class="back" href=(href) hx-get=(href) hx-target="#content" hx-push-url="true" {
+            a class="back" href=(back) hx-get=(back) hx-target="#content" hx-push-url="true" {
                 "← " (dossier.name)
             }
             h1 { "L'estimation." }
@@ -1783,7 +1987,15 @@ pub fn estimate_page(
                 }
             }
         }
-    }
+    };
+    dress(
+        Some(&dossier.name),
+        Some(DossierDoor::Estimation),
+        None,
+        list,
+        false,
+        inner,
+    )
 }
 
 fn travaux_prose(body: &str) -> Markup {
@@ -1804,11 +2016,15 @@ fn travaux_back(href: &str, name: &str) -> Markup {
 
 /// Lecture du récit. Le markdown n'est pas là : « Écrire » ouvre la source.
 pub fn travaux_page(dossier: &PersonDossier, note: &DossierWork) -> Markup {
+    travaux_page_kept(dossier, note, &ListKeep::default())
+}
+
+pub fn travaux_page_kept(dossier: &PersonDossier, note: &DossierWork, list: &ListKeep) -> Markup {
     let href = person_href(&dossier.name);
-    let edit = format!("{href}/travaux/ecrire");
-    html! {
+    let edit = list.on(&format!("{href}/travaux/ecrire"));
+    let inner = html! {
         div class="letter spread" data-view=(ViewId::Gens.slug()) hx-history="false" {
-            (travaux_back(&href, &dossier.name))
+            (travaux_back(&list.on(&href), &dossier.name))
             h1 { "Les travaux." }
             p class="lede" {
                 "Où on en est. L'estimation, à côté, dit ce que chaque ligne vaut."
@@ -1820,7 +2036,15 @@ pub fn travaux_page(dossier: &PersonDossier, note: &DossierWork) -> Markup {
                 (travaux_prose(&note.body))
             }
         }
-    }
+    };
+    dress(
+        Some(&dossier.name),
+        Some(DossierDoor::Travaux),
+        None,
+        list,
+        true,
+        inner,
+    )
 }
 
 /// Source markdown. `saved` est le texte du coffre : s'il diffère du champ, la page est sale.
@@ -1832,12 +2056,30 @@ pub fn travaux_edit(
     alert: Option<&str>,
     offer_vault: bool,
 ) -> Markup {
+    travaux_edit_kept(
+        dossier,
+        draft,
+        saved,
+        alert,
+        offer_vault,
+        &ListKeep::default(),
+    )
+}
+
+pub fn travaux_edit_kept(
+    dossier: &PersonDossier,
+    draft: &DossierWork,
+    saved: &str,
+    alert: Option<&str>,
+    offer_vault: bool,
+    list: &ListKeep,
+) -> Markup {
     let href = person_href(&dossier.name);
     let action = format!("{href}/travaux");
-    let edit = format!("{href}/travaux/ecrire");
-    html! {
+    let edit = list.on(&format!("{href}/travaux/ecrire"));
+    let inner = html! {
         div class="letter spread" data-view=(ViewId::Gens.slug()) hx-history="false" {
-            (travaux_back(&href, &dossier.name))
+            (travaux_back(&list.on(&href), &dossier.name))
             h1 { "Les travaux." }
             p class="travaux-hint" { "Il se garde tout seul." }
             form class="travaux-ecrire" method="post" action=(action)
@@ -1863,7 +2105,15 @@ pub fn travaux_edit(
                 }
             }
         }
-    }
+    };
+    dress(
+        Some(&dossier.name),
+        Some(DossierDoor::Travaux),
+        None,
+        list,
+        true,
+        inner,
+    )
 }
 
 /// Réponse d'une sauvegarde qui laisse le champ en place : révision, « Gardé. », alerte vide.
@@ -1951,6 +2201,8 @@ pub struct PhrasesView {
     pub chrome: LetterChrome,
     pub banner: Option<String>,
     pub status: Option<String>,
+    /// Ouvert depuis La société : le fil porte le titre, l'entrée est une carte.
+    pub reglages: bool,
 }
 
 /// Valeur du bouton « un autre ». Ce n'est pas un nom de genre.
@@ -1994,6 +2246,20 @@ pub struct KeepUi {
     pub recipient: String,
 }
 
+fn phrases_entry(view: &PhrasesView) -> Markup {
+    html! {
+        p class="lede" { (view.lede) }
+        p class="phrase-chronicle" id="phrase-chronicle" { (view.chronicle) }
+        p class="phrase-when" { "Les conversations déjà engagées finissent leur série." }
+        @if let Some(msg) = &view.banner {
+            p class="mast-note" role="alert" { (msg) }
+        }
+        @if let Some(msg) = &view.status {
+            p class="mast-note" role="status" { (msg) }
+        }
+    }
+}
+
 pub fn phrases_page(view: &PhrasesView) -> Markup {
     let order = view
         .moments
@@ -2002,12 +2268,15 @@ pub fn phrases_page(view: &PhrasesView) -> Markup {
         .collect::<Vec<_>>()
         .join(",");
     let preview = phrase_preview_href(&view.action);
+    let genre_title = view.reglages && view.title != "Les phrases.";
     html! {
-        div class="phrase-desk" data-view=(ViewId::Gens.slug()) {
+        div class={ "phrase-desk phrase-open" @if view.reglages { " reglages-desk" } } data-view=(ViewId::Gens.slug()) {
             a class="back" href=(view.back_href) hx-get=(view.back_href) hx-target="#content" hx-push-url="true" {
                 "← " (view.back_label)
             }
-            h1 { (view.title) }
+            @if !view.reglages {
+                h1 { (view.title) }
+            }
             p class="phrase-line" {
                 @for link in &view.links {
                     @if link.current {
@@ -2022,14 +2291,15 @@ pub fn phrases_page(view: &PhrasesView) -> Markup {
                     "Un autre genre"
                 }
             }
-            p class="lede" { (view.lede) }
-            p class="phrase-chronicle" id="phrase-chronicle" { (view.chronicle) }
-            p class="phrase-when" { "Les conversations déjà engagées finissent leur série." }
-            @if let Some(msg) = &view.banner {
-                p class="mast-note" role="alert" { (msg) }
-            }
-            @if let Some(msg) = &view.status {
-                p class="mast-note" role="status" { (msg) }
+            @if view.reglages {
+                article class="reglages-card" {
+                    @if genre_title {
+                        p { (view.title) }
+                    }
+                    (phrases_entry(view))
+                }
+            } @else {
+                (phrases_entry(view))
             }
             form hx-post=(view.action) hx-target="#content" hx-push-url="true" {
                 input type="hidden" name="order" value=(order);
@@ -2425,7 +2695,28 @@ pub fn letter_page(
     flash: Option<&str>,
     keep: &KeepUi,
 ) -> Result<Markup, AppError> {
+    letter_page_kept(
+        store,
+        dossier,
+        card,
+        today,
+        flash,
+        keep,
+        &ListKeep::default(),
+    )
+}
+
+pub fn letter_page_kept(
+    store: &Store,
+    dossier: &PersonDossier,
+    card: Option<&FollowUpCard>,
+    today: Date,
+    flash: Option<&str>,
+    keep: &KeepUi,
+    list: &ListKeep,
+) -> Result<Markup, AppError> {
     let href = person_href(&dossier.name);
+    let back = list.on(&href);
     let sender = follow_up_sender(store.connection())?;
     let from = sender.sender_email.as_deref().unwrap_or("—");
     let channels = fiche_channels_of(store, dossier)?;
@@ -2513,9 +2804,9 @@ pub fn letter_page(
         chrome: LetterChrome::from_profile(&mail),
     };
     let relire = format!("{href}/relire");
-    Ok(html! {
+    let inner = html! {
         div class="letter spread letter-desk" data-view=(ViewId::Gens.slug()) {
-            a class="back" href=(href) hx-get=(href) hx-target="#content" hx-push-url="true" {
+            a class="back" href=(back) hx-get=(back) hx-target="#content" hx-push-url="true" {
                 "← " (dossier.name)
             }
             @if mail.ready {
@@ -2640,7 +2931,15 @@ pub fn letter_page(
             }
             p class="date" { (letter_date(today)) }
         }
-    })
+    };
+    Ok(dress(
+        Some(&dossier.name),
+        Some(DossierDoor::Ecrire),
+        None,
+        list,
+        false,
+        inner,
+    ))
 }
 
 fn lower_first(value: &str) -> String {
@@ -2776,7 +3075,7 @@ pub fn new_genre_page(
     banner: Option<&str>,
 ) -> Markup {
     html! {
-        div class="letter" data-view=(ViewId::Gens.slug()) {
+        div class="letter phrase-open" data-view=(ViewId::Gens.slug()) {
             a class="back" href=(back_href) hx-get=(back_href) hx-target="#content" hx-push-url="true" {
                 "← " (back_label)
             }
@@ -2807,17 +3106,14 @@ fn choice_label(label: &str, key: &PersonKey, choices: &[(PersonKey, String)]) -
     }
 }
 
-pub fn several(needle: &str, choices: &[(PersonKey, String)]) -> Markup {
-    html! {
+pub fn several_kept(needle: &str, choices: &[(PersonKey, String)], list: &ListKeep) -> Markup {
+    let inner = html! {
         div class="letter" data-view=(ViewId::Gens.slug()) {
-            a class="back" href="/affaires" hx-get="/affaires" hx-target="#content" hx-push-url="true" {
-                "← Les affaires"
-            }
             div class="who" { (needle) }
             p class="lede" { "Plusieurs fiches. Choisis laquelle." }
             ul class="people" {
                 @for (key, label) in choices {
-                    @let href = person_href(&key.as_ref_str());
+                    @let href = list.on(&person_href(&key.as_ref_str()));
                     @let shown = choice_label(label, key, choices);
                     li {
                         a href=(href) hx-get=(href) hx-target="#content" hx-push-url="true" {
@@ -2827,20 +3123,23 @@ pub fn several(needle: &str, choices: &[(PersonKey, String)]) -> Markup {
                 }
             }
         }
-    }
+    };
+    dress(None, None, None, list, false, inner)
 }
 
 pub fn not_found(needle: &str, today: Date) -> Markup {
-    html! {
+    not_found_kept(needle, today, &ListKeep::default())
+}
+
+pub fn not_found_kept(needle: &str, today: Date, list: &ListKeep) -> Markup {
+    let inner = html! {
         div class="letter" data-view=(ViewId::Gens.slug()) {
-            a class="back" href="/affaires" hx-get="/affaires" hx-target="#content" hx-push-url="true" {
-                "← Les affaires"
-            }
             h1 { "Personne." }
             p class="lede" { "Aucune fiche ne correspond à « " (needle) " »." }
             p class="date" { (letter_date(today)) }
         }
-    }
+    };
+    dress(None, None, Some("Personne."), list, false, inner)
 }
 
 #[must_use]
@@ -2859,18 +3158,17 @@ pub fn load_card(
     }
 }
 
-pub fn types_page(
+pub fn types_page_kept(
     kinds: &[WorkKind],
     open: &str,
     draft: Option<(&str, &str, &str)>,
     banner: Option<&str>,
     confirming: Option<&str>,
+    list: &ListKeep,
 ) -> Markup {
-    html! {
+    let catalog = list.on("/affaires/types");
+    let inner = html! {
         div class="letter" data-view=(ViewId::Gens.slug()) {
-            a class="back" href="/affaires" hx-get="/affaires" hx-target="#content" hx-push-url="true" {
-                "← Les affaires"
-            }
             h1 { "Les types." }
             p class="lede" { "Un type dit le métier du dossier. Plusieurs peuvent tenir sur la même fiche." }
             @if let Some(msg) = banner {
@@ -2880,7 +3178,7 @@ pub fn types_page(
                 @for kind in kinds {
                     li class={ @if confirming == Some(kind.id.as_str()) || open == kind.id { "editing" } } {
                         @if confirming == Some(kind.id.as_str()) {
-                            (kind_confirm(kind))
+                            (kind_confirm(kind, &catalog))
                         } @else if open == kind.id {
                             (kind_editor(
                                 &format!("/affaires/types/{}", kind.id),
@@ -2888,9 +3186,10 @@ pub fn types_page(
                                 draft_or(kind, draft).1,
                                 draft_or(kind, draft).2,
                                 true,
+                                &catalog,
                             ))
                         } @else {
-                            @let href = format!("/affaires/types?ouvert={}", kind.id);
+                            @let href = types_open_href(list, &kind.id);
                             a class="kind-open" href=(href)
                               hx-get=(href) hx-target="#content" hx-push-url="true" {
                                 span class=(pastille_class(kind)) { (kind.name) }
@@ -2909,17 +3208,29 @@ pub fn types_page(
                             draft.map(|(_, note, _)| note).unwrap_or(""),
                             draft.map(|(_, _, tint)| tint).unwrap_or("encre"),
                             false,
+                            &catalog,
                         ))
                     } @else {
-                        a class="kind-open" href="/affaires/types?ouvert=nouveau"
-                          hx-get="/affaires/types?ouvert=nouveau" hx-target="#content" hx-push-url="true" {
+                        @let href = types_open_href(list, "nouveau");
+                        a class="kind-open" href=(href)
+                          hx-get=(href) hx-target="#content" hx-push-url="true" {
                             span class="pastille ghost" { "+ un type" }
                         }
                     }
                 }
             }
         }
+    };
+    dress(None, None, Some("Les types."), list, false, inner)
+}
+
+fn types_open_href(list: &ListKeep, ouvert: &str) -> String {
+    let base = list.on("/affaires/types");
+    if ouvert.is_empty() {
+        return base;
     }
+    let joiner = if base.contains('?') { '&' } else { '?' };
+    format!("{base}{joiner}ouvert={}", path_encode(ouvert))
 }
 
 fn draft_or<'a>(
@@ -2929,7 +3240,7 @@ fn draft_or<'a>(
     draft.unwrap_or((kind.name.as_str(), kind.note.as_str(), kind.tint.slug()))
 }
 
-fn kind_confirm(kind: &WorkKind) -> Markup {
+fn kind_confirm(kind: &WorkKind, catalog: &str) -> Markup {
     html! {
         form hx-post=(format!("/affaires/types/{}", kind.id)) hx-target="#content" {
             span class=(pastille_class(kind)) { (kind.name) }
@@ -2937,8 +3248,8 @@ fn kind_confirm(kind: &WorkKind) -> Markup {
                 button class="btn danger" type="submit" name="geste" value="confirmer" {
                     "Oui, le retirer"
                 }
-                a class="quiet" href="/affaires/types"
-                  hx-get="/affaires/types" hx-target="#content" hx-push-url="true" {
+                a class="quiet" href=(catalog)
+                  hx-get=(catalog) hx-target="#content" hx-push-url="true" {
                     "Garder"
                 }
             }
@@ -2946,7 +3257,14 @@ fn kind_confirm(kind: &WorkKind) -> Markup {
     }
 }
 
-fn kind_editor(action: &str, name: &str, note: &str, tint: &str, existing: bool) -> Markup {
+fn kind_editor(
+    action: &str,
+    name: &str,
+    note: &str,
+    tint: &str,
+    existing: bool,
+    catalog: &str,
+) -> Markup {
     let chosen = WorkKindTint::parse(tint).unwrap_or(WorkKindTint::Encre);
     html! {
         form class="kind-editor" hx-post=(action) hx-target="#content" {
@@ -2969,8 +3287,8 @@ fn kind_editor(action: &str, name: &str, note: &str, tint: &str, existing: bool)
                 @if existing {
                     button class="quiet" type="submit" name="geste" value="retirer" { "Retirer" }
                 }
-                a class="quiet" href="/affaires/types"
-                  hx-get="/affaires/types" hx-target="#content" hx-push-url="true" {
+                a class="quiet" href=(catalog)
+                  hx-get=(catalog) hx-target="#content" hx-push-url="true" {
                     "Fermer"
                 }
             }

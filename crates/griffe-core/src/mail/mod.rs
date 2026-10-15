@@ -7,6 +7,7 @@ mod model;
 mod present;
 mod secret;
 mod store;
+mod theme;
 
 pub use commands::{
     ArmOutbound, CancelOutbound, ClearMailSecret, RecordMailProbe, RememberImapUsername,
@@ -16,13 +17,17 @@ pub use commands::{
 pub use error::MailError;
 pub use model::{
     DeliveryOutcome, HOURLY_CAP, ICLOUD_HOST, ICLOUD_IMAP_HOST, ICLOUD_SENT_MAILBOX, IMAP_PORT,
-    ImapEndpoint, LetterChrome, LetterInk, MISSING_ADDRESS, MailPreset, MailProbeStatus,
-    MailProfile, MailSubmitError, MailTick, OutboundMail, OutboundMessage, OutboundStatus,
-    OutboundView, PROBE_OK_SENTENCE, ProbeMaterial, ProbeVerdict, ReadyLetter, RecordingMail,
-    SentCopyStatus, SmtpEndpoint, SubmissionBatch, SubmissionReceipt, TlsMode, UNDO_SECS,
+    ImapEndpoint, LetterChrome, MISSING_ADDRESS, MailPreset, MailProbeStatus, MailProfile,
+    MailSubmitError, MailTick, OutboundMail, OutboundMessage, OutboundStatus, OutboundView,
+    PROBE_OK_SENTENCE, ProbeMaterial, ProbeVerdict, ReadyLetter, RecordingMail, SentCopyStatus,
+    SmtpEndpoint, SubmissionBatch, SubmissionReceipt, TlsMode, UNDO_SECS,
 };
 pub use present::{LINK_HINT, LetterParts, close_letter, letter_card, letter_html, readable_links};
 pub use secret::MailSecret;
+pub use theme::{
+    CustomLetter, LetterFileError, LetterPalette, LetterTheme, letter_choices, parse_letter_file,
+    read_custom_letter, selected_sheet,
+};
 
 /// Compte d'envoi, sans le secret.
 ///
@@ -392,7 +397,7 @@ mod tests {
     use time::{Date, Duration, Month, OffsetDateTime, Time};
 
     use super::{
-        ArmOutbound, ClearMailSecret, DeliveryOutcome, LetterInk, MISSING_ADDRESS, MailError,
+        ArmOutbound, ClearMailSecret, DeliveryOutcome, LetterTheme, MISSING_ADDRESS, MailError,
         MailSubmitError, PROBE_OK_SENTENCE, RecordMailProbe, RecordingMail, RetryOutbound,
         SaveLetterface, SaveMailAccount, SaveMailSecret, SaveMailSignature, SentCopyStatus,
         SetAutomaticSend, SubmissionReceipt, abandon_held, commit_outbound, deliver_with,
@@ -597,7 +602,7 @@ mod tests {
         let Outcome::Applied(()) = Executor::new(&mut store)
             .execute(
                 &SaveLetterface {
-                    ink: "sceau".into(),
+                    ink: "sauge".into(),
                     metier: "Ingénieur logiciel".into(),
                     site: "https://atelier.example".into(),
                 },
@@ -608,7 +613,7 @@ mod tests {
             panic!("face");
         };
         let account = profile(store.connection()).unwrap();
-        assert_eq!(account.link_ink, LetterInk::Sceau);
+        assert_eq!(account.link_ink, LetterTheme::Sauge);
         assert_eq!(account.metier, "Ingénieur logiciel");
         assert_eq!(account.site, "https://atelier.example");
         assert!(!account.ready);
@@ -626,7 +631,7 @@ mod tests {
         );
         assert_eq!(
             profile(store.connection()).unwrap().link_ink,
-            LetterInk::Sceau
+            LetterTheme::Sauge
         );
         assert!(
             Executor::new(&mut store)
@@ -654,12 +659,12 @@ mod tests {
         );
         save_ready(&mut store);
         let account = profile(store.connection()).unwrap();
-        assert_eq!(account.link_ink, LetterInk::Sceau);
+        assert_eq!(account.link_ink, LetterTheme::Sauge);
         assert_eq!(account.metier, "Ingénieur logiciel");
         let Outcome::Applied(()) = Executor::new(&mut store)
             .execute(
                 &SaveLetterface {
-                    ink: "vert".into(),
+                    ink: "sceau".into(),
                     metier: "  ".into(),
                     site: String::new(),
                 },
@@ -672,7 +677,7 @@ mod tests {
         let account = profile(store.connection()).unwrap();
         assert!(account.metier.is_empty());
         assert!(account.site.is_empty());
-        assert_eq!(account.link_ink, LetterInk::Vert);
+        assert_eq!(account.link_ink, LetterTheme::Clair);
     }
 
     #[test]

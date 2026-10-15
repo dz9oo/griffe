@@ -4,6 +4,7 @@
 //! et leurs routes.
 
 use maud::{DOCTYPE, Markup, html};
+use time::Date;
 
 /// Les trois pièces de la chrome. Un écran ancien (relances, clôture…) appartient à l'une
 /// d'elles pour le soulignement, ou à aucune (console, aide).
@@ -284,7 +285,9 @@ fn audit_rail() -> Markup {
 
 /// Page complète : utilisée pour un chargement direct (navigation, rechargement). Les
 /// navigations suivantes, boostées par htmx, ne redemandent que le fragment dans `#content`.
-pub fn page(active: ViewId, vault_label: &str, content: Markup) -> Markup {
+///
+/// La date du jour est dans la chrome, hors `#content` : un fragment ne la redessine pas.
+pub fn page(active: ViewId, vault_label: &str, today: Date, content: Markup) -> Markup {
     let piece = active.piece();
     html! {
         (DOCTYPE)
@@ -306,6 +309,7 @@ pub fn page(active: ViewId, vault_label: &str, content: Markup) -> Markup {
                             (crate::brand::wordmark())
                         }
                         (nav(piece))
+                        span class="today" { (crate::views::copy::letter_date(today)) }
                     }
                     div class="body-grid audit-collapsed" id="body-grid" {
                         main class={ "content" @if active.wide() { " wide" } } id="content" {

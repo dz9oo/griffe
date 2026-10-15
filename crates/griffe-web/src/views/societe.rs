@@ -20,7 +20,7 @@ pub use courrier::{
 };
 pub use letter::{
     PHRASES_LINE, ReleveFragment, ReleveQuery, VatCreditForm, account, bureau, closing, duties,
-    duty, duty_with_vat_form, identity, pay, piece, statement, year,
+    duty, duty_with_vat_form, identity, pay, piece, piste, statement, year,
 };
 
 pub const VAT_REGIME_OPTIONS: [(&str, &str); 5] = [

@@ -9,7 +9,7 @@ use griffe_core::app::{AppError, Executor};
 use griffe_core::mail::{
     ArmOutbound, CancelOutbound, ClearMailSecret, MailSecret, RecordMailProbe, ResolveUncertain,
     RetryOutbound, SaveLetterface, SaveMailAccount, SaveMailSecret, SaveMailSignature,
-    SetAutomaticSend, UNDO_SECS, probe_material,
+    SetAutomaticSend, UNDO_SECS, probe_material, profile,
 };
 use maud::{Markup, html};
 use serde::Deserialize;
@@ -65,6 +65,7 @@ pub async fn save(
         (587, "starttls")
     } else {
         return saved(
+            &state,
             &headers,
             courrier_markup(
                 &state,
@@ -99,8 +100,9 @@ pub async fn save(
         .with_store_mut(|store| Executor::new(store).execute(&command, &AppState::human_ctx()))
         .await;
     match result {
-        None => locked(&headers),
+        None => locked(&state, &headers),
         Some(Err(error)) => saved(
+            &state,
             &headers,
             courrier_markup(
                 &state,
@@ -114,9 +116,10 @@ pub async fn save(
         Some(Ok(_)) => {
             if typed_secret {
                 match keep_secret(&state, form.secret).await {
-                    SecretSave::Locked => return locked(&headers),
+                    SecretSave::Locked => return locked(&state, &headers),
                     SecretSave::Refused(message) => {
                         return saved(
+                            &state,
                             &headers,
                             courrier_markup(
                                 &state,
@@ -133,6 +136,7 @@ pub async fn save(
             }
             remember_probe(&state).await;
             saved(
+                &state,
                 &headers,
                 courrier_markup(
                     &state,
@@ -223,6 +227,7 @@ pub async fn save_secret(
 ) -> Response {
     if form.secret.trim().is_empty() {
         return saved(
+            &state,
             &headers,
             courrier_markup(
                 &state,
@@ -238,6 +243,7 @@ pub async fn save_secret(
         Ok(secret) => secret,
         Err(error) => {
             return saved(
+                &state,
                 &headers,
                 courrier_markup(
                     &state,
@@ -256,8 +262,9 @@ pub async fn save_secret(
         })
         .await;
     match result {
-        None => locked(&headers),
+        None => locked(&state, &headers),
         Some(Err(error)) => saved(
+            &state,
             &headers,
             courrier_markup(
                 &state,
@@ -271,6 +278,7 @@ pub async fn save_secret(
         Some(Ok(_)) => {
             remember_probe(&state).await;
             saved(
+                &state,
                 &headers,
                 courrier_markup(
                     &state,
@@ -292,8 +300,9 @@ pub async fn clear_secret(State(state): State<AppState>, headers: HeaderMap) -> 
         })
         .await;
     match result {
-        None => locked(&headers),
+        None => locked(&state, &headers),
         Some(Err(error)) => saved(
+            &state,
             &headers,
             courrier_markup(
                 &state,
@@ -305,6 +314,7 @@ pub async fn clear_secret(State(state): State<AppState>, headers: HeaderMap) -> 
             .await,
         ),
         Some(Ok(_)) => saved(
+            &state,
             &headers,
             courrier_markup(
                 &state,
@@ -341,8 +351,9 @@ pub async fn automatic(
         "L'envoi du jour est éteint."
     };
     match result {
-        None => locked(&headers),
+        None => locked(&state, &headers),
         Some(Err(error)) => saved(
+            &state,
             &headers,
             courrier_markup(
                 &state,
@@ -354,6 +365,7 @@ pub async fn automatic(
             .await,
         ),
         Some(Ok(_)) => saved(
+            &state,
             &headers,
             courrier_markup(
                 &state,
@@ -377,10 +389,6 @@ pub struct SignatureForm {
 pub struct LetterfaceForm {
     #[serde(default)]
     ink: String,
-    #[serde(default)]
-    metier: String,
-    #[serde(default)]
-    site: String,
 }
 
 pub async fn save_apparence(
@@ -390,19 +398,21 @@ pub async fn save_apparence(
 ) -> Response {
     let result = state
         .with_store_mut(|store| {
+            let account = profile(store.connection())?;
             Executor::new(store).execute(
                 &SaveLetterface {
                     ink: form.ink.clone(),
-                    metier: form.metier.clone(),
-                    site: form.site.clone(),
+                    metier: account.metier,
+                    site: account.site,
                 },
                 &AppState::human_ctx(),
             )
         })
         .await;
     match result {
-        None => locked(&headers),
+        None => locked(&state, &headers),
         Some(Err(error)) => saved(
+            &state,
             &headers,
             courrier_markup(
                 &state,
@@ -414,11 +424,12 @@ pub async fn save_apparence(
             .await,
         ),
         Some(Ok(_)) => saved(
+            &state,
             &headers,
             courrier_markup(
                 &state,
                 Some(&CourrierForm {
-                    notice: Some("L'allure est enregistrée.".into()),
+                    notice: Some("La feuille est enregistrée.".into()),
                     ..CourrierForm::blank()
                 }),
             )
@@ -463,8 +474,9 @@ pub async fn save_signature(
         "La formule est enregistrée."
     };
     match result {
-        None => locked(&headers),
+        None => locked(&state, &headers),
         Some(Err(error)) => saved(
+            &state,
             &headers,
             courrier_markup(
                 &state,
@@ -477,6 +489,7 @@ pub async fn save_signature(
             .await,
         ),
         Some(Ok(_)) => saved(
+            &state,
             &headers,
             courrier_markup(
                 &state,
@@ -526,9 +539,10 @@ pub async fn save_lire(
         ..CourrierForm::blank()
     };
     match face {
-        None => return locked(&headers),
+        None => return locked(&state, &headers),
         Some(Err(error)) => {
             return saved(
+                &state,
                 &headers,
                 courrier_markup(
                     &state,
@@ -555,8 +569,9 @@ pub async fn save_lire(
         })
         .await;
     match signature {
-        None => locked(&headers),
+        None => locked(&state, &headers),
         Some(Err(error)) => saved(
+            &state,
             &headers,
             courrier_markup(
                 &state,
@@ -575,6 +590,7 @@ pub async fn save_lire(
                 "La lettre est enregistrée."
             };
             saved(
+                &state,
                 &headers,
                 courrier_markup(
                     &state,
@@ -606,19 +622,20 @@ pub async fn send_trial(
         .with_store_mut(|store| arm_trial(store, &to, &token))
         .await;
     match result {
-        None => locked(&headers),
+        None => locked(&state, &headers),
         Some(Err(error)) => fragment(
+            &state,
             &headers,
             depart_for(&state, Some(&french(&error))).await,
             false,
         ),
-        Some(Ok(())) => fragment(&headers, depart_for(&state, None).await, true),
+        Some(Ok(())) => fragment(&state, &headers, depart_for(&state, None).await, true),
     }
 }
 
 pub async fn trial_status(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let (markup, polling) = depart_status(&state, None).await;
-    status_fragment(&headers, markup, polling)
+    status_fragment(&state, &headers, markup, polling)
 }
 
 #[derive(Debug, Deserialize)]
@@ -724,17 +741,18 @@ async fn trial_gesture(
 ) -> Response {
     if id.trim().is_empty() {
         let markup = depart_for(state, Some("Cette lettre est introuvable.")).await;
-        return fragment(headers, markup, false);
+        return fragment(state, headers, markup, false);
     }
     let result = state.with_store_mut(|store| apply(store, id)).await;
     match result {
-        None => locked(headers),
+        None => locked(state, headers),
         Some(Err(error)) => fragment(
+            state,
             headers,
             depart_for(state, Some(&french(&error))).await,
             false,
         ),
-        Some(Ok(())) => fragment(headers, depart_for(state, None).await, true),
+        Some(Ok(())) => fragment(state, headers, depart_for(state, None).await, true),
     }
 }
 
@@ -789,8 +807,8 @@ async fn depart_status(state: &AppState, note: Option<&str>) -> (Markup, bool) {
         })
 }
 
-fn fragment(headers: &HeaderMap, content: Markup, trigger: bool) -> Response {
-    let mut response = respond(headers, content).into_response();
+fn fragment(state: &AppState, headers: &HeaderMap, content: Markup, trigger: bool) -> Response {
+    let mut response = respond(state, headers, content).into_response();
     if trigger {
         response
             .headers_mut()
@@ -801,8 +819,13 @@ fn fragment(headers: &HeaderMap, content: Markup, trigger: bool) -> Response {
 
 /// Le sondage ne doit pas être rejoué depuis le cache de WebKit. Quand le minuteur
 /// s'arrête, le bloc entier remplace celui qui interrogeait.
-fn status_fragment(headers: &HeaderMap, content: Markup, polling: bool) -> Response {
-    let mut response = fragment(headers, content, false);
+fn status_fragment(
+    state: &AppState,
+    headers: &HeaderMap,
+    content: Markup,
+    polling: bool,
+) -> Response {
+    let mut response = fragment(state, headers, content, false);
     response.headers_mut().insert(
         axum::http::header::CACHE_CONTROL,
         HeaderValue::from_static("no-store, no-cache, must-revalidate"),
@@ -900,27 +923,31 @@ async fn render(
     headers: &HeaderMap,
     form: Option<&CourrierForm>,
 ) -> Html<String> {
-    respond(headers, courrier_markup(state, form).await)
+    respond(state, headers, courrier_markup(state, form).await)
 }
 
-fn respond(headers: &HeaderMap, content: Markup) -> Html<String> {
+fn respond(state: &AppState, headers: &HeaderMap, content: Markup) -> Html<String> {
     if headers.get("HX-Request").is_some() {
         Html(content.into_string())
     } else {
-        Html(crate::layout::page(ViewId::Societe, "déverrouillé", content).into_string())
+        Html(
+            crate::layout::page(ViewId::Societe, "déverrouillé", state.today(), content)
+                .into_string(),
+        )
     }
 }
 
-fn saved(headers: &HeaderMap, content: Markup) -> Response {
-    let mut response = respond(headers, content).into_response();
+fn saved(state: &AppState, headers: &HeaderMap, content: Markup) -> Response {
+    let mut response = respond(state, headers, content).into_response();
     response
         .headers_mut()
         .insert("HX-Trigger", HeaderValue::from_static("griffe:saved"));
     response
 }
 
-fn locked(headers: &HeaderMap) -> Response {
+fn locked(state: &AppState, headers: &HeaderMap) -> Response {
     respond(
+        state,
         headers,
         maud::html! { div class="empty-state" { "coffre verrouillé — rechargez la page" } },
     )

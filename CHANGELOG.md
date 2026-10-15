@@ -2,6 +2,20 @@
 
 Ce qui change pour qui se sert de Griffe. Une section par version publiée.
 
+## 0.3.13
+
+- Le bandeau est le même sur Le jour, Les affaires et La société : le nom, les trois pièces, la date du jour à droite.
+- La société s'ouvre sur quatre cartes. Ouvrir un chapitre replie ce menu. « Revenir au menu » le ramène. Le fil nomme la famille et le chapitre. Les voisins sont des pastilles.
+- Te payer se lit en cartes : ce qu'on peut se verser ce mois-ci, le salaire, les dividendes, et la barre de l'année. Le compte garde le solde et ses trois définitions.
+- L'État se lit en cartes : avant ce coffre, en retard, à venir. Une échéance ouvre sa lettre. Clore garde son parcours.
+- Tenir se lit en cartes. La piste tient le paysage. Le relevé garde ses phrases, et chaque mouvement reste une ligne.
+- Les réglages se lisent en cartes : La carte, Le courrier, Les phrases, Les papiers. Un formulaire reste un formulaire.
+- Le jour pose la phrase du matin sur une carte. Les gestes restent dessous. Le mois suit : la grille, les bandes, l'agenda.
+- Dans Les affaires, la phrase tient sur la même carte. Choisir un nom replie la liste, et le dossier prend la largeur. « Revenir au menu » ramène la liste, avec la vue et la recherche.
+- Le courrier range ses cartes sur la largeur du bureau : la lettre, ce qui la ferme, d'où elles partent, l'envoi du jour.
+- La lettre se peint en Clair, un ivoire, ou en Sauge, un vert pâle. Le choix est sous la lettre d'essai. Changer de feuille repeint la page qui part. Une troisième feuille peut venir d'un fichier sur la machine : `lettre.toml`, dans le dossier `griffe` de la configuration. Un fichier illisible laisse Clair. Les phrases ouvertes depuis une affaire restent dans le dossier.
+- Le coffre garde la même forme.
+
 ## 0.3.12
 
 - Sur La société, chaque ligne se lit en corps de texte, à côté de son montant. La piste, Le relevé, Clore et les autres ouvrent leur chapitre sous les quatre colonnes.

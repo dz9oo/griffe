@@ -5,6 +5,7 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 
 use super::secret::MailSecret;
+use super::theme::{LetterPalette, LetterTheme};
 
 /// Hôte iCloud. Le préréglage ne fait que remplir ces valeurs.
 pub const ICLOUD_HOST: &str = "smtp.mail.me.com";
@@ -162,58 +163,18 @@ pub struct MailProfile {
     pub imap_port: u16,
     /// Identifiant IMAP qui a ouvert la session. Pas un secret.
     pub imap_username: String,
-    /// Couleur des liens.
-    pub link_ink: LetterInk,
+    /// Feuille peinte sur la lettre.
+    pub link_ink: LetterTheme,
     /// Ligne sous le nom. Vide : rien entre le nom et le filet.
     pub metier: String,
     /// Adresse en bas de la lettre. Vide : pas de ligne.
     pub site: String,
 }
 
-/// Couleur des liens. Trois mots, pas une feuille de style.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum LetterInk {
-    #[default]
-    Vert,
-    Encre,
-    Sceau,
-}
-
-impl LetterInk {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Vert => "vert",
-            Self::Encre => "encre",
-            Self::Sceau => "sceau",
-        }
-    }
-
-    /// Couleur des liens sur la feuille.
-    #[must_use]
-    pub const fn css(self) -> &'static str {
-        match self {
-            Self::Vert => "#3e6b34",
-            Self::Encre => "#1c1814",
-            Self::Sceau => "#9f3218",
-        }
-    }
-
-    #[must_use]
-    pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "vert" => Some(Self::Vert),
-            "encre" => Some(Self::Encre),
-            "sceau" => Some(Self::Sceau),
-            _ => None,
-        }
-    }
-}
-
 /// Ce qui habille la lettre au moment où elle part. Indépendant du texte écrit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LetterChrome {
-    pub ink: LetterInk,
+    pub palette: LetterPalette,
     pub metier: String,
     pub site: String,
     /// Formule, pour la poser en retrait quand elle ferme le texte.
@@ -223,7 +184,7 @@ pub struct LetterChrome {
 impl Default for LetterChrome {
     fn default() -> Self {
         Self {
-            ink: LetterInk::Vert,
+            palette: LetterPalette::clair(),
             metier: String::new(),
             site: String::new(),
             signature: String::new(),
@@ -235,7 +196,7 @@ impl LetterChrome {
     #[must_use]
     pub fn from_profile(profile: &MailProfile) -> Self {
         Self {
-            ink: profile.link_ink,
+            palette: profile.link_ink.palette(),
             metier: profile.metier.clone(),
             site: profile.site.clone(),
             signature: profile.signature.clone(),
@@ -308,7 +269,7 @@ impl Default for MailProfile {
             imap_host: String::new(),
             imap_port: IMAP_PORT,
             imap_username: String::new(),
-            link_ink: LetterInk::Vert,
+            link_ink: LetterTheme::Clair,
             metier: String::new(),
             site: String::new(),
         }

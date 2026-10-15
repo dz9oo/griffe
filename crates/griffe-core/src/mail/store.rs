@@ -7,11 +7,12 @@ use uuid::Uuid;
 
 use super::error::MailError;
 use super::model::{
-    HOURLY_CAP, LetterChrome, LetterInk, MISSING_ADDRESS, MailPreset, MailProbeStatus, MailProfile,
-    MailTick, OutboundMessage, OutboundStatus, OutboundView, ProbeMaterial, ReadyLetter,
-    SmtpEndpoint, SubmissionBatch, TlsMode,
+    HOURLY_CAP, LetterChrome, MISSING_ADDRESS, MailPreset, MailProbeStatus, MailProfile, MailTick,
+    OutboundMessage, OutboundStatus, OutboundView, ProbeMaterial, ReadyLetter, SmtpEndpoint,
+    SubmissionBatch, TlsMode,
 };
 use super::secret::MailSecret;
+use super::theme::LetterTheme;
 use crate::app::AppError;
 use crate::domain::{
     FollowUpSubject, LetterRecipient, entered_cycle_key, fiche_channels, infer_letter_recipient,
@@ -98,7 +99,7 @@ pub(super) fn profile(conn: &Connection) -> Result<MailProfile, AppError> {
         imap_port: u16::try_from(imap_port.unwrap_or(i64::from(super::model::IMAP_PORT)))
             .unwrap_or(super::model::IMAP_PORT),
         imap_username: imap_username.unwrap_or_default(),
-        link_ink: LetterInk::parse(link_ink.as_str()).unwrap_or(LetterInk::Vert),
+        link_ink: LetterTheme::read(link_ink.as_str()),
         metier,
         site,
     })

@@ -2,6 +2,7 @@
 //! Aucune IO. Le corps stocké ne change pas : l'habit se calcule à l'envoi.
 
 use super::model::LetterChrome;
+use super::theme::LetterPalette;
 use crate::domain::{display_phone, parse_email, tel_href};
 
 /// Phrase sous la zone d'écriture. Une adresse de suivi se tape en entier.
@@ -10,9 +11,6 @@ La personne lit l'adresse sans cette partie.";
 
 const SERIF: &str =
     "Georgia,'Iowan Old Style','Palatino Linotype',Palatino,'Times New Roman',serif";
-const PAPER: &str = "#f6f1e7";
-const MARGIN: &str = "#efe8dc";
-const INK: &str = "#1c1814";
 
 /// Ce qu'il faut pour habiller une lettre. Le corps est le texte écrit, formule comprise.
 pub struct LetterParts<'a> {
@@ -37,7 +35,7 @@ pub fn letter_html(letter: &LetterParts<'_>) -> String {
     html.push_str(&escape(letter.subject));
     html.push_str("</title></head>");
     html.push_str("<body style=\"margin:0;padding:0;background:");
-    html.push_str(MARGIN);
+    html.push_str(&letter.chrome.palette.margin);
     html.push_str(";\">");
     if !preheader.is_empty() {
         html.push_str("<div style=\"display:none;max-height:0;overflow:hidden;mso-hide:all;\">");
@@ -52,26 +50,27 @@ pub fn letter_html(letter: &LetterParts<'_>) -> String {
 /// La carte, marge comprise, sans le document. La fenêtre l'insère telle quelle.
 #[must_use]
 pub fn letter_card(letter: &LetterParts<'_>) -> String {
+    let palette = &letter.chrome.palette;
     let body = normalize(letter.body);
     let (prose, signature) = peel_signature(&body, &letter.chrome.signature);
     let mut html = String::new();
     html.push_str(
         "<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"background:",
     );
-    html.push_str(MARGIN);
+    html.push_str(&palette.margin);
     html.push_str(
         ";border-collapse:collapse;\"><tr><td align=\"center\" style=\"padding:32px 16px;\">",
     );
     html.push_str(
         "<table role=\"presentation\" width=\"560\" cellpadding=\"0\" cellspacing=\"0\" style=\"width:100%;max-width:560px;background:",
     );
-    html.push_str(PAPER);
+    html.push_str(&palette.paper);
     html.push_str(";border-collapse:collapse;\"><tr><td style=\"padding:32px 28px;\">");
     html.push_str("<div style=\"margin:0;\">");
-    prose_blocks(&mut html, prose, INK, INK);
+    prose_blocks(&mut html, prose, &palette.ink, &palette.link);
     html.push_str("</div>");
     if let Some(signature) = signature {
-        signature_block(&mut html, signature);
+        signature_block(&mut html, signature, palette);
     }
     html.push_str("</td></tr></table></td></tr></table>");
     html
@@ -109,9 +108,9 @@ pub fn readable_links(text: &str) -> String {
 
 /// La formule, dans la même encre et le même serif que la lettre. Un mail, un
 /// numéro ou une adresse, seuls sur leur ligne, restent cliquables, sans
-/// soulignement et sans autre couleur. La première ligne de texte est un peu
+/// soulignement, dans la couleur des liens. La première ligne de texte est un peu
 /// plus présente.
-fn signature_block(html: &mut String, signature: &str) {
+fn signature_block(html: &mut String, signature: &str, palette: &LetterPalette) {
     let lines: Vec<&str> = signature.lines().map(str::trim).collect();
     let Some(start) = lines.iter().position(|line| !line.is_empty()) else {
         return;
@@ -124,7 +123,7 @@ fn signature_block(html: &mut String, signature: &str) {
     html.push_str("<div style=\"margin:20px 0 0;font-family:");
     html.push_str(SERIF);
     html.push_str(";font-size:16px;line-height:1.25;color:");
-    html.push_str(INK);
+    html.push_str(&palette.ink);
     html.push_str(";\">");
     let mut named = false;
     let mut need_break = false;
@@ -145,24 +144,24 @@ fn signature_block(html: &mut String, signature: &str) {
         if strong {
             named = true;
             html.push_str("<span style=\"font-weight:600;font-size:17px;\">");
-            signature_content(html, line);
+            signature_content(html, line, palette);
             html.push_str("</span>");
         } else {
-            signature_content(html, line);
+            signature_content(html, line, palette);
         }
     }
     html.push_str("</div>");
 }
 
-fn signature_content(html: &mut String, line: &str) {
+fn signature_content(html: &mut String, line: &str, palette: &LetterPalette) {
     if let Some(url) = whole_url(line) {
-        html.push_str(&anchor(&url, &without_utm(&url), INK));
+        html.push_str(&anchor(&url, &without_utm(&url), &palette.link));
     } else if whole_email(line) {
-        html.push_str(&anchor(&format!("mailto:{line}"), line, INK));
+        html.push_str(&anchor(&format!("mailto:{line}"), line, &palette.link));
     } else if let Some(href) = tel_href(line) {
-        html.push_str(&anchor(&href, &display_phone(line), INK));
+        html.push_str(&anchor(&href, &display_phone(line), &palette.link));
     } else {
-        linked_line(html, line, INK);
+        linked_line(html, line, &palette.link);
     }
 }
 
@@ -375,7 +374,7 @@ fn escape(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{close_letter, letter_html, readable_links, without_utm};
-    use crate::mail::{LetterChrome, LetterInk, LetterParts};
+    use crate::mail::{LetterChrome, LetterPalette, LetterParts};
 
     const TRACKED: &str = "https://atelier.example/conformite?utm_source=mairie&utm_medium=email&utm_campaign=automne-2026";
 
@@ -399,7 +398,7 @@ mod tests {
     #[test]
     fn the_html_keeps_the_full_address_and_escapes_the_prose() {
         let chrome = LetterChrome {
-            ink: LetterInk::Vert,
+            palette: LetterPalette::clair(),
             metier: "Ingénieur logiciel".into(),
             site: "https://atelier.example".into(),
             signature: "Bien à vous,\nCamille".into(),
@@ -419,6 +418,9 @@ mod tests {
         assert!(!html.contains("<img"));
         assert!(!html.contains("@import"));
         assert!(!html.contains("Ingénieur logiciel"));
+        assert!(html.contains("#f6f0e4"));
+        assert!(html.contains("#8a3e24"));
+        assert!(html.contains("#2c2418"));
         assert!(!html.contains("#3e6b34"));
         assert!(!html.contains("https://atelier.example</a>"));
         assert!(html.contains("text-decoration:none"));
@@ -443,7 +445,7 @@ https://atelier.example/conformite?utm_source=mairie&utm_medium=email&utm_campai
         assert_eq!(close_letter("Bonjour.", ""), "Bonjour.");
 
         let chrome = LetterChrome {
-            ink: LetterInk::Sceau,
+            palette: LetterPalette::sauge(),
             metier: "Ingénieur logiciel indépendant".into(),
             site: "https://atelier.example/conformite".into(),
             signature: signature.into(),
@@ -465,6 +467,8 @@ https://atelier.example/conformite?utm_source=mairie&utm_medium=email&utm_campai
         assert!(html.contains(">06 70 12 32 60</a>"));
         assert!(html.contains("href=\"https://atelier.example/conformite?utm_source=mairie&amp;utm_medium=email&amp;utm_campaign=automne-2026\""));
         assert!(html.contains(">https://atelier.example/conformite</a>"));
+        assert!(html.contains("#1e6b45"));
+        assert!(html.contains("#e5eee6"));
         assert!(!html.contains("#9f3218"));
         assert!(!html.contains("text-transform:uppercase"));
         assert!(html.contains("text-decoration:none"));

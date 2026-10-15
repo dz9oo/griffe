@@ -37,7 +37,7 @@ La console, le journal d’audit, les slugs d’URL peuvent rester. Ils ne sont 
 |---|---|---|
 | **Le jour** | Quoi faire, et où en est le mois ? | Un dashboard |
 | **Les affaires** | Avec qui j’en suis ? | Un CRM + un module devis + un module missions |
-| **La société** | Est-ce que ça tient, et que dois-je à l’État ? | « La maison ». Les réglages sont la quatrième colonne du bureau |
+| **La société** | Est-ce que ça tient, et que dois-je à l’État ? | « La maison ». Les réglages sont une des quatre cartes du plateau |
 
 Chrome : `Griffe` (italique, serif) à gauche · les trois mots à droite.
 La pièce active = un soulignement encre, pas un onglet teinté.
@@ -62,7 +62,7 @@ Nouveaux chemins souhaités, à poser dès que ça ne casse pas les tests :
 
 - `/jour` (accueil après déverrouillage, à la place de `/view/dashboard`)
 - `/affaires`, `/affaires/{réf}` (`/dossiers` et `/gens` restent des alias)
-- `/societe`, `/societe/payer`, `/societe/impots`, `/societe/cloture`, `/societe/releve`, `/societe/identite`
+- `/societe`, `/societe/piste`, `/societe/payer`, `/societe/impots`, `/societe/cloture`, `/societe/releve`, `/societe/identite`
 
 ## 4. Langage
 
@@ -112,22 +112,25 @@ en inversant ces variables.
 Maquette : Newsreader (titres, chiffres du calendrier, italiques) + Source Sans 3 (UI).
 **Pas de webfont distante.** Pas de Google Fonts dans la fenêtre.
 
-À faire : vendoriser les woff2 (OFL) dans `crates/griffe-web/assets/fonts/`
-et les déclarer en `@font-face`. Replis : `Liberation Serif` / `Noto Serif` et
+Les woff2 (OFL) sont dans `crates/griffe-web/assets/fonts/`
+et déclarés en `@font-face`. Replis : `Liberation Serif` / `Noto Serif` et
 `Adwaita Sans` / `Noto Sans`.
 
 - Titres : serif, weight 400, letter-spacing −0.03em, `clamp(36px, 6vw, 58px)`
-- Lede : serif 20px, ink-2, max 52ch (voix éditoriale, plus courte que le corps)
+- Lede : serif 20px, ink-2, max 52ch (voix éditoriale, plus courte que le corps). Sur un chapitre de La société, la phrase d’entrée est en sans 15 px, en encre.
 - UI : sans 15–16px
 - Dates kicker : sans 11–12px, uppercase, letter-spacing 0.2em
 - Marque : serif italic 22px, « Griffe »
 
-Chiffres d’argent : sans, tabular si disponible. Pas de mono type console sur Le jour.
+Chiffres d’argent en ligne : sans, tabular si disponible. Le grand fait d’une famille et le montant de Te payer sont en serif. Pas de mono type console sur Le jour.
 
 ### Chrome et page
 
-- Le jour, Les affaires et l’accueil de La société prennent toute la largeur du bureau. Les autres lettres restent à **760 px**.
-- Padding page ~40 px (20 px sous 700 px).
+- La chrome est la même sur Le jour, Les affaires, La société, l’aide et la console : le wordmark (nom et paraphe), les trois pièces au centre, la date du jour à droite. La date est `letter_date` (jour de semaine réel). Elle vit hors du fragment htmx, donc une navigation ne la redessine pas.
+- La date du jour n’est pas répétée en tête de lettre. Une date qui est le sujet (échéance, histoire, mois) reste dans la page.
+- Chrome et pied prennent toute la largeur, avec le même retrait, quelle que soit la pièce.
+- Le jour, Les affaires et La société prennent toute la largeur. Les autres lettres restent à **760 px**.
+- Padding des autres lettres ~40 px (20 px sous 700 px).
 - Pas de rail d’audit visible par défaut.
 - Bouton primaire : fond sceau, texte papier.
 - Bouton secondaire : filet encre, pas de fond.
@@ -144,9 +147,9 @@ on ne remplit pas avec des graphiques. Inversement on ne cache pas un trou
 Le vide vit **autour de la feuille et entre les blocs**, pas à l’intérieur d’une
 phrase. La colonne **est** la mesure.
 
-- Le jour, Les affaires et l’accueil de La société : toute la largeur du bureau. Les autres lettres : **760 px**.
+- Le jour, Les affaires et La société : toute la largeur. Les autres lettres : **760 px**.
 - Chrome et pied suivent la pièce : pleine largeur sur Le jour, Les affaires et La société.
-- La société aligne quatre colonnes (Tenir, Te payer, L’État, Les réglages). Les lignes sont du corps (sans, 15 px), pas des titres d’affiche. Le chapitre s’ouvre dans le panneau sous les colonnes — y compris Le courrier, Les papiers et Les phrases. Les réglages est l’endroit où l’on retrouve la carte, le courrier, les phrases et les papiers. La ligne choisie a une gouttière : la barre de 3 px ne touche pas le mot.
+- La société est le plateau. L’accueil et chaque chapitre prennent toute la largeur, sur le bureau `#e6dfd2`. Quatre cartes : Tenir `#fbf7f0`, Te payer `#f4ead6`, L’État `#f6e4dc`, Les réglages `#efe6d6`. Les lignes sont du corps (sans, 15 px), des cartes crème posées sur la teinte. Le survol enfonce la ligne dans sa famille (`#f3ece0`, `#ead9bc`, `#f0d2c6`, `#e6d9c4`). Une URL de chapitre replie les cartes : « Revenir au menu », le fil, les pastilles des voisins, le chapitre dans `.work`. La piste est `/societe/piste`.
 - Corps, listes, montants, chemins, boutons : 100 % de la colonne. Pas de
   `max-width` en `ch` sous un titre de bloc.
 - Lede ≤ 52ch. Alarme (`.mast-note`) ≤ 46ch.
@@ -159,12 +162,11 @@ phrase. La colonne **est** la mesure.
 
 Ordre de la page, toujours :
 
-1. **Date** (jour de la semaine réel — la maquette a corrigé mercredi → samedi 5 sept. 2026)
-2. **Mât** — une phrase, puis l'alarme éventuelle
-3. **Gestes** — cinq lignes au plus, la langue de la lentille
-4. **Le mois** — grille, bandes de missions, agenda
+1. **Carte de statut** — la phrase du matin, puis l'alarme éventuelle. La date du jour reste dans la chrome.
+2. **Gestes** — cinq lignes au plus, la langue de la lentille
+3. **Le mois** — grille, bandes de missions, agenda
 
-Le bureau a la largeur de Les affaires. Le compte « N prospects / M clients » reste dans le livre.
+Le bureau a la largeur de Les affaires. La carte des affaires compte les noms de la vue.
 
 ### Mât
 
@@ -174,17 +176,16 @@ Une phrase : **Ce matin, trois gestes — banque · piste en mois · à encaisse
 S'il n'y a aucun geste : les trois faits, puis « Rien n'est dû ce matin. »
 Si un fait est alarmant (piste sous le seuil, à encaisser trop vieux), il passe sceau.
 
-Sous les faits, **une phrase** seulement s’il y a un trou :
+Sous les faits, **une phrase** seulement, le premier de ces trous :
 
-- piste courte
-- aucune conversation derrière la relance du jour
-- octobre vide de missions
+- la piste sous deux mois
+- aucune conversation ouverte
+- une seule conversation ouverte
+- une créance à encaisser depuis trente jours
 
-Pas de phrase si tout va. Le calme se voit à l’absence d’italique rouge.
+Pas de phrase si tout va. Le calme se voit à l’absence d’italique sceau.
 
-Seuil de piste à caler en vivant la maquette (proposition de départ : alarme sous **2 mois**,
-note dès **3 mois** si le pipeline derrière est vide). Cœur : une query compose le mât,
-elle ne décide pas du texte français mot à mot — la fenêtre rédige à partir de faits typés.
+L’alarme de piste est sous **2 mois**. Le cœur compose les faits. La fenêtre rédige le français. Un mois vide de missions se dit sur le mois.
 
 ### Gestes
 
@@ -198,7 +199,7 @@ File dérivée de ce qui existe déjà, fusionnée, **un verbe par ligne** :
 Trois à cinq, pas vingt. Chaque ligne a quatre cellules : le verbe, le qui, le prochain pas, le montant. Le tas froid n'est pas nommé : un lien « et N autres » ouvre Les affaires. Une mission sans geste du matin reste sur sa bande. Un prestataire n'a une ligne que s'il a une dette d'ouverture ou un débit qui correspond. Le reste vit dans le mois. Déplier un geste (pas un panneau
 latéral) : les boutons de la chose (ouvrir le dossier, le brouillon, plus tard).
 
-Le `.eml` ne change pas (lot 47). Griffe n’envoie pas.
+Le brouillon `.eml` des relances reste. L’envoi part du dossier, ou depuis Le courrier.
 
 ### Le mois
 
@@ -224,31 +225,332 @@ Sources du mois (à agréger **dans le cœur**, une query) :
 
 Pas de nouveau module « calendrier » dans la nav.
 
+### Cartes de Le jour
+
+La date du jour reste dans la chrome. Elle ne revient pas en tête de page.
+
+La phrase du matin est la carte de statut déjà dessinée sur le plateau :
+`article.plateau-status` et `p.plateau-sentence`, fond `#fbf7f0`. Le texte
+est en encre. Un fait alarmant reste en sceau (`b.bad`, et `.mast-note`
+dans la carte). Ce n'est pas une carte de chapitre. Ce ne sont pas les
+teintes des quatre familles. Le bureau de la page est `#e6dfd2`, le même
+que le plateau, pour que cette carte se lise comme elle est dessinée.
+« Rien n'est dû ce matin. » reste le lede sous la carte quand aucun geste
+n'est dû. Les notes du courrier restent sous la carte.
+
+Les gestes restent sur la page, sous la carte. Quatre cellules, cinq lignes
+au plus. Le dépli est `.unfold`, sur place : une action, pas un chapitre.
+Il n'y a pas de second dépli, et pas de panneau latéral. Ouvrir la
+destination d'un geste charge cette destination. Un lien vers La société
+arrive sur le chapitre replié. Une lettre `/societe/impots/{kind}` reste
+une lettre. Le lien « et N autres » ouvre Les affaires.
+
+Le mois reste sous les gestes. La grille, les bandes et l'agenda tiennent
+sur une surface `--paper`, rayon 16 px. L'encre, le filet et le sceau sont
+les tokens communs. Le mois ne devient pas un tableau de bord : pas une
+tuile par chiffre. Le défilement de la page reste permis.
+
+Les queries `day_mast`, gestes et mois ne changent pas. Aucun montant
+nouveau. Les boutons de mutation restent dans leur formulaire.
+
 ## 7. Les affaires
 
-Une liste, trois chapitres : **en conversation** (prospects), **en mission** (clients
-avec projet), **fournisseurs**. Un bouton « Nouvelle conversation » = nom + une phrase.
-Pas de fiche client obligatoire pour commencer (lot 45).
+La lentille est le menu : ce qui demande un geste, le livre, le tas, les sorties,
+les arrêtés, le type, la recherche, « Nouvelle conversation ». « Les types » ouvre
+le catalogue. La phrase (« Montre … — N noms ») est la carte de statut
+`article.plateau-status`, fond `#fbf7f0`, le même composant que Le jour. Le texte
+est en encre. Les lignes sont des cartes sur le bureau `#e6dfd2`, fond `#fbf7f0`.
+Pas de famille colorée. `#f4ead6`, `#f6e4dc`, `#efe6d6` et les teintes de lecture
+`#f8f1e2`, `#f8ebe4`, `#f3ecdf` ne s'appliquent pas aux personnes. Les pastilles
+de type restent celles du coffre.
 
-Le **dossier** est l’unité. Chapitres selon ce qui existe :
+Choisir un nom replie la liste. Le dossier prend la largeur. « Revenir au menu »
+restaure la liste, avec la vue, la recherche et le type dans l'URL. Le volet
+côte à côte n'est plus là.
 
-- En cours (la phrase du moment)
-- Le projet (mission, jalons, jours)
-- Les papiers (devis, factures)
-- Histoire (interactions, relances)
+Pastilles, dans l'ordre du dossier : En cours, Écrire, La fiche, L'estimation,
+Les travaux, Noter une rencontre. Reporter, Arrêter et C'est un client restent
+des actions dans En cours. Le projet, les papiers, les notes et l'histoire
+restent le corps d'En cours. Depuis une pastille, « Revenir » rentre vers la liste.
 
-Actions : Écrire, La fiche, L'estimation, Noter une rencontre, Reporter.
-L'estimation est le sujet et le montant gardés dans le coffre. Griffe ne rédige pas le devis.
-On n’« ouvre pas un devis » depuis un onglet Devis : on ouvre Camille.
+`/affaires/types` et la nouvelle conversation utilisent la même barre. Les routes
+`/affaires/{référence}/fiche`, `/estimation`, `/ecrire`, `/travaux`, `/rencontre`
+restent. Les anciens `/view/prospection`, `/view/devis`, `/view/missions`,
+`/view/facturation`, `/view/clients` restent joignables par ⌘K. On ne les redessine pas.
 
-Résolution de référence inchangée (nom, préfixe, UUID).
+Une nouvelle conversation est un nom et une phrase. Pas de fiche obligatoire pour
+commencer. L'estimation est le sujet et le montant gardés dans le coffre. Griffe
+ne rédige pas le devis. On ouvre un nom. La résolution de référence est inchangée
+(nom, préfixe, UUID).
+
+« Aucun nom. » quand la recherche ne trouve personne. « Aucune conversation de ce
+type. » quand le type filtre le livre.
 
 ## 8. La société
 
-Page d’entrée = le bureau. Une phrase (banque, piste, prochaine échéance), quatre
-colonnes toujours visibles, et un panneau. La piste montre le **paysage de
+Page d’entrée = le plateau. Une phrase (banque, piste, prochaine échéance), quatre
+cartes toujours visibles. L’alarme de piste est en sceau. Les destinations sont
+des cartes crème posées sur la teinte de la famille.
+
+| Famille | Grand fait | Lignes |
+|---|---|---|
+| Tenir | la banque | La piste, Le relevé. Sous le fait : les mois de piste. L’encaissement prévu (partie · montant) est une mention, pas un lien. |
+| Te payer | le montant du mois | Ce mois-ci, Le compte, L’année |
+| L’État | la date courte de la prochaine échéance (« 24 sept. ») | Les échéances, Clore. Le nom de l’échéance reste dans la phrase et dans le fait. |
+| Les réglages | La maison | La carte, Le courrier, Les phrases, Les papiers |
+
+La piste a sa propre adresse, `/societe/piste`. Elle montre le **paysage de
 trésorerie** (encre sur papier, pointillés = si l’encaissement prévu arrive).
-Les colonnes :
+
+Une URL de chapitre replie le menu. « Revenir au menu » ramène à `/societe`.
+Le fil nomme la famille et le titre. Les voisins sont des pastilles ; la pastille
+courante est en encre. Échap, depuis `app.js`, ramène au menu. Le chapitre garde
+son marquage dans `.work`. Te payer est peint en cartes. L’État peint Les
+échéances et Clore. Tenir peint La piste et Le relevé. Les réglages peignent
+La carte, Le courrier, Les phrases et Les papiers. Les lettres d’échéance
+gardent le marquage. Les teintes de lecture restent `#fbf7f0`,
+`#f8f1e2`, `#f8ebe4`, `#f3ecdf`.
+
+Voisins : Tenir = La piste et Le relevé ; Te payer = Ce mois-ci, Le compte et
+L’année ; L’État = Les échéances et Clore ; Les réglages = La carte, Le courrier,
+Les phrases et Les papiers.
+
+Une lettre `/societe/impots/{kind}` a pour parent « Les échéances » (lien vers
+`/societe/impots`) et pour voisins « L’État » et « Clore ». « Revenir au menu »
+rentre à `/societe`.
+
+Les phrases `?depuis=societe` portent la famille Les réglages et le soulignement
+La société. Ouvertes depuis une affaire, elles restent dans Les affaires.
+
+### Cartes de Te payer
+
+Le fil, « Revenir au menu » et les pastilles restent. La teinte de lecture des
+cartes est `#f8f1e2`. Le texte est en encre. Les queries ne changent pas : aucun
+montant nouveau, la porte dividende suit le coffre.
+
+La grille remplit l’écran du chapitre. Au-dessus de 1 100 px, Ce mois-ci tient
+en trois colonnes et Le compte en deux (le solde, puis les définitions
+empilées). Sous 1 100 px, deux colonnes. Sous 700 px, une colonne. Le
+défilement de `.work` reste permis : les cartes suivent leur texte, elles ne
+sont pas coupées.
+
+**Ce mois-ci** (`/societe/payer`). La phrase d’entrée reste au-dessus. Trois
+cartes, puis la barre de l’année sur toute la largeur :
+
+- le montant possible, avec la phrase déjà écrite (jusqu’où se verser en gardant
+  la piste, ou rien ce mois-ci) ;
+- « Comme un salaire », porte ouverte tant que les dividendes sont fermés ;
+- « Plus tard, en dividendes », porte fermée avec la phrase déjà écrite
+  (exercice non clos, ou sans bénéfice). Quand la query ouvre les dividendes,
+  cette carte passe ouverte ;
+- la barre « Cette année, pour vivre » : objectif, versé, mètre. Sans objectif,
+  la barre n’est pas dessinée.
+
+« Le prochain virement, depuis le relevé » reste un lien sous la grille. Le
+solde du compte courant vit sur Le compte.
+
+**Le compte** (`/societe/compte`). Carte du solde : la phrase déjà écrite (la
+société te doit, tu dois, ou rien entre toi et la société). « Repris du cabinet »
+reste sur cette carte quand l’ouverture n’est pas nulle. Trois cartes de
+définition, phrases déjà écrites : « avancés de ta poche », « pris sur le compte
+de la société », « mis sur le compte de la société ». Le montant de la
+définition s’écrit quand il n’est pas nul. Les mouvements restent une liste
+sous la grille (Au départ, Avancé, Pris, Apporté).
+
+**Cette année** (`/societe/annee`). Deux faits, versé et objectif, puis la même
+barre. Sans objectif : « Aucun montant visé. », sans barre.
+
+Aucun formulaire sur ces trois chapitres.
+
+### Cartes de L’État
+
+Le fil, « Revenir au menu » et les pastilles restent. La teinte de menu reste
+`#f6e4dc`. La teinte de lecture des cartes est `#f8ebe4`. Le texte est en
+encre. Les queries et les POST ne changent pas.
+
+Le fil porte « Les échéances » et « Clore ». Le `h1` du chapitre sort. Le lien
+« ← La société » reste, le pli le masque.
+
+**Les échéances** (`/societe/impots`). La phrase d’entrée reste au-dessus :
+« Pas des sigles. Des dates, des montants, et où le déposer. On prépare. On ne
+transmet rien. » Une carte par groupe qui a des lignes :
+
+- « Avant ce coffre » ;
+- « En retard » ;
+- « À venir ».
+
+La liste du groupe reste une liste dans la carte : la date, la phrase déjà
+écrite, le montant déjà écrit. Le formulaire « Tout était à jour à l’échéance »
+reste un formulaire, le bouton dans le form, dans la carte « Avant ce coffre ».
+« Déjà déposé » reste le repliable sous la grille. « Aucune échéance dans
+l’horizon. » et « Rien à déposer pour l’instant. » restent des phrases.
+
+La grille vise un écran. Autant de colonnes que de cartes présentes, trois au
+plus. Une seule carte occupe une colonne, sans piste vide. Sous 1 100 px, deux
+colonnes dès qu’il y en a deux. Sous 700 px, une. Les cartes suivent leur texte
+(`minmax(min-content, …)`). Le défilement de `.work` est permis.
+
+**Clore** (`/societe/cloture`). Une carte pour la phrase d’exercice déjà écrite.
+Le parcours reste la liste `.hist` : fait, aujourd’hui, ensuite. « Arrêter les
+comptes » reste le bouton qui ouvre `/cloture/new` dans `#panel`. « Ranger le
+relevé » reste le lien sous la liste quand des mouvements ne sont pas rangés.
+
+Une lettre `/societe/impots/{kind}` reste une lettre. Le parent est « Les
+échéances », les voisins « L’État » et « Clore ». Les blocs, les formulaires et
+les POST restent.
+
+Classes `.etat-*`. Ces deux adresses restent sans CA3, 3514, 2777.
+
+### Cartes de Tenir
+
+Le fil, « Revenir au menu » et les pastilles restent. La teinte de menu reste
+`#fbf7f0`. La teinte de lecture des cartes est `#fbf7f0`. Le texte est en
+encre. Les cartes se posent sur le bureau `#e6dfd2`. Les queries et les POST
+ne changent pas.
+
+La piste tient sur une carte, pleine largeur. Le relevé tient sa carte
+au-dessus de la liste, pleine largeur. Sous 1 100 px et sous 700 px, la carte
+reste seule : pas de grille à deux ou trois colonnes. Les cartes suivent leur
+texte. Le défilement de `.work` reste permis.
+
+**La piste** (`/societe/piste`). Le volet n’a pas de `h1` et n’a pas le lien
+« ← La société ». Le fil porte « La piste ». Une carte pour le paysage déjà
+dessiné. `figure.landscape` reste une figure dans la carte : le SVG s’il y a
+au moins deux points, la légende déjà écrite (mois abrégé, « aujourd’hui »,
+« · clôture dans {n} jours » s’il y a un délai, « · si ça arrive » si un
+encaissement est prévu). La phrase déjà écrite (`landscape_prose`) reste une
+phrase, dans la carte. Sans figure et sans phrase, aucune carte vide. Pas une
+carte par point de la courbe. Le pointillé reste dans le SVG. Le SVG garde
+160 px de haut et 100 % de large. Aucun formulaire, aucun bouton.
+
+**Le relevé** (`/societe/releve`). Le `h1` « Le relevé. » sort : le fil porte
+« Le relevé ». Le lien « ← La société » reste, le pli le masque. La lettre
+garde `letter` et `spread`. La racine qui se rafraîchit sur `griffe:saved`
+reste cette lettre : `hx-get` vers elle-même,
+`hx-trigger="griffe:saved from:body"`, `hx-swap="outerHTML"`,
+`hx-disinherit="hx-swap"`. Le fragment HX-Request garde le retour en
+`hx-swap="innerHTML"`, et il ne redessine pas « Revenir au menu ». Une carte
+pour la phrase d’entrée déjà écrite : « Dernier mouvement au {date}. » quand
+il y en a un, puis « Tu déposes l’export de la banque quand il y a du nouveau.
+Griffe ne va pas le chercher. » « Déposer un export » reste le bouton
+`type="button"` qui ouvre `/banque/import` dans `#panel`, dans cette carte.
+La recherche reste le formulaire `form.releve-search` (GET vers
+`#releve-body`, le champ et le délai déjà écrits), pas une carte. La phrase de
+compteur reste une phrase (« Aucun mouvement dans le coffre. », « Tout est
+traité. … », « {n} mouvements ne sont pas encore traités, sur {total}. »).
+« Voir les non traités » et « Voir tout l’historique » restent des liens.
+Chaque mouvement reste un `article.block` : pastille « non traité » ou
+« traité », date, montant déjà écrit, phrase déjà écrite, lectures déjà
+écrites. Pas une carte par mouvement. « Aucun mouvement ne correspond. » et
+« Les mouvements plus anciens » restent où ils sont. Les lectures ne bougent
+pas : formulaire dont le bouton est dans le form quand c’est un POST vers
+`#panel` (« C’est le règlement d’une dette » si la dette est suggérée,
+« C’est pour moi. » ou « C’est moi qui apporte. »), lien vers `#panel` pour
+« C’est une dépense » et pour la dette quand c’est déjà un lien.
+
+Classes `.tenir-*`. Ces deux adresses restent sans CA3, 3514, 2777.
+
+### Cartes des réglages
+
+Le fil, « Revenir au menu » et les pastilles restent. La teinte de menu reste
+`#efe6d6`. La teinte de lecture des cartes est `#f3ecdf`. Le texte est en
+encre. Les cartes se posent sur le bureau `#e6dfd2`. Les queries et les POST
+ne changent pas.
+
+La carte, les phrases et les papiers posent leurs cartes l’une sous l’autre,
+pleine largeur. Pas de grille à deux ou trois colonnes pour ces cartes. Sous
+1 100 px et sous 700 px, les cartes empilées restent une colonne. Elles
+suivent leur texte. Le défilement de `.work` reste permis. Le courrier garde
+`courrier-desk` et prend la largeur du bureau. Les phrases gardent
+`phrase-desk`. Les papiers gardent `letter` et `#papiers-letter`.
+
+**La carte** (`/societe/identite`). Le fil porte « La carte ». Le `h1`
+« L’identité. » sort : le lede dit déjà « La carte de la société, pas un
+formulaire de paramètres. » Le lien « ← La société » reste, le pli le masque.
+La racine reste `div.letter` dans le bureau. Deux cartes. La première porte
+`ul.people`, une liste dans la carte : Nom, Forme avec le capital quand il
+n’est pas nul, Siège s’il est là, Président s’il est là, SIREN s’il est là,
+Clôture, TVA. Une ligne absente le reste. Pas une carte par ligne. La seconde
+porte « Le coffre » : les deux phrases déjà écrites, et les liens déjà écrits
+vers Le courrier et vers les phrases. « Modifier la carte » reste le lien
+quiet vers `/view/societe`, sous les cartes. Pas un formulaire, pas une carte.
+Aucun formulaire inventé.
+
+**Le courrier** (`/societe/courrier`). Le `h1` « Le courrier. » sort. Le lien
+« ← La société » reste, le pli le masque. La racine garde `letter` et
+`courrier-desk`. Le lede déjà écrit reste une phrase au-dessus (pas encore
+branché, prêt envoi du jour, ou prêt à la main). « Trop de lettres cette
+heure. Celles qui restent attendent. » reste où elle est. Quatre cartes.
+`courrier-board` les range : la lecture à gauche, dans 42 rem au plus, et les
+trois autres à droite. Dès 1 280 px de bureau, la formule et l’envoi du jour
+partagent une ligne, et « D’où elles partent » prend la largeur sous elles.
+En dessous, la lecture reste à côté d’une colonne. Sous 880 px, une seule
+colonne. La première est la lecture : l’amorce « Une lettre d’essai. Le
+prénom est fictif. », `#letter-card`, la feuille, puis `form.courrier-send`.
+`mail-pane` reste la figure de la lettre. L’iframe `.letter-frame` garde son
+bloc vide. Les radios de la feuille restent sur l’input. `form.courrier-send`
+reste le formulaire du champ « Vers » et de « Envoyer l’essai », le bouton
+dans le form. La deuxième carte est `form.courrier-formula` : « Ce qui ferme
+la lettre », l’aide déjà écrite, le textarea dont l’aperçu part en delay
+600 ms vers `#letter-card` en innerHTML sans pousser l’URL, et le bouton
+« Enregistrer » dans le form. La troisième est « D’où elles partent » : la
+ligne de compte déjà écrite, `details.courrier-sheet`, `form.serveur` dont le
+bouton « Enregistrer et essayer la liaison » est dans le form, et, quand un
+mot de passe est au coffre, le formulaire « Retirer le mot de passe » dont le
+bouton est dans le form. Le champ mot de passe reste `type="password"`. La
+page ne le réécrit pas. La grille des champs du serveur reste la grille des
+champs (une colonne, deux colonnes dès 640 px dans le conteneur courrier),
+pas une grille de cartes. La quatrième est « L’envoi du jour » : les deux
+phrases déjà écrites, et le formulaire dont le bouton est « Activer l’envoi
+du jour » ou « Couper l’envoi du jour », dans le form.
+
+**Les phrases** (`/affaires/phrases?depuis=societe`). L’habillage du bureau
+reste : `frame_phrases`, famille Les réglages, soulignement La société.
+`?depuis=lettre` et `?depuis=fiche` restent dans la lentille des affaires,
+avec leur lien retour. Le fil porte « Les phrases ». Le `h1` « Les phrases. »
+sort. Le titre « {genre}. » reste une phrase dans la carte. Le lien « ← … »
+du gabarit partagé reste dans le gabarit. La ligne des genres (« Les
+phrases », chaque genre, « Un autre genre ») reste une ligne, pas une carte.
+Une carte pour l’entrée déjà écrite : le lede, la chronique, « Les
+conversations déjà engagées finissent leur série. » Un seul formulaire
+ensuite, pas une carte par moment. La frise et la feuille gardent la grille
+`phrase-stage` (frise | feuille, une colonne sous 800 px). Les boutons
+Monter, Descendre, Retirer, Ajouter un moment, Enregistrer les phrases et
+Retirer ce genre restent dans ce form. Les jetons restent des boutons
+`type="button"`. L’aperçu reste `#phrase-sheet`, remplacé en innerHTML,
+delay 600 ms. La feuille reste une figure dans le formulaire.
+
+**Les papiers** (`/societe/papiers`). Le `h1` « Les papiers. » sort. Le lien
+« ← La société » reste, le pli le masque. La racine qui se rafraîchit sur
+`griffe:saved` reste `#papiers-letter`. Le fragment dont la cible est
+`papiers-letter` ne redessine pas le pli et ne contient pas « Revenir au
+menu ». Le mât (exercice, « vu le ») reste le mât, au-dessus des cartes. La
+phrase d’entrée déjà écrite reste au-dessus. Deux cartes de listes. « Ce que
+Griffe écrit. » : la phrase déjà écrite (« Le PV et l’affectation… » ou « Le
+PV, le FEC, les factures… ») et le lien « Lesquelles ? », puis `ol.papers`.
+« Ce que vous apportez. » : `ol.papers`, ou « Rien à apporter pour cet
+exercice. », puis `details` « une autre pièce » dont le formulaire (le
+select, « Déposer ») reste dans le `details`. Chaque pièce reste un `li` : le
+bouton `type="button"` qui déplie, le formulaire de dépôt dans le déplié
+quand la pièce est à apporter, les liens « Ouvrir … », les phrases déjà
+écrites. Pas une carte par pièce. « Deux endroits. » garde la grille
+`.places` (deux colonnes, le filet, une colonne sous 700 px). « Au coffre »
+et « Pour un contrôle » sont les deux cartes de cette grille. Le chemin du
+coffre reste le chemin. Le formulaire « Préparer le dossier d’un contrôle »
+reste dans « Pour un contrôle », le bouton dans le form, le résultat dans
+`#pack-result`.
+
+Ce qui reste une figure : `mail-pane` dans la carte de lecture du courrier,
+la feuille `#phrase-sheet` dans le formulaire des phrases. Ce qui reste une
+liste : `ul.people` dans La carte, `ol.papers` dans chaque carte de liste,
+chaque pièce un `li`. Ce qui reste un formulaire : l’envoi d’essai, la
+formule, le serveur, le retrait du mot de passe, l’envoi du jour, le
+formulaire unique des phrases, le dépôt d’une pièce, le dépôt « une autre
+pièce », la préparation du dossier d’un contrôle. La carte n’a pas de
+formulaire.
+
+Classes `.reglages-*`. Ces quatre adresses restent sans CA3, 3514, 2777. Le
+SIREN déjà écrit reste.
 
 | Chapitre | Contenu |
 |---|---|
@@ -258,10 +560,10 @@ Les colonnes :
 | Le relevé | Chaque mouvement = une phrase, trois lectures : dépense, règlement d’une dette, *c’est moi que je me paie*. |
 | La carte | Carte (nom, forme, siège, président, SIREN, clôture, régime de TVA). Le coffre se dit ici. |
 
-« Te payer » et le paysage demandent des **chiffres déjà dans le domaine**
-(prévisionnel, rémunération du dirigeant, affectation) présentés autrement.
-La *recommandation* « 2 800 € ce mois-ci gardent 3 mois de piste » est une
-query nouvelle, pure, à tests chiffrés à la main — pas un calcul dans la fenêtre.
+« Te payer » et le paysage montrent des **chiffres déjà dans le domaine**
+(prévisionnel, rémunération du dirigeant, affectation).
+Le montant qui garde 3 mois de piste vient de la query du cœur,
+tenue par le test chiffré « 2 800 € ». La fenêtre affiche ce résultat.
 
 ## 9. Cœur vs fenêtre
 

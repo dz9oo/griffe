@@ -29,7 +29,7 @@ fn is_htmx_request(headers: &HeaderMap) -> bool {
     headers.contains_key("hx-request")
 }
 
-/// La page et le remplacement de `#content` gardent les quatre colonnes.
+/// La page et le remplacement de `#content` gardent le pli.
 /// Le rafraîchissement de `#papiers-letter` ne renvoie que la lettre.
 fn replaces_content(headers: &HeaderMap) -> bool {
     if !is_htmx_request(headers) {
@@ -164,7 +164,7 @@ pub async fn chapter(
     if is_htmx_request(&headers) {
         Html(content.into_string())
     } else {
-        Html(layout::page(ViewId::Societe, "déverrouillé", content).into_string())
+        Html(layout::page(ViewId::Societe, "déverrouillé", today, content).into_string())
     }
 }
 

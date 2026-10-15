@@ -16,11 +16,14 @@ use crate::layout::ViewId;
 use crate::state::AppState;
 use crate::views::relances;
 
-fn page(headers: &HeaderMap, content: maud::Markup) -> Html<String> {
+fn page(state: &AppState, headers: &HeaderMap, content: maud::Markup) -> Html<String> {
     if headers.contains_key("hx-request") {
         Html(content.into_string())
     } else {
-        Html(crate::layout::page(ViewId::Relances, "déverrouillé", content).into_string())
+        Html(
+            crate::layout::page(ViewId::Relances, "déverrouillé", state.today(), content)
+                .into_string(),
+        )
     }
 }
 
@@ -39,7 +42,7 @@ async fn render_focus(
         })
         .await
         .unwrap_or_else(|| maud::html! { div class="empty-state" { "coffre verrouillé" } });
-    page(&headers, content)
+    page(state, &headers, content)
 }
 
 pub async fn view(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {
@@ -103,7 +106,7 @@ pub async fn set_sender(
         }
         Some(Err(e)) => {
             let content = relances::sender_form(Some(&e.to_string()));
-            page(&headers, content)
+            page(&state, &headers, content)
         }
         None => render_focus(&state, headers, None, Some("coffre verrouillé".into())).await,
     }
@@ -137,6 +140,7 @@ async fn mutate(
                 .await
                 .unwrap_or_else(|| maud::html! { div class="empty-state" { "coffre verrouillé" } });
             page(
+                state,
                 &headers,
                 maud::html! {
                     (banner)
