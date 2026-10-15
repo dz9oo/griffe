@@ -103,43 +103,133 @@ pub struct CustomLetter {
     pub palette: LetterPalette,
 }
 
+/// Ce que le fichier donne, y compris quand il ne peut pas peindre.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CustomSheet {
+    /// Pas de fichier.
+    Absent,
+    /// Couleurs utilisables.
+    Ready(CustomLetter),
+    /// Le fichier est là, la lecture a échoué.
+    Unreadable,
+    /// Lignes manquantes, en trop, ou illisibles.
+    IllFormed,
+    /// L'encre ou le lien passe sous 4,5 sur le papier. `name` si `nom` se lit.
+    Pale { name: Option<String> },
+}
+
 /// Un mot du choix, tel qu'il s'affiche.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LetterChoice {
     pub id: &'static str,
     pub label: String,
+    /// Feuille du fichier, à marquer à part de Clair et de Sauge.
+    pub own: bool,
+    /// On peut la cocher. Une feuille illisible reste visible, et ne se coche pas.
+    pub selectable: bool,
+    /// Couleur du lien, pour la pastille. Vide si la feuille ne se peint pas.
+    pub swatch: Option<String>,
 }
 
-/// Clair, Sauge, et le nom du fichier quand il est valide.
+/// Ligne sous le choix. `readable` dit si la pastille et le mot peuvent peindre.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnSheetNote {
+    pub readable: bool,
+    pub sentence: String,
+}
+
+/// Clair, Sauge, et la feuille du fichier dès qu'il est là.
 #[must_use]
 pub fn letter_choices() -> Vec<LetterChoice> {
-    let mut choices = vec![
-        LetterChoice {
-            id: "clair",
-            label: "Clair".into(),
-        },
-        LetterChoice {
-            id: "sauge",
-            label: "Sauge".into(),
-        },
-    ];
-    if let Some(custom) = read_custom_letter() {
-        choices.push(LetterChoice {
-            id: "fichier",
-            label: custom.name,
-        });
+    sheet_choices(&custom_sheet())
+}
+
+/// Les mots du choix pour un état déjà lu.
+#[must_use]
+pub fn sheet_choices(sheet: &CustomSheet) -> Vec<LetterChoice> {
+    let mut choices = vec![delivered("clair", "Clair"), delivered("sauge", "Sauge")];
+    if let Some(choice) = own_choice(sheet) {
+        choices.push(choice);
     }
     choices
 }
 
-/// Mot coché. Un fichier absent ne laisse pas `fichier` coché.
+fn delivered(id: &'static str, label: &str) -> LetterChoice {
+    LetterChoice {
+        id,
+        label: label.to_string(),
+        own: false,
+        selectable: true,
+        swatch: None,
+    }
+}
+
+fn own_choice(sheet: &CustomSheet) -> Option<LetterChoice> {
+    let (label, selectable, swatch) = match sheet {
+        CustomSheet::Absent => return None,
+        CustomSheet::Ready(letter) => {
+            (letter.name.clone(), true, Some(letter.palette.link.clone()))
+        }
+        CustomSheet::Pale { name: Some(name) } => (name.clone(), false, None),
+        CustomSheet::Pale { name: None } | CustomSheet::Unreadable | CustomSheet::IllFormed => {
+            ("Votre feuille".to_string(), false, None)
+        }
+    };
+    Some(LetterChoice {
+        id: "fichier",
+        label,
+        own: true,
+        selectable,
+        swatch,
+    })
+}
+
+/// Mot coché. Un fichier absent, ou illisible, ne laisse pas `fichier` coché.
 #[must_use]
 pub fn selected_sheet(theme: LetterTheme) -> &'static str {
+    selected_id(theme, &custom_sheet())
+}
+
+/// Mot coché pour un état déjà lu.
+#[must_use]
+pub fn selected_id(theme: LetterTheme, sheet: &CustomSheet) -> &'static str {
     match theme {
         LetterTheme::Sauge => "sauge",
-        LetterTheme::Fichier if read_custom_letter().is_some() => "fichier",
+        LetterTheme::Fichier if matches!(sheet, CustomSheet::Ready(_)) => "fichier",
         LetterTheme::Clair | LetterTheme::Fichier => "clair",
     }
+}
+
+/// Phrase sous les mots. `selected` est le mot coché (`clair`, `sauge`, `fichier`).
+#[must_use]
+pub fn own_sheet_note(sheet: &CustomSheet, selected: &str) -> Option<OwnSheetNote> {
+    let painted = match selected {
+        "sauge" => "Sauge",
+        "fichier" => "cette feuille",
+        _ => "Clair",
+    };
+    let (readable, sentence) = match sheet {
+        CustomSheet::Absent => return None,
+        CustomSheet::Ready(_) if selected == "fichier" => (true, "Lisible.".to_string()),
+        CustomSheet::Ready(_) => (true, format!("Lisible. La lettre est sur {painted}.")),
+        CustomSheet::Unreadable => (
+            false,
+            format!("Illisible. Griffe ne peut pas lire le fichier. La lettre est sur {painted}."),
+        ),
+        CustomSheet::IllFormed => (
+            false,
+            format!(
+                "Illisible. Il faut nom, marge, papier, encre, lien. La lettre est sur {painted}."
+            ),
+        ),
+        CustomSheet::Pale { .. } => (
+            false,
+            format!(
+                "Illisible. L'encre ou le lien est trop pâle sur le papier. La lettre est sur {painted}."
+            ),
+        ),
+    };
+    Some(OwnSheetNote { readable, sentence })
 }
 
 /// Fichier illisible.
@@ -218,9 +308,56 @@ pub fn parse_letter_file(text: &str) -> Result<CustomLetter, LetterFileError> {
 /// Sinon : `$XDG_CONFIG_HOME/griffe/lettre.toml`, ou `~/.config/griffe/lettre.toml`.
 #[must_use]
 pub fn read_custom_letter() -> Option<CustomLetter> {
-    let path = letter_path()?;
-    let text = fs::read_to_string(path).ok()?;
-    parse_letter_file(&text).ok()
+    match custom_sheet() {
+        CustomSheet::Ready(letter) => Some(letter),
+        CustomSheet::Absent
+        | CustomSheet::Unreadable
+        | CustomSheet::IllFormed
+        | CustomSheet::Pale { .. } => None,
+    }
+}
+
+/// Fichier lu, y compris quand il ne peut pas peindre.
+///
+/// Même chemin que [`read_custom_letter`].
+#[must_use]
+pub fn custom_sheet() -> CustomSheet {
+    let Some(path) = letter_path() else {
+        return CustomSheet::Absent;
+    };
+    match fs::read_to_string(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => CustomSheet::Absent,
+        Err(_) => CustomSheet::Unreadable,
+        Ok(text) => sheet_from_text(&text),
+    }
+}
+
+/// Interprète le texte d'une feuille, sans ouvrir de fichier.
+#[must_use]
+pub fn sheet_from_text(text: &str) -> CustomSheet {
+    match parse_letter_file(text) {
+        Ok(letter) => CustomSheet::Ready(letter),
+        Err(LetterFileError::Contrast) => CustomSheet::Pale {
+            name: loose_name(text),
+        },
+        Err(LetterFileError::Shape) => CustomSheet::IllFormed,
+    }
+}
+
+fn loose_name(text: &str) -> Option<String> {
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim() == "nom" {
+            return checked_name(value);
+        }
+    }
+    None
 }
 
 fn letter_path() -> Option<PathBuf> {
@@ -299,8 +436,8 @@ fn linear(channel: u8) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        LetterFileError, LetterPalette, LetterTheme, MIN_CONTRAST, channel, contrast,
-        parse_letter_file,
+        CustomSheet, LetterFileError, LetterPalette, LetterTheme, MIN_CONTRAST, channel, contrast,
+        own_sheet_note, parse_letter_file, selected_id, sheet_choices, sheet_from_text,
     };
 
     #[test]
@@ -339,6 +476,65 @@ lien = #8ec07c
         assert_eq!(
             LetterTheme::Fichier.resolved(None).paper,
             LetterPalette::clair().paper
+        );
+        let pale_sheet = sheet_from_text(pale);
+        assert_eq!(
+            pale_sheet,
+            CustomSheet::Pale {
+                name: Some("Atelier".into())
+            }
+        );
+        let choices = sheet_choices(&pale_sheet);
+        let own = choices.iter().find(|choice| choice.own).expect("feuille");
+        assert_eq!(own.label, "Atelier");
+        assert!(!own.selectable);
+        assert!(own.swatch.is_none());
+        let note = own_sheet_note(&pale_sheet, "clair").expect("ligne");
+        assert!(!note.readable);
+        assert!(note.sentence.contains("trop pâle"));
+        assert!(note.sentence.contains("Clair"));
+    }
+
+    #[test]
+    fn a_readable_file_is_a_sheet_one_can_choose() {
+        let text = "\
+nom = Signal
+marge = #f4f1ea
+papier = #fbf9f5
+encre = #221e18
+lien = #2f5d38
+";
+        let sheet = sheet_from_text(text);
+        let CustomSheet::Ready(letter) = &sheet else {
+            panic!("feuille lisible");
+        };
+        assert_eq!(letter.name, "Signal");
+        let choices = sheet_choices(&sheet);
+        assert_eq!(choices.len(), 3);
+        let own = &choices[2];
+        assert!(own.own && own.selectable);
+        assert_eq!(own.label, "Signal");
+        assert_eq!(own.swatch.as_deref(), Some("#2f5d38"));
+        assert_eq!(selected_id(LetterTheme::Fichier, &sheet), "fichier");
+        assert_eq!(
+            own_sheet_note(&sheet, "fichier").expect("ligne").sentence,
+            "Lisible."
+        );
+        let waiting = own_sheet_note(&sheet, "clair").expect("ligne");
+        assert!(waiting.readable);
+        assert!(waiting.sentence.contains("La lettre est sur Clair."));
+        assert!(own_sheet_note(&CustomSheet::Absent, "clair").is_none());
+        assert!(
+            own_sheet_note(&CustomSheet::IllFormed, "sauge")
+                .expect("ligne")
+                .sentence
+                .contains("Sauge")
+        );
+        assert!(
+            own_sheet_note(&CustomSheet::Unreadable, "clair")
+                .expect("ligne")
+                .sentence
+                .contains("ne peut pas lire")
         );
     }
 

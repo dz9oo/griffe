@@ -9545,7 +9545,8 @@ async fn engaged_conversations_finish_their_series_and_a_new_one_takes_three_mom
     assert!(phrases.contains("value=\"14\""), "{phrases}");
     assert!(!phrases.contains("step="), "{phrases}");
     assert!(phrases.contains("?utm_"), "{phrases}");
-    assert!(phrases.contains("sans cette partie"), "{phrases}");
+    assert!(phrases.contains("se lit sans cette partie"), "{phrases}");
+    assert!(phrases.contains("Le lien la garde"), "{phrases}");
     let shown = without_formula_holder(&phrases);
     for forbidden in [
         "template", "cadence", "step", "campagne", "workflow", "pipeline",
@@ -12462,7 +12463,10 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
     assert!(chapter.contains("class=\"mail-pane\""), "{chapter}");
     assert!(chapter.contains("class=\"mail-subject\""), "{chapter}");
     assert!(chapter.contains("hx-get=\"/aide/courrier\""), "{chapter}");
-    assert!(chapter.contains("Une autre feuille"), "{chapter}");
+    assert!(
+        chapter.contains("Une autre feuille") || chapter.contains("votre feuille"),
+        "{chapter}"
+    );
     let pane_at = chapter.find("class=\"mail-pane\"").unwrap_or(usize::MAX);
     let formula_at = chapter.find("courrier-formula").unwrap_or(0);
     assert!(pane_at < formula_at, "{chapter}");
@@ -12559,8 +12563,12 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
         "{preview_body}"
     );
     assert!(
-        preview_body.contains("&gt;https://atelier.example/page&lt;")
-            || preview_body.contains(">https://atelier.example/page<"),
+        preview_body.contains("https://\u{2060}atelier.example/page"),
+        "{preview_body}"
+    );
+    assert!(
+        !preview_body.contains("&gt;https://atelier.example/page?utm_source=essai")
+            && !preview_body.contains(">https://atelier.example/page?utm_source=essai<"),
         "{preview_body}"
     );
     assert!(
@@ -12785,7 +12793,8 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
     assert!(letter.contains("Envoyer"), "{letter}");
     assert!(letter.contains("C'est parti"), "{letter}");
     assert!(letter.contains("?utm_"), "{letter}");
-    assert!(letter.contains("sans cette partie"), "{letter}");
+    assert!(letter.contains("se lit sans cette partie"), "{letter}");
+    assert!(letter.contains("Le lien la garde"), "{letter}");
     assert!(letter.contains("letter-desk"), "{letter}");
     assert!(
         letter.contains("id=\"face-write\" value=\"ecrire\" checked"),
@@ -12827,7 +12836,11 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
         "{reread_body}"
     );
     assert!(
-        reread_body.contains(">https://atelier.example/conformite<"),
+        reread_body.contains(">https://\u{2060}atelier.example/conformite</a>"),
+        "{reread_body}"
+    );
+    assert!(
+        !reread_body.contains(">https://atelier.example/conformite?utm_source=mairie"),
         "{reread_body}"
     );
     assert!(reread_body.contains("Une ligne."), "{reread_body}");

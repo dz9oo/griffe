@@ -1609,6 +1609,32 @@ tr.row-clickable:hover td { background: var(--paper-2); }
   line-height: 1.45;
 }
 .sheet-note .field-help a { color: var(--ink); }
+.sheet-own-mark {
+  margin-left: 0.4em;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  color: var(--ink-2);
+}
+.sheet-swatch {
+  display: inline-block;
+  width: 0.55em;
+  height: 0.55em;
+  margin-right: 0.35em;
+  border-radius: 50%;
+  vertical-align: 0.05em;
+  box-shadow: inset 0 0 0 1px rgba(28, 24, 20, 0.25);
+}
+.sheet-status {
+  margin: 8px 0 0;
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--ok);
+}
+.sheet-status.is-bad { color: var(--seal); }
+.word-choice label.sheet-own:has(input:disabled) {
+  color: var(--ink-2);
+  cursor: default;
+}
 .courrier-send { margin-top: 18px; }
 .courrier-send .field input[type="text"] {
   height: 36px;

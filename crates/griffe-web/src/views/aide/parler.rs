@@ -69,7 +69,7 @@ pub(super) const COURRIER: Letter = Letter {
         "Deux ports, tous deux chiffrés : 587, ou 465. iCloud remplit le serveur. L'identifiant est alors l'adresse, et le mot de passe est un mot de passe d'application.",
         "La formule s'écrit sous la lettre d'essai, dans la même mesure. Enregistrer la range. Vide, la lettre se termine par Bien à vous, le nom, la société.",
         "Deux feuilles : Clair, un ivoire, et Sauge, un vert pâle. Le choix est sous la lettre d'essai. Changer de feuille repeint la lettre telle qu'elle part.",
-        "Une autre feuille peut venir d'un fichier sur cette machine. Les cinq lignes sont plus bas.",
+        "Votre fichier, s'il est là, apparaît à côté, avec la mention votre feuille. Lisible, on peut le choisir. Illisible, la ligne le dit, et la lettre reste sur Clair ou sur Sauge.",
         "Envoyer l'essai laisse cinq secondes. La fenêtre dit Courrier envoyé. Cela ne promet pas la boîte du destinataire.",
         "L'envoi du jour est éteint. L'activer poste, coffre ouvert, les lettres dont la date prévue est aujourd'hui. Une lettre de la veille reste à envoyer à la main.",
     ],

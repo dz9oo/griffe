@@ -7,11 +7,11 @@ use std::path::PathBuf;
 use clap::{ArgGroup, Subcommand};
 use griffe_core::app::{ExecutionContext, Executor};
 use griffe_core::mail::{
-    ArmOutbound, CancelOutbound, ClearMailSecret, DeliveryOutcome, LetterTheme, MailPreset,
-    MailSecret, RecordMailProbe, RememberImapUsername, SaveLetterface, SaveMailAccount,
+    ArmOutbound, CancelOutbound, ClearMailSecret, CustomSheet, DeliveryOutcome, LetterTheme,
+    MailPreset, MailSecret, RecordMailProbe, RememberImapUsername, SaveLetterface, SaveMailAccount,
     SaveMailSecret, SaveMailSignature, SentCopyStatus, SetAutomaticSend, SubmissionBatch,
-    UNDO_SECS, abandon_held, commit_outbound, french_submit_error, hourly_pause, probe_material,
-    profile, read_custom_letter, record_copies, record_deliveries, take_copies, take_due,
+    UNDO_SECS, abandon_held, commit_outbound, custom_sheet, french_submit_error, hourly_pause,
+    probe_material, profile, record_copies, record_deliveries, selected_id, take_copies, take_due,
     trial_letter,
 };
 use griffe_core::store::Store;
@@ -509,15 +509,17 @@ fn envoyer(
 }
 
 fn feuille_label(account: &griffe_core::mail::MailProfile) -> String {
-    let word = account.link_ink.as_str();
-    if account.link_ink == LetterTheme::Fichier
-        && let Some(custom) = read_custom_letter()
+    let sheet = custom_sheet();
+    let selected = selected_id(account.link_ink, &sheet);
+    if let CustomSheet::Ready(letter) = &sheet
+        && selected == "fichier"
     {
-        let name = &custom.name;
-        format!("{word} · {name}")
-    } else {
-        word.to_string()
+        return format!("fichier · {} · lisible", letter.name);
     }
+    if account.link_ink == LetterTheme::Fichier {
+        return "fichier · illisible".to_string();
+    }
+    selected.to_string()
 }
 
 fn apparence(

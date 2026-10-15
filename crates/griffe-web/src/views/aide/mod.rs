@@ -248,7 +248,7 @@ fn recipe_letter(recipe: &Letter) -> Markup {
             div class="block" {
                 h3 { "Votre feuille." }
                 p class="prose" {
-                    "Le fichier se nomme lettre.toml, dans le dossier griffe de la configuration. Si XDG_CONFIG_HOME est posé, c'est là. Sinon, ~/.config. Cinq lignes, pas davantage. L'encre et le lien restent lisibles sur le papier. Un fichier illisible laisse Clair."
+                    "Le fichier se nomme lettre.toml, dans le dossier griffe de la configuration. Si XDG_CONFIG_HOME est posé, c'est là. Sinon, ~/.config. Cinq lignes, pas davantage. L'encre et le lien restent lisibles sur le papier. Sur Le courrier, cette feuille apparaît à côté de Clair et de Sauge, marquée votre feuille. Lisible, on peut la choisir. Illisible, la ligne le dit et la lettre reste sur une feuille livrée."
                 }
                 pre class="aide-file" {
                     "nom = Atelier\nmarge = #f3f1ec\npapier = #fffcf8\nencre = #2a2622\nlien = #3d5c66"
