@@ -2571,8 +2571,18 @@ async fn la_societe_plateau_presses_a_line_into_its_family() {
         "la teinte de menu des réglages reste : {css}"
     );
     assert!(
-        css.contains(".plateau .work .courrier-desk { max-width: 40rem;"),
-        "le courrier garde ses 40 rem : {css}"
+        css.contains(".plateau .work .courrier-desk { max-width: none;"),
+        "le courrier prend la largeur du bureau : {css}"
+    );
+    assert!(
+        css.contains(
+            "@container courrier (min-width: 880px) {\n  .courrier-board { grid-template-columns: minmax(18rem, 42rem) minmax(16rem, 1fr); }"
+        ),
+        "la lecture et les autres cartes partagent la ligne : {css}"
+    );
+    assert!(
+        css.contains(".courrier-side > .courrier-formula { grid-column: 1; grid-row: 1; }"),
+        "la formule et l'envoi du jour tiennent sur une ligne : {css}"
     );
     assert!(
         css.contains(
@@ -12577,6 +12587,8 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
         "{chapter}"
     );
     assert!(chapter.contains("courrier-desk"), "{chapter}");
+    assert!(chapter.contains("courrier-board"), "{chapter}");
+    assert!(chapter.contains("courrier-side"), "{chapter}");
     assert!(chapter.contains("courrier-read"), "{chapter}");
     assert!(chapter.contains("class=\"letter-stage\""), "{chapter}");
     assert!(chapter.contains("class=\"letter-frame\""), "{chapter}");

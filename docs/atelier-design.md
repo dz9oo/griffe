@@ -457,12 +457,12 @@ Le fil, « Revenir au menu » et les pastilles restent. La teinte de menu reste
 encre. Les cartes se posent sur le bureau `#e6dfd2`. Les queries et les POST
 ne changent pas.
 
-Les cartes se posent l’une sous l’autre, pleine largeur. Pas de grille à deux
-ou trois colonnes pour ces cartes. Sous 1 100 px et sous 700 px, les cartes
-empilées restent une colonne. Elles suivent leur texte. Le défilement de
-`.work` reste permis. Le courrier garde `courrier-desk` et ses 40 rem. Les
-phrases gardent `phrase-desk`. Les papiers gardent `letter` et
-`#papiers-letter`.
+La carte, les phrases et les papiers posent leurs cartes l’une sous l’autre,
+pleine largeur. Pas de grille à deux ou trois colonnes pour ces cartes. Sous
+1 100 px et sous 700 px, les cartes empilées restent une colonne. Elles
+suivent leur texte. Le défilement de `.work` reste permis. Le courrier garde
+`courrier-desk` et prend la largeur du bureau. Les phrases gardent
+`phrase-desk`. Les papiers gardent `letter` et `#papiers-letter`.
 
 **La carte** (`/societe/identite`). Le fil porte « La carte ». Le `h1`
 « L’identité. » sort : le lede dit déjà « La carte de la société, pas un
@@ -480,8 +480,12 @@ Aucun formulaire inventé.
 « ← La société » reste, le pli le masque. La racine garde `letter` et
 `courrier-desk`. Le lede déjà écrit reste une phrase au-dessus (pas encore
 branché, prêt envoi du jour, ou prêt à la main). « Trop de lettres cette
-heure. Celles qui restent attendent. » reste où elle est. Quatre cartes, dans
-les 40 rem. La première est la lecture : l’amorce « Une lettre d’essai. Le
+heure. Celles qui restent attendent. » reste où elle est. Quatre cartes.
+`courrier-board` les range : la lecture à gauche, dans 42 rem au plus, et les
+trois autres à droite. Dès 1 280 px de bureau, la formule et l’envoi du jour
+partagent une ligne, et « D’où elles partent » prend la largeur sous elles.
+En dessous, la lecture reste à côté d’une colonne. Sous 880 px, une seule
+colonne. La première est la lecture : l’amorce « Une lettre d’essai. Le
 prénom est fictif. », `#letter-card`, la feuille, puis `form.courrier-send`.
 `mail-pane` reste la figure de la lettre. L’iframe `.letter-frame` garde son
 bloc vide. Les radios de la feuille restent sur l’input. `form.courrier-send`

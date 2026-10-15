@@ -1550,6 +1550,30 @@ tr.row-clickable:hover td { background: var(--paper-2); }
   letter-spacing: 0.02em;
 }
 .courrier-desk { container-type: inline-size; container-name: courrier; }
+.courrier-board {
+  display: grid;
+  gap: 12px;
+  align-items: start;
+}
+.courrier-side {
+  display: grid;
+  gap: 12px;
+  align-items: start;
+  min-width: 0;
+}
+.courrier-board > .courrier-read { margin-top: 0; }
+@container courrier (min-width: 880px) {
+  .courrier-board { grid-template-columns: minmax(18rem, 42rem) minmax(16rem, 1fr); }
+}
+@container courrier (min-width: 1280px) {
+  .courrier-side {
+    grid-template-columns: minmax(0, 1.4fr) minmax(14rem, 0.75fr);
+    align-items: stretch;
+  }
+  .courrier-side > .courrier-formula { grid-column: 1; grid-row: 1; }
+  .courrier-side > .courrier-jour { grid-column: 2; grid-row: 1; }
+  .courrier-side > .courrier-account { grid-column: 1 / -1; grid-row: 2; }
+}
 .courrier-read {
   display: grid;
   gap: 28px;
@@ -2778,7 +2802,7 @@ input[type="checkbox"] {
 }
 .plateau .work .letter,
 .plateau .work .phrase-desk { max-width: none; margin: 0; width: 100%; }
-.plateau .work .courrier-desk { max-width: 40rem; margin: 0; width: 100%; }
+.plateau .work .courrier-desk { max-width: none; margin: 0; width: 100%; }
 .plateau .work a.back { display: none; }
 .plateau .work h1 {
   font-family: var(--sans);

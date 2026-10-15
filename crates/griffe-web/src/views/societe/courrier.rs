@@ -97,6 +97,7 @@ fn markup(
             @if pause {
                 p class="prose" { "Trop de lettres cette heure. Celles qui restent attendent." }
             }
+            div class="courrier-board" {
             article class="reglages-card courrier-read" {
                     p class="courrier-kicker" { "Une lettre d'essai. Le prénom est fictif." }
                     div id="letter-card" {
@@ -123,6 +124,7 @@ fn markup(
                         ))
                     }
             }
+            div class="courrier-side" {
             form class="reglages-card courrier-formula courrier-block" hx-post="/societe/courrier/signature" hx-target="#content" hx-push-url="true" {
                     h3 class="panel-title" { "Ce qui ferme la lettre" }
                     p class="field-help" {
@@ -269,6 +271,8 @@ fn markup(
                         }
                     }
                 }
+            }
+            }
             }
         }
     }
