@@ -13,7 +13,8 @@ use griffe_core::follow_up::{
     GenreWordDraft, KeepGenreWords, MarkFollowUpSent, MomentDraft, PhraseRewrite, PrepareFollowUp,
     ProspectGenre, ProspectPhrase, RetractLastFollowUp, RewriteGenreWords, RewriteProspectPhrases,
     SetDossierGenre, SetFollowUpDate, SetFollowUpSender, SkipFollowUpStep, SnoozeFollowUp,
-    card_for, follow_up_board, follow_up_queue, prospect_genres, prospect_phrases,
+    card_for, follow_up_board, follow_up_queue, phrases_for_genre, prospect_genres,
+    prospect_phrases,
 };
 use griffe_core::store::Store;
 use time::Date;
@@ -199,7 +200,11 @@ pub enum FollowUpCommand {
         today: Option<Date>,
     },
     /// Les phrases de prospection, dans l'ordre.
-    Phrases,
+    Phrases {
+        /// Série dont on lit les mots. Sans elle, les phrases par défaut.
+        #[arg(long)]
+        genre: Option<String>,
+    },
     /// Les moments : en ajouter, en retirer, les déplacer, régler l'écart.
     Moments {
         #[command(subcommand)]
@@ -214,7 +219,7 @@ pub enum FollowUpCommand {
         #[arg(long)]
         subject: String,
         /// Corps. Les balises `<prénom>`, `<nom>`, `<genre>`, `<sujet>`, `<montant>`,
-        /// `<moi>`, `<société>` et `<signature>` sont les jetons.
+        /// `<constat>`, `<moi>`, `<société>` et `<signature>` sont les jetons.
         /// `<Monsieur le Maire/Madame la Maire>` suit le genre. Un mot ordinaire reste tel quel.
         #[arg(long)]
         body: Option<String>,
@@ -630,8 +635,19 @@ pub fn run(
             let cards = follow_up_board(store.connection(), today_or(today))?;
             Ok(format_value(&cards, json))
         }
-        FollowUpCommand::Phrases => {
-            let phrases = prospect_phrases(store.connection())?;
+        FollowUpCommand::Phrases { genre } => {
+            let phrases = match genre {
+                Some(name) => {
+                    let found = prospect_genres(store.connection())?
+                        .into_iter()
+                        .find(|genre| genre.name == name)
+                        .ok_or_else(|| {
+                            CliError::Domain(format!("Cette série n'existe pas : {name}"))
+                        })?;
+                    phrases_for_genre(store.connection(), &found.id)?
+                }
+                None => prospect_phrases(store.connection())?,
+            };
             if json {
                 Ok(format_json(&phrases))
             } else {

@@ -406,6 +406,8 @@ pub struct TemplateContext {
     pub client: String,
     pub sujet: String,
     pub montant: String,
+    /// Constat propre à ce prospect. Vide : la ligne qui ne contient que `{{constat}}` disparaît.
+    pub constat: String,
     pub moi: String,
     pub societe: String,
     pub facture: String,
@@ -470,6 +472,7 @@ const EDITOR_WORDS: &[(&str, &str)] = &[
     ("{{client}}", "<client>"),
     ("{{sujet}}", "<sujet>"),
     ("{{montant}}", "<montant>"),
+    ("{{constat}}", "<constat>"),
     ("{{moi}}", "<moi>"),
     ("{{societe}}", "<société>"),
     ("{{signature}}", "<signature>"),
@@ -961,8 +964,10 @@ pub fn resolve_signature(signature: &str, moi: &str, societe: &str) -> String {
 /// `<Monsieur le Maire/Madame la Maire>` suit le genre. Sans genre, les deux
 /// côtés restent, séparés par « / ».
 /// `<signature>` est remplacée avant ces formes : son texte est relu.
+/// `<constat>` vide : la ligne qui ne contient que lui disparaît.
 #[must_use]
 pub fn render_template(template: &str, ctx: &TemplateContext) -> String {
+    let template = drop_empty_constat_lines(template, &ctx.constat);
     let signature = resolve_signature(&ctx.signature, &ctx.moi, &ctx.societe);
     let text = template
         .replace("{{prenom}}", &ctx.prenom)
@@ -972,6 +977,7 @@ pub fn render_template(template: &str, ctx: &TemplateContext) -> String {
         .replace("{{client}}", &ctx.client)
         .replace("{{sujet}}", &ctx.sujet)
         .replace("{{montant}}", &ctx.montant)
+        .replace("{{constat}}", &ctx.constat)
         .replace("{{moi}}", &ctx.moi)
         .replace("{{societe}}", &ctx.societe)
         .replace("{{facture}}", &ctx.facture)
@@ -1025,6 +1031,37 @@ fn gendered_choice(inside: &str, civility: &str) -> Option<String> {
         "Madame" => Some(right.to_string()),
         _ => Some(format!("{left} / {right}")),
     }
+}
+
+/// Une ligne qui ne contient que `{{constat}}` disparaît quand le constat est vide.
+/// Les lignes vides qui se suivent alors n'en laissent qu'une.
+fn drop_empty_constat_lines(template: &str, constat: &str) -> String {
+    if !constat.trim().is_empty() {
+        return template.to_string();
+    }
+    let mut skipped = false;
+    let mut lines = Vec::new();
+    for line in template.split('\n') {
+        if line.trim() == "{{constat}}" {
+            skipped = true;
+            continue;
+        }
+        lines.push(line);
+    }
+    if !skipped {
+        return template.to_string();
+    }
+    let mut collapsed = Vec::new();
+    let mut previous_blank = false;
+    for line in lines {
+        let blank = line.trim().is_empty();
+        if blank && previous_blank {
+            continue;
+        }
+        previous_blank = blank;
+        collapsed.push(line);
+    }
+    collapsed.join("\n")
 }
 
 fn squeeze_line_spaces(text: &str) -> String {
@@ -1538,6 +1575,37 @@ mod tests {
         assert_eq!(jean.prenom, "Jean");
         let hyphen = TemplateContext::default().with_names("Jean-Pierre Martin", "Acme");
         assert_eq!(hyphen.prenom, "Jean-Pierre");
+    }
+
+    #[test]
+    fn constat_is_an_editor_token() {
+        let stored = "Voir {{constat}}\n";
+        let shown = phrase_to_editor(stored);
+        assert!(shown.contains("<constat>"));
+        assert!(!shown.contains("{{"));
+        assert_eq!(phrase_from_editor(&shown), stored);
+    }
+
+    #[test]
+    fn an_empty_constat_drops_the_line_that_holds_only_it() {
+        let empty = render_template(
+            "Bonjour,\n\n{{constat}}\n\nBien à vous,\n",
+            &TemplateContext::default(),
+        );
+        assert_eq!(empty, "Bonjour,\n\nBien à vous,\n");
+        let inline = render_template("Voir {{constat}} ici.\n", &TemplateContext::default());
+        assert_eq!(inline, "Voir ici.\n");
+        let filled = render_template(
+            "Bonjour,\n\n{{constat}}\n\nBien à vous,\n",
+            &TemplateContext {
+                constat: "Le site ne déclare pas les cookies.".into(),
+                ..TemplateContext::default()
+            },
+        );
+        assert_eq!(
+            filled,
+            "Bonjour,\n\nLe site ne déclare pas les cookies.\n\nBien à vous,\n"
+        );
     }
 
     #[test]

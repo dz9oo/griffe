@@ -46,6 +46,18 @@ pub fn parse_money(s: &str) -> Result<Money, String> {
     Money::parse_decimal(s).map_err(|e| e.to_string())
 }
 
+/// Une ligne d'estimation, `Libellé=12,00`. Le dernier `=` sépare le montant.
+/// Un libellé vide ou un montant nul est refusé plus loin, par le cœur.
+///
+/// # Errors
+pub fn parse_estimation_line(s: &str) -> Result<(String, Money), String> {
+    let (label, amount) = s
+        .rsplit_once('=')
+        .ok_or_else(|| format!("ligne d'estimation invalide : {s} (attendu Libellé=12,00)"))?;
+    let amount = parse_money(amount.trim())?;
+    Ok((label.trim().to_string(), amount))
+}
+
 /// Une ligne de bilan d'ouverture, `compte:libellé:D|C:montant` — le parseur du domaine
 /// (`OpeningBalanceLine: FromStr`), partagé avec la fenêtre et le serveur MCP.
 ///

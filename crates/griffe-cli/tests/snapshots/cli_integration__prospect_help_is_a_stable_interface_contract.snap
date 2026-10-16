@@ -11,6 +11,7 @@ Commands:
   show             Affiche une opportunité
   list             Liste les opportunités ouvertes et non archivées (ajoutez `--closed`/`--archived` pour élargir)
   edit             Modifie une opportunité ouverte — seuls les champs fournis changent. Ne peut pas changer l'étape (utilisez `advance`/`win`/`lose`) ni le motif de perte
+  estimation       Remplace les lignes de l'estimation. Le montant devient leur somme. Le Quoi ne change pas
   advance          Fait avancer une opportunité vers une autre étape ouverte
   win              Gagne une opportunité : crée la mission forfait correspondante
   reopen           Rouvre une conversation arrêtée, sur le même dossier

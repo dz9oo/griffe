@@ -1023,6 +1023,200 @@ fn follow_up_moments_set_a_gap_add_a_moment_and_refuse_the_first() {
 }
 
 #[test]
+fn estimation_set_sums_the_lines_and_a_new_series_keeps_its_words() {
+    let db = temp_db("estimation-series");
+    provision(&db);
+
+    unlocked(&db)
+        .args(["--json", "follow-up", "phrases", "--genre", "Inconnue"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "Cette série n'existe pas : Inconnue",
+        ));
+
+    let mairies = json_result(
+        &unlocked(&db)
+            .args(["--json", "follow-up", "genre", "add", "Mairies"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    let mairies_id = mairies["result"]["id"].as_str().unwrap();
+    unlocked(&db)
+        .args([
+            "follow-up",
+            "genre",
+            "rewrite",
+            mairies_id,
+            "hello",
+            "--subject",
+            "au sujet de <sujet>",
+            "--body",
+            "Bonjour <prénom>,\n\n<constat>\n\n<signature>",
+        ])
+        .assert()
+        .success();
+
+    let commerces = json_result(
+        &unlocked(&db)
+            .args(["--json", "follow-up", "genre", "add", "Commerces"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    let commerces_id = commerces["result"]["id"].as_str().unwrap();
+    unlocked(&db)
+        .args([
+            "follow-up",
+            "genre",
+            "rewrite",
+            commerces_id,
+            "hello",
+            "--subject",
+            "votre vitrine",
+            "--body",
+            "La vitrine de <client>.\n\n<signature>",
+        ])
+        .assert()
+        .success();
+
+    let mairies_phrases = json_result(
+        &unlocked(&db)
+            .args(["--json", "follow-up", "phrases", "--genre", "Mairies"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    let mairies_hello = mairies_phrases
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|phrase| phrase["key"] == "hello")
+        .unwrap();
+    assert_eq!(mairies_hello["subject"], "au sujet de {{sujet}}");
+    assert!(
+        mairies_hello["body"]
+            .as_str()
+            .unwrap()
+            .contains("{{constat}}"),
+        "{mairies_hello}"
+    );
+    assert!(
+        !mairies_hello["body"].as_str().unwrap().contains("vitrine"),
+        "{mairies_hello}"
+    );
+
+    let commerces_phrases = json_result(
+        &unlocked(&db)
+            .args(["--json", "follow-up", "phrases", "--genre", "Commerces"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    let commerces_hello = commerces_phrases
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|phrase| phrase["key"] == "hello")
+        .unwrap();
+    assert_eq!(commerces_hello["subject"], "votre vitrine");
+    assert!(
+        !commerces_hello["body"]
+            .as_str()
+            .unwrap()
+            .contains("{{constat}}"),
+        "{commerces_hello}"
+    );
+
+    let client_id = create_client(&db, "Mairie de Lewarde");
+    let created = json_result(
+        &unlocked(&db)
+            .args([
+                "--json",
+                "prospect",
+                "create",
+                "--client",
+                &client_id,
+                "--name",
+                "le site communal",
+                "--amount",
+                "0",
+                "--probability",
+                "0",
+                "--next-action",
+                "2026-10-16",
+            ])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    let opportunity_id = created["result"].as_str().unwrap();
+    unlocked(&db)
+        .args([
+            "--json",
+            "prospect",
+            "estimation",
+            "set",
+            opportunity_id,
+            "--line",
+            "Refonte site web=1200,00",
+            "--line",
+            "Audit conformité=400,00",
+        ])
+        .assert()
+        .success();
+    let shown = json_result(
+        &unlocked(&db)
+            .args(["--json", "prospect", "show", opportunity_id])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert_eq!(shown["name"], "le site communal");
+    assert_eq!(shown["amount"], 160_000);
+
+    unlocked(&db)
+        .args([
+            "prospect",
+            "estimation",
+            "set",
+            opportunity_id,
+            "--line",
+            "Audit=0",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "chaque ligne de travaux a besoin d'un libellé et d'un montant",
+        ));
+    unlocked(&db)
+        .args([
+            "prospect",
+            "estimation",
+            "set",
+            opportunity_id,
+            "--line",
+            "sans montant",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("ligne d'estimation invalide"));
+}
+
+#[test]
 fn day_mast_json_on_an_empty_vault_has_zero_bank_and_typed_signals() {
     let db = temp_db("day-mast");
     provision(&db);

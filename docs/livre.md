@@ -62,6 +62,7 @@ Un courrier parti un vendredi, à trois jours, se rappelle le mercredi.
 Les phrases prennent aussi `<nom>`, `<genre>`, et une formule
 `<Monsieur le Maire/Madame la Maire>`. `<genre>` suit Monsieur ou
 Madame. Sans genre, les deux côtés restent visibles.
+Un `<constat>` vide disparaît, et la ligne qui ne porte que lui aussi.
 
 Le courrier s’ouvre sur la lettre d’essai, pour un prénom fictif. La
 formule est sous la lettre, dans la même mesure, et la lettre suit la frappe. Enregistrer l’écrit dans

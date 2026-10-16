@@ -6,14 +6,17 @@ use clap::Subcommand;
 use griffe_core::app::{ExecutionContext, Executor};
 use griffe_core::domain::{Address, InteractionId, InteractionKind, OpportunityStage, Probability};
 use griffe_core::prospection::{
-    self, OpportunityFilter, late_actions, list_opportunities_with, opportunity_by_id,
-    opportunity_references, pipeline_by_stage, weighted_pipeline, without_next_action,
+    self, OpportunityFilter, estimation_lines, late_actions, list_opportunities_with,
+    opportunity_by_id, opportunity_references, pipeline_by_stage, weighted_pipeline,
+    without_next_action,
 };
 use griffe_core::store::Store;
 use time::{Date, OffsetDateTime};
 
 use crate::error::CliError;
-use crate::output::{HumanRender, format_json, format_outcome, format_value, key_values, or_dash};
+use crate::output::{
+    HumanRender, format_json, format_outcome, format_outcome_as, format_value, key_values, or_dash,
+};
 
 impl HumanRender for griffe_core::domain::Opportunity {
     fn render_human(&self) -> String {
@@ -65,7 +68,9 @@ impl HumanRender for Vec<griffe_core::domain::Opportunity> {
         opportunity_table(self)
     }
 }
-use crate::parsers::{parse_date, parse_loss_reason, parse_money, parse_probability};
+use crate::parsers::{
+    parse_date, parse_estimation_line, parse_loss_reason, parse_money, parse_probability,
+};
 use crate::refs;
 
 #[derive(Debug, Subcommand)]
@@ -161,6 +166,11 @@ pub enum ProspectCommand {
         #[arg(long)]
         country: Option<String>,
     },
+    /// Remplace les lignes de l'estimation. Le montant devient leur somme. Le Quoi ne change pas.
+    Estimation {
+        #[command(subcommand)]
+        action: EstimationCommand,
+    },
     /// Fait avancer une opportunité vers une autre étape ouverte.
     Advance {
         #[arg(value_name = "RÉFÉRENCE")]
@@ -239,6 +249,22 @@ pub enum ProspectCommand {
     Orphans,
     /// Pipeline pondéré et répartition par étape.
     Pipeline,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum EstimationCommand {
+    /// Pose les lignes. Chaque `--line` vaut `Libellé=12,00`.
+    Set {
+        #[arg(value_name = "RÉFÉRENCE")]
+        reference: String,
+        #[arg(
+            long = "line",
+            value_name = "LIBELLÉ=MONTANT",
+            value_parser = parse_estimation_line,
+            required = true
+        )]
+        lines: Vec<(String, griffe_core::domain::Money)>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -477,6 +503,34 @@ pub fn run(
             };
             format_outcome(&outcome, json)
         }
+        ProspectCommand::Estimation { action } => match action {
+            EstimationCommand::Set { reference, lines } => {
+                let id = refs::resolve_opportunity(store, &reference)?;
+                let current = opportunity_by_id(store.connection(), id)?
+                    .ok_or_else(|| CliError::Domain(format!("opportunité introuvable : {id}")))?;
+                let command = prospection::SetEstimation {
+                    id,
+                    revision: current.revision,
+                    name: current.name,
+                    lines: lines
+                        .into_iter()
+                        .map(|(label, amount)| prospection::EstimationLineInput { label, amount })
+                        .collect(),
+                };
+                let outcome = Executor::new(store).execute(&command, ctx)?;
+                let shown = estimation_lines(store.connection(), id)?;
+                let updated = opportunity_by_id(store.connection(), id)?
+                    .ok_or_else(|| CliError::Domain(format!("opportunité introuvable : {id}")))?;
+                format_outcome_as(&outcome, json, |_| {
+                    let mut text = String::new();
+                    for (label, amount) in &shown {
+                        text.push_str(&format!("{label} — {amount}\n"));
+                    }
+                    text.push_str(&format!("Total — {}", updated.amount));
+                    text
+                })
+            }
+        },
         ProspectCommand::Advance {
             reference,
             to,

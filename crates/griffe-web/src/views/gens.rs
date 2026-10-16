@@ -2360,7 +2360,7 @@ pub fn phrases_page(view: &PhrasesView) -> Markup {
                                         }
                                     }
                                     p class="field-help" {
-                                        "<nom> et <genre> prennent le nom, et Monsieur ou Madame. <Monsieur le Maire/Madame la Maire> suit le genre. Sans genre, les deux côtés restent."
+                                        "<nom> et <genre> prennent le nom, et Monsieur ou Madame. <Monsieur le Maire/Madame la Maire> suit le genre. Sans genre, les deux côtés restent. <constat> vide, la ligne qui ne porte que lui disparaît."
                                     }
                                     @if !moment.alone {
                                         div class="phrase-moves" {
@@ -2400,6 +2400,7 @@ const PHRASE_TOKENS: &[(&str, &str)] = &[
     ("<genre>", "<genre>"),
     ("<sujet>", "<sujet>"),
     ("<montant>", "<montant>"),
+    ("<constat>", "<constat>"),
     ("<moi>", "<moi>"),
     ("<société>", "<société>"),
     ("<signature>", "<signature>"),
