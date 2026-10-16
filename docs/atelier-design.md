@@ -129,7 +129,7 @@ Chiffres d’argent en ligne : sans, tabular si disponible. Le grand fait d’un
 - La chrome est la même sur Le jour, Les affaires, La société, l’aide et la console : le wordmark (nom et paraphe), les trois pièces au centre, la date du jour à droite. La date est `letter_date` (jour de semaine réel). Elle vit hors du fragment htmx, donc une navigation ne la redessine pas.
 - La date du jour n’est pas répétée en tête de lettre. Une date qui est le sujet (échéance, histoire, mois) reste dans la page.
 - Chrome et pied prennent toute la largeur, avec le même retrait, quelle que soit la pièce.
-- Le jour, Les affaires et La société prennent toute la largeur. Les autres lettres restent à **760 px**.
+- Le jour, Les affaires, La société et l’aide prennent toute la largeur. Le sommaire de l’aide et la lettre se partagent le bureau. Les autres lettres courtes restent à **760 px**.
 - Padding des autres lettres ~40 px (20 px sous 700 px).
 - Pas de rail d’audit visible par défaut.
 - Bouton primaire : fond sceau, texte papier.
@@ -147,8 +147,8 @@ on ne remplit pas avec des graphiques. Inversement on ne cache pas un trou
 Le vide vit **autour de la feuille et entre les blocs**, pas à l’intérieur d’une
 phrase. La colonne **est** la mesure.
 
-- Le jour, Les affaires et La société : toute la largeur. Les autres lettres : **760 px**.
-- Chrome et pied suivent la pièce : pleine largeur sur Le jour, Les affaires et La société.
+- Le jour, Les affaires, La société et l’aide : toute la largeur. L’aide pose un sommaire (environ le quart) et la lettre dans le reste. Sous environ 900 px, le sommaire passe au-dessus et les deux colonnes de la lettre s’empilent. Les autres lettres courtes : **760 px**. Dans Avec un agent, l’introduction explique la commande et le MCP, puis La commande liste chaque geste avec un exemple, sous la lettre, sur toute la largeur de la feuille.
+- Chrome et pied suivent la pièce : pleine largeur sur Le jour, Les affaires, La société et l’aide.
 - La société est le plateau. L’accueil et chaque chapitre prennent toute la largeur, sur le bureau `#e6dfd2`. Quatre cartes : Tenir `#fbf7f0`, Te payer `#f4ead6`, L’État `#f6e4dc`, Les réglages `#efe6d6`. Les lignes sont du corps (sans, 15 px), des cartes crème posées sur la teinte. Le survol enfonce la ligne dans sa famille (`#f3ece0`, `#ead9bc`, `#f0d2c6`, `#e6d9c4`). Une URL de chapitre replie les cartes : « Revenir au menu », le fil, les pastilles des voisins, le chapitre dans `.work`. La piste est `/societe/piste`.
 - Corps, listes, montants, chemins, boutons : 100 % de la colonne. Pas de
   `max-width` en `ch` sous un titre de bloc.

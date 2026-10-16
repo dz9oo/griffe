@@ -516,6 +516,14 @@ async fn the_help_letter_explains_atelier_and_opens_recipes() {
         "la palette reprend le catalogue : {aide}"
     );
     assert!(
+        aide.contains("data-label=\"avec un agent trois portes, un coffre.\""),
+        "la palette trouve le livre agent : {aide}"
+    );
+    assert!(aide.contains("letter-desk aide-desk"), "{aide}");
+    assert!(aide.contains("class=\"aide-sommaire\""), "{aide}");
+    assert!(aide.contains("Avec un agent"), "{aide}");
+    assert!(aide.contains("Fichiers"), "{aide}");
+    assert!(
         !aide.contains("aria-current=\"page\""),
         "aucune pièce soulignée : {aide}"
     );
@@ -579,6 +587,10 @@ async fn the_help_letter_explains_atelier_and_opens_recipes() {
     assert!(
         conversation.contains("href=\"/affaires/nouvelle\""),
         "{conversation}"
+    );
+    assert!(
+        conversation.contains("href=\"/aide/demandes\""),
+        "la conversation renvoie vers l'agent : {conversation}"
     );
 
     let cfe = body_text(
@@ -794,6 +806,19 @@ const AIDE_SLUGS: &[&str] = &[
     "clore",
     "papiers",
     "lexique",
+    "portes",
+    "brancher",
+    "matin",
+    "console",
+    "demandes",
+    "trame",
+    "cmd-coffre",
+    "cmd-gens",
+    "cmd-courrier",
+    "cmd-argent",
+    "cmd-societe",
+    "fichier",
+    "dehors",
 ];
 
 #[tokio::test]
@@ -850,6 +875,23 @@ async fn the_help_catalog_covers_each_situation_and_hides_an_empty_shelf() {
         ("clore", "greffe", Some("/societe/cloture")),
         ("papiers", "Garder les originaux", Some("/societe/papiers")),
         ("lexique", "Report à nouveau", None),
+        ("portes", "stdio", Some("/aide/console")),
+        ("brancher", "griffe-mcp", Some("/aide/matin")),
+        ("matin", "follow_up.prepare", Some("/aide/demandes")),
+        ("console", "backup restore", Some("/view/console")),
+        (
+            "demandes",
+            "prospect estimation set",
+            Some("/affaires/nouvelle"),
+        ),
+        ("trame", "&lt;constat&gt;", Some("/aide/phrases")),
+        ("cmd-coffre", "unlock --remember", Some("/aide/brancher")),
+        ("cmd-gens", "prospect estimation set", Some("/aide/matin")),
+        ("cmd-courrier", "courrier flush", Some("/aide/dehors")),
+        ("cmd-argent", "unit_price", Some("/aide/cmd-gens")),
+        ("cmd-societe", "year opening set", Some("/aide/cmd-argent")),
+        ("fichier", "Mairie de Valvert", Some("/aide/trame")),
+        ("dehors", "--secret-file", Some("/aide/fichier")),
     ];
     assert_eq!(pages.len(), AIDE_SLUGS.len());
 
@@ -879,6 +921,49 @@ async fn the_help_catalog_covers_each_situation_and_hides_an_empty_shelf() {
         assert!(!prose.contains("2777"), "{slug} : {prose}");
         assert!(!body.contains("Tiime"), "{slug} : {body}");
         assert!(!body.contains("Les formalités"), "{slug} : {body}");
+        if matches!(
+            *slug,
+            "portes"
+                | "brancher"
+                | "matin"
+                | "console"
+                | "demandes"
+                | "trame"
+                | "cmd-coffre"
+                | "cmd-gens"
+                | "cmd-courrier"
+                | "cmd-argent"
+                | "cmd-societe"
+                | "fichier"
+                | "dehors"
+        ) {
+            assert!(body.contains("class=\"aide-columns\""), "{slug} : {body}");
+            assert!(!body.contains('@'), "{slug} : {body}");
+            assert!(!body.contains("collection://"), "{slug} : {body}");
+            assert!(!body.contains("Nicolas"), "{slug} : {body}");
+            assert!(!body.contains("Collier"), "{slug} : {body}");
+            assert!(!body.contains("freeflow"), "{slug} : {body}");
+            assert!(!body.contains("SASU"), "{slug} : {body}");
+        }
+        if *slug == "fichier" {
+            assert!(
+                body.contains("1\u{202f}200,00\u{00a0}€"),
+                "l'exemple fictif porte le montant : {body}"
+            );
+            assert!(body.contains("Refonte du site"), "{body}");
+        }
+        if *slug == "phrases" {
+            assert!(
+                body.contains("href=\"/aide/trame\""),
+                "les phrases de l'atelier ouvrent la trame : {body}"
+            );
+        }
+        if *slug == "relancer" {
+            assert!(
+                body.contains("href=\"/aide/demandes\""),
+                "écrire renvoie vers l'agent : {body}"
+            );
+        }
         if let Some(href) = door {
             assert!(
                 body.contains(&format!("href=\"{href}\"")),
