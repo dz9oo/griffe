@@ -533,10 +533,13 @@ Retirer cette série restent dans ce form. Les jetons restent des boutons
 `type="button"`. L’aperçu reste `#phrase-sheet`, remplacé en innerHTML,
 delay 600 ms. La feuille reste une figure dans le formulaire. La page
 « Une autre série. » pose le titre et le lede dans la carte quand le pli est
-là, et le formulaire en dehors. Sur Écrire, pour une conversation, les mêmes
-mots se cochent au-dessus de la lettre et posent la série sur le dossier.
-Une facture n’a pas ce choix. « Une autre » ouvre la création dans La société
-et, au retour d’une lettre, la série est posée sur le dossier.
+là, et le formulaire en dehors. Sur Écrire, pour une conversation, la ligne tient sur une rangée : Série,
+puis le nom posé. Le nom ouvre le même menu que Montre, sous le nom, sans
+pousser la lettre. Garder referme le menu et laisse la série. Sans série
+posée, et s’il en existe, la ligne dit Choisir une série. Fermer referme
+sans en poser. Sans série dans le coffre, la ligne dit Aucune série. et
+Une autre ouvre la création. Une facture n’a pas ce choix. Au retour d’une
+lettre, la série créée est posée sur le dossier.
 
 **Les papiers** (`/societe/papiers`). Le `h1` « Les papiers. » sort. Le lien
 « ← La société » reste, le pli le masque. La racine qui se rafraîchit sur

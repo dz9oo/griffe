@@ -9277,6 +9277,33 @@ async fn phrases_are_a_letter_and_the_next_unopened_mail_uses_them() {
     assert!(!page.contains("class=\"phrase-frise\""), "{page}");
     assert!(!page.contains("Enregistrer les phrases"), "{page}");
 
+    let empty_letter = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Camille%20Rivi%C3%A8re/ecrire")
+                    .header("HX-Request", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(empty_letter.contains("Aucune série."), "{empty_letter}");
+    assert!(empty_letter.contains(">Une autre<"), "{empty_letter}");
+    assert!(
+        !empty_letter.contains("serie-menu"),
+        "sans série, pas de menu : {empty_letter}"
+    );
+    assert!(!empty_letter.contains("name=\"serie\""), "{empty_letter}");
+    assert!(
+        !empty_letter.contains("Choisir une série"),
+        "{empty_letter}"
+    );
+    assert!(!empty_letter.contains(">Changer<"), "{empty_letter}");
+
     let accueil = create_genre(&router, "Accueil").await;
     let page = body_text(
         router
@@ -9340,6 +9367,17 @@ async fn phrases_are_a_letter_and_the_next_unopened_mail_uses_them() {
     assert!(!letter.contains("Pas encore de genre"), "{letter}");
     assert!(!letter.contains("Garder ces mots"), "{letter}");
     assert!(letter.contains("C'est parti"), "{letter}");
+    assert!(letter.contains("<div class=\"serie-menu\">"), "{letter}");
+    assert!(letter.contains(">Choisir une série<"), "{letter}");
+    assert!(letter.contains(">Fermer<"), "{letter}");
+    assert!(!letter.contains(">Changer<"), "{letter}");
+    assert!(!letter.contains(">Garder<"), "{letter}");
+    let unpicked = serie_face(&letter);
+    assert!(
+        !unpicked.contains("Accueil"),
+        "au repos, le nom n'apparaît qu'une fois la série posée : {unpicked}"
+    );
+    assert!(!unpicked.contains("name=\"serie\""), "{unpicked}");
 
     let saved = body_text(
         router
@@ -9390,6 +9428,13 @@ label_close=Dernier+mot&subject_close=Fin&body_close=Un+dernier+mot.&revision_cl
     assert!(next.contains("Premier contact"), "{next}");
     assert!(next.contains("Un premier mot réécrit."), "{next}");
     assert!(!next.contains("Je me permets de revenir"), "{next}");
+    assert!(next.contains(">Garder<"), "{next}");
+    assert!(!next.contains(">Changer<"), "{next}");
+    assert!(!next.contains(">Fermer<"), "{next}");
+    let picked = serie_face(&next);
+    assert!(picked.contains("Accueil"), "{picked}");
+    assert!(!picked.contains(">Choisir une série<"), "{picked}");
+    assert!(!picked.contains("name=\"serie\""), "{picked}");
 
     let identity = body_text(
         router
@@ -10057,13 +10102,27 @@ async fn the_genre_changes_only_the_words() {
     assert!(camille.contains("Services publics"), "{camille}");
     assert!(camille.contains("Premier message"), "{camille}");
     assert!(camille.contains("name=\"serie\""), "{camille}");
+    assert!(camille.contains(">Garder<"), "{camille}");
+    assert!(!camille.contains(">Changer<"), "{camille}");
+    let camille_face = serie_face(&camille);
+    assert!(camille_face.contains("Services publics"), "{camille_face}");
+    assert!(!camille_face.contains("Commerces"), "{camille_face}");
+    assert!(!camille_face.contains("Courant"), "{camille_face}");
+    assert!(!camille_face.contains("name=\"serie\""), "{camille_face}");
     assert!(!camille.contains("Pas encore de type"), "{camille}");
     assert!(nina.contains("Pour le commerce"), "{nina}");
     assert!(nina.contains("Commerces"), "{nina}");
     assert!(!camille.contains("Pour le commerce"), "{camille}");
     assert!(leo.contains("name=\"serie\""), "{leo}");
     assert!(leo.contains(">Une autre<"), "{leo}");
+    assert!(leo.contains(">Choisir une série<"), "{leo}");
+    assert!(leo.contains(">Fermer<"), "{leo}");
+    assert!(!leo.contains(">Changer<"), "{leo}");
     assert!(!leo.contains("Aucune série."), "{leo}");
+    let leo_face = serie_face(&leo);
+    assert!(!leo_face.contains("Services publics"), "{leo_face}");
+    assert!(!leo_face.contains("Commerces"), "{leo_face}");
+    assert!(!leo_face.contains("name=\"serie\""), "{leo_face}");
     assert!(leo.contains("Premier message"), "{leo}");
     assert!(!leo.contains("Pas encore de type"), "{leo}");
     assert!(!leo.contains("Pas encore de genre"), "{leo}");
@@ -10083,6 +10142,9 @@ async fn the_genre_changes_only_the_words() {
     assert!(by_hand.contains("Texte à la main"), "{by_hand}");
     assert!(by_hand.contains("Pas le modèle"), "{by_hand}");
     assert!(by_hand.contains("Commerces"), "{by_hand}");
+    let hand_face = serie_face(&by_hand);
+    assert!(hand_face.contains("Commerces"), "{hand_face}");
+    assert!(!hand_face.contains("Services publics"), "{hand_face}");
     assert!(!by_hand.contains("value=\"Pour le commerce\""), "{by_hand}");
     post_form(
         &router,
@@ -10511,6 +10573,13 @@ async fn post_form(router: &axum::Router, uri: &str, body: &str) -> String {
             .unwrap(),
     )
     .await
+}
+
+/// Ce qui se lit sur Écrire avant le menu des séries.
+fn serie_face(page: &str) -> &str {
+    page.split_once("<div class=\"serie-menu\">")
+        .map(|(head, _)| head)
+        .unwrap_or(page)
 }
 
 fn hidden_value(page: &str, name: &str) -> String {

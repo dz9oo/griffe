@@ -50,9 +50,11 @@ le prénom, le nom, et Monsieur ou Madame. Courriel et Téléphone restent
 ceux du standard, ou de l’accueil. En écrivant, on choisit le standard,
 ou le courriel de la personne lorsqu’il est là.
 
-La série choisie en écrivant donne les mots. On les écrit dans
-La société, Les phrases. Le type du dossier ne les choisit pas.
-Les affaires ne réécrivent pas les phrases.
+La série choisie en écrivant donne les mots. Sur la lettre, la ligne
+ne montre que son nom. Le nom ouvre les autres, sous lui. Garder referme
+sans changer. Une autre en crée une. On les écrit dans La société, Les
+phrases. Le type du dossier ne les choisit pas. Les affaires ne
+réécrivent pas les phrases.
 
 L'écart entre deux moments compte les jours du lundi au vendredi.
 Un courrier parti un vendredi, à trois jours, se rappelle le mercredi.

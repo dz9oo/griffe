@@ -10,7 +10,7 @@ use griffe_core::domain::{
 };
 use griffe_core::dossier_work::DossierWork;
 use griffe_core::follow_up::{
-    FollowUpCard, card_for, follow_up_sender, prospect_genre_for, prospect_genres,
+    FollowUpCard, ProspectGenre, card_for, follow_up_sender, prospect_genre_for, prospect_genres,
 };
 use griffe_core::mail::{
     LINK_HINT, LetterChrome, LetterParts, OutboundStatus, OutboundView, close_letter, letter_card,
@@ -2721,6 +2721,61 @@ pub fn letter_page(
     )
 }
 
+fn serie_another(href: &str) -> Markup {
+    html! {
+        a href=(href) hx-get=(href) hx-target="#content" hx-push-url="true" { "Une autre" }
+    }
+}
+
+/// Une rangée. Le nom ouvre le menu sous lui. Garder, ou Fermer, le referme.
+fn serie_choice(
+    current: Option<&ProspectGenre>,
+    series: &[ProspectGenre],
+    serie_href: &str,
+    another: &str,
+) -> Markup {
+    html! {
+        div class="serie-slot" {
+            span class="serie-kicker" { "Série" }
+            @if series.is_empty() {
+                span class="serie-none" { "Aucune série." }
+                (serie_another(another))
+            } @else {
+                span class="serie-anchor" {
+                    input class="serie-open" id="serie-open" type="checkbox";
+                    label class={ @if current.is_some() { "seg" } @else { "seg unset" } }
+                      for="serie-open" {
+                        @if let Some(genre) = current {
+                            (genre.name)
+                        } @else {
+                            "Choisir une série"
+                        }
+                    }
+                    div class="serie-menu" {
+                        @for item in series {
+                            label class={ @if current.is_some_and(|genre| genre.id == item.id) { "on" } } {
+                                input type="radio" name="serie" value=(item.id)
+                                    checked[current.is_some_and(|genre| genre.id == item.id)]
+                                    hx-post=(serie_href)
+                                    hx-trigger="change"
+                                    hx-target="#content"
+                                    hx-include="closest form"
+                                    hx-swap="innerHTML"
+                                    hx-push-url="false";
+                                (item.name)
+                            }
+                        }
+                        (serie_another(another))
+                        label class="serie-keep" for="serie-open" {
+                            @if current.is_some() { "Garder" } @else { "Fermer" }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 pub fn letter_page_kept(
     store: &Store,
     dossier: &PersonDossier,
@@ -2810,34 +2865,7 @@ pub fn letter_page_kept(
             }
             form class="letter-compose" {
                 @if opportunity.is_some() {
-                    fieldset class="word-choice" {
-                        legend { "Série" }
-                        div class="word-choice-row" {
-                            @if series.is_empty() {
-                                span { "Aucune série." }
-                            } @else {
-                                @for item in &series {
-                                    label {
-                                        input type="radio" name="serie" value=(item.id)
-                                            checked[genre.as_ref().is_some_and(|current| current.id == item.id)]
-                                            hx-post=(serie_href)
-                                            hx-trigger="change"
-                                            hx-target="#content"
-                                            hx-include="closest form"
-                                            hx-swap="innerHTML"
-                                            hx-push-url="false";
-                                        (item.name)
-                                    }
-                                }
-                            }
-                            a href=(another_series)
-                              hx-get=(another_series)
-                              hx-target="#content"
-                              hx-push-url="true" {
-                                "Une autre"
-                            }
-                        }
-                    }
+                    (serie_choice(genre.as_ref(), &series, &serie_href, &another_series))
                     @if let Some(label) = &moment {
                         p class="phrase-caption" { (label) }
                     }
