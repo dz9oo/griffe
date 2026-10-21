@@ -2,6 +2,18 @@
 
 Ce qui change pour qui se sert de Griffe. Une section par version publiée.
 
+## 0.3.15
+
+- Écrire s'ouvre sur la lettre telle qu'elle part. Éditer reprend le texte. Relire y revient. C'est parti n'est là que lorsqu'aucun serveur n'est configuré : il classe le double et n'envoie rien. En cours dit alors que cela suppose un envoi hors de Griffe, et ouvre Le courrier.
+- Une lettre en partance quitte les gestes du matin.
+- Sur la lettre, la série ne montre que son nom. Le nom ouvre les autres. Garder referme sans changer.
+- L'écart entre deux moments d'une série compte les jours du lundi au vendredi. Un courrier parti un vendredi, à trois jours, se rappelle le mercredi. Une facture, un report, ou une date posée à la main, restent en jours du calendrier.
+- Un constat vide disparaît de la lettre, et la ligne qui ne porte que lui aussi.
+- La commande pose les lignes de l'estimation.
+- L'aide prend le bureau. Elle documente la commande, l'agent, et chaque geste.
+- Le bandeau ne trace plus un cadre bleu autour de la pièce ouverte quand on touche une touche. Au clavier, la pièce reprend son filet d'encre.
+- Ouvrir un coffre déjà créé avance son schéma. La version précédente ne peut plus l'ouvrir.
+
 ## 0.3.14
 
 - Les phrases se rangent en séries. On les nomme dans La société, Les phrases. La ligne montre ces noms, puis « Une autre ». La série ouverte est en encre, et la carte porte son nom. Sans série encore, la page dit « Aucune série. » Des mots déjà écrits sans nom demandent un nom : il les garde.
