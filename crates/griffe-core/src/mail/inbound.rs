@@ -71,8 +71,8 @@ pub fn read_message(raw: &str) -> ParsedMessage {
     let raw = raw.replace("\r\n", "\n").replace('\r', "\n");
     let (header_text, body) = split_headers(&raw);
     let headers = unfold(header_text);
-    let from = header(&headers, "from")
-        .map_or((None, None), |value| address_of(&decode_words(value)));
+    let from =
+        header(&headers, "from").map_or((None, None), |value| address_of(&decode_words(value)));
     let top_type = header(&headers, "content-type").unwrap_or_default();
     let report = top_type.to_ascii_lowercase().contains("multipart/report");
     let parts = explode(&headers, body);
