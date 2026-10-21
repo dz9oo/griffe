@@ -866,6 +866,9 @@ pub(super) fn enroll(
             continue;
         }
         let client_id = follow_client_id(conn, card.subject)?;
+        if departure_blocked(conn, card.subject, &to)? {
+            continue;
+        }
         match insert_letter(
             conn,
             &NewLetter {
@@ -918,6 +921,101 @@ fn follow_client_id(
     conn.query_row(sql, [id], |row| row.get(0))
         .optional()
         .map_err(AppError::from)
+}
+
+/// Vrai si la relance de ce dossier est retenue, ou si l'adresse est en échec certain.
+fn departure_blocked(
+    conn: &Connection,
+    subject: FollowUpSubject,
+    address: &str,
+) -> Result<bool, AppError> {
+    if let FollowUpSubject::Opportunity(id) = subject
+        && reply_held(conn, &id.to_string())?
+    {
+        return Ok(true);
+    }
+    let client_id = follow_client_id(conn, subject)?;
+    address_blocked(conn, client_id.as_deref(), address)
+}
+
+pub(super) fn reply_held(conn: &Connection, opportunity_id: &str) -> Result<bool, AppError> {
+    let held: Option<i64> = conn
+        .query_row(
+            "SELECT reply_hold FROM opportunities WHERE id = ?1",
+            [opportunity_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(held == Some(1))
+}
+
+pub(super) fn set_reply_hold(
+    conn: &Connection,
+    opportunity_id: &str,
+    held: bool,
+) -> Result<(), AppError> {
+    let updated = conn.execute(
+        "UPDATE opportunities SET reply_hold = ?1 WHERE id = ?2",
+        params![i64::from(u8::from(held)), opportunity_id],
+    )?;
+    if updated == 0 {
+        return Err(MailError::Dossier.into());
+    }
+    Ok(())
+}
+
+pub(super) fn address_blocked(
+    conn: &Connection,
+    client_id: Option<&str>,
+    address: &str,
+) -> Result<bool, AppError> {
+    let blocked = if let Some(client_id) = client_id {
+        conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM address_fault
+                WHERE client_id = ?1 AND address = ?2 AND status = 'failed'
+            )",
+            params![client_id, address],
+            |row| row.get(0),
+        )?
+    } else {
+        conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM address_fault WHERE address = ?1 AND status = 'failed'
+            )",
+            [address],
+            |row| row.get(0),
+        )?
+    };
+    Ok(blocked)
+}
+
+pub(super) fn mark_address(
+    conn: &Connection,
+    client_id: &str,
+    address: &str,
+    status: &str,
+    message_id: Option<&str>,
+) -> Result<(), AppError> {
+    let current: Option<String> = conn
+        .query_row(
+            "SELECT status FROM address_fault WHERE client_id = ?1 AND address = ?2",
+            params![client_id, address],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if status == "probable" && matches!(current.as_deref(), Some("failed" | "confirmed")) {
+        return Ok(());
+    }
+    conn.execute(
+        "INSERT INTO address_fault (client_id, address, status, message_id)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(client_id, address) DO UPDATE SET
+            status = excluded.status,
+            message_id = excluded.message_id",
+        params![client_id, address, status, message_id],
+    )?;
+    Ok(())
 }
 
 /// Attente avant de retenter un dépôt manqué. L'horloge de la fenêtre passe
@@ -1014,6 +1112,16 @@ fn follow_open(
         |row| row.get(0),
     )?;
     Ok(count > 0)
+}
+
+pub(super) fn departing_anchors(conn: &Connection) -> Result<Vec<String>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT anchor FROM outbound_mail
+          WHERE status IN ('armed', 'held', 'sending')
+            AND anchor <> ''",
+    )?;
+    let rows = stmt.query_map([], |row| row.get(0))?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
 }
 
 pub(super) fn for_anchor(
@@ -1135,6 +1243,12 @@ pub(super) fn mail_tick(
                 FollowUpSubject::Invoice(id) => ("invoice", id.to_string()),
             };
             let cycle = entered_cycle_key(&events_for(conn, card.subject)?);
+            let Some(address) = card.contact_email.as_deref() else {
+                continue;
+            };
+            if departure_blocked(conn, card.subject, address)? {
+                continue;
+            }
             if !follow_open(conn, kind, &id, &cycle, step)? {
                 send = true;
                 break;

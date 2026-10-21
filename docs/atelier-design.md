@@ -126,10 +126,10 @@ Chiffres d’argent en ligne : sans, tabular si disponible. Le grand fait d’un
 
 ### Chrome et page
 
-- La chrome est la même sur Le jour, Les affaires, La société, l’aide et la console : le wordmark (nom et paraphe), les trois pièces au centre, la date du jour à droite. La date est `letter_date` (jour de semaine réel). Elle vit hors du fragment htmx, donc une navigation ne la redessine pas.
+- La chrome est la même sur Le jour, Les affaires, La société, l’aide et la console : le wordmark (nom et paraphe), les trois pièces au centre, la date du jour à droite. La date est `letter_date` (jour de semaine réel). Elle vit hors du fragment htmx, donc une navigation ne la redessine pas. Une pièce ne prend pas le cadre bleu du navigateur. Au clavier, elle reprend le même filet d’encre que la pièce ouverte.
 - La date du jour n’est pas répétée en tête de lettre. Une date qui est le sujet (échéance, histoire, mois) reste dans la page.
 - Chrome et pied prennent toute la largeur, avec le même retrait, quelle que soit la pièce.
-- Le jour, Les affaires et La société prennent toute la largeur. Les autres lettres restent à **760 px**.
+- Le jour, Les affaires, La société et l’aide prennent toute la largeur. Le sommaire de l’aide et la lettre se partagent le bureau. Les autres lettres courtes restent à **760 px**.
 - Padding des autres lettres ~40 px (20 px sous 700 px).
 - Pas de rail d’audit visible par défaut.
 - Bouton primaire : fond sceau, texte papier.
@@ -147,8 +147,8 @@ on ne remplit pas avec des graphiques. Inversement on ne cache pas un trou
 Le vide vit **autour de la feuille et entre les blocs**, pas à l’intérieur d’une
 phrase. La colonne **est** la mesure.
 
-- Le jour, Les affaires et La société : toute la largeur. Les autres lettres : **760 px**.
-- Chrome et pied suivent la pièce : pleine largeur sur Le jour, Les affaires et La société.
+- Le jour, Les affaires, La société et l’aide : toute la largeur. L’aide pose un sommaire (environ le quart) et la lettre dans le reste. Sous environ 900 px, le sommaire passe au-dessus et les deux colonnes de la lettre s’empilent. Les autres lettres courtes : **760 px**. Dans Avec un agent, l’introduction explique la commande et le MCP, puis La commande liste chaque geste avec un exemple, sous la lettre, sur toute la largeur de la feuille.
+- Chrome et pied suivent la pièce : pleine largeur sur Le jour, Les affaires, La société et l’aide.
 - La société est le plateau. L’accueil et chaque chapitre prennent toute la largeur, sur le bureau `#e6dfd2`. Quatre cartes : Tenir `#fbf7f0`, Te payer `#f4ead6`, L’État `#f6e4dc`, Les réglages `#efe6d6`. Les lignes sont du corps (sans, 15 px), des cartes crème posées sur la teinte. Le survol enfonce la ligne dans sa famille (`#f3ece0`, `#ead9bc`, `#f0d2c6`, `#e6d9c4`). Une URL de chapitre replie les cartes : « Revenir au menu », le fil, les pastilles des voisins, le chapitre dans `.work`. La piste est `/societe/piste`.
 - Corps, listes, montants, chemins, boutons : 100 % de la colonne. Pas de
   `max-width` en `ch` sous un titre de bloc.
@@ -271,7 +271,15 @@ côte à côte n'est plus là.
 Pastilles, dans l'ordre du dossier : En cours, Écrire, La fiche, L'estimation,
 Les travaux, Noter une rencontre. Reporter, Arrêter et C'est un client restent
 des actions dans En cours. Le projet, les papiers, les notes et l'histoire
-restent le corps d'En cours. Depuis une pastille, « Revenir » rentre vers la liste.
+restent le corps d'En cours. « Revenir au menu » rentre vers la liste. La
+pastille En cours rentre au dossier. Le lien « ← nom » sous les pastilles
+n'est plus là. Arrêter, C'est un client et Ils reviennent gardent le leur :
+ces pages n'ont pas la barre.
+
+Écrire s'ouvre sur la lettre telle qu'elle part. « Éditer » ouvre le texte,
+« Relire » y revient. « Envoyer » part quand Le courrier est branché.
+« C'est parti » n'est là que sans serveur. Après ce geste, En cours dit que
+la lettre a été envoyée hors de Griffe, et lie Le courrier.
 
 `/affaires/types` et la nouvelle conversation utilisent la même barre. Les routes
 `/affaires/{référence}/fiche`, `/estimation`, `/ecrire`, `/travaux`, `/rencontre`
@@ -525,10 +533,13 @@ Retirer cette série restent dans ce form. Les jetons restent des boutons
 `type="button"`. L’aperçu reste `#phrase-sheet`, remplacé en innerHTML,
 delay 600 ms. La feuille reste une figure dans le formulaire. La page
 « Une autre série. » pose le titre et le lede dans la carte quand le pli est
-là, et le formulaire en dehors. Sur Écrire, pour une conversation, les mêmes
-mots se cochent au-dessus de la lettre et posent la série sur le dossier.
-Une facture n’a pas ce choix. « Une autre » ouvre la création dans La société
-et, au retour d’une lettre, la série est posée sur le dossier.
+là, et le formulaire en dehors. Sur Écrire, pour une conversation, la ligne tient sur une rangée : Série,
+puis le nom posé. Le nom ouvre le même menu que Montre, sous le nom, sans
+pousser la lettre. Garder referme le menu et laisse la série. Sans série
+posée, et s’il en existe, la ligne dit Choisir une série. Fermer referme
+sans en poser. Sans série dans le coffre, la ligne dit Aucune série. et
+Une autre ouvre la création. Une facture n’a pas ce choix. Au retour d’une
+lettre, la série créée est posée sur le dossier.
 
 **Les papiers** (`/societe/papiers`). Le `h1` « Les papiers. » sort. Le lien
 « ← La société » reste, le pli le masque. La racine qui se rafraîchit sur
@@ -648,3 +659,36 @@ Ouvrir `docs/mockups/atelier-app.html`. Parcours minimum avant de coder un lot :
 4. La société → paysage, Te payer (dividende fermé), relevé Leroy = dette.
 
 Si un futur changement casse ce parcours, ce n’est plus Atelier.
+
+## 13. La boîte
+
+La boîte n’est pas une quatrième pièce. Les trois questions restent. Dans la
+chrome, entre les pièces et la date, le mot **Boîte**. Un compte en sceau
+n’apparaît que si une réponse de dossier, ou une adresse qui ne reçoit pas,
+demande un regard. Rien quand la boîte est calme. Le courrier, chapitre de
+La société, reste le réglage du compte. On ne le renomme pas.
+
+La page prend le bureau (`#e6dfd2`). Trois colonnes dès que la fenêtre le
+permet : les vues (À lire, Avec les dossiers, Envoyées, Tout, En échec), les
+lettres en cartes `#fbf7f0`, puis la lettre. Les dossiers du serveur
+(INBOX, Sent, Brouillons, Archive) restent fermés. Une phrase de statut ouvre
+la page, même carte que le matin.
+
+Sur le dossier, pas de sixième pastille. Le fil est le haut d’En cours, avant
+le projet et l’histoire. Les pastilles restent : En cours, Écrire, La fiche,
+L’estimation, Les travaux, Noter une rencontre. Répondre suit la lettre reçue.
+Écrire prépare encore la lettre de la série. Les deux ne se confondent pas.
+
+Une lettre partie par Griffe, et la réponse qu’on écrit, reprennent la feuille
+et la formule de Le courrier (Clair, Sauge, ou le fichier lisible). Le courrier
+reçu n’est pas repeint. Ces réglages ne se refont pas dans la boîte.
+
+Quand la personne répond, le fil le montre et la prochaine relance automatique
+de ce dossier reste là : « Camille a répondu. La relance ne part pas. »
+« Laisser partir la relance » la rend de nouveau. Répondre soi-même est un
+envoi, avec les cinq secondes, et ne réarme pas la série.
+
+Un avis de non-remise certain dit que l’adresse ne reçoit pas. Griffe n’efface
+pas l’adresse. On la corrige, ou on confirme « Elle est bonne ». Un indice
+seulement par l’objet reste probable, jusqu’à ce geste. Si plusieurs fiches
+portent la même adresse, Griffe propose le choix.

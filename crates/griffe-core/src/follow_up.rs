@@ -252,12 +252,13 @@ mod tests {
             panic!("expected Applied");
         };
         assert_eq!(card.step_key.as_deref(), Some("bump"));
-        assert_eq!(card.due_on, Some(date(2026, Month::September, 8)));
+        // Samedi 5 septembre 2026, écart 3 : mercredi 9.
+        assert_eq!(card.due_on, Some(date(2026, Month::September, 9)));
         let FollowUpSubject::Opportunity(oid) = subject else {
             panic!("opportunity");
         };
         let opp = opportunity_by_id(store.connection(), oid).unwrap().unwrap();
-        assert_eq!(opp.next_action_at, Some(date(2026, Month::September, 8)));
+        assert_eq!(opp.next_action_at, Some(date(2026, Month::September, 9)));
         let interactions = list_interactions(store.connection(), oid).unwrap();
         assert_eq!(interactions.len(), 1);
         assert_eq!(interactions[0].kind, InteractionKind::Email);
@@ -948,18 +949,21 @@ mod tests {
         file_letter(&mut store, engaged, sent_on);
         let before = card_for(store.connection(), engaged, today).unwrap();
         assert_eq!(before.step_label.as_deref(), Some("Petit rappel"));
-        assert_eq!(before.due_on, Some(today));
+        // Mercredi 2 septembre 2026, écart 3 : lundi 7. Le samedi 5 n'est pas encore le jour.
+        let monday = date(2026, Month::September, 7);
+        assert_eq!(before.due_on, Some(monday));
         assert_eq!(before.step_count, 4);
-        assert!(on_the_day(&store, today, "Refonte"));
+        assert!(!on_the_day(&store, today, "Refonte"));
+        assert!(on_the_day(&store, monday, "Refonte"));
 
         arrange_three(&mut store);
 
         let kept = card_for(store.connection(), engaged, today).unwrap();
         assert_eq!(kept.step_label.as_deref(), Some("Petit rappel"));
         assert_eq!(kept.step_count, 4);
-        assert_eq!(kept.due_on, Some(today));
+        assert_eq!(kept.due_on, Some(monday));
         assert!(kept.preview_body.unwrap().contains("court rappel"));
-        assert!(on_the_day(&store, today, "Refonte"));
+        assert!(on_the_day(&store, monday, "Refonte"));
 
         let bump = phrase_by_key(&store, "bump");
         let Outcome::Applied(_) = Executor::new(&mut store)
@@ -981,16 +985,17 @@ mod tests {
         };
         let still = card_for(store.connection(), engaged, today).unwrap();
         assert!(still.preview_body.unwrap().contains("court rappel"));
-        assert_eq!(still.due_on, Some(today));
+        assert_eq!(still.due_on, Some(monday));
 
         let (_, fresh) = seed_opportunity(&mut store, today);
         file_letter(&mut store, fresh, today);
         let next = card_for(store.connection(), fresh, today).unwrap();
         assert_eq!(next.step_count, 3);
         assert_eq!(next.step_label.as_deref(), Some("Première relance"));
-        assert_eq!(next.due_on, Some(date(2026, Month::September, 15)));
+        // Samedi 5 septembre 2026, écart 10 : vendredi 18.
+        assert_eq!(next.due_on, Some(date(2026, Month::September, 18)));
         assert!(next.preview_body.unwrap().contains("Un écart nouveau."));
-        assert!(on_the_day(&store, today, "Refonte"));
+        assert!(on_the_day(&store, monday, "Refonte"));
     }
 
     #[test]
@@ -1884,7 +1889,8 @@ mod tests {
         let pinned = card_for(store.connection(), engaged, today).unwrap();
         assert_eq!(pinned.step_count, 4);
         assert_eq!(pinned.step_key.as_deref(), Some("bump"));
-        assert_eq!(pinned.due_on, Some(today));
+        // Mercredi 2 septembre, écart 3 de la série copiée : lundi 7.
+        assert_eq!(pinned.due_on, Some(date(2026, Month::September, 7)));
         let copy_subject: String = store
             .connection()
             .query_row(

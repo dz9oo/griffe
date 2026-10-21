@@ -124,14 +124,20 @@ pub async fn gens(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(form): Query<AffairesQuery>,
-) -> Html<String> {
+) -> Response {
     let q = form.q;
     let kind = form.kind;
     let vue = form.vue;
-    letter(&state, headers, ViewId::Gens, move |store, today| {
+    let mut response = letter(&state, headers, ViewId::Gens, move |store, today| {
         views::gens::render_search(store, today, &q, &kind, &vue)
     })
     .await
+    .into_response();
+    response.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        HeaderValue::from_static("no-store, no-cache, must-revalidate"),
+    );
+    response
 }
 
 pub async fn societe_piece(State(state): State<AppState>, headers: HeaderMap) -> Html<String> {

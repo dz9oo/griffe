@@ -247,11 +247,11 @@ fn palette() -> Markup {
                       href="/premiers-pas" hx-get="/premiers-pas" hx-target="#content" hx-push-url="true" hx-swap="innerHTML" {
                         "→ configurer ma société (premiers pas)"
                     }
-                    a class="palette-item" data-label="aide lexique ? atelier"
+                    a class="palette-item" data-label="aide lexique ? atelier agent"
                       href="/aide" hx-get="/aide" hx-target="#content" hx-push-url="true" hx-swap="innerHTML" {
                         "? aide — l'atelier, les recettes"
                     }
-                    @for page in crate::views::aide::atelier_letters() {
+                    @for page in crate::views::aide::guide_letters() {
                         @let href = format!("/aide/{}", page.slug);
                         @let label = format!("{} {}", page.kicker, page.title).to_lowercase();
                         a class="palette-item" data-label=(label)
@@ -326,7 +326,7 @@ pub fn page(active: ViewId, vault_label: &str, today: Date, content: Markup) -> 
                             button class="quiet" type="button" id="audit-toggle" title="Afficher ou masquer le journal d'audit" { "Journal" }
                             a class="quiet" id="aide-link" href="/aide"
                               hx-get="/aide" hx-target="#content" hx-push-url="true" hx-swap="innerHTML"
-                              title="L'atelier, les recettes, les mots" { "Aide" }
+                              title="L'atelier, avec un agent, les recettes" { "Aide" }
                             button class="quiet danger-hover" type="button" hx-post="/lock" hx-swap="none" title="Verrouiller le coffre" { "Verrouiller" }
                             button class="palette-hint quiet" type="button" title="Palette de commandes" { "⌘K" }
                         }

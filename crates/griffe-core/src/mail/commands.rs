@@ -388,6 +388,9 @@ impl Command for ArmOutbound {
 
     fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
         let to_address = parse_email(self.to_address.trim()).map_err(|_| MailError::Address)?;
+        if store::address_blocked(conn, self.client_id.as_deref(), &to_address)? {
+            return Err(MailError::Undeliverable.into());
+        }
         let subject = self.subject.trim().to_string();
         let signature = store::profile(conn)?.signature;
         let body = close_letter(self.body.trim(), &signature);
@@ -640,6 +643,89 @@ impl Command for RetryOutbound {
             &store::stamp(now)?,
             &store::stamp(now)?,
             self.session_token.as_deref(),
+        )
+    }
+}
+
+/// Marque d'une adresse de fiche : échec certain, indice, ou confirmation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AddressFault {
+    Failed,
+    Probable,
+    Confirmed,
+}
+
+impl AddressFault {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Failed => "failed",
+            Self::Probable => "probable",
+            Self::Confirmed => "confirmed",
+        }
+    }
+}
+
+/// Retient la prochaine relance automatique de ce dossier.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HoldReply {
+    pub opportunity_id: String,
+}
+
+impl Command for HoldReply {
+    type Output = ();
+    const NAME: &'static str = "mail.hold_reply";
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        store::set_reply_hold(conn, &self.opportunity_id, true)
+    }
+}
+
+/// Laisse repartir la relance retenue.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReleaseReplyHold {
+    pub opportunity_id: String,
+}
+
+impl Command for ReleaseReplyHold {
+    type Output = ();
+    const NAME: &'static str = "mail.release_reply";
+
+    fn requires_confirmation(&self) -> bool {
+        true
+    }
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        store::set_reply_hold(conn, &self.opportunity_id, false)
+    }
+}
+
+/// Pose la marque d'adresse. Le corps du message n'est pas un champ.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarkAddress {
+    pub client_id: String,
+    pub address: String,
+    pub status: AddressFault,
+    pub message_id: Option<String>,
+}
+
+impl Command for MarkAddress {
+    type Output = ();
+    const NAME: &'static str = "mail.mark_address";
+
+    fn requires_confirmation(&self) -> bool {
+        self.status == AddressFault::Confirmed
+    }
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        let address = parse_email(self.address.trim()).map_err(|_| MailError::Address)?;
+        store::mark_address(
+            conn,
+            &self.client_id,
+            &address,
+            self.status.as_str(),
+            self.message_id.as_deref(),
         )
     }
 }

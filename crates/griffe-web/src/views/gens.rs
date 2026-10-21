@@ -10,7 +10,7 @@ use griffe_core::domain::{
 };
 use griffe_core::dossier_work::DossierWork;
 use griffe_core::follow_up::{
-    FollowUpCard, card_for, follow_up_sender, prospect_genre_for, prospect_genres,
+    FollowUpCard, ProspectGenre, card_for, follow_up_sender, prospect_genre_for, prospect_genres,
 };
 use griffe_core::mail::{
     LINK_HINT, LetterChrome, LetterParts, OutboundStatus, OutboundView, close_letter, letter_card,
@@ -69,6 +69,9 @@ fn lens_page(
     vue: &str,
 ) -> Result<Markup, AppError> {
     let list = people_list(store.connection(), today)?;
+    let departing = griffe_core::mail::departing_anchors(store.connection())?
+        .into_iter()
+        .collect::<HashSet<_>>();
     let catalog = work_kinds(store.connection())?;
     let type_id = type_id.trim();
     let allowed = if type_id.is_empty() {
@@ -91,6 +94,7 @@ fn lens_page(
             type_id,
             allowed: allowed.as_ref(),
             vue: parse_vue(vue),
+            departing: &departing,
         },
     ))
 }
@@ -102,6 +106,7 @@ struct LensFilter<'a> {
     type_id: &'a str,
     allowed: Option<&'a HashSet<ClientId>>,
     vue: Vue,
+    departing: &'a HashSet<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -279,6 +284,7 @@ fn lens_markup(list: &PeopleList, today: Date, filter: &LensFilter<'_>) -> Marku
         type_id,
         allowed,
         vue,
+        departing,
     } = *filter;
     let filtering = allowed.is_some();
     let conversations = rows_kept(&list.conversations, allowed, query);
@@ -305,7 +311,7 @@ fn lens_markup(list: &PeopleList, today: Date, filter: &LensFilter<'_>) -> Marku
                 .chain(missions)
                 .chain(outgoing)
             {
-                if asks_today(row, today) {
+                if asks_today(row, today, departing.contains(row.name.as_str())) {
                     rows.push(row);
                 }
             }
@@ -424,18 +430,16 @@ fn rows_kept<'a>(
 
 /// Un prochain pas déjà dû, même quand la phrase du stade avale la relance
 /// (premier message). Une facture en retard, un débit qui correspond, ou un
-/// brouillon prêt, demandent aussi un geste.
-fn asks_today(row: &PersonRow, today: Date) -> bool {
-    let step_is_due = row.due_on.is_some_and(|on| on <= today);
+/// brouillon prêt, demandent aussi un geste. Une lettre déjà armée, retenue
+/// ou en route ne compte plus comme ce pas.
+fn asks_today(row: &PersonRow, today: Date, letter_leaving: bool) -> bool {
+    let step_is_due = !letter_leaving && row.due_on.is_some_and(|on| on <= today);
     step_is_due
         || row.cues.iter().any(|cue| {
             matches!(
                 cue,
-                PersonCue::FollowUpDue { today: true, .. }
-                    | PersonCue::InvoiceOverdue { .. }
-                    | PersonCue::MatchingDebit
-                    | PersonCue::DraftReady
-            )
+                PersonCue::InvoiceOverdue { .. } | PersonCue::MatchingDebit | PersonCue::DraftReady
+            ) || (!letter_leaving && matches!(cue, PersonCue::FollowUpDue { today: true, .. }))
         })
 }
 
@@ -668,10 +672,29 @@ pub fn dossier_kept(
     Ok(dossier_body(
         &dossier,
         today,
-        None,
+        DossierNotice::None,
         None,
         &look,
         list,
+        DossierDoor::Cours,
+    ))
+}
+
+/// En cours, après « C'est parti » sans serveur : la note explique l'envoi hors de Griffe.
+pub fn dossier_after_own_send(
+    store: &Store,
+    needle: &str,
+    today: Date,
+) -> Result<Markup, AppError> {
+    let dossier = person(store.connection(), needle, today)?;
+    let look = LetterLook::from_store(store);
+    Ok(dossier_body(
+        &dossier,
+        today,
+        DossierNotice::OwnSend,
+        None,
+        &look,
+        &ListKeep::default(),
         DossierDoor::Cours,
     ))
 }
@@ -749,7 +772,15 @@ pub fn dossier_marked(
     door: DossierDoor,
 ) -> Markup {
     let look = LetterLook::plain();
-    dossier_body(dossier, today, flash, None, &look, list, door)
+    dossier_body(
+        dossier,
+        today,
+        DossierNotice::text(flash),
+        None,
+        &look,
+        list,
+        door,
+    )
 }
 
 pub fn dossier_with_kinds(
@@ -762,7 +793,7 @@ pub fn dossier_with_kinds(
     dossier_body(
         dossier,
         today,
-        flash,
+        DossierNotice::text(flash),
         Some(kinds),
         &look,
         &ListKeep::default(),
@@ -866,10 +897,25 @@ fn stays_in_cours(action: &PersonAction) -> bool {
     )
 }
 
+enum DossierNotice<'a> {
+    None,
+    Text(&'a str),
+    OwnSend,
+}
+
+impl<'a> DossierNotice<'a> {
+    fn text(flash: Option<&'a str>) -> Self {
+        match flash {
+            Some(msg) => Self::Text(msg),
+            None => Self::None,
+        }
+    }
+}
+
 fn dossier_body(
     dossier: &PersonDossier,
     today: Date,
-    flash: Option<&str>,
+    notice: DossierNotice<'_>,
     posted: Option<&KindFormState>,
     look: &LetterLook,
     list: &ListKeep,
@@ -891,8 +937,20 @@ fn dossier_body(
             @if client_fiche {
                 (kinds_form(dossier, &href, posted, list))
             }
-            @if let Some(msg) = flash {
-                p class="mast-note" role="status" { (msg) }
+            @match notice {
+                DossierNotice::Text(msg) => {
+                    p class="mast-note" role="status" { (msg) }
+                }
+                DossierNotice::OwnSend => {
+                    p class="mast-note" role="status" {
+                        "Classée. Cela suppose que tu l'as envoyée toi-même, hors de Griffe. "
+                        a href="/societe/courrier" hx-get="/societe/courrier" hx-target="#content" hx-push-url="true" {
+                            "Le courrier"
+                        }
+                        " peut l'envoyer d'ici."
+                    }
+                }
+                DossierNotice::None => {}
             }
             @if !daily.is_empty() {
                 div class="row-actions" {
@@ -1742,12 +1800,8 @@ pub fn meeting_form_kept(
     list: &ListKeep,
 ) -> Markup {
     let href = person_href(&dossier.name);
-    let back = list.on(&href);
     let inner = html! {
         div class="letter" data-view=(ViewId::Gens.slug()) {
-            a class="back" href=(back) hx-get=(back) hx-target="#content" hx-push-url="true" {
-                "← " (dossier.name)
-            }
             h1 { "Une rencontre." }
             p class="lede" { "Pas un CRM. Ce que tu veux encore savoir dans six mois." }
             @if let Some(msg) = error {
@@ -1818,12 +1872,8 @@ pub fn fiche_page_kept(
     list: &ListKeep,
 ) -> Markup {
     let href = person_href(&dossier.name);
-    let back = list.on(&href);
     let inner = html! {
         div class="letter" data-view=(ViewId::Gens.slug()) {
-            a class="back" href=(back) hx-get=(back) hx-target="#content" hx-push-url="true" {
-                "← " (dossier.name)
-            }
             h1 { "La fiche." }
             p class="lede" { "Qui c'est, pour leur écrire plus tard. Pas besoin d'une estimation pour ça." }
             @if let Some(msg) = &errors.banner {
@@ -1933,12 +1983,8 @@ pub fn estimate_page_kept(
     list: &ListKeep,
 ) -> Markup {
     let href = person_href(&dossier.name);
-    let back = list.on(&href);
     let inner = html! {
         div class="letter spread" data-view=(ViewId::Gens.slug()) {
-            a class="back" href=(back) hx-get=(back) hx-target="#content" hx-push-url="true" {
-                "← " (dossier.name)
-            }
             h1 { "L'estimation." }
             p class="lede" {
                 "Ce que chaque ligne vaut. Le devis, tu le rédiges ailleurs."
@@ -1983,14 +2029,6 @@ fn travaux_prose(body: &str) -> Markup {
     }
 }
 
-fn travaux_back(href: &str, name: &str) -> Markup {
-    html! {
-        a class="back" href=(href) hx-get=(href) hx-target="#content" hx-push-url="true" {
-            "← " (name)
-        }
-    }
-}
-
 /// Lecture du récit. Le markdown n'est pas là : « Écrire » ouvre la source.
 pub fn travaux_page(dossier: &PersonDossier, note: &DossierWork) -> Markup {
     travaux_page_kept(dossier, note, &ListKeep::default())
@@ -2001,7 +2039,6 @@ pub fn travaux_page_kept(dossier: &PersonDossier, note: &DossierWork, list: &Lis
     let edit = list.on(&format!("{href}/travaux/ecrire"));
     let inner = html! {
         div class="letter spread" data-view=(ViewId::Gens.slug()) hx-history="false" {
-            (travaux_back(&list.on(&href), &dossier.name))
             h1 { "Les travaux." }
             p class="lede" {
                 "Où on en est. L'estimation, à côté, dit ce que chaque ligne vaut."
@@ -2056,7 +2093,6 @@ pub fn travaux_edit_kept(
     let edit = list.on(&format!("{href}/travaux/ecrire"));
     let inner = html! {
         div class="letter spread" data-view=(ViewId::Gens.slug()) hx-history="false" {
-            (travaux_back(&list.on(&href), &dossier.name))
             h1 { "Les travaux." }
             p class="travaux-hint" { "Il se garde tout seul." }
             form class="travaux-ecrire" method="post" action=(action)
@@ -2294,8 +2330,8 @@ pub fn phrases_page(view: &PhrasesView) -> Markup {
                                               type="text"
                                               inputmode="numeric"
                                               value=(moment.gap)
-                                              aria-label=(format!("Jours avant {}", moment.label));
-                                        span { "j" }
+                                              aria-label=(format!("Jours ouvrés avant {}", moment.label));
+                                        span { "ouvrés" }
                                     }
                                 }
                             }
@@ -2324,7 +2360,7 @@ pub fn phrases_page(view: &PhrasesView) -> Markup {
                                         }
                                     }
                                     p class="field-help" {
-                                        "<nom> et <genre> prennent le nom, et Monsieur ou Madame. <Monsieur le Maire/Madame la Maire> suit le genre. Sans genre, les deux côtés restent."
+                                        "<nom> et <genre> prennent le nom, et Monsieur ou Madame. <Monsieur le Maire/Madame la Maire> suit le genre. Sans genre, les deux côtés restent. <constat> vide, la ligne qui ne porte que lui disparaît."
                                     }
                                     @if !moment.alone {
                                         div class="phrase-moves" {
@@ -2364,6 +2400,7 @@ const PHRASE_TOKENS: &[(&str, &str)] = &[
     ("<genre>", "<genre>"),
     ("<sujet>", "<sujet>"),
     ("<montant>", "<montant>"),
+    ("<constat>", "<constat>"),
     ("<moi>", "<moi>"),
     ("<société>", "<société>"),
     ("<signature>", "<signature>"),
@@ -2685,6 +2722,61 @@ pub fn letter_page(
     )
 }
 
+fn serie_another(href: &str) -> Markup {
+    html! {
+        a href=(href) hx-get=(href) hx-target="#content" hx-push-url="true" { "Une autre" }
+    }
+}
+
+/// Une rangée. Le nom ouvre le menu sous lui. Garder, ou Fermer, le referme.
+fn serie_choice(
+    current: Option<&ProspectGenre>,
+    series: &[ProspectGenre],
+    serie_href: &str,
+    another: &str,
+) -> Markup {
+    html! {
+        div class="serie-slot" {
+            span class="serie-kicker" { "Série" }
+            @if series.is_empty() {
+                span class="serie-none" { "Aucune série." }
+                (serie_another(another))
+            } @else {
+                span class="serie-anchor" {
+                    input class="serie-open" id="serie-open" type="checkbox";
+                    label class={ @if current.is_some() { "seg" } @else { "seg unset" } }
+                      for="serie-open" {
+                        @if let Some(genre) = current {
+                            (genre.name)
+                        } @else {
+                            "Choisir une série"
+                        }
+                    }
+                    div class="serie-menu" {
+                        @for item in series {
+                            label class={ @if current.is_some_and(|genre| genre.id == item.id) { "on" } } {
+                                input type="radio" name="serie" value=(item.id)
+                                    checked[current.is_some_and(|genre| genre.id == item.id)]
+                                    hx-post=(serie_href)
+                                    hx-trigger="change"
+                                    hx-target="#content"
+                                    hx-include="closest form"
+                                    hx-swap="innerHTML"
+                                    hx-push-url="false";
+                                (item.name)
+                            }
+                        }
+                        (serie_another(another))
+                        label class="serie-keep" for="serie-open" {
+                            @if current.is_some() { "Garder" } @else { "Fermer" }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 pub fn letter_page_kept(
     store: &Store,
     dossier: &PersonDossier,
@@ -2695,7 +2787,6 @@ pub fn letter_page_kept(
     list: &ListKeep,
 ) -> Result<Markup, AppError> {
     let href = person_href(&dossier.name);
-    let back = list.on(&href);
     let sender = follow_up_sender(store.connection())?;
     let from = sender.sender_email.as_deref().unwrap_or("—");
     let channels = fiche_channels_of(store, dossier)?;
@@ -2747,13 +2838,10 @@ pub fn letter_page_kept(
     let relire = format!("{href}/relire");
     let inner = html! {
         div class="letter spread letter-desk" data-view=(ViewId::Gens.slug()) {
-            a class="back" href=(back) hx-get=(back) hx-target="#content" hx-push-url="true" {
-                "← " (dossier.name)
-            }
             @if mail.ready {
                 h1 { "Une lettre." }
                 p class="lede" {
-                    "Tu écris ici. « Envoyer » la fait partir, avec cinq secondes pour la retenir. « C'est parti » classe le double dans l'historique."
+                    "Tu écris ici. « Envoyer » la fait partir, avec cinq secondes pour la retenir."
                 }
             } @else {
                 h1 { "Une lettre, pas un envoi." }
@@ -2778,34 +2866,7 @@ pub fn letter_page_kept(
             }
             form class="letter-compose" {
                 @if opportunity.is_some() {
-                    fieldset class="word-choice" {
-                        legend { "Série" }
-                        div class="word-choice-row" {
-                            @if series.is_empty() {
-                                span { "Aucune série." }
-                            } @else {
-                                @for item in &series {
-                                    label {
-                                        input type="radio" name="serie" value=(item.id)
-                                            checked[genre.as_ref().is_some_and(|current| current.id == item.id)]
-                                            hx-post=(serie_href)
-                                            hx-trigger="change"
-                                            hx-target="#content"
-                                            hx-include="closest form"
-                                            hx-swap="innerHTML"
-                                            hx-push-url="false";
-                                        (item.name)
-                                    }
-                                }
-                            }
-                            a href=(another_series)
-                              hx-get=(another_series)
-                              hx-target="#content"
-                              hx-push-url="true" {
-                                "Une autre"
-                            }
-                        }
-                    }
+                    (serie_choice(genre.as_ref(), &series, &serie_href, &another_series))
                     @if let Some(label) = &moment {
                         p class="phrase-caption" { (label) }
                     }
@@ -2813,7 +2874,7 @@ pub fn letter_page_kept(
                 input class="letter-face-pick" type="radio" name="face" id="face-write" value="ecrire" checked[!keep.reading];
                 input class="letter-face-pick" type="radio" name="face" id="face-read" value="relire" checked[keep.reading];
                 div class="letter-faces" {
-                    label class="quiet" for="face-write" { "Écrire" }
+                    label class="quiet" for="face-write" { "Éditer" }
                     button class="quiet letter-relire" type="submit"
                            formaction=(relire)
                            formmethod="post"
@@ -2838,13 +2899,15 @@ pub fn letter_page_kept(
                         } @else if mail.ready {
                             p class="depart-line" { "Il manque l'adresse de la personne." }
                         }
-                        button class="seal" type="submit"
-                               formaction=(format!("{href}/envoye"))
-                               formmethod="post"
-                               hx-post=(format!("{href}/envoye"))
-                               hx-target="#content"
-                               hx-push-url="true" {
-                            "C'est parti"
+                        @if !mail.ready {
+                            button class="seal" type="submit"
+                                   formaction=(format!("{href}/envoye"))
+                                   formmethod="post"
+                                   hx-post=(format!("{href}/envoye"))
+                                   hx-target="#content"
+                                   hx-push-url="true" {
+                                "C'est parti"
+                            }
                         }
                     }
                 }

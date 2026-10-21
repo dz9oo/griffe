@@ -86,6 +86,33 @@ pub fn next_french_business_day_on_or_after(date: Date) -> Date {
     current
 }
 
+/// Avance de `days` jours du lundi au vendredi. Le jour de départ ne compte pas.
+///
+/// Un samedi et un dimanche sont sautés. Un jour férié qui tombe en semaine compte :
+/// ce n'est pas le calendrier fiscal ([`is_french_business_day`]). `days` nul ou négatif
+/// rend `date`.
+///
+/// # Panics
+///
+/// Ne panique jamais en pratique : `Date::next_day` ne peut échouer qu'au-delà de l'an 9999.
+#[must_use]
+pub fn add_weekdays(date: Date, days: i64) -> Date {
+    if days <= 0 {
+        return date;
+    }
+    let mut current = date;
+    let mut left = days;
+    while left > 0 {
+        current = current
+            .next_day()
+            .expect("un jour du lundi au vendredi existe toujours avant l'an 9999");
+        if !matches!(current.weekday(), Weekday::Saturday | Weekday::Sunday) {
+            left -= 1;
+        }
+    }
+    current
+}
+
 /// Nombre de jours ouvrés français dans l'intervalle `[start, end]` (bornes inclusives).
 ///
 /// # Panics
@@ -161,6 +188,52 @@ mod tests {
         assert!(is_french_business_day(
             Date::from_calendar_date(2026, Month::September, 1).unwrap()
         ));
+    }
+
+    #[test]
+    fn three_weekdays_after_a_friday_land_on_wednesday() {
+        // Vendredi 4 septembre 2026. Lundi 7, mardi 8, mercredi 9.
+        let friday = Date::from_calendar_date(2026, Month::September, 4).unwrap();
+        assert_eq!(
+            add_weekdays(friday, 3),
+            Date::from_calendar_date(2026, Month::September, 9).unwrap()
+        );
+    }
+
+    #[test]
+    fn three_weekdays_after_a_monday_stay_inside_the_week() {
+        // Lundi 7 septembre 2026. Mardi 8, mercredi 9, jeudi 10.
+        let monday = Date::from_calendar_date(2026, Month::September, 7).unwrap();
+        assert_eq!(
+            add_weekdays(monday, 3),
+            Date::from_calendar_date(2026, Month::September, 10).unwrap()
+        );
+    }
+
+    #[test]
+    fn three_weekdays_after_a_wednesday_skip_the_weekend() {
+        // Mercredi 2 septembre 2026. Jeudi 3, vendredi 4, lundi 7.
+        let wednesday = Date::from_calendar_date(2026, Month::September, 2).unwrap();
+        assert_eq!(
+            add_weekdays(wednesday, 3),
+            Date::from_calendar_date(2026, Month::September, 7).unwrap()
+        );
+    }
+
+    #[test]
+    fn a_zero_gap_stays_on_a_friday() {
+        let friday = Date::from_calendar_date(2026, Month::September, 4).unwrap();
+        assert_eq!(add_weekdays(friday, 0), friday);
+    }
+
+    #[test]
+    fn a_weekday_holiday_still_counts() {
+        // Lundi 13 juillet 2026, puis le mardi 14, férié et pourtant un jour de semaine.
+        let monday = Date::from_calendar_date(2026, Month::July, 13).unwrap();
+        let bastille = Date::from_calendar_date(2026, Month::July, 14).unwrap();
+        assert_eq!(bastille.weekday(), Weekday::Tuesday);
+        assert!(!is_french_business_day(bastille));
+        assert_eq!(add_weekdays(monday, 1), bastille);
     }
 
     #[test]

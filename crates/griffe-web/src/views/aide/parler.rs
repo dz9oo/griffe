@@ -46,9 +46,9 @@ pub(super) const RELANCER: Letter = Letter {
     lede: "Une lettre est un geste du Jour, ou un bouton sur le dossier.",
     steps: &[
         "Sur Le jour, le geste est là, avec un verbe, quand quelqu'un est à écrire ou à relancer.",
-        "Sur le dossier, Écrire ouvre la lettre. Relire la montre telle qu'elle part. La zone d'écriture reprend le texte.",
+        "Sur le dossier, Écrire ouvre la lettre telle qu'elle part. Éditer reprend le texte. Relire y revient.",
         "Envoyer la fait partir, avec cinq secondes pour la retenir. Annuler, pendant ces cinq secondes, la garde. Fermer la fenêtre pendant ce délai la retient aussi.",
-        "C'est parti classe le double dans l'historique et ne contacte pas le serveur.",
+        "C'est parti n'est là que sans serveur. Il classe le double et ne contacte pas le serveur. En cours dit que cela suppose un envoi hors de Griffe, et ouvre Le courrier.",
         "La formule se règle dans Le courrier. Elle ferme la lettre. Elle n'est pas recopiée dans la zone d'écriture.",
     ],
     does_not: Some(
@@ -118,7 +118,7 @@ pub(super) const PHRASES: Letter = Letter {
     title: "Les phrases.",
     lede: "Les mots des lettres de prospection. On les écrit dans La société, Les phrases.",
     steps: &[
-        "Une frise règle les moments, leur nombre et l'écart entre eux. Enregistrer écrit la série. Rien ne part.",
+        "Une frise règle les moments, leur nombre et l'écart entre eux. L'écart compte les jours du lundi au vendredi. Enregistrer écrit la série. Rien ne part.",
         "La série choisie en écrivant donne les mots. Changer de série ne change pas le moment. Un brouillon déjà prêt garde son texte.",
         "Réécrire un moment change la prochaine lettre. Une lettre déjà classée, ou un brouillon déjà prêt, garde son texte.",
         "Les conversations déjà engagées finissent leur série.",

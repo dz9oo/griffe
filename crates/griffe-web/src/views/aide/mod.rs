@@ -1,11 +1,13 @@
-//! Lettre d'aide. Deux rayons : l'atelier, rempli, et les formalités, vide.
+//! Lettre d'aide. Le bureau est un livre : sommaire persistant, lettre à côté.
 //!
-//! L'index n'affiche une section que si elle a des liens. Ajouter le second rayon
-//! plus tard : des `Letter` dans `FORMALITES_LETTERS`, et des `Section` que
-//! `sections` renvoie pour `Rayon::Formalites`. Les routes et les lettres de
-//! l'atelier restent en place.
+//! Trois rayons. L'atelier est rempli. Avec un agent aussi. Les formalités sont
+//! vides : un livre n'apparaît que si `sections` lui donne des liens. Ajouter un
+//! fichier, plus tard : une lettre dans la section « Fichiers » de l'agent. Ajouter
+//! un livre : un `Rayon`, des `Letter`, des `Section`.
 
+mod agent;
 mod argent;
+mod commande;
 mod etat;
 mod parler;
 mod reperer;
@@ -16,10 +18,11 @@ use maud::{Markup, html};
 
 use crate::views::copy::{deadline_fr, duty_href};
 
-/// Où une lettre se range. Le second rayon n'a pas encore de page.
+/// Où une lettre se range. Un rayon sans section ne s'affiche pas.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Rayon {
     Atelier,
+    Agent,
     Formalites,
 }
 
@@ -61,6 +64,8 @@ const ATELIER_LETTERS: &[&Letter] = &[
     &etat::PAPIERS,
     &etat::LEXIQUE,
 ];
+
+const AGENT_LETTERS: &[&Letter] = agent::LETTERS;
 
 const FORMALITES_LETTERS: &[&Letter] = &[];
 
@@ -106,9 +111,65 @@ const ATELIER_SECTIONS: &[Section] = &[
     },
 ];
 
+const AGENT_SECTIONS: &[Section] = &[
+    Section {
+        label: "Avec un agent",
+        links: &[
+            ("portes", "la fenêtre, la commande, l'agent"),
+            ("brancher", "la session, le MCP, la compétence"),
+            ("matin", "Valvert, du matin à l'envoi"),
+            ("console", "la même commande, ici"),
+            ("demandes", "créer, estimer, brouillon"),
+            ("trame", "la trame, le constat"),
+        ],
+    },
+    Section {
+        label: "La commande",
+        links: &[
+            ("cmd-coffre", "ouvrir, garder, confirmer"),
+            ("cmd-gens", "le jour, les gens, les séries"),
+            ("cmd-courrier", "les clients, le compte qui poste"),
+            ("cmd-argent", "devis, facture, relevé"),
+            ("cmd-societe", "l'État, la clôture, les papiers"),
+        ],
+    },
+    Section {
+        label: "Fichiers",
+        links: &[
+            ("fichier", "Notion, puis un autre"),
+            ("dehors", "la file, l'envoi, un montant inventé"),
+        ],
+    },
+];
+
+struct Book {
+    rayon: Rayon,
+    label: &'static str,
+    home: &'static str,
+}
+
+const BOOKS: &[Book] = &[
+    Book {
+        rayon: Rayon::Atelier,
+        label: "L'atelier",
+        home: "/aide",
+    },
+    Book {
+        rayon: Rayon::Agent,
+        label: "Avec un agent",
+        home: "/aide/portes",
+    },
+    Book {
+        rayon: Rayon::Formalites,
+        label: "Les formalités",
+        home: "/aide",
+    },
+];
+
 fn sections(rayon: Rayon) -> &'static [Section] {
     match rayon {
         Rayon::Atelier => ATELIER_SECTIONS,
+        Rayon::Agent => AGENT_SECTIONS,
         Rayon::Formalites => &[],
     }
 }
@@ -116,24 +177,24 @@ fn sections(rayon: Rayon) -> &'static [Section] {
 fn letters(rayon: Rayon) -> &'static [&'static Letter] {
     match rayon {
         Rayon::Atelier => ATELIER_LETTERS,
+        Rayon::Agent => AGENT_LETTERS,
         Rayon::Formalites => FORMALITES_LETTERS,
     }
 }
 
 fn find(slug: &str) -> Option<&'static Letter> {
-    letters(Rayon::Atelier)
+    BOOKS
         .iter()
-        .chain(letters(Rayon::Formalites))
-        .copied()
+        .flat_map(|book| letters(book.rayon).iter().copied())
         .find(|letter| letter.slug == slug)
 }
 
-/// Lettres de l'atelier, pour la palette. Le rayon vide n'y entre pas.
-pub fn atelier_letters() -> impl Iterator<Item = &'static Letter> {
-    letters(Rayon::Atelier)
+/// Lettres des livres visibles, pour la palette.
+pub fn guide_letters() -> impl Iterator<Item = &'static Letter> {
+    BOOKS
         .iter()
-        .copied()
-        .filter(|letter| letter.rayon == Rayon::Atelier)
+        .filter(|book| !sections(book.rayon).is_empty())
+        .flat_map(|book| letters(book.rayon).iter().copied())
 }
 
 fn chapter_link(href: &str, title: &str, sub: &str) -> Markup {
@@ -150,71 +211,108 @@ fn chapter_link(href: &str, title: &str, sub: &str) -> Markup {
     }
 }
 
-fn back() -> Markup {
+fn toc_link(href: &str, title: &str, current: bool) -> Markup {
     html! {
-        a class="back" href="/aide"
-          hx-get="/aide" hx-target="#content" hx-push-url="true" hx-swap="innerHTML" {
-            "← L'aide"
+        li {
+            a href=(href)
+              aria-current=[current.then_some("true")]
+              hx-get=(href)
+              hx-target="#content"
+              hx-push-url="true"
+              hx-swap="innerHTML" {
+                (title)
+            }
         }
     }
 }
 
-fn letter_shell(inner: Markup) -> Markup {
+fn sommaire(active: Rayon, current: Option<&str>) -> Markup {
     html! {
-        div class="letter" data-view="aide" {
-            (inner)
-        }
-    }
-}
-
-fn section_markup(section: &Section) -> Markup {
-    if section.links.is_empty() {
-        return html! {};
-    }
-    html! {
-        p class="section-label" { (section.label) }
-        ul class="chapters" {
-            @for (slug, sub) in section.links {
-                @if let Some(letter) = find(slug) {
-                    (chapter_link(&format!("/aide/{slug}"), letter.title, sub))
+        nav class="aide-sommaire" aria-label="Sommaire" {
+            div class="aide-livres" {
+                @for book in BOOKS {
+                    @if !sections(book.rayon).is_empty() {
+                        a class="aide-livre"
+                          href=(book.home)
+                          aria-current=[(book.rayon == active).then_some("true")]
+                          hx-get=(book.home)
+                          hx-target="#content"
+                          hx-push-url="true"
+                          hx-swap="innerHTML" {
+                            (book.label)
+                        }
+                    }
+                }
+            }
+            @for book in BOOKS {
+                @if !sections(book.rayon).is_empty() {
+                    div class="aide-chapitres" hidden[book.rayon != active] {
+                        @for section in sections(book.rayon) {
+                            p class="section-label" { (section.label) }
+                            ul class="aide-toc" {
+                                @for (slug, _) in section.links {
+                                    @if let Some(letter) = find(slug) {
+                                        (toc_link(
+                                            &format!("/aide/{slug}"),
+                                            letter.title,
+                                            current == Some(letter.slug),
+                                        ))
+                                    }
+                                }
+                            }
+                        }
+                        @if book.rayon == Rayon::Atelier {
+                            p class="section-label" { "Portes" }
+                            ul class="aide-toc" {
+                                (toc_link("/premiers-pas", "Premiers pas", false))
+                            }
+                        }
+                    }
                 }
             }
         }
     }
 }
 
-/// L'index : démarche, traduction des modules, sommaire.
-#[must_use]
-pub fn index() -> Markup {
-    letter_shell(html! {
-        div class="date" { "L'atelier" }
-        h1 { "Laissez-vous guider." }
-        p class="lede" {
-            "Ce qu'il y a à faire aujourd'hui est sur Le jour — pas un tableau de bord. \
-             Cette lettre dit pourquoi l'app ne ressemble pas à un logiciel de compta, \
-             et comment faire les gestes courants. Vous pouvez vous laisser guider."
-        }
-        div class="block" {
-            h3 { "Si vous venez d'ailleurs" }
-            p class="prose" {
-                "Ce n'est pas Tiime, Indy ou Pennylane. Pas de menu Factures, Devis, Banque, \
-                 ni de tuiles de chiffre d'affaires. Le tableau de bord, c'est Le jour. \
-                 Un client, un devis, une facture : on ouvre une personne, dans Les affaires. \
-                 La banque et les dépenses : le relevé, dans La société. Les impôts, \
-                 la clôture, l'identité : La société aussi."
+fn open_book(rayon: Rayon, current: Option<&str>, feuille: Markup) -> Markup {
+    html! {
+        div class="letter spread letter-desk aide-desk" data-view="aide" {
+            div class="aide-book" {
+                (sommaire(rayon, current))
+                article class="aide-feuille" { (feuille) }
             }
         }
-        @for section in sections(Rayon::Atelier) {
-            (section_markup(section))
-        }
-        @for section in sections(Rayon::Formalites) {
-            (section_markup(section))
-        }
-        p class="section-label" { "Portes" }
-        ul class="chapters" {
-            (chapter_link("/premiers-pas", "Premiers pas", "coffre neuf, profil, banque"))
-        }
-    })
+    }
+}
+
+/// L'index : démarche, traduction des modules. Le sommaire range les lettres.
+#[must_use]
+pub fn index() -> Markup {
+    open_book(
+        Rayon::Atelier,
+        None,
+        html! {
+            div class="date" { "L'atelier" }
+            h1 { "Laissez-vous guider." }
+            p class="lede" {
+                "Ce qu'il y a à faire aujourd'hui est sur Le jour — pas un tableau de bord. \
+                 Cette lettre dit pourquoi l'app ne ressemble pas à un logiciel de compta, \
+                 et comment faire les gestes courants. Vous pouvez vous laisser guider. \
+                 Le sommaire range les lettres. Avec un agent dit la commande, le MCP, \
+                 et le fichier d'à côté. La commande liste chaque geste, avec un exemple."
+            }
+            div class="block" {
+                h3 { "Si vous venez d'ailleurs" }
+                p class="prose" {
+                    "Ce n'est pas Tiime, Indy ou Pennylane. Pas de menu Factures, Devis, Banque, \
+                     ni de tuiles de chiffre d'affaires. Le tableau de bord, c'est Le jour. \
+                     Un client, un devis, une facture : on ouvre une personne, dans Les affaires. \
+                     La banque et les dépenses : le relevé, dans La société. Les impôts, \
+                     la clôture, l'identité : La société aussi."
+                }
+            }
+        },
+    )
 }
 
 /// Une lettre, le lexique, ou la lettre d'absence. Toujours 200.
@@ -277,29 +375,74 @@ fn recipe_letter(recipe: &Letter) -> Markup {
         },
         _ => html! {},
     };
-    letter_shell(html! {
-        (back())
-        div class="date" { (recipe.kicker) }
-        h1 { (recipe.title) }
-        p class="lede" { (recipe.lede) }
-        ol {
-            @for step in recipe.steps {
-                li { (step) }
-            }
-        }
-        (extra)
-        @if let Some(does_not) = recipe.does_not {
-            p class="prose" style="color:var(--ink-2);font-size:14px" { (does_not) }
-        }
-        @if let (Some(href), Some(action)) = (recipe.href, recipe.action) {
-            div class="row-actions" {
-                a class="seal" href=(href)
-                  hx-get=(href) hx-target="#content" hx-push-url="true" {
-                    (action)
+    open_book(
+        recipe.rayon,
+        Some(recipe.slug),
+        html! {
+            div class="date" { (recipe.kicker) }
+            h1 { (recipe.title) }
+            p class="lede" { (recipe.lede) }
+            div class="aide-columns" {
+                div class="aide-geste" {
+                    ol {
+                        @for step in recipe.steps {
+                            li { (step) }
+                        }
+                    }
+                    (bridge(recipe.slug))
+                }
+                aside class="aide-regard" {
+                    (agent::regard(recipe.slug))
+                    (extra)
+                    @if let Some(does_not) = recipe.does_not {
+                        p class="prose aide-limite" { (does_not) }
+                    }
+                    @if let (Some(href), Some(action)) = (recipe.href, recipe.action) {
+                        div class="row-actions" {
+                            a class="seal" href=(href)
+                              hx-get=(href) hx-target="#content" hx-push-url="true" {
+                                (action)
+                            }
+                        }
+                    }
                 }
             }
-        }
-    })
+            (commande::catalog(recipe.slug))
+        },
+    )
+}
+
+fn bridge(slug: &str) -> Markup {
+    match slug {
+        "conversation" => html! {
+            p class="prose" {
+                "Un agent ouvre la même conversation, par la commande ou par le MCP. "
+                a href="/aide/demandes"
+                  hx-get="/aide/demandes" hx-target="#content" hx-push-url="true" {
+                    "Ce que l'agent demande."
+                }
+            }
+        },
+        "relancer" => html! {
+            p class="prose" {
+                "Le brouillon se prépare aussi par la commande, sans partir. "
+                a href="/aide/demandes"
+                  hx-get="/aide/demandes" hx-target="#content" hx-push-url="true" {
+                    "Ce que l'agent demande."
+                }
+            }
+        },
+        "phrases" => html! {
+            p class="prose" {
+                "L'agent recopie la série. Seul le constat change. Un constat vide, la ligne qui ne porte que lui disparaît. "
+                a href="/aide/trame"
+                  hx-get="/aide/trame" hx-target="#content" hx-push-url="true" {
+                    "Les phrases, avec un agent."
+                }
+            }
+        },
+        _ => html! {},
+    }
 }
 
 fn duty_chapters(kinds: &[FiscalDeadlineKind]) -> Markup {
@@ -317,31 +460,37 @@ fn duty_chapters(kinds: &[FiscalDeadlineKind]) -> Markup {
 }
 
 fn lexique() -> Markup {
-    letter_shell(html! {
-        (back())
-        div class="date" { "Rendre des comptes" }
-        h1 { "Les mots." }
-        p class="lede" { "Les mots de la comptabilité, dans l'ordre où on les rencontre." }
-        dl class="detail-list" {
-            @for entry in GLOSSARY {
-                dt { (entry.term) }
-                dd { (entry.meaning) }
+    open_book(
+        Rayon::Atelier,
+        Some("lexique"),
+        html! {
+            div class="date" { "Rendre des comptes" }
+            h1 { "Les mots." }
+            p class="lede" { "Les mots de la comptabilité, dans l'ordre où on les rencontre." }
+            dl class="detail-list" {
+                @for entry in GLOSSARY {
+                    dt { (entry.term) }
+                    dd { (entry.meaning) }
+                }
             }
-        }
-    })
+        },
+    )
 }
 
 fn absent() -> Markup {
-    letter_shell(html! {
-        (back())
-        div class="date" { "L'atelier" }
-        h1 { "Cette recette n'est pas ici." }
-        p class="lede" { "Le sommaire de l'aide liste ce qui existe." }
-        div class="row-actions" {
-            a class="seal" href="/aide"
-              hx-get="/aide" hx-target="#content" hx-push-url="true" {
-                "L'aide"
+    open_book(
+        Rayon::Atelier,
+        None,
+        html! {
+            div class="date" { "L'atelier" }
+            h1 { "Cette recette n'est pas ici." }
+            p class="lede" { "Le sommaire de l'aide liste ce qui existe." }
+            div class="row-actions" {
+                a class="seal" href="/aide"
+                  hx-get="/aide" hx-target="#content" hx-push-url="true" {
+                    "L'aide"
+                }
             }
-        }
-    })
+        },
+    )
 }

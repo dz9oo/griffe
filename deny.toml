@@ -30,6 +30,13 @@ ignore = [
     "RUSTSEC-2025-0081",
     "RUSTSEC-2025-0098",
     "RUSTSEC-2025-0100",
+    # zvariant, zvariant_derive et zbus_names ont été fondus dans zbus 6.
+    # Aucune faille : les annonces disent qu'il n'y a pas de version corrigée.
+    # Le trousseau Linux (keyring → zbus-secret-service-keyring-store 1 → zbus 5)
+    # les tire encore. À retirer quand ce magasin passera à zbus 6.
+    "RUSTSEC-2026-0370",
+    "RUSTSEC-2026-0371",
+    "RUSTSEC-2026-0372",
 ]
 
 [licenses]
