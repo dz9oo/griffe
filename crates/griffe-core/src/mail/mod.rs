@@ -6,14 +6,16 @@ mod error;
 mod inbound;
 mod model;
 mod present;
+mod releve;
 mod secret;
 mod store;
 mod theme;
 
 pub use commands::{
-    AddressFault, ArmOutbound, CancelOutbound, ClearMailSecret, HoldReply, MarkAddress,
-    RecordMailProbe, ReleaseReplyHold, RememberImapUsername, ResolveUncertain, RetryOutbound,
-    SaveLetterface, SaveMailAccount, SaveMailSecret, SaveMailSignature, SetAutomaticSend,
+    AddressFault, ArmOutbound, CancelOutbound, ClearMailSecret, FileMessage, FilingSource,
+    HoldReply, MarkAddress, RecordMailProbe, ReleaseReplyHold, RememberImapUsername,
+    ResolveUncertain, RetryOutbound, SaveLetterface, SaveMailAccount, SaveMailSecret,
+    SaveMailSignature, SetAutomaticSend,
 };
 pub use error::MailError;
 pub use inbound::{
@@ -27,6 +29,10 @@ pub use model::{
     SmtpEndpoint, SubmissionBatch, SubmissionReceipt, TlsMode, UNDO_SECS,
 };
 pub use present::{LINK_HINT, LetterParts, close_letter, letter_card, letter_html, readable_links};
+pub use releve::{
+    AbsorbReport, BoxLine, PulledMailbox, PulledMessage, RELEVE_EVERY_SECS, RelevePlan, absorb,
+    list_box, releve_due, releve_plan,
+};
 pub use secret::MailSecret;
 pub use theme::{
     CustomLetter, CustomSheet, LetterChoice, LetterFileError, LetterPalette, LetterTheme,

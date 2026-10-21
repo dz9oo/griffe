@@ -1,5 +1,6 @@
-//! Dépôt IMAP de la copie. Pas de lecture de la boîte de réception.
-//! La liaison est chiffrée sur le port 993. Aucun dossier n'est créé.
+//! Dépôt IMAP de la copie, et lecture des lettres nouvelles.
+//! `BODY.PEEK` : le relevé ne marque pas lu. La liaison est chiffrée sur le
+//! port 993. Aucun dossier n'est créé, rien n'est détruit.
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -7,14 +8,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use griffe_core::mail::{
-    ICLOUD_SENT_MAILBOX, IMAP_PORT, ImapEndpoint, MailSecret, MailSubmitError, SentCopyStatus,
+    ICLOUD_SENT_MAILBOX, IMAP_PORT, ImapEndpoint, MailSecret, MailSubmitError, PulledMailbox,
+    PulledMessage, SentCopyStatus,
 };
+use griffe_core::mailbox::MailboxCursor;
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, ClientConnection, StreamOwned};
 use zeroize::Zeroize;
 
 const TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_LINE: usize = 1024 * 1024;
+const FETCH_MAX: usize = 4 * 1024 * 1024;
 
 /// Noms d'essai, sans doublon : celui qui a déjà marché, la partie avant `@`,
 /// puis l'adresse complète.
@@ -46,6 +50,127 @@ pub fn login_names(remembered: Option<&str>, smtp_username: &str) -> Vec<String>
 pub struct ListedMailbox {
     pub name: String,
     pub sent: bool,
+}
+
+/// Lit les messages nouveaux de la boîte de réception et d'Envoyés.
+/// `BODY.PEEK` : le relevé ne marque pas lu.
+///
+/// # Errors
+///
+/// La liaison, l'identifiant ou la lecture échoue. Le mot de passe n'est pas dans le message.
+pub fn fetch_new(
+    endpoint: &ImapEndpoint,
+    secret: &MailSecret,
+    cursors: &[MailboxCursor],
+) -> Result<Vec<PulledMailbox>, MailSubmitError> {
+    let (mut session, _) = login(endpoint, secret)?;
+    let password = secret.expose();
+    let listed = session.list(password)?;
+    let mut names = Vec::new();
+    let inbox = listed
+        .iter()
+        .find(|entry| entry.name.eq_ignore_ascii_case("INBOX"))
+        .map(|entry| entry.name.clone())
+        .unwrap_or_else(|| "INBOX".to_string());
+    names.push(inbox);
+    if let Some(sent) = choose_sent_mailbox(&listed, endpoint.icloud)
+        && !names.iter().any(|name| name.eq_ignore_ascii_case(&sent))
+    {
+        names.push(sent.clone());
+    }
+    let mut pulled = Vec::new();
+    for name in names {
+        let role = if name.eq_ignore_ascii_case("INBOX") {
+            "inbox"
+        } else {
+            "sent"
+        };
+        pulled.push(session.pull(password, &name, role, cursors)?);
+    }
+    session.logout();
+    Ok(pulled)
+}
+
+/// Marque un message lu sur le serveur.
+///
+/// # Errors
+///
+/// La liaison ou l'écriture de l'indicateur échoue.
+pub fn store_seen(
+    endpoint: &ImapEndpoint,
+    secret: &MailSecret,
+    mailbox: &str,
+    uid: u32,
+) -> Result<(), MailSubmitError> {
+    let (mut session, _) = login(endpoint, secret)?;
+    let password = secret.expose();
+    session.select(mailbox, password)?;
+    session
+        .command(&format!("UID STORE {uid} +FLAGS.SILENT (\\Seen)"), password)
+        .map(|_| ())?;
+    session.logout();
+    Ok(())
+}
+
+/// `UIDVALIDITY` lu dans la réponse `SELECT`.
+#[must_use]
+pub fn parse_uidvalidity(lines: &[String]) -> Option<u64> {
+    for line in lines {
+        let Some(at) = line.find("UIDVALIDITY") else {
+            continue;
+        };
+        let rest = line[at + "UIDVALIDITY".len()..].trim_start();
+        let number: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        if let Ok(value) = number.parse() {
+            return Some(value);
+        }
+    }
+    None
+}
+
+/// Une ligne `FETCH` dont le littéral a déjà été absorbé.
+#[must_use]
+pub fn parse_fetch_line(line: &[u8]) -> Option<PulledMessage> {
+    let fetch_at = line.windows(7).position(|window| window == b" FETCH ")?;
+    let marker = line[fetch_at..]
+        .windows(4)
+        .position(|window| window == b"BODY")?
+        + fetch_at;
+    let after = &line[marker..];
+    let brace = after.iter().position(|byte| *byte == b'{')?;
+    let close = after[brace..].iter().position(|byte| *byte == b'}')?;
+    let number = std::str::from_utf8(&after[brace + 1..brace + close]).ok()?;
+    let len: usize = number.parse().ok()?;
+    let start = marker + brace + close + 1;
+    let end = start.checked_add(len)?;
+    if end > line.len() {
+        return None;
+    }
+    let prefix = std::str::from_utf8(&line[..marker]).ok()?;
+    Some(PulledMessage {
+        uid: i64::from(uid_of(prefix)?),
+        seen: prefix.contains("\\Seen"),
+        raw: String::from_utf8_lossy(&line[start..end]).into_owned(),
+    })
+}
+
+fn uid_of(prefix: &str) -> Option<u32> {
+    let mut rest = prefix;
+    while let Some(at) = rest.find("UID") {
+        let after = &rest[at + 3..];
+        if let Some(stripped) = after.strip_prefix("VALIDITY") {
+            rest = stripped;
+            continue;
+        }
+        let after = after.trim_start();
+        if !after.starts_with(|ch: char| ch.is_ascii_digit()) {
+            rest = &rest[at + 3..];
+            continue;
+        }
+        let number: String = after.chars().take_while(char::is_ascii_digit).collect();
+        return number.parse().ok();
+    }
+    None
 }
 
 /// Le dossier marqué `\Sent`, sinon le nom de repli connu.
@@ -231,8 +356,63 @@ impl Session {
     }
 
     fn select(&mut self, mailbox: &str, secret: &str) -> Result<(), MailSubmitError> {
+        self.select_lines(mailbox, secret).map(|_| ())
+    }
+
+    fn select_lines(
+        &mut self,
+        mailbox: &str,
+        secret: &str,
+    ) -> Result<Vec<String>, MailSubmitError> {
         self.command(&format!("SELECT {}", quote(mailbox)), secret)
-            .map(|_| ())
+    }
+
+    fn pull(
+        &mut self,
+        secret: &str,
+        name: &str,
+        role: &str,
+        cursors: &[MailboxCursor],
+    ) -> Result<PulledMailbox, MailSubmitError> {
+        let lines = self.select_lines(name, secret)?;
+        let uidvalidity = parse_uidvalidity(&lines)
+            .map(i64::try_from)
+            .transpose()
+            .map_err(|_| unread(secret, ""))?
+            .ok_or_else(|| unread(secret, ""))?;
+        let cursor = cursors
+            .iter()
+            .find(|cursor| cursor.name.eq_ignore_ascii_case(name));
+        let resync = cursor.is_some_and(|cursor| cursor.uidvalidity != uidvalidity);
+        let start = if resync {
+            1
+        } else {
+            cursor
+                .map(|cursor| cursor.last_uid.saturating_add(1))
+                .unwrap_or(1)
+        };
+        let fetched = self.fetch(
+            &format!("UID FETCH {start}:* (UID FLAGS BODY.PEEK[])"),
+            secret,
+        )?;
+        let mut messages = Vec::new();
+        for line in fetched {
+            if let Some(message) = parse_fetch_line(&line) {
+                messages.push(message);
+            }
+        }
+        Ok(PulledMailbox {
+            name: name.to_string(),
+            uidvalidity,
+            resync,
+            role: role.to_string(),
+            messages,
+        })
+    }
+
+    fn fetch(&mut self, body: &str, secret: &str) -> Result<Vec<Vec<u8>>, MailSubmitError> {
+        self.write_command(body)?;
+        self.read_tagged_bytes(secret)
     }
 
     fn already_there(&mut self, message_id: &str, secret: &str) -> Result<bool, MailSubmitError> {
@@ -330,6 +510,57 @@ impl Session {
         }
     }
 
+    fn read_tagged_bytes(&mut self, secret: &str) -> Result<Vec<Vec<u8>>, MailSubmitError> {
+        let tag = format!("A{}", self.tag);
+        let mut lines = Vec::new();
+        loop {
+            let line = self.read_line_bytes(FETCH_MAX)?;
+            let text = String::from_utf8_lossy(&line);
+            if let Some(rest) = text.strip_prefix(&tag) {
+                let rest = rest.trim_start();
+                if rest.starts_with("OK") {
+                    return Ok(lines);
+                }
+                return Err(unread(secret, rest));
+            }
+            if text.starts_with("+ ") || text == "+" {
+                return Err(unread(secret, &text));
+            }
+            lines.push(line);
+            if lines.len() > 5_000 {
+                return Err(unread(secret, ""));
+            }
+        }
+    }
+
+    fn read_line_bytes(&mut self, max: usize) -> Result<Vec<u8>, MailSubmitError> {
+        let mut buf = Vec::new();
+        loop {
+            let byte = self.read_byte()?;
+            buf.push(byte);
+            if buf.len() > max {
+                return Err(MailSubmitError::Other(
+                    "La boîte n'a pas pu être lue.".into(),
+                ));
+            }
+            if buf.ends_with(b"\r\n") {
+                buf.truncate(buf.len() - 2);
+                if let Some(len) = trailing_literal(&buf) {
+                    if len > max {
+                        return Err(MailSubmitError::Other(
+                            "La boîte n'a pas pu être lue.".into(),
+                        ));
+                    }
+                    let mut rest = vec![0_u8; len];
+                    self.stream.read_exact(&mut rest).map_err(io_error)?;
+                    buf.extend(rest);
+                    continue;
+                }
+                return Ok(buf);
+            }
+        }
+    }
+
     fn read_byte(&mut self) -> Result<u8, MailSubmitError> {
         let mut byte = [0_u8; 1];
         self.stream.read_exact(&mut byte).map_err(io_error)?;
@@ -353,6 +584,22 @@ fn quote(value: &str) -> String {
     }
     out.push('"');
     out
+}
+
+fn unread(secret: &str, line: &str) -> MailSubmitError {
+    match classify(line, secret) {
+        MailSubmitError::Auth => MailSubmitError::Auth,
+        MailSubmitError::Tls => MailSubmitError::Tls,
+        MailSubmitError::Timeout => MailSubmitError::Timeout,
+        MailSubmitError::Refused(message) => {
+            if !secret.is_empty() && message.contains(secret) {
+                MailSubmitError::Other("La boîte n'a pas pu être lue.".into())
+            } else {
+                MailSubmitError::Refused(message)
+            }
+        }
+        MailSubmitError::Other(_) => MailSubmitError::Other("La boîte n'a pas pu être lue.".into()),
+    }
 }
 
 fn classify(line: &str, secret: &str) -> MailSubmitError {
@@ -444,7 +691,10 @@ fn skip_astring(input: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{choose_sent_mailbox, login_names, parse_list_line, probe_copy};
+    use super::{
+        choose_sent_mailbox, login_names, parse_fetch_line, parse_list_line, parse_uidvalidity,
+        probe_copy,
+    };
     use griffe_core::mail::{ImapEndpoint, MailSecret, MailSubmitError};
 
     #[test]
@@ -494,5 +744,31 @@ mod tests {
         let secret = MailSecret::new("secret-de-test").unwrap();
         let error = probe_copy(&endpoint, &secret).unwrap_err();
         assert_eq!(error, MailSubmitError::Tls);
+    }
+
+    #[test]
+    fn a_select_response_gives_the_uid_validity() {
+        let lines = [
+            "* FLAGS (\\Seen)".to_string(),
+            "* OK [UIDVALIDITY 3857529045] UIDs valid".to_string(),
+            "A1 OK [READ-WRITE] SELECT completed".to_string(),
+        ];
+        assert_eq!(parse_uidvalidity(&lines), Some(3_857_529_045));
+    }
+
+    #[test]
+    fn a_peek_line_keeps_the_body_and_the_seen_flag() {
+        let mut line = b"* 1 FETCH (UID 42 FLAGS (\\Seen) BODY[] {10}".to_vec();
+        line.extend(b"Bonjour\r\n.");
+        line.extend(b")");
+        let message = parse_fetch_line(&line).unwrap();
+        assert_eq!(message.uid, 42);
+        assert!(message.seen);
+        assert_eq!(message.raw, "Bonjour\r\n.");
+        let fresh = b"* 2 FETCH (UID 7 FLAGS () BODY[] {4}lu ?)";
+        let message = parse_fetch_line(fresh).unwrap();
+        assert_eq!(message.uid, 7);
+        assert!(!message.seen);
+        assert_eq!(message.raw, "lu ?");
     }
 }

@@ -512,6 +512,7 @@ impl Store {
         if dest_db_path.exists()
             || kdf::sidecar_path(dest_db_path).exists()
             || receipts_dir_of(dest_db_path).exists()
+            || crate::mailbox::mailbox_file(dest_db_path).exists()
         {
             return Err(StoreError::BackupDestinationExists(
                 dest_db_path.to_path_buf(),
@@ -526,6 +527,12 @@ impl Store {
             kdf::sidecar_path(dest_db_path),
         )?;
         copy_receipts_sidecar(backup_db_path, dest_db_path)?;
+        let mirror = crate::mailbox::mailbox_file(backup_db_path);
+        if mirror.exists() {
+            let dest_mirror = crate::mailbox::mailbox_file(dest_db_path);
+            fs::copy(&mirror, &dest_mirror)?;
+            tighten_file(&dest_mirror);
+        }
         Self::open_with_passphrase(dest_db_path, passphrase)
     }
 
@@ -836,6 +843,15 @@ impl Store {
         receipts_dir_of(&self.db_path)
     }
 
+    /// Ouvre le miroir de la boîte, à côté de ce coffre, avec la même clé.
+    ///
+    /// # Errors
+    ///
+    /// Le fichier ne s'ouvre pas, ou sa clé ne le lit pas.
+    pub fn open_mailbox(&self) -> Result<crate::mailbox::Mailbox, StoreError> {
+        crate::mailbox::Mailbox::open(&crate::mailbox::mailbox_file(&self.db_path), &self.key)
+    }
+
     /// Accès mutable à la connexion sous-jacente, pour les écritures.
     pub fn connection_mut(&mut self) -> &mut Connection {
         &mut self.conn
@@ -889,7 +905,10 @@ fn write_vault_copy(
     src_db: &Path,
     dest_db: &Path,
 ) -> Result<(), StoreError> {
-    if dest_db.exists() || kdf::sidecar_path(dest_db).exists() || receipts_dir_of(dest_db).exists()
+    if dest_db.exists()
+        || kdf::sidecar_path(dest_db).exists()
+        || receipts_dir_of(dest_db).exists()
+        || crate::mailbox::mailbox_file(dest_db).exists()
     {
         return Err(StoreError::BackupDestinationExists(dest_db.to_path_buf()));
     }
@@ -904,7 +923,32 @@ fn write_vault_copy(
     backup.run_to_completion(16, Duration::from_millis(250), None)?;
     fs::copy(kdf::sidecar_path(src_db), kdf::sidecar_path(dest_db))?;
     copy_receipts_sidecar(src_db, dest_db)?;
+    copy_mailbox(src_db, dest_db, key)?;
     tighten_permissions(dest_db);
+    Ok(())
+}
+
+fn copy_mailbox(src_db: &Path, dest_db: &Path, key: &VaultKey) -> Result<(), StoreError> {
+    let src = crate::mailbox::mailbox_file(src_db);
+    if !src.exists() {
+        return Ok(());
+    }
+    let dest = crate::mailbox::mailbox_file(dest_db);
+    if dest.exists() {
+        return Err(StoreError::BackupDestinationExists(dest));
+    }
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let src_conn = Connection::open(&src)?;
+    unlock(&src_conn, key)?;
+    let mut dest_conn = Connection::open(&dest)?;
+    unlock(&dest_conn, key)?;
+    let backup = Backup::new(&src_conn, &mut dest_conn)?;
+    backup.run_to_completion(16, Duration::from_millis(250), None)?;
+    drop(backup);
+    dest_conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+    tighten_file(&dest);
     Ok(())
 }
 
@@ -1127,9 +1171,21 @@ fn empty_vault_template_db() -> Option<PathBuf> {
 
 /// Applique la clé puis configure la connexion — le chemin normal d'ouverture. Le changement de
 /// passphrase, lui, a besoin des deux étapes séparément (voir [`Store::rekey_in_place`]).
-fn unlock(conn: &Connection, key: &VaultKey) -> Result<(), StoreError> {
+pub(crate) fn unlock(conn: &Connection, key: &VaultKey) -> Result<(), StoreError> {
     apply_key(conn, key)?;
     configure(conn)
+}
+
+pub(crate) fn tighten_file(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
 }
 
 fn vault_files_present(db_path: &Path) -> bool {

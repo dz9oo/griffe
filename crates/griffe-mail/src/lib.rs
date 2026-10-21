@@ -4,6 +4,8 @@
 
 mod imap;
 
+pub use imap::{fetch_new, parse_fetch_line, parse_uidvalidity, store_seen};
+
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use time::OffsetDateTime;

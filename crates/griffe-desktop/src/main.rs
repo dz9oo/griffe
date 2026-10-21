@@ -38,6 +38,53 @@ fn resolve_db_path() -> PathBuf {
     })
 }
 
+fn spawn_releve_clock(state: AppState) {
+    tauri::async_runtime::spawn(async move {
+        let mut tick =
+            tokio::time::interval(Duration::from_secs(griffe_core::mail::RELEVE_EVERY_SECS));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tick.tick().await;
+            if let Err(error) = pull_mail(&state).await {
+                eprintln!("⚠ boîte : {error}");
+            }
+        }
+    });
+}
+
+async fn pull_mail(state: &AppState) -> Result<(), String> {
+    if !state.vault_is_open().await {
+        return Ok(());
+    }
+    let ctx = ExecutionContext::new(Actor::System, false);
+    let prepared = state
+        .with_store_mut(|store| griffe_core::mail::releve_plan(store))
+        .await;
+    let Some(prepared) = prepared else {
+        return Ok(());
+    };
+    let Some(plan) = prepared.map_err(|error| error.to_string())? else {
+        return Ok(());
+    };
+    let icloud = plan.endpoint.icloud;
+    let pulled = tokio::task::spawn_blocking(move || {
+        griffe_mail::fetch_new(&plan.endpoint, &plan.secret, &plan.cursors)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| griffe_core::mail::french_submit_error(&error, icloud))?;
+    let recorded = state
+        .with_store_mut(|store| {
+            let mut mailbox = store.open_mailbox()?;
+            griffe_core::mail::absorb(store, &mut mailbox, &pulled, &ctx)
+        })
+        .await;
+    if let Some(result) = recorded {
+        result.map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
 fn spawn_mail_clock(state: AppState) {
     tauri::async_runtime::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(1));
@@ -190,6 +237,7 @@ fn main() {
 
     tauri::async_runtime::block_on(state.try_open_cached());
     spawn_mail_clock(state.clone());
+    spawn_releve_clock(state.clone());
 
     tauri::Builder::default()
         .register_asynchronous_uri_scheme_protocol("griffe", move |_ctx, request, responder| {

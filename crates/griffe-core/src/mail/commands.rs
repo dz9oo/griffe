@@ -729,3 +729,54 @@ impl Command for MarkAddress {
         )
     }
 }
+
+/// Qui a rangé le message : le relevé, ou un geste.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FilingSource {
+    Auto,
+    Human,
+}
+
+impl FilingSource {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Human => "human",
+        }
+    }
+}
+
+/// Range un message sur une fiche, et sur un dossier si on le connaît.
+/// Le corps n'est pas un champ.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileMessage {
+    pub message_id: String,
+    pub client_id: String,
+    pub opportunity_id: Option<String>,
+    pub source: FilingSource,
+}
+
+impl Command for FileMessage {
+    type Output = ();
+    const NAME: &'static str = "mail.file";
+
+    fn requires_confirmation(&self) -> bool {
+        self.source == FilingSource::Human
+    }
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        let message_id = self.message_id.trim().trim_matches(['<', '>']);
+        if message_id.is_empty() {
+            return Err(MailError::Missing.into());
+        }
+        store::file_message(
+            conn,
+            message_id,
+            self.client_id.trim(),
+            self.opportunity_id.as_deref(),
+            self.source.as_str(),
+        )
+    }
+}

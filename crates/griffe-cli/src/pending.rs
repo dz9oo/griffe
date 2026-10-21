@@ -17,7 +17,8 @@ use griffe_core::fiscal_year::{ApproveFiscalYear, CloseFiscalYear, DeleteFiscalY
 use griffe_core::fixed_assets::DeleteFixedAsset;
 use griffe_core::follow_up::MarkFollowUpSent;
 use griffe_core::mail::{
-    ArmOutbound, CancelOutbound, ResolveUncertain, RetryOutbound, SetAutomaticSend,
+    ArmOutbound, CancelOutbound, FileMessage, MarkAddress, ReleaseReplyHold, ResolveUncertain,
+    RetryOutbound, SetAutomaticSend,
 };
 use griffe_core::missions::{DeleteMission, DeleteTimeEntry};
 use griffe_core::opening_balance::{
@@ -315,6 +316,15 @@ pub fn confirm(store: &mut Store, id: PendingActionId, json: bool) -> Result<Str
         Ok(format_outcome(&outcome, json))
     } else if action.command_name == RetryOutbound::NAME {
         let outcome = Executor::new(store).confirm::<RetryOutbound>(id)?;
+        Ok(format_outcome(&outcome, json))
+    } else if action.command_name == FileMessage::NAME {
+        let outcome = Executor::new(store).confirm::<FileMessage>(id)?;
+        Ok(format_outcome(&outcome, json))
+    } else if action.command_name == MarkAddress::NAME {
+        let outcome = Executor::new(store).confirm::<MarkAddress>(id)?;
+        Ok(format_outcome(&outcome, json))
+    } else if action.command_name == ReleaseReplyHold::NAME {
+        let outcome = Executor::new(store).confirm::<ReleaseReplyHold>(id)?;
         Ok(format_outcome(&outcome, json))
     } else {
         Err(CliError::UnknownConfirmableCommand(action.command_name))

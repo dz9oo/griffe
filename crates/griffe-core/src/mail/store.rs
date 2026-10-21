@@ -1018,6 +1018,70 @@ pub(super) fn mark_address(
     Ok(())
 }
 
+/// Pose le rattachement. Une ligne déjà écrite par un humain n'est pas
+/// reprise par le relevé automatique.
+pub(super) fn file_message(
+    conn: &Connection,
+    message_id: &str,
+    client_id: &str,
+    opportunity_id: Option<&str>,
+    source: &str,
+) -> Result<(), AppError> {
+    let existing: Option<String> = conn
+        .query_row(
+            "SELECT source FROM mail_filing WHERE message_id = ?1",
+            [message_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if source == "auto" && existing.is_some() {
+        return Ok(());
+    }
+    let known: i64 = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM clients WHERE id = ?1)",
+        [client_id],
+        |row| row.get(0),
+    )?;
+    if known == 0 {
+        return Err(MailError::Fiche.into());
+    }
+    if let Some(opportunity_id) = opportunity_id {
+        let owner: Option<String> = conn
+            .query_row(
+                "SELECT client_id FROM opportunities WHERE id = ?1",
+                [opportunity_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if owner.as_deref() != Some(client_id) {
+            return Err(MailError::Dossier.into());
+        }
+    }
+    conn.execute(
+        "INSERT INTO mail_filing (message_id, client_id, opportunity_id, source)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(message_id) DO UPDATE SET
+            client_id = excluded.client_id,
+            opportunity_id = excluded.opportunity_id,
+            source = excluded.source",
+        params![message_id, client_id, opportunity_id, source],
+    )?;
+    Ok(())
+}
+
+pub(super) fn filing_source(
+    conn: &Connection,
+    message_id: &str,
+) -> Result<Option<String>, AppError> {
+    conn.query_row(
+        "SELECT source FROM mail_filing WHERE message_id = ?1",
+        [message_id],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(AppError::from)
+}
+
 /// Attente avant de retenter un dépôt manqué. L'horloge de la fenêtre passe
 /// chaque seconde : sans ce délai, elle frapperait le serveur en boucle.
 const COPY_RETRY: Duration = Duration::seconds(60);
