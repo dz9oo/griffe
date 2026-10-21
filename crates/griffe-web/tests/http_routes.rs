@@ -444,6 +444,13 @@ async fn the_atelier_chrome_has_three_pieces_and_vendored_fonts() {
     .await;
     assert!(css.contains("--paper:"), "{css}");
     assert!(css.contains("Newsreader"), "{css}");
+    assert!(
+        css.contains(".chrome a:focus,")
+            && css.contains(".chrome a:focus-visible {")
+            && css.contains(".chrome a:focus,\n.chrome a:focus-visible {\n  outline: none;")
+            && css.contains(".chrome nav a:focus-visible {"),
+        "le bandeau ne garde pas le cadre bleu du navigateur"
+    );
     assert!(!css.contains("fonts.googleapis.com"), "{css}");
     assert!(
         !css.contains("html.dark{") && !css.contains("html.dark {"),

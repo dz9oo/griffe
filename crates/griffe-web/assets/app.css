@@ -163,6 +163,14 @@ button { font-family: inherit; color: inherit; cursor: pointer; background: none
   color: var(--ink);
   box-shadow: inset 0 -1px 0 var(--ink);
 }
+.chrome a:focus,
+.chrome a:focus-visible {
+  outline: none;
+}
+.chrome nav a:focus-visible {
+  color: var(--ink);
+  box-shadow: inset 0 -1px 0 var(--ink);
+}
 
 .body-grid { display: grid; grid-template-columns: 1fr 280px; min-height: 0; overflow: hidden; }
 .body-grid.audit-collapsed { grid-template-columns: 1fr; }
