@@ -1074,6 +1074,6 @@ mod tests {
                 assert!(!blob.contains("collection://"), "{}", cmd.verb);
             }
         }
-        assert_eq!(seen.len(), 191);
+        assert_eq!(seen.len(), 197);
     }
 }
