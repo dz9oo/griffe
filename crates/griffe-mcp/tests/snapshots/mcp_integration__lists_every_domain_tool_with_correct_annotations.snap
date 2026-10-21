@@ -52,6 +52,8 @@ expression: "json!({\n    \"tool_names\": names, \"invoice_emit_input_schema\":\
     "bank.settle",
     "bank.unreconcile",
     "bank.unsettle",
+    "boite.adresse",
+    "boite.classer",
     "boite.list",
     "boite.relever",
     "clients.archive",

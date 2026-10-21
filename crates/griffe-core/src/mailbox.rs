@@ -263,4 +263,125 @@ impl Mailbox {
             .optional()
             .map_err(AppError::from)
     }
+
+    /// Message complet, corps compris. Absent s'il n'est pas là.
+    ///
+    /// # Errors
+    ///
+    /// Lecture impossible.
+    pub fn read(&self, id: &str) -> Result<Option<MirrorLetter>, AppError> {
+        self.conn
+            .query_row(
+                "SELECT id, mailbox, uid, message_id, from_name, from_address, subject, sent_on,
+                        text, html, seen, notice, notice_address, folder_role, choice_of, choice_ids
+                 FROM message WHERE id = ?1",
+                [id],
+                letter_row,
+            )
+            .optional()
+            .map_err(AppError::from)
+    }
+
+    /// Passe le message en lu dans le miroir. `false` : déjà lu, ou absent.
+    ///
+    /// # Errors
+    ///
+    /// Écriture impossible.
+    pub fn mark_seen(&self, id: &str) -> Result<bool, AppError> {
+        let updated = self.conn.execute(
+            "UPDATE message SET seen = 1 WHERE id = ?1 AND seen = 0",
+            [id],
+        )?;
+        Ok(updated == 1)
+    }
+
+    /// Dossier du serveur et UID, pour marquer lu sur le compte.
+    ///
+    /// # Errors
+    ///
+    /// Lecture impossible.
+    pub fn place(&self, id: &str) -> Result<Option<SeenPlace>, AppError> {
+        self.conn
+            .query_row(
+                "SELECT mailbox, uid, seen FROM message WHERE id = ?1",
+                [id],
+                |row| {
+                    let seen: i64 = row.get(2)?;
+                    Ok(SeenPlace {
+                        mailbox: row.get(0)?,
+                        uid: row.get(1)?,
+                        seen: seen == 1,
+                    })
+                },
+            )
+            .optional()
+            .map_err(AppError::from)
+    }
+
+    /// Noms de dossiers déjà vus. Les autres ne sont pas inventés.
+    ///
+    /// # Errors
+    ///
+    /// Lecture impossible.
+    pub fn folder_names(&self) -> Result<Vec<String>, AppError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT name FROM mailbox
+             UNION
+             SELECT mailbox FROM message
+             ORDER BY 1",
+        )?;
+        let rows = stmt.query_map([], |row| row.get(0))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+    }
+}
+
+/// Lettre du miroir, corps compris. Le coffre comptable ne la reçoit pas.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MirrorLetter {
+    pub id: String,
+    pub mailbox: String,
+    pub uid: i64,
+    pub message_id: Option<String>,
+    pub from_name: Option<String>,
+    pub from_address: Option<String>,
+    pub subject: String,
+    pub sent_on: Option<String>,
+    pub text: String,
+    pub html: Option<String>,
+    pub seen: bool,
+    pub notice: Option<String>,
+    pub notice_address: Option<String>,
+    pub folder_role: String,
+    pub choice_of: Option<String>,
+    pub choice_ids: Option<String>,
+}
+
+/// Où marquer lu sur le serveur.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeenPlace {
+    pub mailbox: String,
+    pub uid: i64,
+    pub seen: bool,
+}
+
+fn letter_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MirrorLetter> {
+    let seen: i64 = row.get(10)?;
+    Ok(MirrorLetter {
+        id: row.get(0)?,
+        mailbox: row.get(1)?,
+        uid: row.get(2)?,
+        message_id: row.get(3)?,
+        from_name: row.get(4)?,
+        from_address: row.get(5)?,
+        subject: row.get(6)?,
+        sent_on: row.get(7)?,
+        text: row.get(8)?,
+        html: row.get(9)?,
+        seen: seen == 1,
+        notice: row.get(11)?,
+        notice_address: row.get(12)?,
+        folder_role: row.get(13)?,
+        choice_of: row.get(14)?,
+        choice_ids: row.get(15)?,
+    })
 }

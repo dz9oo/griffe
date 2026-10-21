@@ -15,13 +15,17 @@ use std::time::{Duration, Instant};
 
 use griffe_core::app::{Actor, ExecutionContext};
 use griffe_core::domain::parse_date;
-use griffe_core::mail::{ImapEndpoint, MailSecret, ProbeVerdict, SmtpEndpoint};
+use griffe_core::mail::{ImapEndpoint, MailSecret, MailSubmitError, ProbeVerdict, SmtpEndpoint};
 use griffe_core::store::{AUTO_BACKUP_MAX_AGE, Passphrase, Store, StoreError, VaultStatus};
 use tokio::sync::Mutex;
 
 /// Essai de liaison fourni par la fenêtre. `griffe-web` n'ouvre pas de socket.
 pub type MailProbe =
     Arc<dyn Fn(SmtpEndpoint, Option<ImapEndpoint>, MailSecret) -> ProbeVerdict + Send + Sync>;
+
+/// Marque lu sur le compte. Absente dans les tests : le miroir seul est mis à jour.
+pub type MarkSeen =
+    Arc<dyn Fn(&ImapEndpoint, &MailSecret, &str, u32) -> Result<(), MailSubmitError> + Send + Sync>;
 
 /// Lit `GRIFFE_TODAY` (`AAAA-MM-JJ`). `None` ou une chaîne vide : horloge locale. Une valeur
 /// illisible est une erreur — le binaire de dev refuse de démarrer plutôt que de photographier
@@ -156,6 +160,8 @@ pub struct AppState {
     mail_session: String,
     /// Sonde SMTP. Absente dans les tests qui ne l'installent pas : aucun appel réseau.
     mail_probe: Arc<std::sync::Mutex<Option<MailProbe>>>,
+    /// Marque lu sur le compte. Absente : le miroir est mis à jour sans socket.
+    mark_seen: Arc<std::sync::Mutex<Option<MarkSeen>>>,
 }
 
 /// Instantané de l'état du coffre pour le rendu et le middleware — ne donne jamais accès au
@@ -183,6 +189,7 @@ impl AppState {
             fixed_today: None,
             mail_session: fresh_mail_session(),
             mail_probe: Arc::new(std::sync::Mutex::new(None)),
+            mark_seen: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -201,6 +208,23 @@ impl AppState {
 
     pub(crate) fn mail_probe(&self) -> Option<MailProbe> {
         self.mail_probe.lock().ok().and_then(|slot| slot.clone())
+    }
+
+    /// Installe la marque lu. La fenêtre passe `griffe_mail::store_seen`.
+    pub fn set_mark_seen(
+        &self,
+        mark: impl Fn(&ImapEndpoint, &MailSecret, &str, u32) -> Result<(), MailSubmitError>
+        + Send
+        + Sync
+        + 'static,
+    ) {
+        if let Ok(mut slot) = self.mark_seen.lock() {
+            *slot = Some(Arc::new(mark));
+        }
+    }
+
+    pub(crate) fn mark_seen(&self) -> Option<MarkSeen> {
+        self.mark_seen.lock().ok().and_then(|slot| slot.clone())
     }
 
     /// Jeton de cette fenêtre, posé à la création de l'état.

@@ -234,6 +234,9 @@ fn main() {
     state.set_mail_probe(|endpoint, copy, secret| {
         griffe_mail::probe_account(&endpoint, copy.as_ref(), &secret)
     });
+    state.set_mark_seen(|endpoint, secret, mailbox, uid| {
+        griffe_mail::store_seen(endpoint, secret, mailbox, uid)
+    });
 
     tauri::async_runtime::block_on(state.try_open_cached());
     spawn_mail_clock(state.clone());

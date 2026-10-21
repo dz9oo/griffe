@@ -4,6 +4,7 @@
 mod assets;
 mod audit;
 mod banque;
+mod boite;
 mod brand;
 mod clients;
 mod cloture;
@@ -148,6 +149,10 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(handlers::index))
         .route("/jour", get(handlers::jour))
+        .route("/boite", get(boite::page))
+        .route("/boite/sceau", get(boite::seal))
+        .route("/boite/classer", post(boite::classer))
+        .route("/boite/adresse", post(boite::adresse))
         .nest("/affaires", people_routes())
         .nest("/dossiers", people_routes())
         .nest("/gens", people_routes())

@@ -2,12 +2,16 @@
 //! Le mot de passe ne passe ni par les arguments, ni par le journal.
 
 use clap::Subcommand;
-use griffe_core::app::ExecutionContext;
-use griffe_core::mail::{french_submit_error, list_box, releve_plan};
+use griffe_core::app::{ExecutionContext, Executor};
+use griffe_core::mail::{
+    AddressFault, MarkAddress, file_human, french_submit_error, list_box, releve_plan,
+    resolve_message_id,
+};
 use griffe_core::store::Store;
 
 use crate::error::CliError;
-use crate::output::format_json;
+use crate::output::{format_json, format_outcome_as};
+use crate::refs;
 
 #[derive(Subcommand)]
 pub enum BoiteCommand {
@@ -15,6 +19,27 @@ pub enum BoiteCommand {
     Liste,
     /// Relève la boîte de réception et Envoyés.
     Relever,
+    /// Range une lettre sur une fiche, et sur un dossier si on le nomme.
+    Classer {
+        /// Identifiant du message, ou celui du miroir.
+        #[arg(long)]
+        message: String,
+        /// Fiche : nom ou identifiant.
+        #[arg(long)]
+        fiche: String,
+        /// Dossier ouvert. Absent : la fiche seule.
+        #[arg(long)]
+        dossier: Option<String>,
+    },
+    /// Dit qu'une adresse en échec est bonne.
+    Adresse {
+        /// Fiche : nom ou identifiant.
+        #[arg(long)]
+        fiche: String,
+        /// Adresse à confirmer.
+        #[arg(long)]
+        adresse: String,
+    },
 }
 
 pub fn run(
@@ -26,6 +51,15 @@ pub fn run(
     match command {
         BoiteCommand::Liste => liste(store, json),
         BoiteCommand::Relever => relever(store, ctx, json),
+        BoiteCommand::Classer {
+            message,
+            fiche,
+            dossier,
+        } => classer(store, ctx, json, &message, &fiche, dossier.as_deref()),
+        BoiteCommand::Adresse {
+            fiche,
+            adresse: address,
+        } => adresse(store, ctx, json, &fiche, &address),
     }
 }
 
@@ -79,4 +113,45 @@ fn relever(store: &mut Store, ctx: &ExecutionContext, json: bool) -> Result<Stri
         "{} lettres rangées. {} relances retenues. {} adresses ne reçoivent pas. {} à classer.",
         report.stored, report.held, report.failed, report.choices
     ))
+}
+
+fn classer(
+    store: &mut Store,
+    ctx: &ExecutionContext,
+    json: bool,
+    message: &str,
+    fiche: &str,
+    dossier: Option<&str>,
+) -> Result<String, CliError> {
+    let message_id = resolve_message_id(store, message)?;
+    let client = refs::resolve_client(store, fiche)?;
+    let opportunity = dossier
+        .map(|name| refs::resolve_opportunity(store, name).map(|id| id.to_string()))
+        .transpose()?;
+    let outcome = file_human(store, ctx, &message_id, &client.to_string(), opportunity)?;
+    Ok(format_outcome_as(&outcome, json, |_| {
+        "La lettre est rangée.".to_string()
+    }))
+}
+
+fn adresse(
+    store: &mut Store,
+    ctx: &ExecutionContext,
+    json: bool,
+    fiche: &str,
+    adresse: &str,
+) -> Result<String, CliError> {
+    let client = refs::resolve_client(store, fiche)?;
+    let outcome = Executor::new(store).execute(
+        &MarkAddress {
+            client_id: client.to_string(),
+            address: adresse.to_string(),
+            status: AddressFault::Confirmed,
+            message_id: None,
+        },
+        ctx,
+    )?;
+    Ok(format_outcome_as(&outcome, json, |_| {
+        "L'adresse est bonne.".to_string()
+    }))
 }

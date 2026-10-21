@@ -62,6 +62,7 @@ pub enum ViewId {
     Cloture,
     Console,
     Aide,
+    Boite,
 }
 
 impl ViewId {
@@ -82,6 +83,7 @@ impl ViewId {
             Self::Cloture => "/view/cloture",
             Self::Console => "/view/console",
             Self::Aide => "/aide",
+            Self::Boite => "/boite",
         }
     }
 
@@ -102,6 +104,7 @@ impl ViewId {
             Self::Cloture => "cloture",
             Self::Console => "console",
             Self::Aide => "aide",
+            Self::Boite => "boite",
         }
     }
 
@@ -129,6 +132,7 @@ impl ViewId {
             Self::Cloture => "Clôture",
             Self::Console => "Console",
             Self::Aide => "Aide",
+            Self::Boite => "Boîte",
         }
     }
 
@@ -144,7 +148,7 @@ impl ViewId {
             | Self::Facturation
             | Self::Clients => Some(Piece::Gens),
             Self::Societe | Self::Depenses | Self::Cloture => Some(Piece::Societe),
-            Self::Console | Self::Aide => None,
+            Self::Console | Self::Aide | Self::Boite => None,
         }
     }
 
@@ -158,10 +162,11 @@ impl ViewId {
     }
 
     /// Palette ⌘K : les trois pièces d'abord, puis les écrans encore joignables hors nav.
-    const PALETTE: [Self; 13] = [
+    const PALETTE: [Self; 14] = [
         Self::Jour,
         Self::Gens,
         Self::Societe,
+        Self::Boite,
         Self::Relances,
         Self::Prospection,
         Self::Devis,
@@ -173,6 +178,23 @@ impl ViewId {
         Self::Console,
         Self::Dashboard,
     ];
+}
+
+/// Le mot Boîte, entre les pièces et la date. Le nombre arrive par `GET /boite/sceau`.
+pub fn boite_link(count: u32, current: bool) -> Markup {
+    html! {
+        a class="boite-link" href="/boite"
+          hx-get="/boite"
+          hx-target="#content"
+          hx-push-url="true"
+          hx-swap="innerHTML"
+          aria-current=[current.then_some("page")] {
+            "Boîte"
+            @if count > 0 {
+                span class="n" { (count) }
+            }
+        }
+    }
 }
 
 fn piece_link(piece: Piece, active: Option<Piece>) -> Markup {
@@ -309,7 +331,15 @@ pub fn page(active: ViewId, vault_label: &str, today: Date, content: Markup) -> 
                             (crate::brand::wordmark())
                         }
                         (nav(piece))
-                        span class="today" { (crate::views::copy::letter_date(today)) }
+                        div class="chrome-end" {
+                            span class="boite-slot" id="boite-slot"
+                              hx-get="/boite/sceau"
+                              hx-trigger="load, griffe:saved from:body, griffe:box from:body"
+                              hx-swap="innerHTML" {
+                                (boite_link(0, active == ViewId::Boite))
+                            }
+                            span class="today" { (crate::views::copy::letter_date(today)) }
+                        }
                     }
                     div class="body-grid audit-collapsed" id="body-grid" {
                         main class={ "content" @if active.wide() { " wide" } } id="content" {

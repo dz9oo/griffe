@@ -1,6 +1,7 @@
 //! Courrier. Le cœur décide du texte, de la retenue et du rattachement.
 //! La crate qui parle au serveur reste hors d'ici.
 
+mod boite;
 mod commands;
 mod error;
 mod inbound;
@@ -11,6 +12,11 @@ mod secret;
 mod store;
 mod theme;
 
+pub use boite::{
+    BoxCard, BoxCounts, BoxLetter, BoxPage, BoxQuery, BoxVue, ClassChoice, LetterPlace, SeenMark,
+    SeenTarget, file_human, hold_filed, in_view, prepare_seen, read_box, resolve_message_id,
+    seal_count,
+};
 pub use commands::{
     AddressFault, ArmOutbound, CancelOutbound, ClearMailSecret, FileMessage, FilingSource,
     HoldReply, MarkAddress, RecordMailProbe, ReleaseReplyHold, RememberImapUsername,

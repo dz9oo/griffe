@@ -13886,3 +13886,398 @@ async fn un_ecart_nul_laisse_le_nom_parmi_les_gestes() {
     );
     assert_eq!(opportunity_due(&db_path, "le porche"), Some(today));
 }
+
+fn plant_letter(
+    store: &Store,
+    uid: i64,
+    message_id: &str,
+    notice: Option<&str>,
+    subject: &str,
+    text: &str,
+    html: Option<&str>,
+) -> String {
+    let mailbox = store.open_mailbox().unwrap();
+    mailbox
+        .insert(&griffe_core::mailbox::MirrorInsert {
+            mailbox: "INBOX".into(),
+            uid,
+            uidvalidity: 1,
+            message_id: Some(message_id.into()),
+            from_name: Some(subject.into()),
+            from_address: Some("qui@exemple.test".into()),
+            subject: subject.into(),
+            sent_on: Some("Sat, 5 Sep 2026 09:00:00 +0200".into()),
+            text: text.into(),
+            html: html.map(str::to_string),
+            seen: false,
+            notice: notice.map(str::to_string),
+            notice_address: (notice == Some("certain"))
+                .then(|| "contact@atelier-du-mail.fr".into()),
+            folder_role: "inbox".into(),
+            choice_of: None,
+            choice_ids: None,
+        })
+        .unwrap();
+    mailbox.remember("INBOX", 1, uid).unwrap();
+    mailbox
+        .list()
+        .unwrap()
+        .into_iter()
+        .find(|line| line.uid == uid)
+        .unwrap()
+        .id
+}
+
+#[tokio::test]
+async fn the_box_page_reads_a_letter_and_confirms_a_failed_address() {
+    let db_path = test_db_path("boite-page");
+    let store = Store::create(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    store
+        .connection()
+        .execute_batch(
+            "INSERT INTO clients (id, name, created_at, switchboard_email) VALUES
+                ('c1', 'Camille', '2026-09-01T00:00:00Z', 'camille@riviere.test'),
+                ('c2', 'Atelier', '2026-09-01T00:00:00Z', 'contact@atelier-du-mail.fr');
+             INSERT INTO opportunities (
+                id, client_id, name, stage, amount_cents, probability_percent,
+                next_action_at, created_at
+             ) VALUES
+                ('o1', 'c1', 'Site', 'discovery', 0, 40, '2026-09-08', '2026-09-01T00:00:00Z'),
+                ('o2', 'c2', 'Enseigne', 'discovery', 0, 40, '2026-09-08', '2026-09-01T00:00:00Z');
+             INSERT INTO mail_filing (message_id, client_id, opportunity_id, source) VALUES
+                ('camille-1@riviere.test', 'c1', 'o1', 'auto'),
+                ('bounce@mx.example', 'c2', 'o2', 'auto');
+             INSERT INTO address_fault (client_id, address, status, message_id) VALUES
+                ('c2', 'contact@atelier-du-mail.fr', 'failed', 'bounce@mx.example');",
+        )
+        .unwrap();
+    let reply = plant_letter(
+        &store,
+        1,
+        "<camille-1@riviere.test>",
+        None,
+        "Reponse Camille",
+        "PHRASE-SECRETE-REPONSE",
+        None,
+    );
+    let bounce = plant_letter(
+        &store,
+        2,
+        "<bounce@mx.example>",
+        Some("certain"),
+        "Avis certain",
+        "PHRASE-SECRETE-AVIS",
+        None,
+    );
+    plant_letter(
+        &store,
+        3,
+        "<peut-etre@mx.example>",
+        Some("probable"),
+        "Avis probable",
+        "indice",
+        None,
+    );
+    let libre = plant_letter(
+        &store,
+        4,
+        "<libre@exemple.test>",
+        None,
+        "Disponibilite",
+        "PHRASE-SECRETE-BOITE",
+        None,
+    );
+    let html_id = plant_letter(
+        &store,
+        5,
+        "<html@exemple.test>",
+        None,
+        "Avec cadre",
+        "TEXTE-LOCAL",
+        Some(
+            "<p style=\"background:url(https://pixel.evil.test/b.png)\">Bonjour Camille</p><img src=\"https://pixel.evil.test/a.png\"><script>pixel.evil.test</script>",
+        ),
+    );
+    let empty_id = plant_letter(
+        &store,
+        6,
+        "<vide@exemple.test>",
+        None,
+        "Cadre vide",
+        "",
+        Some("<p><img src=\"https://pixel.evil.test/a.png\"></p>"),
+    );
+    drop(store);
+
+    let state = AppState::new(db_path.clone());
+    state
+        .unlock(&Passphrase::from(PASSPHRASE), false)
+        .await
+        .unwrap();
+    let router = griffe_web::router(state);
+
+    let css = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/assets/app.css")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(css.contains(".content:has(.boite)"), "{css}");
+    assert!(css.contains("max-width: 820px"), "{css}");
+
+    let jour = body_text(
+        router
+            .clone()
+            .oneshot(Request::builder().uri("/jour").body(Body::empty()).unwrap())
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(jour.contains("Boîte"), "{jour}");
+    assert!(jour.contains("class=\"today\""), "{jour}");
+    assert!(
+        !jour.contains("class=\"n\""),
+        "le sceau initial ne compte pas : {jour}"
+    );
+
+    let seal = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/boite/sceau")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        seal.contains("class=\"n\">2<"),
+        "réponse non lue et adresse en échec : {seal}"
+    );
+    assert!(!seal.contains("<!DOCTYPE"), "{seal}");
+
+    let failed = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/boite?vue=echec")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(failed.status(), StatusCode::OK);
+    assert_eq!(
+        failed
+            .headers()
+            .get("HX-Trigger")
+            .and_then(|value| value.to_str().ok()),
+        Some("griffe:box")
+    );
+    let failed_body = body_text(failed).await;
+    assert!(failed_body.contains("Avis certain"), "{failed_body}");
+    assert!(!failed_body.contains("Avis probable"), "{failed_body}");
+    assert!(!failed_body.contains("Reponse Camille"), "{failed_body}");
+    assert!(failed_body.contains("Elle est bonne"), "{failed_body}");
+    assert!(failed_body.contains("data-view=\"boite\""), "{failed_body}");
+    assert!(!failed_body.contains("hx-on"), "{failed_body}");
+
+    let opened = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/boite?vue=lire&lettre={reply}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let opened_body = body_text(opened).await;
+    assert!(
+        opened_body.contains("PHRASE-SECRETE-REPONSE"),
+        "{opened_body}"
+    );
+    assert!(opened_body.contains("Ouvrir le dossier"), "{opened_body}");
+
+    let seal_after = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/boite/sceau")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        seal_after.contains("class=\"n\">1<"),
+        "la réponse lue sort du sceau, l'adresse reste : {seal_after}"
+    );
+
+    let lire = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/boite?vue=lire")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        !lire.contains("Reponse Camille"),
+        "la lettre lue quitte À lire : {lire}"
+    );
+
+    let framed = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/boite?lettre={html_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(framed.contains("TEXTE-LOCAL"), "{framed}");
+    assert!(framed.contains("Bonjour Camille"), "{framed}");
+    assert!(framed.contains("sandbox=\"\""), "{framed}");
+    assert!(framed.contains("<iframe"), "{framed}");
+    assert!(!framed.contains("pixel.evil.test"), "{framed}");
+
+    let bare = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/boite?lettre={empty_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(bare.contains("Cadre vide"), "{bare}");
+    assert!(
+        !bare.contains("<iframe"),
+        "un HTML vide ne laisse pas de cadre : {bare}"
+    );
+    assert!(!bare.contains("pixel.evil.test"), "{bare}");
+
+    let filed = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/boite/classer")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from(format!(
+                    "message_id=libre%40exemple.test&client_id=c1&opportunity_id=o1&vue=tout&lettre={libre}"
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(filed.status(), StatusCode::OK);
+    assert_eq!(
+        filed
+            .headers()
+            .get("HX-Trigger")
+            .and_then(|value| value.to_str().ok()),
+        Some("griffe:saved")
+    );
+    let filed_body = body_text(filed).await;
+    assert!(filed_body.contains("Camille"), "{filed_body}");
+    assert!(filed_body.contains("PHRASE-SECRETE-BOITE"), "{filed_body}");
+    assert!(!filed_body.contains("<!DOCTYPE"), "{filed_body}");
+
+    let audit = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/audit/recent")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        !audit.contains("PHRASE-SECRETE"),
+        "le corps reste hors du journal : {audit}"
+    );
+
+    let confirmed = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/boite/adresse")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from(format!(
+                    "client_id=c2&address=contact%40atelier-du-mail.fr&vue=echec&lettre={bounce}"
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(confirmed.status(), StatusCode::OK);
+    assert_eq!(
+        confirmed
+            .headers()
+            .get("HX-Trigger")
+            .and_then(|value| value.to_str().ok()),
+        Some("griffe:saved")
+    );
+    let confirmed_body = body_text(confirmed).await;
+    assert!(
+        !confirmed_body.contains("Elle est bonne"),
+        "{confirmed_body}"
+    );
+    assert!(
+        !confirmed_body.contains("ne reçoit pas"),
+        "{confirmed_body}"
+    );
+
+    let quiet = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/boite/sceau")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        !quiet.contains("class=\"n\""),
+        "plus rien à compter : {quiet}"
+    );
+}
