@@ -267,12 +267,27 @@ fn compose(message: &OutboundMessage) -> Result<Message, MailSubmitError> {
     });
     let plain = SinglePart::plain(text);
     let rich = SinglePart::html(html);
-    Message::builder()
+    let mut built = Message::builder()
         .date(system_time(message.at))
         .from(from)
         .to(to)
         .message_id(Some(message.message_id.clone()))
-        .subject(message.subject.clone())
+        .subject(message.subject.clone());
+    if let Some(value) = message
+        .in_reply_to
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        built = built.in_reply_to(value.to_string());
+    }
+    if let Some(value) = message
+        .references
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        built = built.references(value.to_string());
+    }
+    built
         .multipart(
             MultiPart::alternative()
                 .boundary(letter_boundary(&message.message_id))
@@ -450,6 +465,8 @@ mod tests {
             chrome: LetterChrome::default(),
             message_id: "<lettre@griffe.local>".into(),
             at: time::OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap(),
+            in_reply_to: Some("<recu@exemple.test>".into()),
+            references: Some("<recu@exemple.test>".into()),
         };
         let raw = String::from_utf8(compose(&message).unwrap().formatted()).unwrap();
         assert_eq!(
@@ -460,6 +477,8 @@ mod tests {
         assert!(raw.contains("text/plain"));
         assert!(raw.contains("text/html"));
         assert!(raw.contains("<lettre@griffe.local>"));
+        assert!(raw.contains("In-Reply-To: <recu@exemple.test>"));
+        assert!(raw.contains("References: <recu@exemple.test>"));
         assert!(raw.contains("Une ligne."));
         assert!(raw.contains("Ada"));
         assert!(!raw.contains("font-size:22px"));
@@ -485,6 +504,8 @@ mod tests {
             chrome,
             message_id: "<lettre@griffe.local>".into(),
             at: time::OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap(),
+            in_reply_to: None,
+            references: None,
         };
         let raw = String::from_utf8(compose(&message).unwrap().formatted()).unwrap();
         let decoded = decode_transfer(&raw);

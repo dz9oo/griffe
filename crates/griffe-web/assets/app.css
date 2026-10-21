@@ -3672,3 +3672,31 @@ input[type="checkbox"] {
   .board { grid-template-columns: 1fr; }
   .server { margin-top: 12px; }
 }
+
+.fil { display: flex; flex-direction: column; gap: 18px; }
+.fil .plateau-sentence { font-size: 22px; }
+.plateau-sentence .bad { color: var(--seal); }
+.fil .msg { padding: 4px 0 8px; border-bottom: 1px solid var(--rule); }
+.fil .msg header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--ink-2);
+  font-size: 14px;
+}
+.fil.block .msg h3 {
+  font-size: 17px;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--ink);
+  font-weight: 600;
+  margin: 8px 0;
+}
+.fil .corps { white-space: pre-wrap; font-size: 17px; line-height: 1.5; max-width: 62ch; }
+.fil .note { margin: 8px 0 0; color: var(--seal); font-family: var(--serif); font-style: italic; }
+.fil .actions, .fil form.reply { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; }
+.fil form.reply { flex-direction: column; align-items: stretch; }
+.fil .fil-reply { margin-top: 12px; }
+.fil .fil-reply > summary { cursor: pointer; list-style: none; }
+.fil .fil-reply > summary::-webkit-details-marker { display: none; }
+.fil form.reply textarea, .fil form.reply input[type="text"] { width: 100%; }

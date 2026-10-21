@@ -5,9 +5,10 @@ use std::path::Path;
 
 use rusqlite::OptionalExtension;
 use time::OffsetDateTime;
-use time::format_description::well_known::Rfc2822;
+use time::format_description::well_known::{Rfc2822, Rfc3339};
 
-use super::commands::{FileMessage, FilingSource, HoldReply};
+use super::commands::{ArmOutbound, CancelOutbound, FileMessage, FilingSource, HoldReply};
+use super::error::MailError;
 use crate::app::{AppError, ExecutionContext, Executor, Outcome};
 use crate::mailbox::{self, Mailbox, MirrorLetter, MirrorMessage};
 use crate::store::Store;
@@ -266,6 +267,344 @@ pub fn hold_filed(
     };
     Executor::new(vault).execute(&HoldReply { opportunity_id }, ctx)?;
     Ok(())
+}
+
+/// Une ligne du fil : lettre partie, ou message reçu rangé sur le dossier.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FilLine {
+    pub id: String,
+    pub sent: bool,
+    pub who: String,
+    pub address: String,
+    pub subject: String,
+    pub text: String,
+    pub message_id: Option<String>,
+    /// Date brute, RFC 3339 ou RFC 2822.
+    pub when: Option<String>,
+    /// Adresse citée par un avis de non-remise.
+    pub notice_address: Option<String>,
+    pub can_reply: bool,
+}
+
+/// Réponse armée, encore dans les cinq secondes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArmedReply {
+    pub id: String,
+    pub to_address: String,
+}
+
+/// Fil d'un dossier. Le miroir n'est ouvert que s'il existe.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DossierFil {
+    pub lines: Vec<FilLine>,
+    pub held: bool,
+    pub failed: Vec<String>,
+    pub armed: Option<ArmedReply>,
+    pub client_id: String,
+}
+
+/// De quoi armer une réponse, sans réarmer la série.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplyDraft {
+    pub opportunity_id: String,
+    pub message: String,
+    pub subject: String,
+    pub body: String,
+    pub delay_secs: i64,
+    pub session_token: Option<String>,
+}
+
+/// Lettres parties et messages reçus de ce dossier, du plus récent au plus ancien.
+///
+/// # Errors
+///
+/// Lecture impossible, ou dossier introuvable.
+pub fn dossier_fil(vault: &Store, opportunity_id: &str) -> Result<DossierFil, AppError> {
+    let client_id = client_of(vault.connection(), opportunity_id)?;
+    let held = super::store::reply_held(vault.connection(), opportunity_id)?;
+    let failed = failed_of(vault.connection(), &client_id)?;
+    let armed = armed_reply(vault.connection(), opportunity_id)?;
+    let mut lines = sent_lines(vault.connection(), opportunity_id)?;
+    if mailbox_exists(vault) {
+        lines.extend(received_lines(vault, opportunity_id)?);
+    }
+    lines.sort_by(|left, right| {
+        when_stamp(right.when.as_deref())
+            .cmp(&when_stamp(left.when.as_deref()))
+            .then(right.id.cmp(&left.id))
+    });
+    Ok(DossierFil {
+        lines,
+        held,
+        failed,
+        armed,
+        client_id,
+    })
+}
+
+/// Arme une réponse. La série et la retenue ne bougent pas.
+/// Un agent laisse l'armement en attente.
+///
+/// # Errors
+///
+/// Le message n'est pas sur ce dossier, n'a pas d'identifiant, est déjà parti,
+/// ou l'écriture échoue.
+pub fn arm_reply(
+    vault: &mut Store,
+    ctx: &ExecutionContext,
+    draft: &ReplyDraft,
+) -> Result<Outcome<String>, AppError> {
+    let letter = received_letter(vault, &draft.message)?;
+    if letter.folder_role == "sent" {
+        return Err(AppError::Domain("Cette lettre est déjà partie.".into()));
+    }
+    let Some(raw) = letter
+        .message_id
+        .as_deref()
+        .map(bare)
+        .filter(|id| !id.is_empty())
+    else {
+        return Err(AppError::Domain("Ce message n'a pas d'identifiant.".into()));
+    };
+    let filings = filings_of(vault.connection())?;
+    if filings
+        .get(&raw)
+        .and_then(|row| row.opportunity_id.as_deref())
+        != Some(draft.opportunity_id.as_str())
+    {
+        return Err(AppError::Domain(
+            "Ce message n'est pas sur ce dossier.".into(),
+        ));
+    }
+    let Some(to_address) = letter.from_address.filter(|value| value.contains('@')) else {
+        return Err(AppError::Domain("Cette lettre n'a pas d'adresse.".into()));
+    };
+    let client_id = client_of(vault.connection(), &draft.opportunity_id)?;
+    let header = format!("<{raw}>");
+    Executor::new(vault).execute(
+        &ArmOutbound {
+            kind: "letter".into(),
+            anchor: Some(format!("opportunity:{}", draft.opportunity_id)),
+            to_address,
+            subject: draft.subject.clone(),
+            body: draft.body.clone(),
+            delay_secs: draft.delay_secs,
+            session_token: draft.session_token.clone(),
+            follow_subject: None,
+            follow_subject_id: None,
+            follow_cycle: None,
+            follow_step: None,
+            client_id: Some(client_id),
+            in_reply_to: Some(header.clone()),
+            references: Some(header),
+        },
+        ctx,
+    )
+}
+
+/// Annule une réponse armée de ce dossier. Une lettre de la série reste.
+///
+/// # Errors
+///
+/// La lettre n'est pas une réponse armée de ce dossier, ou l'écriture échoue.
+pub fn cancel_reply(
+    vault: &mut Store,
+    ctx: &ExecutionContext,
+    opportunity_id: &str,
+    id: &str,
+) -> Result<Outcome<()>, AppError> {
+    let anchor = format!("opportunity:{opportunity_id}");
+    let found: Option<String> = vault
+        .connection()
+        .query_row(
+            "SELECT anchor FROM outbound_mail WHERE id = ?1 AND status = 'armed'",
+            [id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if found.as_deref() != Some(anchor.as_str()) {
+        return Err(AppError::Domain("Cette réponse n'est pas armée.".into()));
+    }
+    Executor::new(vault).execute(&CancelOutbound { id: id.to_string() }, ctx)
+}
+
+/// Vrai si cette adresse de fiche est en échec certain.
+///
+/// # Errors
+///
+/// Lecture impossible.
+pub fn address_failed(
+    conn: &rusqlite::Connection,
+    client_id: &str,
+    address: &str,
+) -> Result<bool, AppError> {
+    super::store::address_blocked(conn, Some(client_id), address)
+}
+
+/// Vrai si la relance de ce dossier est retenue.
+///
+/// # Errors
+///
+/// Lecture impossible.
+pub fn reply_is_held(conn: &rusqlite::Connection, opportunity_id: &str) -> Result<bool, AppError> {
+    super::store::reply_held(conn, opportunity_id)
+}
+
+fn client_of(conn: &rusqlite::Connection, opportunity_id: &str) -> Result<String, AppError> {
+    conn.query_row(
+        "SELECT client_id FROM opportunities WHERE id = ?1",
+        [opportunity_id],
+        |row| row.get(0),
+    )
+    .optional()?
+    .ok_or_else(|| MailError::Dossier.into())
+}
+
+fn failed_of(conn: &rusqlite::Connection, client_id: &str) -> Result<Vec<String>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT address FROM address_fault
+         WHERE client_id = ?1 AND status = 'failed'
+         ORDER BY address",
+    )?;
+    let rows = stmt.query_map([client_id], |row| row.get(0))?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+}
+
+fn armed_reply(
+    conn: &rusqlite::Connection,
+    opportunity_id: &str,
+) -> Result<Option<ArmedReply>, AppError> {
+    let anchor = format!("opportunity:{opportunity_id}");
+    conn.query_row(
+        "SELECT id, to_address FROM outbound_mail
+         WHERE status = 'armed' AND anchor = ?1
+         ORDER BY created_at DESC
+         LIMIT 1",
+        [anchor],
+        |row| {
+            Ok(ArmedReply {
+                id: row.get(0)?,
+                to_address: row.get(1)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(AppError::from)
+}
+
+fn sent_lines(conn: &rusqlite::Connection, opportunity_id: &str) -> Result<Vec<FilLine>, AppError> {
+    let anchor = format!("opportunity:{opportunity_id}");
+    let mut stmt = conn.prepare(
+        "SELECT id, to_address, subject, body, message_id, updated_at
+         FROM outbound_mail
+         WHERE status = 'sent'
+           AND (
+             (follow_subject = 'opportunity' AND follow_subject_id = ?1)
+             OR anchor = ?2
+           )",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![opportunity_id, anchor], |row| {
+        Ok(FilLine {
+            id: row.get(0)?,
+            sent: true,
+            who: "Toi".into(),
+            address: row.get(1)?,
+            subject: row.get(2)?,
+            text: row.get(3)?,
+            message_id: Some(row.get(4)?),
+            when: Some(row.get(5)?),
+            notice_address: None,
+            can_reply: false,
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+}
+
+fn received_lines(vault: &Store, opportunity_id: &str) -> Result<Vec<FilLine>, AppError> {
+    let filings = filings_of(vault.connection())?;
+    let mailbox = vault.open_mailbox()?;
+    let mut lines = Vec::new();
+    for message in mailbox.list()? {
+        if message.folder_role == "sent" {
+            continue;
+        }
+        let Some(filing) = filing_of(&message, &filings) else {
+            continue;
+        };
+        if filing.opportunity_id.as_deref() != Some(opportunity_id) {
+            continue;
+        }
+        let Some(letter) = mailbox.read(&message.id)? else {
+            continue;
+        };
+        lines.push(line_of(letter));
+    }
+    Ok(lines)
+}
+
+fn line_of(letter: MirrorLetter) -> FilLine {
+    let raw = letter
+        .message_id
+        .as_deref()
+        .map(bare)
+        .filter(|id| !id.is_empty());
+    let can_reply = raw.is_some() && letter.notice.as_deref() != Some("certain");
+    FilLine {
+        id: letter.id,
+        sent: false,
+        who: letter
+            .from_name
+            .clone()
+            .filter(|name| !name.is_empty())
+            .or_else(|| letter.from_address.clone())
+            .unwrap_or_else(|| "—".to_string()),
+        address: letter.from_address.unwrap_or_default(),
+        subject: letter.subject,
+        text: letter.text,
+        message_id: raw,
+        when: letter.sent_on,
+        notice_address: letter.notice_address,
+        can_reply,
+    }
+}
+
+fn received_letter(vault: &Store, token: &str) -> Result<MirrorLetter, AppError> {
+    if !mailbox_exists(vault) {
+        return Err(AppError::Domain(
+            "Ce message n'est pas dans la boîte.".into(),
+        ));
+    }
+    let mailbox = vault.open_mailbox()?;
+    let token = token.trim();
+    if let Some(letter) = mailbox.read(token)? {
+        return Ok(letter);
+    }
+    let needle = bare(token);
+    if needle.is_empty() {
+        return Err(AppError::Domain("Ce message n'a pas d'identifiant.".into()));
+    }
+    for message in mailbox.list()? {
+        if message
+            .message_id
+            .as_deref()
+            .is_some_and(|id| bare(id) == needle)
+            && let Some(letter) = mailbox.read(&message.id)?
+        {
+            return Ok(letter);
+        }
+    }
+    Err(AppError::Domain(
+        "Ce message n'est pas dans la boîte.".into(),
+    ))
+}
+
+fn when_stamp(raw: Option<&str>) -> i64 {
+    let Some(value) = raw else {
+        return 0;
+    };
+    OffsetDateTime::parse(value, &Rfc2822)
+        .or_else(|_| OffsetDateTime::parse(value, &Rfc3339))
+        .map_or(0, OffsetDateTime::unix_timestamp)
 }
 
 /// Où marquer lu. `remote` est vide quand l'UID ne tient pas dans un ordre serveur.
@@ -672,7 +1011,10 @@ fn bare(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{BoxQuery, BoxVue, file_human, hold_filed, in_view, read_box, seal_count};
+    use super::{
+        BoxQuery, BoxVue, ReplyDraft, address_failed, arm_reply, dossier_fil, file_human,
+        hold_filed, in_view, read_box, reply_is_held, seal_count,
+    };
     use crate::app::{Actor, ExecutionContext, recent_audit_entries};
     use crate::mailbox::MirrorInsert;
     use crate::store::testing::test_store;
@@ -873,5 +1215,168 @@ mod tests {
             )
             .unwrap();
         assert_eq!(held, 1);
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn a_reply_on_the_thread_does_not_rearm_the_relance() {
+        let mut store = test_store("boite-fil");
+        seed_people(&mut store);
+        store
+            .connection()
+            .execute(
+                "UPDATE opportunities SET reply_hold = 1, next_action_at = '2026-09-20' WHERE id = 'o1'",
+                [],
+            )
+            .unwrap();
+        store
+            .connection()
+            .execute(
+                "INSERT INTO outbound_mail (
+                    id, kind, status, anchor, from_address, to_address, subject, body, message_id,
+                    send_after, created_at, updated_at
+                 ) VALUES (
+                    'partie-fil', 'letter', 'sent', 'opportunity:o1', 'camille@studio.test',
+                    'camille@riviere.test', 'Partie', 'PARTIE-FIL', '<partie@studio.test>',
+                    '2026-09-02T08:00:00Z', '2026-09-02T08:00:00Z', '2026-09-02T08:00:00Z'
+                 )",
+                [],
+            )
+            .unwrap();
+        let before = dossier_fil(&store, "o1").unwrap();
+        assert!(before.held);
+        assert_eq!(before.lines.len(), 1);
+        assert!(before.lines[0].sent);
+        assert!(reply_is_held(store.connection(), "o1").unwrap());
+        assert!(address_failed(store.connection(), "c2", "contact@atelier-du-mail.fr").unwrap());
+        plant(
+            &store,
+            1,
+            "<camille-1@riviere.test>",
+            None,
+            false,
+            "inbox",
+            "Reponse",
+            "PHRASE-FIL",
+        );
+        let fil = dossier_fil(&store, "o1").unwrap();
+        assert_eq!(fil.lines.len(), 2);
+        assert!(fil.lines[0].text.contains("PHRASE-FIL"));
+        assert!(fil.lines[0].can_reply);
+        assert!(
+            fil.lines
+                .iter()
+                .any(|line| line.text.contains("PARTIE-FIL"))
+        );
+        let draft = ReplyDraft {
+            opportunity_id: "o1".into(),
+            message: "<camille-1@riviere.test>".into(),
+            subject: "Re: Reponse".into(),
+            body: "Je réponds.".into(),
+            delay_secs: 5,
+            session_token: None,
+        };
+        let pending = arm_reply(&mut store, &agent(), &draft).unwrap();
+        assert!(matches!(
+            pending,
+            crate::app::Outcome::PendingConfirmation(_)
+        ));
+        assert!(reply_is_held(store.connection(), "o1").unwrap());
+        let armed: i64 = store
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM outbound_mail WHERE status = 'armed'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(armed, 0);
+        ready_account(&mut store);
+        arm_reply(&mut store, &human(), &draft).unwrap();
+        let (hold, next): (i64, String) = store
+            .connection()
+            .query_row(
+                "SELECT reply_hold, next_action_at FROM opportunities WHERE id = 'o1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(hold, 1);
+        assert_eq!(next, "2026-09-20");
+        let (reply_to, refs, follow): (Option<String>, Option<String>, Option<String>) = store
+            .connection()
+            .query_row(
+                "SELECT in_reply_to, \"references\", follow_subject
+                 FROM outbound_mail WHERE anchor = 'opportunity:o1' AND status = 'armed'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(reply_to.as_deref(), Some("<camille-1@riviere.test>"));
+        assert_eq!(refs.as_deref(), Some("<camille-1@riviere.test>"));
+        assert!(follow.is_none());
+        let wrong = arm_reply(
+            &mut store,
+            &human(),
+            &ReplyDraft {
+                opportunity_id: "o2".into(),
+                ..draft.clone()
+            },
+        )
+        .unwrap_err();
+        assert!(wrong.to_string().contains("pas sur ce dossier"));
+        plant(
+            &store,
+            8,
+            "<copie@boite.test>",
+            None,
+            true,
+            "sent",
+            "Copie",
+            "deja partie",
+        );
+        let sent = arm_reply(
+            &mut store,
+            &human(),
+            &ReplyDraft {
+                message: "<copie@boite.test>".into(),
+                ..draft
+            },
+        )
+        .unwrap_err();
+        assert!(sent.to_string().contains("déjà partie"));
+    }
+
+    fn ready_account(store: &mut crate::store::Store) {
+        let crate::app::Outcome::Applied(()) = crate::app::Executor::new(store)
+            .execute(
+                &crate::mail::SaveMailAccount {
+                    from_name: Some("Camille".into()),
+                    from_address: "camille@studio.test".into(),
+                    host: "smtp.mail.me.com".into(),
+                    port: 25,
+                    tls: "plain".into(),
+                    username: "camille@icloud.test".into(),
+                    preset: "icloud".into(),
+                    imap_host: String::new(),
+                    imap_port: 993,
+                },
+                &human(),
+            )
+            .unwrap()
+        else {
+            panic!("compte");
+        };
+        let crate::app::Outcome::Applied(()) = crate::app::Executor::new(store)
+            .execute(
+                &crate::mail::SaveMailSecret {
+                    secret: crate::mail::MailSecret::new("mot-de-passe-application-xyz").unwrap(),
+                },
+                &human(),
+            )
+            .unwrap()
+        else {
+            panic!("secret");
+        };
     }
 }

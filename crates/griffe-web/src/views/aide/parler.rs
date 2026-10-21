@@ -52,7 +52,7 @@ pub(super) const RELANCER: Letter = Letter {
         "La formule se règle dans Le courrier. Elle ferme la lettre. Elle n'est pas recopiée dans la zone d'écriture.",
     ],
     does_not: Some(
-        "Griffe ne lit pas votre boîte. Tant que Le courrier n'est pas branché, le brouillon peut s'ouvrir dans votre client mail.",
+        "Tant que Le courrier n'est pas branché, le brouillon peut s'ouvrir dans votre client mail. Une réponse reçue retient la relance jusqu'à ce qu'on la laisse partir.",
     ),
     href: Some("/jour"),
     action: Some("Aller au jour"),
@@ -73,9 +73,30 @@ pub(super) const COURRIER: Letter = Letter {
         "Envoyer l'essai laisse cinq secondes. La fenêtre dit Courrier envoyé. Cela ne promet pas la boîte du destinataire.",
         "L'envoi du jour est éteint. L'activer poste, coffre ouvert, les lettres dont la date prévue est aujourd'hui. Une lettre de la veille reste à envoyer à la main.",
     ],
-    does_not: Some("Griffe ne lit pas le courrier reçu."),
+    does_not: Some("Cela ne promet pas la boîte du destinataire au-delà de l'avis de non-remise."),
     href: Some("/societe/courrier"),
     action: Some("Ouvrir Le courrier"),
+    rayon: Rayon::Atelier,
+};
+
+pub(super) const BOITE: Letter = Letter {
+    slug: "boite",
+    kicker: "Parler aux gens",
+    title: "La boîte.",
+    lede: "Les lettres du compte déjà réglé dans Le courrier. Un seul compte.",
+    steps: &[
+        "Boîte, dans la barre, entre les trois pièces et la date. Le sceau compte une réponse de dossier pas encore ouverte, et une adresse qui ne reçoit pas.",
+        "À lire, Avec les dossiers, Envoyées, Tout, En échec. Ouvrir une lettre la marque lue.",
+        "Plusieurs fiches, ou aucune : on rattache la lettre. Le dossier la montre en haut, avec les lettres parties.",
+        "Répondre se déplie sous le message reçu. Envoyer l'arme, avec cinq secondes pour la retenir. Écrire, sur le dossier, reste la lettre de la série.",
+        "Une réponse reçue retient la relance. Laisser partir la relance la rend à son jour.",
+        "Un avis certain dit que l'adresse ne reçoit pas. Corriger l'adresse ouvre la fiche. Elle est bonne la confirme.",
+    ],
+    does_not: Some(
+        "Griffe ne promet pas la boîte du destinataire au-delà de l'avis de non-remise.",
+    ),
+    href: Some("/boite"),
+    action: Some("Ouvrir la boîte"),
     rayon: Rayon::Atelier,
 };
 

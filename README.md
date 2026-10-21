@@ -14,8 +14,8 @@ indicative, coffre SQLCipher sur ta machine.
 
 ## Ce que ça ne fait pas
 
-Pas d’avis fiscal, pas de réception de mail, pas de télétransmission, pas une
-plateforme agréée. Griffe calcule et rappelle ; tu déposes ailleurs.
+Pas d’avis fiscal, pas de télétransmission, pas une plateforme agréée. Griffe
+calcule et rappelle ; tu déposes ailleurs.
 
 ## Statut
 

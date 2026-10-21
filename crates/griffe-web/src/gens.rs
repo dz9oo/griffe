@@ -26,8 +26,9 @@ use griffe_core::follow_up::{
     follow_up_sender, phrases_for_genre, prospect_genres, prospect_phrases,
 };
 use griffe_core::mail::{
-    ArmOutbound, CancelOutbound, LetterChrome, MISSING_ADDRESS, ResolveUncertain, RetryOutbound,
-    UNDO_SECS,
+    AddressFault, ArmOutbound, CancelOutbound, LetterChrome, MISSING_ADDRESS, MarkAddress,
+    ReleaseReplyHold, ReplyDraft, ResolveUncertain, RetryOutbound, UNDO_SECS, arm_reply,
+    cancel_reply,
 };
 use griffe_core::people::{PersonChapter, PersonKey, person, resolve_person};
 use griffe_core::prospection::{
@@ -1824,6 +1825,223 @@ async fn gesture(
     }
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ReplyForm {
+    #[serde(default)]
+    message: String,
+    #[serde(default)]
+    subject: String,
+    #[serde(default)]
+    body: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AddressForm {
+    #[serde(default)]
+    address: String,
+}
+
+pub async fn repondre(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(reference): Path<String>,
+    Form(form): Form<ReplyForm>,
+) -> Response {
+    let today = state.today();
+    let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
+        return page(&state, &headers, gens::not_found(&reference, today)).into_response();
+    };
+    let Some(opportunity_id) = gens::thread_opportunity(&dossier) else {
+        return dossier_saved(
+            &state,
+            &headers,
+            &reference,
+            Some("Ce dossier n'a pas de fil."),
+            false,
+        )
+        .await;
+    };
+    let token = state.mail_session().to_string();
+    let draft = ReplyDraft {
+        opportunity_id,
+        message: form.message,
+        subject: form.subject,
+        body: form.body,
+        delay_secs: UNDO_SECS,
+        session_token: Some(token),
+    };
+    let result = state
+        .with_store_mut(|store| arm_reply(store, &AppState::human_ctx(), &draft))
+        .await;
+    match result {
+        None => locked(&state, &headers).into_response(),
+        Some(Err(error)) => {
+            dossier_saved(
+                &state,
+                &headers,
+                &reference,
+                Some(&mail_notice(&error)),
+                false,
+            )
+            .await
+        }
+        Some(Ok(_)) => dossier_saved(&state, &headers, &reference, None, true).await,
+    }
+}
+
+pub async fn relance(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(reference): Path<String>,
+) -> Response {
+    let today = state.today();
+    let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
+        return page(&state, &headers, gens::not_found(&reference, today)).into_response();
+    };
+    let Some(opportunity_id) = gens::thread_opportunity(&dossier) else {
+        return dossier_saved(
+            &state,
+            &headers,
+            &reference,
+            Some("Ce dossier n'a pas de fil."),
+            false,
+        )
+        .await;
+    };
+    let result = state
+        .with_store_mut(|store| {
+            Executor::new(store)
+                .execute(&ReleaseReplyHold { opportunity_id }, &AppState::human_ctx())
+        })
+        .await;
+    match result {
+        None => locked(&state, &headers).into_response(),
+        Some(Err(error)) => {
+            dossier_saved(
+                &state,
+                &headers,
+                &reference,
+                Some(&mail_notice(&error)),
+                false,
+            )
+            .await
+        }
+        Some(Ok(_)) => dossier_saved(&state, &headers, &reference, None, true).await,
+    }
+}
+
+pub async fn confirmer_adresse(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(reference): Path<String>,
+    Form(form): Form<AddressForm>,
+) -> Response {
+    let today = state.today();
+    let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
+        return page(&state, &headers, gens::not_found(&reference, today)).into_response();
+    };
+    let griffe_core::people::PersonKey::Client { id } = dossier.key else {
+        return dossier_saved(
+            &state,
+            &headers,
+            &reference,
+            Some("Cette fiche n'a pas d'adresse."),
+            false,
+        )
+        .await;
+    };
+    let result = state
+        .with_store_mut(|store| {
+            Executor::new(store).execute(
+                &MarkAddress {
+                    client_id: id.to_string(),
+                    address: form.address,
+                    status: AddressFault::Confirmed,
+                    message_id: None,
+                },
+                &AppState::human_ctx(),
+            )
+        })
+        .await;
+    match result {
+        None => locked(&state, &headers).into_response(),
+        Some(Err(error)) => {
+            dossier_saved(
+                &state,
+                &headers,
+                &reference,
+                Some(&mail_notice(&error)),
+                false,
+            )
+            .await
+        }
+        Some(Ok(_)) => dossier_saved(&state, &headers, &reference, None, true).await,
+    }
+}
+
+pub async fn annuler_reponse(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(reference): Path<String>,
+    Form(form): Form<LetterPost>,
+) -> Response {
+    let today = state.today();
+    let Some(Ok(dossier)) = load_dossier(&state, &reference).await else {
+        return page(&state, &headers, gens::not_found(&reference, today)).into_response();
+    };
+    let Some(opportunity_id) = gens::thread_opportunity(&dossier) else {
+        return dossier_saved(
+            &state,
+            &headers,
+            &reference,
+            Some("Ce dossier n'a pas de fil."),
+            false,
+        )
+        .await;
+    };
+    let result = state
+        .with_store_mut(|store| {
+            cancel_reply(store, &AppState::human_ctx(), &opportunity_id, &form.id)
+        })
+        .await;
+    match result {
+        None => locked(&state, &headers).into_response(),
+        Some(Err(error)) => {
+            dossier_saved(
+                &state,
+                &headers,
+                &reference,
+                Some(&mail_notice(&error)),
+                false,
+            )
+            .await
+        }
+        Some(Ok(_)) => dossier_saved(&state, &headers, &reference, None, true).await,
+    }
+}
+
+async fn dossier_saved(
+    state: &AppState,
+    headers: &HeaderMap,
+    reference: &str,
+    flash: Option<&str>,
+    saved: bool,
+) -> Response {
+    let today = state.today();
+    let content = state
+        .with_store(|store| {
+            gens::dossier_shown(store, reference, today, &gens::ListKeep::default(), flash)
+                .unwrap_or_else(|err| html! { div class="empty-state" { (err.to_string()) } })
+        })
+        .await
+        .unwrap_or_else(|| html! { div class="empty-state" { "coffre verrouillé" } });
+    if saved {
+        saved_page(state, headers, content)
+    } else {
+        page(state, headers, content).into_response()
+    }
+}
+
 #[allow(clippy::too_many_arguments)] // lettre, jeton, jour, et la fiche qui la reçoit
 fn arm_letter(
     store: &mut griffe_core::store::Store,
@@ -1867,6 +2085,8 @@ fn arm_letter(
                 follow_cycle: slot.cycle,
                 follow_step: slot.step,
                 client_id,
+                in_reply_to: None,
+                references: None,
             },
             &AppState::human_ctx(),
         )

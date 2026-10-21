@@ -361,6 +361,8 @@ fn essai(
             follow_cycle: None,
             follow_step: None,
             client_id: None,
+            in_reply_to: None,
+            references: None,
         },
         ctx,
     )?;
@@ -500,6 +502,8 @@ fn envoyer(
             follow_cycle: None,
             follow_step: None,
             client_id: None,
+            in_reply_to: None,
+            references: None,
         },
         ctx,
     )?;

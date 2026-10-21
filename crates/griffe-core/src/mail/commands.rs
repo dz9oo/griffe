@@ -376,6 +376,12 @@ pub struct ArmOutbound {
     /// ou lettre sans fiche, l'adresse saisie reste.
     #[serde(default)]
     pub client_id: Option<String>,
+    /// Message auquel celle-ci répond. Absent : lettre de la série.
+    #[serde(default)]
+    pub in_reply_to: Option<String>,
+    /// Chaîne `References` de la réponse. Absente : lettre de la série.
+    #[serde(default)]
+    pub references: Option<String>,
 }
 
 impl Command for ArmOutbound {
@@ -416,6 +422,8 @@ impl Command for ArmOutbound {
                 follow_step: self.follow_step.clone(),
                 client_id: self.client_id.clone(),
                 recipient: None,
+                in_reply_to: self.in_reply_to.clone(),
+                references: self.references.clone(),
             },
             &now,
         )

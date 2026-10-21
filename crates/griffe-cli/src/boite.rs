@@ -1,11 +1,13 @@
 //! `griffe boite` — lire le compte déjà réglé dans Le courrier.
 //! Le mot de passe ne passe ni par les arguments, ni par le journal.
 
+use std::path::PathBuf;
+
 use clap::Subcommand;
 use griffe_core::app::{ExecutionContext, Executor};
 use griffe_core::mail::{
-    AddressFault, MarkAddress, file_human, french_submit_error, list_box, releve_plan,
-    resolve_message_id,
+    AddressFault, MarkAddress, ReleaseReplyHold, ReplyDraft, UNDO_SECS, arm_reply, file_human,
+    french_submit_error, list_box, releve_plan, resolve_message_id,
 };
 use griffe_core::store::Store;
 
@@ -40,6 +42,30 @@ pub enum BoiteCommand {
         #[arg(long)]
         adresse: String,
     },
+    /// Arme une réponse sur le dossier. La relance reste retenue.
+    Repondre {
+        /// Identifiant du message, ou celui du miroir.
+        #[arg(long)]
+        message: String,
+        /// Dossier : nom ou identifiant.
+        #[arg(long)]
+        dossier: String,
+        /// Sujet de la réponse.
+        #[arg(long)]
+        sujet: String,
+        /// Corps de la réponse.
+        #[arg(long, conflicts_with = "corps_file")]
+        corps: Option<String>,
+        /// Fichier qui contient le corps.
+        #[arg(long, conflicts_with = "corps")]
+        corps_file: Option<PathBuf>,
+    },
+    /// Laisse repartir la relance retenue.
+    Relance {
+        /// Dossier : nom ou identifiant.
+        #[arg(long)]
+        dossier: String,
+    },
 }
 
 pub fn run(
@@ -60,6 +86,25 @@ pub fn run(
             fiche,
             adresse: address,
         } => adresse(store, ctx, json, &fiche, &address),
+        BoiteCommand::Repondre {
+            message,
+            dossier,
+            sujet,
+            corps,
+            corps_file,
+        } => repondre(
+            store,
+            ctx,
+            json,
+            ReplyFields {
+                message,
+                dossier,
+                sujet,
+                corps,
+                corps_file,
+            },
+        ),
+        BoiteCommand::Relance { dossier } => relance(store, ctx, json, &dossier),
     }
 }
 
@@ -153,5 +198,73 @@ fn adresse(
     )?;
     Ok(format_outcome_as(&outcome, json, |_| {
         "L'adresse est bonne.".to_string()
+    }))
+}
+
+struct ReplyFields {
+    message: String,
+    dossier: String,
+    sujet: String,
+    corps: Option<String>,
+    corps_file: Option<PathBuf>,
+}
+
+fn repondre(
+    store: &mut Store,
+    ctx: &ExecutionContext,
+    json: bool,
+    fields: ReplyFields,
+) -> Result<String, CliError> {
+    let ReplyFields {
+        message,
+        dossier,
+        sujet,
+        corps,
+        corps_file,
+    } = fields;
+    let body = match (corps, corps_file) {
+        (Some(text), None) => text,
+        (None, Some(path)) => std::fs::read_to_string(&path).map_err(|error| {
+            CliError::Domain(format!("lecture de {} : {error}", path.display()))
+        })?,
+        _ => {
+            return Err(CliError::Domain(
+                "Le corps se donne avec --corps ou --corps-file.".into(),
+            ));
+        }
+    };
+    let opportunity = refs::resolve_opportunity(store, &dossier)?;
+    let outcome = arm_reply(
+        store,
+        ctx,
+        &ReplyDraft {
+            opportunity_id: opportunity.to_string(),
+            message,
+            subject: sujet,
+            body,
+            delay_secs: UNDO_SECS,
+            session_token: None,
+        },
+    )?;
+    Ok(format_outcome_as(&outcome, json, |_| {
+        "La réponse est armée.".to_string()
+    }))
+}
+
+fn relance(
+    store: &mut Store,
+    ctx: &ExecutionContext,
+    json: bool,
+    dossier: &str,
+) -> Result<String, CliError> {
+    let opportunity = refs::resolve_opportunity(store, dossier)?;
+    let outcome = Executor::new(store).execute(
+        &ReleaseReplyHold {
+            opportunity_id: opportunity.to_string(),
+        },
+        ctx,
+    )?;
+    Ok(format_outcome_as(&outcome, json, |_| {
+        "La relance peut partir.".to_string()
     }))
 }

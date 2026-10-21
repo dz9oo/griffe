@@ -75,8 +75,14 @@ Une lettre partie est aussi déposée dans Envoyés du compte qui l’envoie.
 iCloud le fait sans champ de plus. Un autre serveur le fait si l’hôte des
 copies est saisi, sur le port 993. Vide, la lettre part et la copie n’ira
 pas dans Envoyés : l’essai de liaison le dit. Si le dépôt échoue, la lettre
-est quand même partie. Griffe réessaie plus tard. Elle ne lit pas le
-courrier reçu, et ne promet pas la boîte du destinataire.
+est quand même partie. Griffe réessaie plus tard.
+
+La boîte lit ce même compte : les lettres reçues, et celles déjà envoyées.
+Ouvrir une lettre la marque lue. On la rattache à un dossier. Répondre
+arme une lettre, avec cinq secondes pour la retenir. Une réponse reçue
+retient la relance. Laisser partir la relance la rend à son jour. Un avis
+certain dit que l’adresse ne reçoit pas. On la corrige, ou on dit qu’elle
+est bonne. Cela ne promet pas la boîte du destinataire au-delà de cet avis.
 
 L’envoi du jour est éteint. L’activer poste, pendant que le coffre est
 ouvert, les lettres dont la date prévue est aujourd’hui. Une lettre de la

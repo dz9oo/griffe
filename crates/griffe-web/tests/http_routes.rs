@@ -800,6 +800,7 @@ const AIDE_SLUGS: &[&str] = &[
     "conversation",
     "relancer",
     "courrier",
+    "boite",
     "devis",
     "travaux",
     "phrases",
@@ -865,6 +866,7 @@ async fn the_help_catalog_covers_each_situation_and_hides_an_empty_shelf() {
             "Enregistrer et essayer la liaison",
             Some("/societe/courrier"),
         ),
+        ("boite", "Laisser partir la relance", Some("/boite")),
         ("devis", "Le total est la somme", Some("/affaires")),
         ("travaux", "Il se garde tout seul", Some("/affaires")),
         (
@@ -14280,4 +14282,295 @@ async fn the_box_page_reads_a_letter_and_confirms_a_failed_address() {
         !quiet.contains("class=\"n\""),
         "plus rien à compter : {quiet}"
     );
+}
+
+#[tokio::test]
+async fn the_dossier_thread_holds_the_reply_and_refuses_a_dead_address() {
+    let db_path = test_db_path("boite-fil");
+    let mut store = Store::create(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    let camille = prospect(
+        &mut store,
+        "Camille",
+        Some("Camille Rivière"),
+        Some("camille@riviere.test"),
+        "Site",
+    );
+    let atelier = prospect(
+        &mut store,
+        "Atelier",
+        None,
+        Some("contact@atelier-du-mail.fr"),
+        "Enseigne",
+    );
+    plant_from(
+        &store,
+        1,
+        "<camille-fil@boite.test>",
+        "camille@riviere.test",
+        "Camille Rivière",
+        "Re: Site",
+        "PHRASE-FIL",
+    );
+    plant_from(
+        &store,
+        2,
+        "<atelier-fil@boite.test>",
+        "contact@atelier-du-mail.fr",
+        "Atelier",
+        "Re: Enseigne",
+        "PHRASE-MORT",
+    );
+    griffe_core::mail::file_human(
+        &mut store,
+        &human_ctx(),
+        "<camille-fil@boite.test>",
+        &camille.0,
+        Some(camille.1.clone()),
+    )
+    .unwrap();
+    griffe_core::mail::file_human(
+        &mut store,
+        &human_ctx(),
+        "<atelier-fil@boite.test>",
+        &atelier.0,
+        Some(atelier.1.clone()),
+    )
+    .unwrap();
+    Executor::new(&mut store)
+        .execute(
+            &griffe_core::mail::MarkAddress {
+                client_id: atelier.0.clone(),
+                address: "contact@atelier-du-mail.fr".into(),
+                status: griffe_core::mail::AddressFault::Failed,
+                message_id: None,
+            },
+            &human_ctx(),
+        )
+        .unwrap();
+    store
+        .connection()
+        .execute(
+            "INSERT INTO outbound_mail (
+                id, kind, status, anchor, from_address, to_address, subject, body, message_id,
+                send_after, created_at, updated_at
+             ) VALUES (
+                'partie-fil', 'letter', 'sent', ?1, 'moi@studio.test', 'camille@riviere.test',
+                'Partie', 'PARTIE-FIL', '<partie@studio.test>',
+                '2026-09-02T08:00:00Z', '2026-09-02T08:00:00Z', '2026-09-02T08:00:00Z'
+             )",
+            [format!("opportunity:{}", camille.1)],
+        )
+        .unwrap();
+    drop(store);
+
+    let state = AppState::new(db_path.clone());
+    state
+        .unlock(&Passphrase::from(PASSPHRASE), false)
+        .await
+        .unwrap();
+    let router = griffe_web::router(state);
+
+    let dossier = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Camille")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(dossier.contains("Camille a répondu"), "{dossier}");
+    assert!(dossier.contains("La relance ne part pas"), "{dossier}");
+    assert!(dossier.contains("PHRASE-FIL"), "{dossier}");
+    assert!(dossier.contains("PARTIE-FIL"), "{dossier}");
+    assert!(dossier.contains("Répondre"), "{dossier}");
+    assert!(dossier.contains("Laisser partir la relance"), "{dossier}");
+    assert!(dossier.contains("<textarea"), "{dossier}");
+    assert!(!dossier.contains("hx-on"), "{dossier}");
+
+    let released = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/affaires/Camille/relance")
+                .header("HX-Request", "true")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(released.status(), StatusCode::OK);
+    assert_eq!(
+        released
+            .headers()
+            .get("HX-Trigger")
+            .and_then(|value| value.to_str().ok()),
+        Some("griffe:saved")
+    );
+    let released_body = body_text(released).await;
+    assert!(
+        !released_body.contains("La relance ne part pas"),
+        "{released_body}"
+    );
+    let hold: i64 = Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE))
+        .unwrap()
+        .connection()
+        .query_row(
+            "SELECT reply_hold FROM opportunities WHERE id = ?1",
+            [camille.1.clone()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(hold, 0);
+
+    let dead = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Atelier")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(dead.contains("ne reçoit pas"), "{dead}");
+    assert!(dead.contains("Corriger l'adresse"), "{dead}");
+    assert!(dead.contains("Elle est bonne"), "{dead}");
+    assert!(!dead.contains("<textarea"), "{dead}");
+    assert!(!dead.contains("Répondre"), "{dead}");
+
+    let write = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/affaires/Atelier/ecrire")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(write.contains("ne reçoit pas"), "{write}");
+    assert!(write.contains("Elle est bonne"), "{write}");
+    assert!(!write.contains("/envoyer"), "{write}");
+
+    let refused = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/affaires/Atelier/repondre")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .header("HX-Request", "true")
+                    .body(Body::from(
+                        "message=atelier-fil%40boite.test&subject=Re%3A+suite&body=bonjour",
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(refused.contains("ne reçoit pas"), "{refused}");
+    let check = Store::open_with_passphrase(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    let armed: i64 = check
+        .connection()
+        .query_row(
+            "SELECT COUNT(*) FROM outbound_mail WHERE status = 'armed'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(armed, 0);
+    let still: i64 = check
+        .connection()
+        .query_row(
+            "SELECT reply_hold FROM opportunities WHERE id = ?1",
+            [atelier.1],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(still, 1);
+}
+
+fn prospect(
+    store: &mut Store,
+    qui: &str,
+    respondent: Option<&str>,
+    email: Option<&str>,
+    piste: &str,
+) -> (String, String) {
+    let Outcome::Applied(id) = Executor::new(store)
+        .execute(
+            &CreateProspect {
+                prospect_name: qui.into(),
+                address: None,
+                representative: respondent.map(str::to_string),
+                email: email.map(str::to_string),
+                phone: None,
+                name: piste.into(),
+                amount: Money::ZERO,
+                probability: Probability::new(40).unwrap(),
+                next_action_at: time::macros::date!(2026 - 09 - 20),
+                source: None,
+            },
+            &human_ctx(),
+        )
+        .unwrap()
+    else {
+        panic!("dossier");
+    };
+    let client_id: String = store
+        .connection()
+        .query_row(
+            "SELECT client_id FROM opportunities WHERE id = ?1",
+            [id.to_string()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    (client_id, id.to_string())
+}
+
+fn plant_from(
+    store: &Store,
+    uid: i64,
+    message_id: &str,
+    from: &str,
+    name: &str,
+    subject: &str,
+    text: &str,
+) {
+    let mailbox = store.open_mailbox().unwrap();
+    mailbox
+        .insert(&griffe_core::mailbox::MirrorInsert {
+            mailbox: "INBOX".into(),
+            uid,
+            uidvalidity: 1,
+            message_id: Some(message_id.into()),
+            from_name: Some(name.into()),
+            from_address: Some(from.into()),
+            subject: subject.into(),
+            sent_on: Some("Sat, 5 Sep 2026 09:00:00 +0200".into()),
+            text: text.into(),
+            html: None,
+            seen: false,
+            notice: None,
+            notice_address: None,
+            folder_role: "inbox".into(),
+            choice_of: None,
+            choice_ids: None,
+        })
+        .unwrap();
+    mailbox.remember("INBOX", 1, uid).unwrap();
 }

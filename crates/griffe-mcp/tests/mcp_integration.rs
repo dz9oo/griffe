@@ -315,6 +315,8 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "mail.trial",
         "boite.classer",
         "boite.adresse",
+        "boite.relance",
+        "boite.repondre",
     ] {
         let ann = by_name(destructive).annotations.as_ref().unwrap();
         assert_eq!(ann.read_only_hint, Some(false));

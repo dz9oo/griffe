@@ -320,6 +320,8 @@ pub(super) struct NewLetter {
     pub(super) client_id: Option<String>,
     /// Posé au réessai pour ne pas reclasser l'adresse. Absent : déduit de `to_address`.
     pub(super) recipient: Option<LetterRecipient>,
+    pub(super) in_reply_to: Option<String>,
+    pub(super) references: Option<String>,
 }
 
 pub(super) fn insert_letter(
@@ -341,9 +343,11 @@ pub(super) fn insert_letter(
         "INSERT INTO outbound_mail (
             id, kind, status, anchor, from_address, from_name, to_address, subject, body,
             message_id, send_after, session_token, follow_subject, follow_subject_id,
-            follow_cycle, follow_step, client_id, recipient, created_at, updated_at
+            follow_cycle, follow_step, client_id, recipient, in_reply_to, \"references\",
+            created_at, updated_at
          ) VALUES (
-            ?1, ?2, 'armed', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?18
+            ?1, ?2, 'armed', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
+            ?18, ?19, ?20, ?20
          )",
         params![
             id,
@@ -363,6 +367,8 @@ pub(super) fn insert_letter(
             letter.follow_step,
             letter.client_id,
             recipient.as_str(),
+            letter.in_reply_to,
+            letter.references,
             now,
         ],
     )?;
@@ -594,7 +600,8 @@ fn load_ready(conn: &Connection, id: &str) -> Result<Option<ReadyLetter>, AppErr
 fn load_letter(conn: &Connection, id: &str, status: &str) -> Result<Option<ReadyLetter>, AppError> {
     let row = conn
         .query_row(
-            "SELECT id, from_name, from_address, to_address, subject, body, message_id, copy_at
+            "SELECT id, from_name, from_address, to_address, subject, body, message_id, copy_at,
+                    in_reply_to, \"references\"
              FROM outbound_mail WHERE id = ?1 AND status = ?2",
             params![id, status],
             |row| {
@@ -607,11 +614,24 @@ fn load_letter(conn: &Connection, id: &str, status: &str) -> Result<Option<Ready
                     row.get::<_, String>(5)?,
                     row.get::<_, String>(6)?,
                     row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                    row.get::<_, Option<String>>(9)?,
                 ))
             },
         )
         .optional()?;
-    let Some((id, from_name, from_address, to_address, subject, text, message_id, copy_at)) = row
+    let Some((
+        id,
+        from_name,
+        from_address,
+        to_address,
+        subject,
+        text,
+        message_id,
+        copy_at,
+        in_reply_to,
+        references,
+    )) = row
     else {
         return Ok(None);
     };
@@ -632,6 +652,8 @@ fn load_letter(conn: &Connection, id: &str, status: &str) -> Result<Option<Ready
             chrome,
             message_id,
             at,
+            in_reply_to,
+            references,
         },
     }))
 }
@@ -746,6 +768,8 @@ struct StoredLetter {
     client_id: Option<String>,
     recipient: String,
     status: String,
+    in_reply_to: Option<String>,
+    references: Option<String>,
 }
 
 pub(super) fn retry(
@@ -759,7 +783,7 @@ pub(super) fn retry(
         .query_row(
             "SELECT kind, anchor, to_address, session_token, subject, body,
                 follow_subject, follow_subject_id, follow_cycle, follow_step, client_id,
-                recipient, status
+                recipient, status, in_reply_to, \"references\"
          FROM outbound_mail WHERE id = ?1",
             [id],
             |row| {
@@ -777,6 +801,8 @@ pub(super) fn retry(
                     client_id: row.get(10)?,
                     recipient: row.get(11)?,
                     status: row.get(12)?,
+                    in_reply_to: row.get(13)?,
+                    references: row.get(14)?,
                 })
             },
         )
@@ -821,6 +847,8 @@ pub(super) fn retry(
             follow_step: letter.follow_step,
             client_id: letter.client_id,
             recipient: Some(kind),
+            in_reply_to: letter.in_reply_to,
+            references: letter.references,
         },
         now,
     )
@@ -885,6 +913,8 @@ pub(super) fn enroll(
                 follow_step: Some(step),
                 client_id,
                 recipient: None,
+                in_reply_to: None,
+                references: None,
             },
             now,
         ) {

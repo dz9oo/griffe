@@ -6,14 +6,15 @@ use std::collections::HashSet;
 use griffe_core::app::AppError;
 use griffe_core::domain::{
     ClientId, ExpensePaidBy, FicheChannels, FollowUpSubject, InteractionKind, LetterRecipient,
-    display_phone, fiche_channels, format_date, format_date_fr, letter_address,
+    display_phone, fiche_channels, format_date, format_date_fr, given_name, letter_address,
 };
 use griffe_core::dossier_work::DossierWork;
 use griffe_core::follow_up::{
     FollowUpCard, ProspectGenre, card_for, follow_up_sender, prospect_genre_for, prospect_genres,
 };
 use griffe_core::mail::{
-    LINK_HINT, LetterChrome, LetterParts, OutboundStatus, OutboundView, close_letter, letter_card,
+    DossierFil, FilLine, LINK_HINT, LetterChrome, LetterParts, OutboundStatus, OutboundView,
+    address_failed, close_letter, letter_card,
 };
 use griffe_core::people::{
     CurrentSituation, HistoryEvent, HistoryKind, MissionShape, OutgoingCadence, OutgoingChapter,
@@ -24,10 +25,12 @@ use griffe_core::store::Store;
 use griffe_core::work_kinds::{WorkKind, WorkKindTint, dossiers_of_work_kind, work_kinds};
 use maud::{Markup, PreEscaped, html};
 use time::Date;
+use time::OffsetDateTime;
+use time::format_description::well_known::{Rfc2822, Rfc3339};
 
 use crate::layout::ViewId;
 use crate::markdown::render_work_markdown;
-use crate::views::copy::letter_date;
+use crate::views::copy::{letter_date, month_fr};
 use crate::views::form;
 
 pub fn path_encode(s: &str) -> String {
@@ -667,16 +670,28 @@ pub fn dossier_kept(
     today: Date,
     list: &ListKeep,
 ) -> Result<Markup, AppError> {
+    dossier_shown(store, needle, today, list, None)
+}
+
+pub fn dossier_shown(
+    store: &Store,
+    needle: &str,
+    today: Date,
+    list: &ListKeep,
+    flash: Option<&str>,
+) -> Result<Markup, AppError> {
     let dossier = person(store.connection(), needle, today)?;
     let look = LetterLook::from_store(store);
+    let fil = fil_of(store, &dossier)?;
     Ok(dossier_body(
         &dossier,
         today,
-        DossierNotice::None,
+        DossierNotice::text(flash),
         None,
         &look,
         list,
         DossierDoor::Cours,
+        fil.as_ref(),
     ))
 }
 
@@ -688,6 +703,7 @@ pub fn dossier_after_own_send(
 ) -> Result<Markup, AppError> {
     let dossier = person(store.connection(), needle, today)?;
     let look = LetterLook::from_store(store);
+    let fil = fil_of(store, &dossier)?;
     Ok(dossier_body(
         &dossier,
         today,
@@ -696,6 +712,7 @@ pub fn dossier_after_own_send(
         &look,
         &ListKeep::default(),
         DossierDoor::Cours,
+        fil.as_ref(),
     ))
 }
 
@@ -780,6 +797,7 @@ pub fn dossier_marked(
         &look,
         list,
         door,
+        None,
     )
 }
 
@@ -798,6 +816,7 @@ pub fn dossier_with_kinds(
         &look,
         &ListKeep::default(),
         DossierDoor::Cours,
+        None,
     )
 }
 
@@ -912,6 +931,7 @@ impl<'a> DossierNotice<'a> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn dossier_body(
     dossier: &PersonDossier,
     today: Date,
@@ -920,6 +940,7 @@ fn dossier_body(
     look: &LetterLook,
     list: &ListKeep,
     door: DossierDoor,
+    fil: Option<&DossierFil>,
 ) -> Markup {
     let href = person_href(&dossier.name);
     let client_fiche = matches!(dossier.key, PersonKey::Client { .. });
@@ -964,6 +985,9 @@ fn dossier_body(
             }
             div class="blocks" {
                 div class="col-main" {
+                    @if let Some(fil) = fil {
+                        (fil_markup(dossier, fil, look))
+                    }
                     @if let Some(body) = current_paragraph(&dossier.current, dossier) {
                         div class="block" {
                             h3 { "En cours" }
@@ -1032,6 +1056,173 @@ fn dossier_body(
         }
     };
     dress(Some(&dossier.name), Some(door), None, list, false, inner)
+}
+
+fn fil_of(store: &Store, dossier: &PersonDossier) -> Result<Option<DossierFil>, AppError> {
+    let Some(id) = thread_opportunity(dossier) else {
+        return Ok(None);
+    };
+    griffe_core::mail::dossier_fil(store, &id).map(Some)
+}
+
+pub(crate) fn thread_opportunity(dossier: &PersonDossier) -> Option<String> {
+    dossier
+        .current
+        .opportunity_id
+        .map(|id| id.to_string())
+        .or_else(|| match dossier.follow_up_subject {
+            Some(FollowUpSubject::Opportunity(id)) => Some(id.to_string()),
+            _ => None,
+        })
+}
+
+fn fil_markup(dossier: &PersonDossier, fil: &DossierFil, look: &LetterLook) -> Markup {
+    if fil.lines.is_empty() && !fil.held && fil.armed.is_none() && fil.failed.is_empty() {
+        return html! {};
+    }
+    let href = person_href(&dossier.name);
+    html! {
+        div class="block fil" {
+            (fil_sentence(dossier, fil))
+            @for line in &fil.lines {
+                (fil_line(&href, fil, line, look))
+            }
+            @if let Some(armed) = &fil.armed {
+                p class="depart-line" { "Elle part dans cinq secondes." }
+                form method="post" action=(format!("{href}/reponse/annuler"))
+                     hx-post=(format!("{href}/reponse/annuler"))
+                     hx-target="#content" {
+                    input type="hidden" name="id" value=(armed.id);
+                    button class="quiet" type="submit" { "Annuler" }
+                }
+            }
+            @if fil.held {
+                form method="post" action=(format!("{href}/relance"))
+                     hx-post=(format!("{href}/relance"))
+                     hx-target="#content" {
+                    button class="quiet" type="submit" { "Laisser partir la relance" }
+                }
+            }
+        }
+    }
+}
+
+fn fil_sentence(dossier: &PersonDossier, fil: &DossierFil) -> Markup {
+    let name = given_name(dossier.contact_name.as_deref().unwrap_or(""), &dossier.name);
+    html! {
+        @if fil.held {
+            p class="plateau-sentence" {
+                @if name.is_empty() {
+                    "Une réponse est arrivée. "
+                } @else {
+                    (name) " a répondu. "
+                }
+                span class="bad" { "La relance ne part pas." }
+            }
+        }
+        @if let Some(address) = fil.failed.first() {
+            p class="plateau-sentence" {
+                span class="bad" { "L'adresse " (address) " ne reçoit pas." }
+            }
+        }
+    }
+}
+
+fn fil_line(href: &str, fil: &DossierFil, line: &FilLine, look: &LetterLook) -> Markup {
+    let blocked = blocked_address(fil, line);
+    html! {
+        article class="msg" {
+            header {
+                span class="when" { (fil_when(line.when.as_deref())) }
+                span { (line.who) }
+            }
+            h3 { (line.subject) }
+            div class="corps" { (line.text) }
+            @if let Some(address) = blocked {
+                p class="note" { (address) " ne reçoit pas. L'envoi ne part pas." }
+                div class="actions" {
+                    a class="quiet" href=(format!("{href}/fiche"))
+                      hx-get=(format!("{href}/fiche"))
+                      hx-target="#content"
+                      hx-push-url="true" { "Corriger l'adresse" }
+                    (bonne_form(href, address))
+                }
+            } @else if line.can_reply {
+                @if let Some(message) = &line.message_id {
+                    details class="fil-reply" {
+                        summary class="seal" { "Répondre" }
+                        form class="reply" method="post" action=(format!("{href}/repondre"))
+                             hx-post=(format!("{href}/repondre"))
+                             hx-target="#content" {
+                            input type="hidden" name="message" value=(message);
+                            (form::text("subject", "Sujet", &reply_subject(&line.subject), None))
+                            (form::textarea("body", "Ta réponse", "", 8, None))
+                            (letter_stage("", "", &look.chrome, true, false))
+                            div class="actions" {
+                                button class="seal" type="submit" { "Envoyer" }
+                                a class="quiet" href=(href)
+                                  hx-get=(href)
+                                  hx-target="#content"
+                                  hx-push-url="true" { "Annuler" }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn bonne_form(href: &str, address: &str) -> Markup {
+    let action = format!("{href}/adresse");
+    html! {
+        form method="post" action=(action) hx-post=(action) hx-target="#content" {
+            input type="hidden" name="address" value=(address);
+            button class="quiet" type="submit" { "Elle est bonne" }
+        }
+    }
+}
+
+fn blocked_address<'a>(fil: &'a DossierFil, line: &FilLine) -> Option<&'a str> {
+    let candidates = [
+        line.address.as_str(),
+        line.notice_address.as_deref().unwrap_or(""),
+    ];
+    candidates.into_iter().find_map(|value| {
+        if value.is_empty() {
+            None
+        } else {
+            fil.failed
+                .iter()
+                .find(|item| item.eq_ignore_ascii_case(value))
+                .map(String::as_str)
+        }
+    })
+}
+
+fn reply_subject(subject: &str) -> String {
+    let trimmed = subject.trim();
+    if trimmed.is_empty() {
+        return "Re:".to_string();
+    }
+    if trimmed.to_ascii_lowercase().starts_with("re:") {
+        trimmed.to_string()
+    } else {
+        format!("Re: {trimmed}")
+    }
+}
+
+fn fil_when(raw: Option<&str>) -> String {
+    let Some(raw) = raw else {
+        return "—".to_string();
+    };
+    let parsed = OffsetDateTime::parse(raw, &Rfc2822)
+        .or_else(|_| OffsetDateTime::parse(raw, &Rfc3339))
+        .ok();
+    parsed.map_or_else(
+        || "—".to_string(),
+        |at| format!("{} {}", at.day(), month_fr(u8::from(at.month()))),
+    )
 }
 
 fn subtitle(d: &PersonDossier, today: Date) -> String {
@@ -2793,7 +2984,15 @@ pub fn letter_page_kept(
     let picked = picked_recipient(&channels, &keep.recipient);
     let to = letter_address(&channels, picked).unwrap_or("");
     let mail = griffe_core::mail::profile(store.connection()).unwrap_or_default();
-    let can_send = mail.ready && to.contains('@');
+    let client_id = match dossier.key {
+        PersonKey::Client { id } => Some(id.to_string()),
+        PersonKey::Supplier { .. } => None,
+    };
+    let dead = match &client_id {
+        Some(id) if to.contains('@') => address_failed(store.connection(), id, to)?,
+        _ => false,
+    };
+    let can_send = mail.ready && to.contains('@') && !dead;
     let depart = if can_send {
         griffe_core::mail::outbound_for_anchor(
             store.connection(),
@@ -2894,12 +3093,19 @@ pub fn letter_page_kept(
                 div class="letter-under" {
                     (letter_destination(from, to, &channels, picked, mail.ready))
                     div class="row-actions" {
-                        @if can_send {
+                        @if dead {
+                            p class="depart-line" { (to) " ne reçoit pas. L'envoi ne part pas." }
+                            a class="quiet" href=(format!("{href}/fiche"))
+                              hx-get=(format!("{href}/fiche"))
+                              hx-target="#content"
+                              hx-push-url="true" { "Corriger l'adresse" }
+                            (bonne_form(&href, to))
+                        } @else if can_send {
                             (depart_markup(&href, depart.as_ref(), None, "Envoyer", (!to.is_empty()).then_some(to)))
                         } @else if mail.ready {
                             p class="depart-line" { "Il manque l'adresse de la personne." }
                         }
-                        @if !mail.ready {
+                        @if !mail.ready && !dead {
                             button class="seal" type="submit"
                                    formaction=(format!("{href}/envoye"))
                                    formmethod="post"
