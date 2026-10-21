@@ -659,3 +659,36 @@ Ouvrir `docs/mockups/atelier-app.html`. Parcours minimum avant de coder un lot :
 4. La société → paysage, Te payer (dividende fermé), relevé Leroy = dette.
 
 Si un futur changement casse ce parcours, ce n’est plus Atelier.
+
+## 13. La boîte
+
+La boîte n’est pas une quatrième pièce. Les trois questions restent. Dans la
+chrome, entre les pièces et la date, le mot **Boîte**. Un compte en sceau
+n’apparaît que si une réponse de dossier, ou une adresse qui ne reçoit pas,
+demande un regard. Rien quand la boîte est calme. Le courrier, chapitre de
+La société, reste le réglage du compte. On ne le renomme pas.
+
+La page prend le bureau (`#e6dfd2`). Trois colonnes dès que la fenêtre le
+permet : les vues (À lire, Avec les dossiers, Envoyées, Tout, En échec), les
+lettres en cartes `#fbf7f0`, puis la lettre. Les dossiers du serveur
+(INBOX, Sent, Brouillons, Archive) restent fermés. Une phrase de statut ouvre
+la page, même carte que le matin.
+
+Sur le dossier, pas de sixième pastille. Le fil est le haut d’En cours, avant
+le projet et l’histoire. Les pastilles restent : En cours, Écrire, La fiche,
+L’estimation, Les travaux, Noter une rencontre. Répondre suit la lettre reçue.
+Écrire prépare encore la lettre de la série. Les deux ne se confondent pas.
+
+Une lettre partie par Griffe, et la réponse qu’on écrit, reprennent la feuille
+et la formule de Le courrier (Clair, Sauge, ou le fichier lisible). Le courrier
+reçu n’est pas repeint. Ces réglages ne se refont pas dans la boîte.
+
+Quand la personne répond, le fil le montre et la prochaine relance automatique
+de ce dossier reste là : « Camille a répondu. La relance ne part pas. »
+« Laisser partir la relance » la rend de nouveau. Répondre soi-même est un
+envoi, avec les cinq secondes, et ne réarme pas la série.
+
+Un avis de non-remise certain dit que l’adresse ne reçoit pas. Griffe n’efface
+pas l’adresse. On la corrige, ou on confirme « Elle est bonne ». Un indice
+seulement par l’objet reste probable, jusqu’à ce geste. Si plusieurs fiches
+portent la même adresse, Griffe propose le choix.

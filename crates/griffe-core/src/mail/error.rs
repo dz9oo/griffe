@@ -36,6 +36,12 @@ pub enum MailError {
     #[error("lettre introuvable")]
     Missing,
 
+    #[error("Cette adresse ne reçoit pas.")]
+    Undeliverable,
+
+    #[error("Ce dossier est introuvable.")]
+    Dossier,
+
     #[error("la formule dépasse 2 000 caractères")]
     SignatureLength,
 

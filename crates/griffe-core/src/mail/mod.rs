@@ -1,8 +1,9 @@
-//! Courrier sortant. Le cœur décide quand une lettre part et ce qu'elle dit.
-//! La crate qui parle SMTP implémente [`OutboundMail`] et reste hors d'ici.
+//! Courrier. Le cœur décide du texte, de la retenue et du rattachement.
+//! La crate qui parle au serveur reste hors d'ici.
 
 mod commands;
 mod error;
+mod inbound;
 mod model;
 mod present;
 mod secret;
@@ -10,11 +11,14 @@ mod store;
 mod theme;
 
 pub use commands::{
-    ArmOutbound, CancelOutbound, ClearMailSecret, RecordMailProbe, RememberImapUsername,
-    ResolveUncertain, RetryOutbound, SaveLetterface, SaveMailAccount, SaveMailSecret,
-    SaveMailSignature, SetAutomaticSend,
+    AddressFault, ArmOutbound, CancelOutbound, ClearMailSecret, HoldReply, MarkAddress,
+    RecordMailProbe, ReleaseReplyHold, RememberImapUsername, ResolveUncertain, RetryOutbound,
+    SaveLetterface, SaveMailAccount, SaveMailSecret, SaveMailSignature, SetAutomaticSend,
 };
 pub use error::MailError;
+pub use inbound::{
+    DossierLink, FicheAddress, Filing, KnownLetter, Notice, ParsedMessage, classify, read_message,
+};
 pub use model::{
     DeliveryOutcome, HOURLY_CAP, ICLOUD_HOST, ICLOUD_IMAP_HOST, ICLOUD_SENT_MAILBOX, IMAP_PORT,
     ImapEndpoint, LetterChrome, MISSING_ADDRESS, MailPreset, MailProbeStatus, MailProfile,
@@ -407,11 +411,12 @@ mod tests {
     use time::{Date, Duration, Month, OffsetDateTime, Time};
 
     use super::{
-        ArmOutbound, ClearMailSecret, DeliveryOutcome, LetterTheme, MISSING_ADDRESS, MailError,
-        MailSubmitError, PROBE_OK_SENTENCE, RecordMailProbe, RecordingMail, RetryOutbound,
-        SaveLetterface, SaveMailAccount, SaveMailSecret, SaveMailSignature, SentCopyStatus,
-        SetAutomaticSend, SubmissionReceipt, abandon_held, commit_outbound, deliver_with,
-        mail_tick, profile, record_deliveries, take_copies, take_due, trial_letter,
+        AddressFault, ArmOutbound, ClearMailSecret, DeliveryOutcome, HoldReply, LetterTheme,
+        MISSING_ADDRESS, MailError, MailSubmitError, MarkAddress, PROBE_OK_SENTENCE,
+        RecordMailProbe, RecordingMail, ReleaseReplyHold, RetryOutbound, SaveLetterface,
+        SaveMailAccount, SaveMailSecret, SaveMailSignature, SentCopyStatus, SetAutomaticSend,
+        SubmissionReceipt, abandon_held, commit_outbound, deliver_with, mail_tick, profile,
+        record_deliveries, take_copies, take_due, trial_letter,
     };
     use crate::app::{Actor, AppError, ExecutionContext, Executor, Outcome, recent_audit_entries};
     use crate::clients::{CreateClient, CreateContact, DeleteContact, UpdateClient, UpdateContact};
@@ -1805,6 +1810,204 @@ mod tests {
         insert_sent(&mut custom, "sans-hote", &stamp, Some(&stamp), None);
         let nowhere = mail_tick(custom.connection(), "fenetre", now, now.date(), true).unwrap();
         assert!(!nowhere.copy);
+    }
+
+    #[test]
+    fn a_reply_holds_the_relance_until_it_is_released() {
+        let mut store = test_store("mail-hold");
+        save_ready(&mut store);
+        let today = Date::from_calendar_date(2026, Month::September, 5).unwrap();
+        let FollowUpSubject::Opportunity(id) = seed(&mut store, today) else {
+            panic!("dossier");
+        };
+        let held = Executor::new(&mut store).execute(
+            &HoldReply {
+                opportunity_id: id.to_string(),
+            },
+            &human(),
+        );
+        assert!(matches!(held, Ok(Outcome::Applied(()))));
+        Executor::new(&mut store)
+            .execute(&SetAutomaticSend { enabled: true }, &human())
+            .unwrap();
+        let now = at(5, 9, 0, 0);
+        assert!(
+            take_due(&mut store, &human(), "fenetre", now, today, true)
+                .unwrap()
+                .is_none()
+        );
+        let pending = Executor::new(&mut store)
+            .execute(
+                &ReleaseReplyHold {
+                    opportunity_id: id.to_string(),
+                },
+                &agent(),
+            )
+            .unwrap();
+        assert!(matches!(pending, Outcome::PendingConfirmation(_)));
+        Executor::new(&mut store)
+            .execute(
+                &ReleaseReplyHold {
+                    opportunity_id: id.to_string(),
+                },
+                &human(),
+            )
+            .unwrap();
+        let batch = take_due(&mut store, &human(), "fenetre", now, today, true)
+            .unwrap()
+            .expect("relance");
+        assert_eq!(batch.letters.len(), 1);
+        assert_eq!(batch.letters[0].message.to_address, "marie@acme.test");
+    }
+
+    fn mark_fault(store: &mut crate::store::Store, client_id: &str, status: AddressFault) {
+        Executor::new(store)
+            .execute(
+                &MarkAddress {
+                    client_id: client_id.to_string(),
+                    address: "marie@acme.test".into(),
+                    status,
+                    message_id: Some("avis-1".into()),
+                },
+                &human(),
+            )
+            .unwrap();
+    }
+
+    fn fault_status(store: &crate::store::Store, client_id: &str) -> String {
+        store
+            .connection()
+            .query_row(
+                "SELECT status FROM address_fault WHERE client_id = ?1",
+                [client_id],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn a_failed_address_blocks_the_letter_until_it_is_confirmed() {
+        let mut store = test_store("mail-dead");
+        save_ready(&mut store);
+        let today = Date::from_calendar_date(2026, Month::September, 5).unwrap();
+        let FollowUpSubject::Opportunity(id) = seed(&mut store, today) else {
+            panic!("dossier");
+        };
+        let client_id: String = store
+            .connection()
+            .query_row(
+                "SELECT client_id FROM opportunities WHERE id = ?1",
+                [id.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        mark_fault(&mut store, &client_id, AddressFault::Probable);
+        mark_fault(&mut store, &client_id, AddressFault::Failed);
+        mark_fault(&mut store, &client_id, AddressFault::Probable);
+        assert_eq!(fault_status(&store, &client_id), "failed");
+        let refused = Executor::new(&mut store).execute(
+            &ArmOutbound {
+                kind: "letter".into(),
+                anchor: None,
+                to_address: "marie@acme.test".into(),
+                subject: "Bonjour".into(),
+                body: "Une ligne.".into(),
+                delay_secs: 0,
+                session_token: None,
+                follow_subject: None,
+                follow_subject_id: None,
+                follow_cycle: None,
+                follow_step: None,
+                client_id: Some(client_id.clone()),
+            },
+            &human(),
+        );
+        let Err(error) = refused else {
+            panic!("l'adresse morte a été armée");
+        };
+        assert!(error.to_string().contains("ne reçoit pas"));
+        Executor::new(&mut store)
+            .execute(&SetAutomaticSend { enabled: true }, &human())
+            .unwrap();
+        let now = at(5, 9, 0, 0);
+        assert!(
+            take_due(&mut store, &human(), "fenetre", now, today, true)
+                .unwrap()
+                .is_none()
+        );
+        let pending = Executor::new(&mut store)
+            .execute(
+                &MarkAddress {
+                    client_id: client_id.clone(),
+                    address: "Marie@acme.test".into(),
+                    status: AddressFault::Confirmed,
+                    message_id: None,
+                },
+                &agent(),
+            )
+            .unwrap();
+        assert!(matches!(pending, Outcome::PendingConfirmation(_)));
+        mark_fault(&mut store, &client_id, AddressFault::Confirmed);
+        let batch = take_due(&mut store, &human(), "fenetre", now, today, true)
+            .unwrap()
+            .expect("adresse confirmée");
+        assert_eq!(batch.letters[0].message.to_address, "marie@acme.test");
+        mark_fault(&mut store, &client_id, AddressFault::Failed);
+        assert_eq!(fault_status(&store, &client_id), "failed");
+        let entries = recent_audit_entries(store.connection(), 0, 40).unwrap();
+        let marked = entries
+            .iter()
+            .find(|entry| entry.command_name == "mail.mark_address")
+            .expect("marque");
+        assert!(marked.command_json.contains("marie@acme.test"));
+        assert!(!marked.command_json.contains("Une ligne"));
+    }
+
+    #[test]
+    fn arming_a_reply_leaves_the_series_in_place() {
+        let mut store = test_store("mail-reply-arm");
+        save_ready(&mut store);
+        let today = Date::from_calendar_date(2026, Month::September, 5).unwrap();
+        let FollowUpSubject::Opportunity(id) = seed(&mut store, today) else {
+            panic!("dossier");
+        };
+        let client_id: String = store
+            .connection()
+            .query_row(
+                "SELECT client_id FROM opportunities WHERE id = ?1",
+                [id.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        Executor::new(&mut store)
+            .execute(
+                &ArmOutbound {
+                    kind: "letter".into(),
+                    anchor: Some(format!("opportunity:{id}")),
+                    to_address: "marie@acme.test".into(),
+                    subject: "Re: suite".into(),
+                    body: "Je réponds.".into(),
+                    delay_secs: 0,
+                    session_token: None,
+                    follow_subject: None,
+                    follow_subject_id: None,
+                    follow_cycle: None,
+                    follow_step: None,
+                    client_id: Some(client_id),
+                },
+                &human(),
+            )
+            .unwrap();
+        let (hold, next): (i64, String) = store
+            .connection()
+            .query_row(
+                "SELECT reply_hold, next_action_at FROM opportunities WHERE id = ?1",
+                [id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(hold, 0);
+        assert_eq!(next, "2026-09-05");
     }
 
     fn insert_sent(
