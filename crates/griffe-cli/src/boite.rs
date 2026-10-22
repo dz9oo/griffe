@@ -6,8 +6,9 @@ use std::path::PathBuf;
 use clap::Subcommand;
 use griffe_core::app::{ExecutionContext, Executor};
 use griffe_core::mail::{
-    AddressFault, MarkAddress, ReleaseReplyHold, ReplyDraft, UNDO_SECS, arm_reply, file_human,
-    french_submit_error, list_box, releve_plan, resolve_message_id,
+    AddressFault, MarkAddress, RECENT_BODIES, ReleaseReplyHold, ReplyDraft, UNDO_SECS, arm_reply,
+    file_human, french_submit_error, list_box, note_releve_failure, note_releve_success,
+    releve_plan, resolve_message_id,
 };
 use griffe_core::store::Store;
 
@@ -147,10 +148,29 @@ fn relever(store: &mut Store, ctx: &ExecutionContext, json: bool) -> Result<Stri
         ));
     };
     let icloud = plan.endpoint.icloud;
-    let pulled = griffe_mail::fetch_new(&plan.endpoint, &plan.secret, &plan.cursors)
-        .map_err(|error| CliError::Domain(french_submit_error(&error, icloud)))?;
+    let pulled = match griffe_mail::fetch_new(&plan.endpoint, &plan.secret, &plan.cursors) {
+        Ok(pulled) => pulled,
+        Err(error) => {
+            let sentence = french_submit_error(&error, icloud);
+            let _ = note_releve_failure(store, &sentence);
+            return Err(CliError::Domain(sentence));
+        }
+    };
     let mut mailbox = store.open_mailbox()?;
-    let report = griffe_core::mail::absorb(store, &mut mailbox, &pulled, ctx)?;
+    let mut report = griffe_core::mail::absorb(store, &mut mailbox, &pulled, ctx)?;
+    let pending = mailbox.pending_bodies(RECENT_BODIES)?;
+    if let Ok(bodies) = griffe_mail::fetch_pending(&plan.endpoint, &plan.secret, &pending) {
+        let filled = griffe_core::mail::absorb(store, &mut mailbox, &bodies, ctx)?;
+        report.stored = report.stored.saturating_add(filled.stored);
+        report.held = report.held.saturating_add(filled.held);
+        report.failed = report.failed.saturating_add(filled.failed);
+        report.choices = report.choices.saturating_add(filled.choices);
+        report.on_dossier = report.on_dossier.saturating_add(filled.on_dossier);
+    }
+    let stamp = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default();
+    let _ = note_releve_success(store, &stamp);
     if json {
         return Ok(format_json(&report));
     }

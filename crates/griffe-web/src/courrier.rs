@@ -9,7 +9,7 @@ use griffe_core::app::{AppError, Executor};
 use griffe_core::mail::{
     ArmOutbound, CancelOutbound, ClearMailSecret, MailSecret, RecordMailProbe, ResolveUncertain,
     RetryOutbound, SaveLetterface, SaveMailAccount, SaveMailSecret, SaveMailSignature,
-    SetAutomaticSend, UNDO_SECS, probe_material, profile,
+    SetAutomaticSend, SetReleveInterval, UNDO_SECS, probe_material, profile,
 };
 use maud::{Markup, html};
 use serde::Deserialize;
@@ -371,6 +371,54 @@ pub async fn automatic(
                 &state,
                 Some(&CourrierForm {
                     notice: Some(notice.into()),
+                    ..CourrierForm::blank()
+                }),
+            )
+            .await,
+        ),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ReleveForm {
+    #[serde(default)]
+    minutes: String,
+}
+
+pub async fn releve_interval(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(form): Form<ReleveForm>,
+) -> Response {
+    let minutes: u64 = form.minutes.trim().parse().unwrap_or(0);
+    let seconds = minutes.saturating_mul(60);
+    let result = state
+        .with_store_mut(|store| {
+            Executor::new(store).execute(&SetReleveInterval { seconds }, &AppState::human_ctx())
+        })
+        .await;
+    let notice = griffe_core::mail::releve_cadence(seconds).to_string();
+    match result {
+        None => locked(&state, &headers),
+        Some(Err(error)) => saved(
+            &state,
+            &headers,
+            courrier_markup(
+                &state,
+                Some(&CourrierForm {
+                    error: Some(french(&error)),
+                    ..CourrierForm::blank()
+                }),
+            )
+            .await,
+        ),
+        Some(Ok(_)) => saved(
+            &state,
+            &headers,
+            courrier_markup(
+                &state,
+                Some(&CourrierForm {
+                    notice: Some(format!("La relève : {notice}")),
                     ..CourrierForm::blank()
                 }),
             )

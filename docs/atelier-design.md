@@ -675,7 +675,12 @@ lettres en cartes `#fbf7f0`, puis la lettre. Les dossiers du serveur
 la page, même carte que le matin. Pendant la lecture, cette phrase le dit.
 Le grand paraphe ne paraît que si la boîte est encore vide. Une relève
 suivante ne recouvre pas la lettre ouverte. L'échec, et le compte qui ne
-se lit pas, s'écrivent. Au repos, le sondage s'arrête.
+se lit pas, s'écrivent. La phrase dit « Relève du courrier en cours. » ou
+« Dernière relève à 14 h 32. ». « Relever le courrier » demande un passage.
+La période, une, trois, quinze ou trente minutes, se règle dans Le courrier
+et se lit sous la phrase. Tant que la page est ouverte, le sondage continue :
+chaque seconde pendant la relève, toutes les deux secondes au repos. Sans
+crochet de lecture, il ne démarre pas.
 
 Sur le dossier, pas de sixième pastille. Le fil est le haut d’En cours, avant
 le projet et l’histoire. Les pastilles restent : En cours, Écrire, La fiche,

@@ -3,7 +3,8 @@
 
 use griffe_core::app::Executor;
 use griffe_core::mail::{
-    ArmOutbound, SaveLetterface, SaveMailSignature, SetAutomaticSend, profile, trial_letter,
+    ArmOutbound, SaveLetterface, SaveMailSignature, SetAutomaticSend, SetReleveInterval, profile,
+    trial_letter,
 };
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
@@ -52,6 +53,14 @@ pub(crate) struct SignatureArgs {
 pub(crate) struct TrialArgs {
     /// Destinataire. Absent : l'adresse qui signe.
     to: Option<String>,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct RythmeArgs {
+    /// 1, 3, 15 ou 30 minutes.
+    minutes: u16,
     #[serde(default)]
     dry_run: bool,
 }
@@ -214,6 +223,26 @@ impl FreeflowServer {
             client_id: None,
             in_reply_to: None,
             references: None,
+        };
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
+            Ok(outcome) => ok_json(outcome_json(&outcome)),
+            Err(error) => err_text(error.to_string()),
+        }
+    }
+
+    #[tool(
+        name = "mail.rythme",
+        description = "Règle la relève à 1, 3, 15 ou 30 minutes.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true
+        )
+    )]
+    async fn mail_rythme(&self, Parameters(args): Parameters<RythmeArgs>) -> CallToolResult {
+        let mut store = self.store.lock().await;
+        let cmd = SetReleveInterval {
+            seconds: u64::from(args.minutes).saturating_mul(60),
         };
         match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),

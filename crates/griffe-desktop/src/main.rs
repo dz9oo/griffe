@@ -40,12 +40,14 @@ fn resolve_db_path() -> PathBuf {
 
 fn spawn_releve_clock(state: AppState) {
     tauri::async_runtime::spawn(async move {
-        let mut tick =
-            tokio::time::interval(Duration::from_secs(griffe_core::mail::RELEVE_EVERY_SECS));
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
-            tick.tick().await;
             pull_mail(&state).await;
+            let every = state
+                .with_store(griffe_core::mail::releve_every)
+                .await
+                .and_then(Result::ok)
+                .unwrap_or(griffe_core::mail::RELEVE_EVERY_SECS);
+            tokio::time::sleep(Duration::from_secs(every)).await;
         }
     });
 }
@@ -206,8 +208,14 @@ fn main() {
     state.set_mark_seen(|endpoint, secret, mailbox, uid| {
         griffe_mail::store_seen(endpoint, secret, mailbox, uid)
     });
-    state.set_releve_fetch(|endpoint, secret, cursors, tick| {
-        griffe_mail::fetch_reporting(endpoint, secret, cursors, tick)
+    let hub = griffe_mail::MailHub::start();
+    let fetch_hub = hub.clone();
+    state.set_releve_fetch(move |endpoint, secret, cursors, on| {
+        fetch_hub.sync(endpoint, secret, cursors, on)
+    });
+    let body_hub = hub;
+    state.set_body_fetch(move |endpoint, secret, mailbox, uid| {
+        body_hub.body(endpoint, secret, mailbox, uid)
     });
 
     tauri::async_runtime::block_on(state.try_open_cached());

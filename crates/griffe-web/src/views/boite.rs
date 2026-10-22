@@ -19,6 +19,8 @@ pub struct LectureView {
     pub generation: u64,
     /// Lignes qui arrivent dans cette réponse.
     pub fresh: Vec<String>,
+    /// La liaison est ouverte.
+    pub busy: bool,
 }
 
 /// Ce que la page doit garder dans ses liens.
@@ -38,9 +40,13 @@ pub fn render(
 ) -> Markup {
     let open_id = page.open.as_ref().map(|letter| letter.id.as_str());
     let fresh = lecture.map(|view| view.fresh.as_slice()).unwrap_or(&[]);
-    let empty = lecture
-        .map(|view| view.face.empty)
-        .unwrap_or("Aucune lettre dans cette vue.");
+    let empty = empty_line(
+        page,
+        keep,
+        lecture
+            .map(|view| view.face.empty)
+            .unwrap_or("Aucune lettre dans cette vue."),
+    );
     html! {
         div class="boite" data-view="boite" {
             article class="plateau-status" {
@@ -73,7 +79,14 @@ pub fn poll_fragment(
         (facts(page, keep, Some(lecture)))
         @if refresh_list {
             (vues(page, keep, true))
-            (list(page, keep, open_id, lecture.face.empty, &lecture.fresh, true))
+            (list(
+                page,
+                keep,
+                open_id,
+                empty_line(page, keep, lecture.face.empty),
+                &lecture.fresh,
+                true,
+            ))
         }
         @if refresh_column {
             (reading(page, keep, Some(&lecture.face), true))
@@ -85,14 +98,77 @@ pub fn poll_fragment(
 
 fn facts(page: &BoxPage, keep: &Keep, lecture: Option<&LectureView>) -> Markup {
     let Some(lecture) = lecture else {
-        return status(page.dossier_letters, page.failed_addresses);
+        return html! {
+            (status(page.dossier_letters, page.failed_addresses))
+            (releve_bar(page, keep, false))
+        };
     };
-    let trigger = lecture.face.poll.then_some("every 1s");
+    let trigger = if lecture.face.poll {
+        "every 1s"
+    } else {
+        "every 2s"
+    };
     let url = lecture_href(keep, lecture);
     html! {
-        div id="lecture" hx-get=(url) hx-trigger=[trigger] hx-swap="outerHTML" hx-target="this" {
+        div id="lecture" hx-get=(url) hx-trigger=(trigger) hx-swap="outerHTML" hx-target="this" {
             (shown_sentence(page, &lecture.face))
+            (releve_bar(page, keep, lecture.busy))
         }
+    }
+}
+
+fn releve_bar(page: &BoxPage, keep: &Keep, busy: bool) -> Markup {
+    let hour = page
+        .releve_at
+        .as_deref()
+        .and_then(griffe_core::mail::releve_clock);
+    html! {
+        p class="quiet-line" aria-live="polite" {
+            @if busy {
+                "Relève du courrier en cours."
+            } @else if let Some(error) = page.releve_error.as_deref() {
+                "La relève n'a pas abouti. "
+                (error)
+                @if let Some(hour) = hour.as_deref() {
+                    " Dernière relève à " (hour) "."
+                }
+            } @else if let Some(hour) = hour.as_deref() {
+                "Dernière relève à " (hour) "."
+            } @else {
+                "La relève n'a pas encore eu lieu."
+            }
+        }
+        p class="quiet-line" {
+            a href="/societe/courrier#releve"
+              hx-get="/societe/courrier"
+              hx-target="#content"
+              hx-push-url="/societe/courrier#releve"
+              hx-swap="innerHTML" {
+                (griffe_core::mail::releve_cadence(page.releve_every_secs))
+            }
+        }
+        form hx-post="/boite/relever" hx-target="#content" hx-swap="innerHTML" {
+            input type="hidden" name="vue" value=(keep.vue.as_str());
+            input type="hidden" name="q" value=(keep.q);
+            input type="hidden" name="lettre" value=(keep.lettre);
+            input type="hidden" name="dossier" value=(keep.dossier);
+            div class="row-actions" {
+                button type="submit" disabled[busy] { "Relever le courrier" }
+            }
+        }
+    }
+}
+
+fn empty_line<'a>(page: &BoxPage, keep: &Keep, fallback: &'a str) -> &'a str {
+    if keep.vue == BoxVue::Lire
+        && page.cards.is_empty()
+        && page.counts.tout > 0
+        && keep.q.is_empty()
+        && keep.dossier.is_empty()
+    {
+        "Les lettres déjà lues sont dans Tout."
+    } else {
+        fallback
     }
 }
 
@@ -347,11 +423,16 @@ fn reading(page: &BoxPage, keep: &Keep, face: Option<&LectureFace>, oob: bool) -
                     "L'adresse " (address) " ne reçoit pas. L'envoi vers elle est retenu."
                 }
             }
-            @if !letter.text.trim().is_empty() {
+            @if let Some(sentence) = crate::releve::body_sentence(&letter.body_state) {
+                p class="note" { (sentence) }
+            }
+            @if letter.body_state == "ready" && !letter.text.trim().is_empty() {
                 div class="body" { (letter.text) }
             }
-            @if let Some(document) = html_frame {
-                iframe class="received-frame" sandbox="" title="Le message reçu" srcdoc=(document) {}
+            @if letter.body_state == "ready" {
+                @if let Some(document) = html_frame {
+                    iframe class="received-frame" sandbox="" title="Le message reçu" srcdoc=(document) {}
+                }
             }
             (actions(letter, keep))
         }

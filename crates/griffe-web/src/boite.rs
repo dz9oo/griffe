@@ -56,6 +56,16 @@ pub(crate) struct LectureForm {
     stall: String,
 }
 
+pub async fn relever(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(form): Form<BoiteForm>,
+) -> Response {
+    state.request_releve();
+    kick_releve(&state).await;
+    show(&state, &headers, &form, None, false).await
+}
+
 pub async fn page(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -105,12 +115,14 @@ pub(crate) async fn lecture(
         form.col.as_str()
     };
     let refresh_list = form.generation != snap.generation;
-    let refresh_column =
-        keep.lettre.is_empty() && (requested_col != col || (col == "glyph" && form.stall != stall));
+    let refresh_column = (keep.lettre.is_empty()
+        && (requested_col != col || (col == "glyph" && form.stall != stall)))
+        || (refresh_list && col == "letter");
     let view = LectureView {
         face,
         generation: snap.generation,
         fresh: snap.fresh_ids,
+        busy: lecture_busy(snap.phase),
     };
     let mut response = Html(
         crate::views::boite::poll_fragment(&page, &keep, &view, refresh_list, refresh_column)
@@ -249,6 +261,7 @@ async fn show(
     } else {
         first
     };
+    ask_for_body(state, page.open.as_ref()).await;
     let lecture = paint_lecture(state, &page).await;
     page_response(
         state,
@@ -281,6 +294,28 @@ async fn read_page(
     state.with_store(|store| read_box(store, query)).await
 }
 
+async fn ask_for_body(state: &AppState, letter: Option<&griffe_core::mail::BoxLetter>) {
+    let Some(letter) = letter else {
+        return;
+    };
+    if letter.body_state != "pending" {
+        return;
+    }
+    let id = letter.id.clone();
+    let Some(Ok(Some(body))) = state
+        .with_store(move |store| -> Result<_, griffe_core::app::AppError> {
+            if !griffe_core::mailbox::mailbox_file(store.db_path()).exists() {
+                return Ok(None);
+            }
+            store.open_mailbox()?.pending_of(&id)
+        })
+        .await
+    else {
+        return;
+    };
+    crate::releve::request_body(state, body);
+}
+
 async fn account_readable(state: &AppState) -> bool {
     state
         .with_store(|store| releve_plan(store).ok().flatten().is_some())
@@ -304,7 +339,15 @@ async fn paint_lecture(state: &AppState, page: &griffe_core::mail::BoxPage) -> O
         face,
         generation: snap.generation,
         fresh: snap.fresh_ids,
+        busy: lecture_busy(snap.phase),
     })
+}
+
+fn lecture_busy(phase: griffe_core::mail::LecturePhase) -> bool {
+    matches!(
+        phase,
+        griffe_core::mail::LecturePhase::Opening | griffe_core::mail::LecturePhase::Reading { .. }
+    )
 }
 
 async fn mark_letter(state: &AppState, id: &str) -> bool {

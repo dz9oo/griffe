@@ -429,6 +429,11 @@ const COURRIER: &[Cmd] = &[
         example: r#"griffe courrier secret --secret-file secret.txt"#,
     },
     Cmd {
+        verb: r#"courrier rythme"#,
+        said: r#"Règle la relève à 1, 3, 15 ou 30 minutes. La fenêtre s'en sert pendant que le coffre est ouvert."#,
+        example: r#"griffe courrier rythme 3"#,
+    },
+    Cmd {
         verb: r#"courrier auto"#,
         said: r#"Allume ou éteint l'envoi des lettres dont la date est aujourd'hui. Avec un agent, le geste attend une personne."#,
         example: r#"griffe courrier auto --off"#,

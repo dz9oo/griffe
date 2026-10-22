@@ -80,6 +80,11 @@ est quand même partie. Griffe réessaie plus tard.
 La boîte lit ce même compte : les lettres reçues, et celles déjà envoyées.
 Ouvrir la page le dit : le grand paraphe seulement si la boîte est encore
 vide, et une phrase si le compte ne répond pas ou ne se lit pas.
+Elle dit aussi si la relève est en cours, ou l'heure de la dernière qui
+a abouti. « Relever le courrier » en demande une. La période se règle
+dans Le courrier : une minute, trois, quinze ou trente. Trois minutes,
+sinon. Les lettres déjà lues ne sont pas dans À lire : elles sont dans Tout.
+Le texte d'une lettre lourde n'est pas recopié ici.
 Ouvrir une lettre la marque lue. On la rattache à un dossier. Répondre
 arme une lettre, avec cinq secondes pour la retenir. Une réponse reçue
 retient la relance. Laisser partir la relance la rend à son jour. Un avis

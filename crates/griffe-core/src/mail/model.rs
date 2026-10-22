@@ -169,6 +169,8 @@ pub struct MailProfile {
     pub metier: String,
     /// Adresse en bas de la lettre. Vide : pas de ligne.
     pub site: String,
+    /// Secondes entre deux relèves. Une des quatre valeurs.
+    pub releve_every_secs: u64,
 }
 
 /// Ce qui habille la lettre au moment où elle part. Indépendant du texte écrit.
@@ -274,6 +276,7 @@ impl Default for MailProfile {
             link_ink: LetterTheme::Clair,
             metier: String::new(),
             site: String::new(),
+            releve_every_secs: super::RELEVE_EVERY_SECS,
         }
     }
 }

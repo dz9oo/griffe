@@ -13,7 +13,8 @@ const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS mailbox (
     name TEXT PRIMARY KEY,
     uidvalidity INTEGER NOT NULL,
-    last_uid INTEGER NOT NULL
+    last_uid INTEGER NOT NULL,
+    modseq INTEGER
 );
 CREATE TABLE IF NOT EXISTS message (
     id TEXT PRIMARY KEY,
@@ -33,9 +34,17 @@ CREATE TABLE IF NOT EXISTS message (
     folder_role TEXT NOT NULL CHECK (folder_role IN ('inbox', 'sent', 'other')),
     choice_of TEXT CHECK (choice_of IN ('fiche', 'dossier')),
     choice_ids TEXT,
+    body_state TEXT NOT NULL DEFAULT 'ready',
     UNIQUE (mailbox, uidvalidity, uid)
 );
+CREATE TABLE IF NOT EXISTS releve (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    at TEXT,
+    error TEXT
+);
 ";
+
+const MIRROR_VERSION: i64 = 2;
 
 /// Où est le miroir d'un coffre. `vault.db` donne `vault.db.mailbox`.
 #[must_use]
@@ -51,6 +60,8 @@ pub struct MailboxCursor {
     pub name: String,
     pub uidvalidity: i64,
     pub last_uid: i64,
+    /// `HIGHESTMODSEQ` déjà vu. Absent : le serveur n'annonce pas CONDSTORE.
+    pub modseq: Option<i64>,
 }
 
 /// Ligne du miroir, sans qu'on la ressorte du coffre comptable.
@@ -90,6 +101,8 @@ pub struct MirrorInsert {
     pub folder_role: String,
     pub choice_of: Option<String>,
     pub choice_ids: Option<String>,
+    /// `pending`, `ready`, `too_large` ou `unreadable`.
+    pub body_state: String,
 }
 
 /// Fichier miroir ouvert.
@@ -110,12 +123,23 @@ impl Mailbox {
         let conn = Connection::open(path)?;
         unlock(&conn, key)?;
         let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if version > 1 {
+        if version > MIRROR_VERSION {
             return Err(StoreError::SchemaTooNew);
         }
         if version == 0 {
             conn.execute_batch(SCHEMA)?;
-            conn.execute_batch("PRAGMA user_version = 1")?;
+            conn.pragma_update(None, "user_version", MIRROR_VERSION)?;
+        } else if version == 1 {
+            conn.execute_batch(
+                "ALTER TABLE message ADD COLUMN body_state TEXT NOT NULL DEFAULT 'ready';
+                 ALTER TABLE mailbox ADD COLUMN modseq INTEGER;
+                 CREATE TABLE IF NOT EXISTS releve (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    at TEXT,
+                    error TEXT
+                 );",
+            )?;
+            conn.pragma_update(None, "user_version", MIRROR_VERSION)?;
         }
         tighten_file(path);
         Ok(Self { conn })
@@ -127,12 +151,13 @@ impl Mailbox {
     pub fn cursors(&self) -> Result<Vec<MailboxCursor>, AppError> {
         let mut stmt = self
             .conn
-            .prepare("SELECT name, uidvalidity, last_uid FROM mailbox ORDER BY name")?;
+            .prepare("SELECT name, uidvalidity, last_uid, modseq FROM mailbox ORDER BY name")?;
         let rows = stmt.query_map([], |row| {
             Ok(MailboxCursor {
                 name: row.get(0)?,
                 uidvalidity: row.get(1)?,
                 last_uid: row.get(2)?,
+                modseq: row.get(3)?,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
@@ -175,9 +200,9 @@ impl Mailbox {
             "INSERT INTO message (
                 id, mailbox, uid, uidvalidity, message_id, from_name, from_address,
                 subject, sent_on, text, html, seen, notice, notice_address,
-                folder_role, choice_of, choice_ids
+                folder_role, choice_of, choice_ids, body_state
              ) VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18
              )",
             params![
                 id,
@@ -197,6 +222,7 @@ impl Mailbox {
                 message.folder_role,
                 message.choice_of,
                 message.choice_ids,
+                message.body_state,
             ],
         )?;
         Ok(())
@@ -207,13 +233,20 @@ impl Mailbox {
     /// # Errors
     ///
     /// Écriture impossible.
-    pub fn remember(&self, name: &str, uidvalidity: i64, last_uid: i64) -> Result<(), AppError> {
+    pub fn remember(
+        &self,
+        name: &str,
+        uidvalidity: i64,
+        last_uid: i64,
+        modseq: Option<i64>,
+    ) -> Result<(), AppError> {
         self.conn.execute(
-            "INSERT INTO mailbox (name, uidvalidity, last_uid) VALUES (?1, ?2, ?3)
+            "INSERT INTO mailbox (name, uidvalidity, last_uid, modseq) VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(name) DO UPDATE SET
                 uidvalidity = excluded.uidvalidity,
-                last_uid = MAX(mailbox.last_uid, excluded.last_uid)",
-            params![name, uidvalidity, last_uid],
+                last_uid = MAX(mailbox.last_uid, excluded.last_uid),
+                modseq = COALESCE(excluded.modseq, mailbox.modseq)",
+            params![name, uidvalidity, last_uid, modseq],
         )?;
         Ok(())
     }
@@ -301,7 +334,8 @@ impl Mailbox {
         self.conn
             .query_row(
                 "SELECT id, mailbox, uid, message_id, from_name, from_address, subject, sent_on,
-                        text, html, seen, notice, notice_address, folder_role, choice_of, choice_ids
+                        text, html, seen, notice, notice_address, folder_role, choice_of, choice_ids,
+                        body_state
                  FROM message WHERE id = ?1",
                 [id],
                 letter_row,
@@ -361,6 +395,164 @@ impl Mailbox {
         let rows = stmt.query_map([], |row| row.get(0))?;
         rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
     }
+
+    /// Dernière relève aboutie, et la phrase de l'échec encore en cours.
+    /// L'échec n'efface pas l'heure.
+    ///
+    /// # Errors
+    ///
+    /// Lecture impossible.
+    pub fn releve_stamp(&self) -> Result<(Option<String>, Option<String>), AppError> {
+        self.conn
+            .query_row("SELECT at, error FROM releve WHERE id = 1", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .optional()
+            .map(|row| row.unwrap_or((None, None)))
+            .map_err(AppError::from)
+    }
+
+    /// Note l'heure d'une relève aboutie, ou la phrase d'un échec.
+    /// `at` absent garde l'heure précédente. `error` absent l'efface.
+    ///
+    /// # Errors
+    ///
+    /// Écriture impossible.
+    pub fn note_releve(&self, at: Option<&str>, error: Option<&str>) -> Result<(), AppError> {
+        self.conn.execute(
+            "INSERT INTO releve (id, at, error) VALUES (1, ?1, ?2)
+             ON CONFLICT(id) DO UPDATE SET
+                at = COALESCE(excluded.at, releve.at),
+                error = excluded.error",
+            params![at, error],
+        )?;
+        Ok(())
+    }
+
+    /// Corps encore absent pour cette ligne. `None` s'il est déjà là, ou si la ligne n'existe pas.
+    ///
+    /// # Errors
+    ///
+    /// Lecture impossible.
+    pub fn pending_of(&self, id: &str) -> Result<Option<PendingBody>, AppError> {
+        self.conn
+            .query_row(
+                "SELECT mailbox, uid, uidvalidity FROM message
+                 WHERE id = ?1 AND body_state = 'pending'",
+                [id],
+                |row| {
+                    Ok(PendingBody {
+                        mailbox: row.get(0)?,
+                        uid: row.get(1)?,
+                        uidvalidity: row.get(2)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(AppError::from)
+    }
+
+    /// Corps encore absents, les plus récemment déposés d'abord.
+    ///
+    /// # Errors
+    ///
+    /// Lecture impossible.
+    pub fn pending_bodies(&self, limit: u32) -> Result<Vec<PendingBody>, AppError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut stmt = self.conn.prepare(
+            "SELECT mailbox, uid, uidvalidity FROM message
+             WHERE body_state = 'pending'
+             ORDER BY rowid DESC
+             LIMIT ?1",
+        )?;
+        let rows = stmt.query_map([i64::from(limit)], |row| {
+            Ok(PendingBody {
+                mailbox: row.get(0)?,
+                uid: row.get(1)?,
+                uidvalidity: row.get(2)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+    }
+
+    /// État du corps. `None` si la ligne n'est pas là.
+    ///
+    /// # Errors
+    ///
+    /// Lecture impossible.
+    pub fn body_state_of(
+        &self,
+        mailbox: &str,
+        uidvalidity: i64,
+        uid: i64,
+    ) -> Result<Option<String>, AppError> {
+        self.conn
+            .query_row(
+                "SELECT body_state FROM message
+                 WHERE mailbox = ?1 AND uidvalidity = ?2 AND uid = ?3",
+                params![mailbox, uidvalidity, uid],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(AppError::from)
+    }
+
+    /// Écrit le corps d'une ligne déjà posée par ses en-têtes.
+    ///
+    /// # Errors
+    ///
+    /// Écriture impossible.
+    #[allow(clippy::too_many_arguments)]
+    pub fn fill_body(
+        &self,
+        mailbox: &str,
+        uidvalidity: i64,
+        uid: i64,
+        text: &str,
+        html: Option<&str>,
+        body_state: &str,
+        notice: Option<&str>,
+        notice_address: Option<&str>,
+    ) -> Result<bool, AppError> {
+        let updated = self.conn.execute(
+            "UPDATE message
+             SET text = ?1, html = ?2, body_state = ?3, notice = ?4, notice_address = ?5
+             WHERE mailbox = ?6 AND uidvalidity = ?7 AND uid = ?8",
+            params![
+                text,
+                html,
+                body_state,
+                notice,
+                notice_address,
+                mailbox,
+                uidvalidity,
+                uid
+            ],
+        )?;
+        Ok(updated == 1)
+    }
+
+    /// Met à jour le drapeau lu d'une ligne déjà indexée.
+    ///
+    /// # Errors
+    ///
+    /// Écriture impossible.
+    pub fn set_seen_uid(
+        &self,
+        mailbox: &str,
+        uidvalidity: i64,
+        uid: i64,
+        seen: bool,
+    ) -> Result<(), AppError> {
+        self.conn.execute(
+            "UPDATE message SET seen = ?1
+             WHERE mailbox = ?2 AND uidvalidity = ?3 AND uid = ?4",
+            params![i64::from(seen), mailbox, uidvalidity, uid],
+        )?;
+        Ok(())
+    }
 }
 
 /// Lettre du miroir, corps compris. Le coffre comptable ne la reçoit pas.
@@ -382,6 +574,16 @@ pub struct MirrorLetter {
     pub folder_role: String,
     pub choice_of: Option<String>,
     pub choice_ids: Option<String>,
+    /// `pending`, `ready`, `too_large` ou `unreadable`.
+    pub body_state: String,
+}
+
+/// Corps encore à demander au serveur.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingBody {
+    pub mailbox: String,
+    pub uid: i64,
+    pub uidvalidity: i64,
 }
 
 /// Où marquer lu sur le serveur.
@@ -411,5 +613,6 @@ fn letter_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MirrorLetter> {
         folder_role: row.get(13)?,
         choice_of: row.get(14)?,
         choice_ids: row.get(15)?,
+        body_state: row.get(16)?,
     })
 }

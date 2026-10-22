@@ -53,8 +53,14 @@ déguisé.
 
 La fenêtre n'écoute toujours aucun port. Les sorties sont la soumission
 SMTP vers le serveur écrit dans Le courrier, et la relève de ce même compte,
-pendant que le coffre est ouvert, en TLS. Les relances peuvent encore
-produire un brouillon `.eml`. Pas de Google Fonts, pas de CDN.
+pendant que le coffre est ouvert, en TLS. La relève tient une liaison IMAP
+dans le processus de la fenêtre (`griffe-imap`) : en-têtes par lots, corps
+ensuite, sans second compte et sans port en écoute. Marquer lu ouvre une
+liaison courte pour ne pas attendre la fin de l'index. L'heure et l'échec
+de la relève sont sur le miroir, pas dans le journal d'audit : un passage
+par minute ne doit pas l'allonger. La période, elle, est une commande.
+Les relances peuvent encore produire un brouillon `.eml`. Pas de Google
+Fonts, pas de CDN.
 
 ## WAL multi-process
 

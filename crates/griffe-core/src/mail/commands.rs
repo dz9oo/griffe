@@ -359,6 +359,25 @@ impl Command for SetAutomaticSend {
     }
 }
 
+/// Période entre deux relèves. Quatre valeurs, rien d'autre.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetReleveInterval {
+    pub seconds: u64,
+}
+
+impl Command for SetReleveInterval {
+    type Output = ();
+    const NAME: &'static str = "mail.set_releve_interval";
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        if !super::RELEVE_CHOICES_SECS.contains(&self.seconds) {
+            return Err(MailError::ReleveInterval.into());
+        }
+        let seconds = i64::try_from(self.seconds).map_err(|_| MailError::ReleveInterval)?;
+        store::set_releve_every(conn, seconds, &now_stamp()?)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArmOutbound {
     pub kind: String,

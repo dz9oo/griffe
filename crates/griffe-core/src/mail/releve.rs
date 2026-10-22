@@ -4,14 +4,55 @@ use rusqlite::OptionalExtension;
 
 use super::commands::{AddressFault, FileMessage, FilingSource, HoldReply, MarkAddress};
 use super::inbound::{DossierLink, FicheAddress, KnownLetter, Notice, classify, read_message};
+use super::lecture::PullTick;
 use super::model::ImapEndpoint;
 use super::secret::MailSecret;
 use super::{probe_material, store};
 use crate::app::{AppError, ExecutionContext, Executor, Outcome};
 use crate::mailbox::{Mailbox, MailboxCursor, MirrorInsert, MirrorMessage};
 
-/// Écart entre deux relèves de la fenêtre, en secondes.
+/// Écart entre deux relèves de la fenêtre, en secondes. Défaut : trois minutes.
 pub const RELEVE_EVERY_SECS: u64 = 180;
+
+/// Périodes acceptées : une minute, trois, quinze, trente.
+pub const RELEVE_CHOICES_SECS: [u64; 4] = [60, 180, 900, 1_800];
+
+/// Corps gardé dans le miroir, en octets. Au-delà, les en-têtes restent.
+pub const BODY_CAP_BYTES: u64 = 15 * 1024 * 1024;
+
+/// Corps récents demandés après l'index des en-têtes.
+pub const RECENT_BODIES: u32 = 40;
+
+/// En-têtes demandés ensemble.
+pub const HEADER_BATCH: usize = 100;
+
+/// Ce que la liaison a déjà du corps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PulledBody {
+    /// En-têtes seuls. Le corps viendra.
+    Pending,
+    /// `raw` est le message entier.
+    Ready,
+    /// Au-delà de [`BODY_CAP_BYTES`]. `raw` est les en-têtes.
+    TooLarge,
+    /// En-têtes illisibles.
+    Unreadable,
+    /// Drapeaux seulement. La ligne existe déjà.
+    Flags,
+}
+
+impl PulledBody {
+    /// Valeur rangée dans le miroir.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Ready | Self::Flags => "ready",
+            Self::TooLarge => "too_large",
+            Self::Unreadable => "unreadable",
+        }
+    }
+}
 
 /// Un dossier du serveur, tel que la liaison l'a rapporté.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,6 +63,8 @@ pub struct PulledMailbox {
     /// `inbox`, `sent` ou `other`.
     pub role: String,
     pub messages: Vec<PulledMessage>,
+    /// `HIGHESTMODSEQ` lu au `SELECT`. Absent si le serveur ne le dit pas.
+    pub modseq: Option<i64>,
 }
 
 /// Un message rapporté, pas encore rangé.
@@ -30,6 +73,32 @@ pub struct PulledMessage {
     pub uid: i64,
     pub seen: bool,
     pub raw: String,
+    pub body: PulledBody,
+    /// `RFC822.SIZE`, quand le serveur l'a donné.
+    pub size: Option<i64>,
+}
+
+impl PulledMessage {
+    /// Message entier, tel que les tests et l'ancien lecteur le posaient.
+    #[must_use]
+    pub fn full(uid: i64, seen: bool, raw: impl Into<String>) -> Self {
+        Self {
+            uid,
+            seen,
+            raw: raw.into(),
+            body: PulledBody::Ready,
+            size: None,
+        }
+    }
+}
+
+/// Annonce de la liaison, ou un lot à ranger tout de suite.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PullEvent {
+    /// `EXISTS`, puis chaque message analysé.
+    Tick(PullTick),
+    /// En-têtes, corps, ou drapeaux d'un dossier.
+    Batch(PulledMailbox),
 }
 
 /// Ce qu'il faut pour ouvrir la liaison. Le secret s'efface avec cette valeur.
@@ -64,6 +133,74 @@ pub struct BoxLine {
     pub notice: Option<String>,
     pub seen: bool,
     pub choice: bool,
+}
+
+/// Phrase de la période. Les quatre valeurs, rien d'autre.
+#[must_use]
+pub fn releve_cadence(seconds: u64) -> &'static str {
+    match seconds {
+        60 => "Toutes les minutes.",
+        900 => "Toutes les 15 minutes.",
+        1_800 => "Toutes les 30 minutes.",
+        _ => "Toutes les 3 minutes.",
+    }
+}
+
+/// Heure locale d'une relève aboutie, « 14 h 32 ».
+#[must_use]
+pub fn releve_clock(at: &str) -> Option<String> {
+    let parsed =
+        time::OffsetDateTime::parse(at, &time::format_description::well_known::Rfc3339).ok()?;
+    let local = time::UtcOffset::local_offset_at(parsed)
+        .ok()
+        .map_or(parsed, |offset| parsed.to_offset(offset));
+    Some(format!("{} h {:02}", local.hour(), local.minute()))
+}
+
+/// Mot des quatre périodes.
+#[must_use]
+pub fn releve_word(seconds: u64) -> &'static str {
+    match seconds {
+        60 => "1 minute",
+        900 => "15 minutes",
+        1_800 => "30 minutes",
+        _ => "3 minutes",
+    }
+}
+
+/// Période retenue, ou trois minutes si le compte n'a rien choisi de valide.
+///
+/// # Errors
+///
+/// Lecture impossible.
+pub fn releve_every(vault: &crate::store::Store) -> Result<u64, AppError> {
+    let raw = store::releve_every_raw(vault.connection())?;
+    Ok(raw
+        .and_then(|seconds| u64::try_from(seconds).ok())
+        .filter(|seconds| RELEVE_CHOICES_SECS.contains(seconds))
+        .unwrap_or(RELEVE_EVERY_SECS))
+}
+
+/// Heure d'une relève aboutie. Efface la phrase d'échec.
+///
+/// # Errors
+///
+/// Le miroir ne s'écrit pas.
+pub fn note_releve_success(vault: &crate::store::Store, at: &str) -> Result<(), AppError> {
+    vault.open_mailbox()?.note_releve(Some(at), None)
+}
+
+/// Phrase d'un échec. L'heure de la dernière réussite reste.
+///
+/// # Errors
+///
+/// Le miroir ne s'écrit pas.
+pub fn note_releve_failure(vault: &crate::store::Store, error: &str) -> Result<(), AppError> {
+    let error = error.trim();
+    if error.is_empty() {
+        return Ok(());
+    }
+    vault.open_mailbox()?.note_releve(None, Some(error))
 }
 
 /// Prépare la liaison. `None` : le compte ne permet pas de lire.
@@ -141,6 +278,19 @@ fn absorb_folder(
     for message in &folder.messages {
         last_uid = last_uid.max(message.uid);
         if mailbox.has_uid(&folder.name, folder.uidvalidity, message.uid)? {
+            if message.body == PulledBody::Flags {
+                mailbox.set_seen_uid(
+                    &folder.name,
+                    folder.uidvalidity,
+                    message.uid,
+                    message.seen,
+                )?;
+            } else if message.body != PulledBody::Pending {
+                fill_if_pending(vault, mailbox, folder, message, ctx, books, report)?;
+            }
+            continue;
+        }
+        if message.body == PulledBody::Flags {
             continue;
         }
         let placed = place(vault, mailbox, folder, message, ctx, books)?;
@@ -150,7 +300,47 @@ fn absorb_folder(
         report.choices += u32::from(placed.choice);
         report.on_dossier += u32::from(placed.on_dossier);
     }
-    mailbox.remember(&folder.name, folder.uidvalidity, last_uid)?;
+    mailbox.remember(&folder.name, folder.uidvalidity, last_uid, folder.modseq)?;
+    Ok(())
+}
+
+fn fill_if_pending(
+    vault: &mut crate::store::Store,
+    mailbox: &mut Mailbox,
+    folder: &PulledMailbox,
+    message: &PulledMessage,
+    ctx: &ExecutionContext,
+    books: &Books<'_>,
+    report: &mut AbsorbReport,
+) -> Result<(), AppError> {
+    let Some(state) = mailbox.body_state_of(&folder.name, folder.uidvalidity, message.uid)? else {
+        return Ok(());
+    };
+    if state != PulledBody::Pending.as_str() {
+        return Ok(());
+    }
+    let parsed = read_message(&message.raw);
+    let own = own_refs(books.own);
+    let filing = classify(&parsed, books.known, books.fiches, &own);
+    let (link, _, _, _) = resolve(&filing.link, filing.hold, books.open);
+    let failed = mark_notice(
+        vault,
+        ctx,
+        parsed.message_id.as_ref(),
+        &link,
+        filing.notice.as_ref(),
+    )?;
+    report.failed += u32::from(failed);
+    mailbox.fill_body(
+        &folder.name,
+        folder.uidvalidity,
+        message.uid,
+        &parsed.text,
+        parsed.html.as_deref(),
+        message.body.as_str(),
+        notice_label(filing.notice.as_ref()).as_deref(),
+        notice_address(filing.notice.as_ref()).as_deref(),
+    )?;
     Ok(())
 }
 
@@ -176,6 +366,7 @@ fn place(
     books: &Books<'_>,
 ) -> Result<Placed, AppError> {
     let parsed = read_message(&message.raw);
+    let defer_notice = message.body == PulledBody::Pending && parsed.delivery_report;
     let already = match parsed.message_id.as_deref() {
         Some(id) => store::filing_source(vault.connection(), id)?.is_some(),
         None => false,
@@ -205,13 +396,14 @@ fn place(
                     ..
                 }
             );
-        placed.failed = mark_notice(
-            vault,
-            ctx,
-            parsed.message_id.as_ref(),
-            &link,
-            filing.notice.as_ref(),
-        )?;
+        placed.failed = !defer_notice
+            && mark_notice(
+                vault,
+                ctx,
+                parsed.message_id.as_ref(),
+                &link,
+                filing.notice.as_ref(),
+            )?;
     }
     mailbox.insert(&MirrorInsert {
         mailbox: folder.name.clone(),
@@ -229,11 +421,20 @@ fn place(
         text: parsed.text,
         html: parsed.html,
         seen: message.seen,
-        notice: notice_label(filing.notice.as_ref()),
-        notice_address: notice_address(filing.notice.as_ref()),
+        notice: if defer_notice {
+            None
+        } else {
+            notice_label(filing.notice.as_ref())
+        },
+        notice_address: if defer_notice {
+            None
+        } else {
+            notice_address(filing.notice.as_ref())
+        },
         folder_role: folder.role.clone(),
         choice_of,
         choice_ids,
+        body_state: message.body.as_str().to_string(),
     })?;
     Ok(placed)
 }
@@ -563,8 +764,12 @@ pub fn releve_due(last: Option<time::OffsetDateTime>, now: time::OffsetDateTime)
 mod tests {
     use time::OffsetDateTime;
 
-    use super::{PulledMailbox, PulledMessage, absorb, list_box, releve_due};
-    use crate::app::{Actor, ExecutionContext, recent_audit_entries};
+    use super::{
+        PulledBody, PulledMailbox, PulledMessage, absorb, list_box, note_releve_failure,
+        note_releve_success, releve_due, releve_every,
+    };
+    use crate::app::{Actor, ExecutionContext, Executor, recent_audit_entries};
+    use crate::mail::SetReleveInterval;
     use crate::store::testing::test_store;
 
     const REPLY: &str = "\
@@ -651,15 +856,12 @@ Message-ID: <dead@griffe.local>\n\
             resync,
             role: "inbox".to_string(),
             messages,
+            modseq: None,
         }
     }
 
     fn pulled(uid: i64, raw: &str) -> PulledMessage {
-        PulledMessage {
-            uid,
-            seen: false,
-            raw: raw.to_string(),
-        }
+        PulledMessage::full(uid, false, raw)
     }
 
     #[test]
@@ -784,6 +986,97 @@ Message-ID: <dead@griffe.local>\n\
         assert_eq!(mailbox.list().unwrap().len(), 1);
         let lines = list_box(&restored, &mailbox).unwrap();
         assert_eq!(lines[0].subject, "Re: Votre proposition");
+    }
+
+    #[test]
+    fn headers_are_stored_before_the_body_and_a_report_waits() {
+        let mut vault = test_store("releve-headers");
+        seed(&mut vault);
+        let mut mailbox = vault.open_mailbox().unwrap();
+        let reply_headers = format!("{}\n\n", REPLY.split("\n\n").next().unwrap_or(REPLY));
+        let other = "\
+From: Ada <ada@example.test>\n\
+Subject: Bonjour\n\
+Message-ID: <ada@example.test>\n\
+\n";
+        let report_headers = format!("{}\n\n", DSN.split("\n\n").next().unwrap_or(DSN));
+        let batch = folder(
+            7,
+            false,
+            vec![
+                PulledMessage {
+                    uid: 1,
+                    seen: false,
+                    raw: reply_headers,
+                    body: PulledBody::Pending,
+                    size: Some(2_000_000),
+                },
+                PulledMessage {
+                    uid: 2,
+                    seen: true,
+                    raw: other.to_string(),
+                    body: PulledBody::Pending,
+                    size: Some(400),
+                },
+                PulledMessage {
+                    uid: 3,
+                    seen: false,
+                    raw: report_headers,
+                    body: PulledBody::Pending,
+                    size: Some(800),
+                },
+            ],
+        );
+        let report = absorb(&mut vault, &mut mailbox, &[batch], &system()).unwrap();
+        assert_eq!(report.stored, 3);
+        assert_eq!(report.held, 1);
+        assert_eq!(report.on_dossier, 1);
+        assert_eq!(report.failed, 0);
+        assert_eq!(
+            mailbox.body_state_of("INBOX", 7, 1).unwrap().as_deref(),
+            Some("pending")
+        );
+        let filled = absorb(
+            &mut vault,
+            &mut mailbox,
+            &[folder(7, false, vec![PulledMessage::full(3, false, DSN)])],
+            &system(),
+        )
+        .unwrap();
+        assert_eq!(filled.stored, 0);
+        assert_eq!(filled.failed, 1);
+        assert_eq!(
+            mailbox.body_state_of("INBOX", 7, 3).unwrap().as_deref(),
+            Some("ready")
+        );
+    }
+
+    #[test]
+    fn the_interval_accepts_four_values_and_the_stamp_keeps_the_hour() {
+        let mut vault = test_store("releve-interval");
+        let human = ExecutionContext::new(Actor::Human, false);
+        for seconds in [60_u64, 180, 900, 1_800] {
+            Executor::new(&mut vault)
+                .execute(&SetReleveInterval { seconds }, &human)
+                .unwrap();
+            assert_eq!(releve_every(&vault).unwrap(), seconds);
+        }
+        let refused = Executor::new(&mut vault)
+            .execute(&SetReleveInterval { seconds: 2 }, &human)
+            .unwrap_err();
+        assert!(refused.to_string().contains("1, 3, 15 ou 30"), "{refused}");
+        assert_eq!(releve_every(&vault).unwrap(), 1_800);
+        note_releve_success(&vault, "2026-10-22T12:32:00Z").unwrap();
+        note_releve_failure(&vault, "Le serveur n'a pas répondu.").unwrap();
+        let mailbox = vault.open_mailbox().unwrap();
+        let (at, error) = mailbox.releve_stamp().unwrap();
+        assert_eq!(at.as_deref(), Some("2026-10-22T12:32:00Z"));
+        assert_eq!(error.as_deref(), Some("Le serveur n'a pas répondu."));
+        note_releve_success(&vault, "2026-10-22T12:35:00Z").unwrap();
+        let mailbox = vault.open_mailbox().unwrap();
+        let (at, error) = mailbox.releve_stamp().unwrap();
+        assert_eq!(at.as_deref(), Some("2026-10-22T12:35:00Z"));
+        assert_eq!(error, None);
     }
 
     #[test]

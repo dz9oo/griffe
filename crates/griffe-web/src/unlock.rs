@@ -121,7 +121,10 @@ pub async fn submit(State(state): State<AppState>, Form(form): Form<UnlockForm>)
     let passphrase = Passphrase::from(form.passphrase);
     let remember = form.remember.is_some();
     match state.unlock(&passphrase, remember).await {
-        Ok(()) => Html(dashboard_page(&state).await).into_response(),
+        Ok(()) => {
+            crate::releve::kick_releve(&state).await;
+            Html(dashboard_page(&state).await).into_response()
+        }
         // Le message de `StoreError::PassphraseChangeInterrupted` porte déjà toute la
         // conduite à tenir : pas besoin du bandeau proactif en plus, qui ferait doublon.
         Err(e) => unlock_page(Some(&e.to_string()), false).into_response(),

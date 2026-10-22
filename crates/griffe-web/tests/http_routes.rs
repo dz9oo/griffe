@@ -13918,9 +13918,10 @@ fn plant_letter(
             folder_role: "inbox".into(),
             choice_of: None,
             choice_ids: None,
+            body_state: "ready".into(),
         })
         .unwrap();
-    mailbox.remember("INBOX", 1, uid).unwrap();
+    mailbox.remember("INBOX", 1, uid, None).unwrap();
     mailbox
         .list()
         .unwrap()
@@ -14285,7 +14286,7 @@ async fn the_box_page_reads_a_letter_and_confirms_a_failed_address() {
 }
 
 fn engage_releve(state: &AppState) {
-    state.set_releve_fetch(|_endpoint, _secret, _cursors, _tick| Ok(Vec::new()));
+    state.set_releve_fetch(|_endpoint, _secret, _cursors, _on| Ok(()));
 }
 
 fn save_account(store: &mut Store, preset: &str, imap_host: &str) {
@@ -14348,7 +14349,8 @@ async fn the_box_says_it_is_reading_and_the_poll_stops_at_rest() {
     let quiet_router = griffe_web::router(quiet);
     let (_, _, quiet_body) = read_route(&quiet_router, "/boite").await;
     assert!(
-        !quiet_body.contains("every 1s"),
+        !quiet_body.contains("hx-trigger=\"every 1s\"")
+            && !quiet_body.contains("hx-trigger=\"every 2s\""),
         "sans crochet, pas de sondage : {quiet_body}"
     );
     assert!(!quiet_body.contains("Griffe ouvre"), "{quiet_body}");
@@ -14444,8 +14446,14 @@ async fn the_box_says_it_is_reading_and_the_poll_stops_at_rest() {
     );
     assert!(
         !after.contains("every 1s"),
-        "au repos le sondage s'arrête : {after}"
+        "au repos le sondage ralentit : {after}"
     );
+    assert!(
+        after.contains("hx-trigger=\"every 2s\""),
+        "au repos la phrase de relève reste : {after}"
+    );
+    assert!(after.contains("Relever le courrier"), "{after}");
+    assert!(after.contains("Toutes les 3 minutes."), "{after}");
 
     let (_, trigger, rest) = read_route(
         &empty_router,
@@ -14454,6 +14462,7 @@ async fn the_box_says_it_is_reading_and_the_poll_stops_at_rest() {
     .await;
     assert_ne!(trigger.as_deref(), Some("griffe:saved"));
     assert!(!rest.contains("every 1s"), "{rest}");
+    assert!(rest.contains("hx-trigger=\"every 2s\""), "{rest}");
     assert!(!rest.contains("hx-on"), "{rest}");
 
     let filled_path = test_db_path("boite-lecture-pleine");
@@ -14846,7 +14855,8 @@ fn plant_from(
             folder_role: "inbox".into(),
             choice_of: None,
             choice_ids: None,
+            body_state: "ready".into(),
         })
         .unwrap();
-    mailbox.remember("INBOX", 1, uid).unwrap();
+    mailbox.remember("INBOX", 1, uid, None).unwrap();
 }

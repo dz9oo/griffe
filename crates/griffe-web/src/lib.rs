@@ -156,6 +156,7 @@ pub fn router(state: AppState) -> Router {
         .route("/", get(handlers::index))
         .route("/jour", get(handlers::jour))
         .route("/boite", get(boite::page))
+        .route("/boite/relever", post(boite::relever))
         .route("/boite/lecture", get(boite::lecture))
         .route("/boite/sceau", get(boite::seal))
         .route("/boite/classer", post(boite::classer))
@@ -319,6 +320,7 @@ pub fn router(state: AppState) -> Router {
         .route("/societe/courrier/secret", post(courrier::save_secret))
         .route("/societe/courrier/retirer", post(courrier::clear_secret))
         .route("/societe/courrier/automatique", post(courrier::automatic))
+        .route("/societe/courrier/releve", post(courrier::releve_interval))
         .route(
             "/societe/courrier/signature",
             post(courrier::save_signature),

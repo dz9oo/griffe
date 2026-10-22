@@ -23,7 +23,7 @@ pub use commands::{
     AddressFault, ArmOutbound, CancelOutbound, ClearMailSecret, FileMessage, FilingSource,
     HoldReply, MarkAddress, RecordMailProbe, ReleaseReplyHold, RememberImapUsername,
     ResolveUncertain, RetryOutbound, SaveLetterface, SaveMailAccount, SaveMailSecret,
-    SaveMailSignature, SetAutomaticSend,
+    SaveMailSignature, SetAutomaticSend, SetReleveInterval,
 };
 pub use error::MailError;
 pub use inbound::{
@@ -42,8 +42,10 @@ pub use model::{
 };
 pub use present::{LINK_HINT, LetterParts, close_letter, letter_card, letter_html, readable_links};
 pub use releve::{
-    AbsorbReport, BoxLine, PulledMailbox, PulledMessage, RELEVE_EVERY_SECS, RelevePlan, absorb,
-    list_box, releve_due, releve_plan,
+    AbsorbReport, BODY_CAP_BYTES, BoxLine, HEADER_BATCH, PullEvent, PulledBody, PulledMailbox,
+    PulledMessage, RECENT_BODIES, RELEVE_CHOICES_SECS, RELEVE_EVERY_SECS, RelevePlan, absorb,
+    list_box, note_releve_failure, note_releve_success, releve_cadence, releve_clock, releve_due,
+    releve_every, releve_plan, releve_word,
 };
 pub use secret::MailSecret;
 pub use theme::{

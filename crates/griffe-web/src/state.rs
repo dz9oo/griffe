@@ -17,10 +17,10 @@ use griffe_core::app::{Actor, ExecutionContext};
 use griffe_core::domain::parse_date;
 use griffe_core::mail::{
     AbsorbBeat, AbsorbReport, ImapEndpoint, LectureFolder, LecturePhase, MailSecret,
-    MailSubmitError, ProbeVerdict, PullRole, PullTick, PulledMailbox, SmtpEndpoint,
+    MailSubmitError, ProbeVerdict, PullEvent, PullRole, PullTick, PulledMessage, SmtpEndpoint,
     beat_after_absorb,
 };
-use griffe_core::mailbox::MailboxCursor;
+use griffe_core::mailbox::{MailboxCursor, PendingBody};
 use griffe_core::store::{AUTO_BACKUP_MAX_AGE, Passphrase, Store, StoreError, VaultStatus};
 use tokio::sync::Mutex;
 
@@ -33,13 +33,21 @@ pub type MarkSeen =
     Arc<dyn Fn(&ImapEndpoint, &MailSecret, &str, u32) -> Result<(), MailSubmitError> + Send + Sync>;
 
 /// Relève IMAP. Absente dans les tests et `griffe-web-dev` : la page ne joue pas la lecture.
+/// Le rappel reçoit chaque lot. Il ne doit pas ouvrir le coffre : le fil qui absorbe le fait.
 pub type ReleveFetch = Arc<
     dyn Fn(
             &ImapEndpoint,
             &MailSecret,
             &[MailboxCursor],
-            &mut dyn FnMut(PullTick),
-        ) -> Result<Vec<PulledMailbox>, MailSubmitError>
+            &mut dyn FnMut(PullEvent),
+        ) -> Result<(), MailSubmitError>
+        + Send
+        + Sync,
+>;
+
+/// Corps d'une lettre déjà indexée. Absente : le texte reste en attente.
+pub type BodyFetch = Arc<
+    dyn Fn(&ImapEndpoint, &MailSecret, &str, u32) -> Result<PulledMessage, MailSubmitError>
         + Send
         + Sync,
 >;
@@ -64,6 +72,9 @@ struct LectureMemory {
     fresh_ids: Vec<String>,
     running: bool,
     finished_at: Option<Instant>,
+    /// Demande manuelle. Elle saute l'attente, pas une relève déjà en cours.
+    force: bool,
+    report: AbsorbReport,
 }
 
 impl Default for LectureMemory {
@@ -75,14 +86,16 @@ impl Default for LectureMemory {
             fresh_ids: Vec::new(),
             running: false,
             finished_at: None,
+            force: false,
+            report: AbsorbReport::default(),
         }
     }
 }
 
-fn releve_wait_over(finished: Option<Instant>) -> bool {
+fn releve_wait_over(finished: Option<Instant>, every: Duration) -> bool {
     match finished {
         None => true,
-        Some(at) => at.elapsed() >= Duration::from_secs(griffe_core::mail::RELEVE_EVERY_SECS),
+        Some(at) => at.elapsed() >= every,
     }
 }
 
@@ -223,6 +236,10 @@ pub struct AppState {
     mark_seen: Arc<std::sync::Mutex<Option<MarkSeen>>>,
     /// Relève. Absente : aucun réseau, la page ne joue pas la lecture.
     releve_fetch: Arc<std::sync::Mutex<Option<ReleveFetch>>>,
+    /// Corps différé. Absent : la page dit que le texte arrive, sans le demander.
+    body_fetch: Arc<std::sync::Mutex<Option<BodyFetch>>>,
+    /// Corps à prendre avant la file des quarante.
+    body_rush: Arc<std::sync::Mutex<Vec<PendingBody>>>,
     /// Où en est la lecture. Mutex standard : le fil bloquant l'écrit sans le coffre.
     lecture: Arc<std::sync::Mutex<LectureMemory>>,
 }
@@ -254,6 +271,8 @@ impl AppState {
             mail_probe: Arc::new(std::sync::Mutex::new(None)),
             mark_seen: Arc::new(std::sync::Mutex::new(None)),
             releve_fetch: Arc::new(std::sync::Mutex::new(None)),
+            body_fetch: Arc::new(std::sync::Mutex::new(None)),
+            body_rush: Arc::new(std::sync::Mutex::new(Vec::new())),
             lecture: Arc::new(std::sync::Mutex::new(LectureMemory::default())),
         }
     }
@@ -299,8 +318,8 @@ impl AppState {
             &ImapEndpoint,
             &MailSecret,
             &[MailboxCursor],
-            &mut dyn FnMut(PullTick),
-        ) -> Result<Vec<PulledMailbox>, MailSubmitError>
+            &mut dyn FnMut(PullEvent),
+        ) -> Result<(), MailSubmitError>
         + Send
         + Sync
         + 'static,
@@ -312,6 +331,43 @@ impl AppState {
 
     pub(crate) fn releve_fetch(&self) -> Option<ReleveFetch> {
         self.releve_fetch.lock().ok().and_then(|slot| slot.clone())
+    }
+
+    /// Installe la lecture d'un corps. La fenêtre passe le fil IMAP.
+    pub fn set_body_fetch(
+        &self,
+        fetch: impl Fn(&ImapEndpoint, &MailSecret, &str, u32) -> Result<PulledMessage, MailSubmitError>
+        + Send
+        + Sync
+        + 'static,
+    ) {
+        if let Ok(mut slot) = self.body_fetch.lock() {
+            *slot = Some(Arc::new(fetch));
+        }
+    }
+
+    pub(crate) fn body_fetch(&self) -> Option<BodyFetch> {
+        self.body_fetch.lock().ok().and_then(|slot| slot.clone())
+    }
+
+    /// Demande ce corps avant les autres. La page n'attend pas.
+    pub(crate) fn prefer_body(&self, body: PendingBody) {
+        let Ok(mut slot) = self.body_rush.lock() else {
+            return;
+        };
+        slot.retain(|item| item.mailbox != body.mailbox || item.uid != body.uid);
+        slot.insert(0, body);
+    }
+
+    pub(crate) fn take_preferred(&self) -> Option<PendingBody> {
+        let Ok(mut slot) = self.body_rush.lock() else {
+            return None;
+        };
+        if slot.is_empty() {
+            None
+        } else {
+            Some(slot.remove(0))
+        }
     }
 
     /// Vrai quand la fenêtre sait lire. Les tests et `griffe-web-dev` restent sur la page d'aujourd'hui.
@@ -344,22 +400,34 @@ impl AppState {
         slot.fresh_ids = fresh;
     }
 
-    pub(crate) fn lecture_due(&self) -> bool {
+    /// Demande une relève tout de suite. Une relève déjà en cours n'est pas doublée.
+    pub fn request_releve(&self) {
+        let Ok(mut slot) = self.lecture.lock() else {
+            return;
+        };
+        if !slot.running {
+            slot.force = true;
+        }
+    }
+
+    pub(crate) fn lecture_due(&self, every: Duration) -> bool {
         let Ok(slot) = self.lecture.lock() else {
             return false;
         };
-        !slot.running && releve_wait_over(slot.finished_at)
+        !slot.running && (slot.force || releve_wait_over(slot.finished_at, every))
     }
 
-    /// Passe en ouverture si aucune relève n'est due ni en cours.
+    /// Passe en ouverture. `lecture_due` a déjà tranché l'attente.
     pub(crate) fn begin_lecture(&self, address: &str) -> bool {
         let Ok(mut slot) = self.lecture.lock() else {
             return false;
         };
-        if slot.running || !releve_wait_over(slot.finished_at) {
+        if slot.running {
             return false;
         }
         slot.running = true;
+        slot.force = false;
+        slot.report = AbsorbReport::default();
         slot.phase = LecturePhase::Opening;
         slot.address = address.to_string();
         true
@@ -400,22 +468,38 @@ impl AppState {
         slot.phase = LecturePhase::Failed;
     }
 
-    pub(crate) fn note_pull_absorbed(
-        &self,
-        report: &AbsorbReport,
-        was_empty: bool,
-        changed: bool,
-        fresh: Vec<String>,
-    ) {
+    /// Un lot est rangé. La relève reste en cours, la liste peut se rafraîchir.
+    pub(crate) fn note_batch(&self, report: &AbsorbReport, changed: bool, fresh: Vec<String>) {
         let Ok(mut slot) = self.lecture.lock() else {
             return;
         };
-        slot.running = false;
-        slot.finished_at = Some(Instant::now());
+        slot.report.stored = slot.report.stored.saturating_add(report.stored);
+        slot.report.held = slot.report.held.saturating_add(report.held);
+        slot.report.failed = slot.report.failed.saturating_add(report.failed);
+        slot.report.choices = slot.report.choices.saturating_add(report.choices);
+        slot.report.on_dossier = slot.report.on_dossier.saturating_add(report.on_dossier);
         if changed {
             slot.generation = slot.generation.saturating_add(1);
-            slot.fresh_ids = fresh;
+            slot.fresh_ids.extend(fresh);
         }
+    }
+
+    /// Le corps d'une lettre ouverte est arrivé. La colonne se redessine.
+    pub(crate) fn note_body_landed(&self) {
+        let Ok(mut slot) = self.lecture.lock() else {
+            return;
+        };
+        slot.generation = slot.generation.saturating_add(1);
+    }
+
+    /// La relève est finie. La phrase vient du compte accumulé.
+    pub(crate) fn finish_lecture(&self, was_empty: bool) {
+        let Ok(mut slot) = self.lecture.lock() else {
+            return;
+        };
+        let report = std::mem::take(&mut slot.report);
+        slot.running = false;
+        slot.finished_at = Some(Instant::now());
         slot.phase = beat_after_absorb(AbsorbBeat {
             on_dossier: report.on_dossier,
             stored: report.stored,

@@ -9,10 +9,10 @@ use griffe_core::app::{ExecutionContext, Executor};
 use griffe_core::mail::{
     ArmOutbound, CancelOutbound, ClearMailSecret, CustomSheet, DeliveryOutcome, LetterTheme,
     MailPreset, MailSecret, RecordMailProbe, RememberImapUsername, SaveLetterface, SaveMailAccount,
-    SaveMailSecret, SaveMailSignature, SentCopyStatus, SetAutomaticSend, SubmissionBatch,
-    UNDO_SECS, abandon_held, commit_outbound, custom_sheet, french_submit_error, hourly_pause,
-    probe_material, profile, record_copies, record_deliveries, selected_id, take_copies, take_due,
-    trial_letter,
+    SaveMailSecret, SaveMailSignature, SentCopyStatus, SetAutomaticSend, SetReleveInterval,
+    SubmissionBatch, UNDO_SECS, abandon_held, commit_outbound, custom_sheet, french_submit_error,
+    hourly_pause, probe_material, profile, record_copies, record_deliveries, selected_id,
+    take_copies, take_due, trial_letter,
 };
 use griffe_core::store::Store;
 use time::OffsetDateTime;
@@ -58,6 +58,11 @@ pub enum MailCommand {
         /// Retire le mot de passe du coffre.
         #[arg(long)]
         clear: bool,
+    },
+    /// Période de la relève : 1, 3, 15 ou 30 minutes.
+    Rythme {
+        /// Minutes entre deux relèves.
+        minutes: u16,
     },
     /// Active ou éteint l'envoi des lettres dont la date est aujourd'hui.
     #[command(group(ArgGroup::new("mode").required(true).args(["on", "off"])))]
@@ -160,6 +165,12 @@ pub fn run(
             Ok(format_outcome_as(&outcome, json, |_| {
                 "Le mot de passe est dans le coffre.".to_string()
             }))
+        }
+        MailCommand::Rythme { minutes } => {
+            let seconds = u64::from(minutes).saturating_mul(60);
+            let outcome = Executor::new(store).execute(&SetReleveInterval { seconds }, ctx)?;
+            let sentence = griffe_core::mail::releve_cadence(seconds);
+            Ok(format_outcome_as(&outcome, json, |_| sentence.to_string()))
         }
         MailCommand::Auto { on, .. } => {
             let outcome = Executor::new(store).execute(&SetAutomaticSend { enabled: on }, ctx)?;

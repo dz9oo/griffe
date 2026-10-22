@@ -254,6 +254,27 @@ fn markup(
                     }
                 }
             }
+            div id="releve" class="reglages-card courrier-block" {
+                h3 class="panel-title" { "La relève" }
+                p class="prose" {
+                    "Pendant que le coffre est ouvert, Griffe relève ce compte. "
+                    (griffe_core::mail::releve_cadence(account.releve_every_secs))
+                }
+                form hx-post="/societe/courrier/releve" hx-target="#content" {
+                    fieldset class="word-choice" {
+                        legend { "Période" }
+                        div class="word-choice-row" {
+                            (releve_choice(account.releve_every_secs, 60, "1 minute"))
+                            (releve_choice(account.releve_every_secs, 180, "3 minutes"))
+                            (releve_choice(account.releve_every_secs, 900, "15 minutes"))
+                            (releve_choice(account.releve_every_secs, 1_800, "30 minutes"))
+                        }
+                    }
+                    div class="row-actions" {
+                        button class="seal" type="submit" { "Régler la relève" }
+                    }
+                }
+            }
             div class="reglages-card courrier-jour courrier-block" {
                 h3 class="panel-title" { "L'envoi du jour" }
                 p class="prose" {
@@ -481,6 +502,16 @@ pub fn subtitle(account: &MailProfile) -> &'static str {
         "prêt, envoi du jour"
     } else {
         "prêt, à la main"
+    }
+}
+
+fn releve_choice(current: u64, seconds: u64, word: &str) -> Markup {
+    let minutes = seconds / 60;
+    html! {
+        label {
+            input type="radio" name="minutes" value=(minutes) checked[current == seconds];
+            (word)
+        }
     }
 }
 

@@ -26,7 +26,7 @@ pub(super) fn profile(conn: &Connection) -> Result<MailProfile, AppError> {
             "SELECT from_name, from_address, smtp_host, smtp_port, smtp_tls, smtp_username,
                     secret IS NOT NULL AND length(secret) > 0, preset, auto_send, signature,
                     probe_ok, probe_detail, imap_host, imap_port, imap_username,
-                    link_ink, metier, site
+                    link_ink, metier, site, releve_every_secs
              FROM mail_account WHERE id = 1",
             [],
             |row| {
@@ -49,6 +49,7 @@ pub(super) fn profile(conn: &Connection) -> Result<MailProfile, AppError> {
                     row.get::<_, String>(15)?,
                     row.get::<_, String>(16)?,
                     row.get::<_, String>(17)?,
+                    row.get::<_, i64>(18)?,
                 ))
             },
         )
@@ -72,6 +73,7 @@ pub(super) fn profile(conn: &Connection) -> Result<MailProfile, AppError> {
         link_ink,
         metier,
         site,
+        releve_every,
     )) = row
     else {
         return Ok(MailProfile::default());
@@ -102,6 +104,7 @@ pub(super) fn profile(conn: &Connection) -> Result<MailProfile, AppError> {
         link_ink: LetterTheme::read(link_ink.as_str()),
         metier,
         site,
+        releve_every_secs: u64::try_from(releve_every).unwrap_or(super::RELEVE_EVERY_SECS),
     })
 }
 
@@ -230,6 +233,31 @@ pub(super) fn clear_secret(conn: &Connection, now: &str) -> Result<(), AppError>
          WHERE id = 1",
         [now],
     )?;
+    Ok(())
+}
+
+pub(super) fn releve_every_raw(conn: &Connection) -> Result<Option<i64>, AppError> {
+    conn.query_row(
+        "SELECT releve_every_secs FROM mail_account WHERE id = 1",
+        [],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(AppError::from)
+}
+
+pub(super) fn set_releve_every(conn: &Connection, seconds: i64, now: &str) -> Result<(), AppError> {
+    let updated = conn.execute(
+        "UPDATE mail_account SET releve_every_secs = ?1, updated_at = ?2 WHERE id = 1",
+        params![seconds, now],
+    )?;
+    if updated == 0 {
+        conn.execute(
+            "INSERT INTO mail_account (id, smtp_tls, preset, auto_send, releve_every_secs, updated_at)
+             VALUES (1, 'starttls', 'custom', 0, ?1, ?2)",
+            params![seconds, now],
+        )?;
+    }
     Ok(())
 }
 

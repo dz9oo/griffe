@@ -65,6 +65,8 @@ pub struct ParsedMessage {
     pub notice: Option<Notice>,
     /// En-tête `Date`, tel qu'il est écrit. Absent s'il manque.
     pub sent_on: Option<String>,
+    /// `Content-Type: multipart/report`. L'avis certain attend le corps.
+    pub delivery_report: bool,
 }
 
 /// Lit un message RFC 822. Le HTML n'est gardé que s'il est présent.
@@ -114,6 +116,7 @@ pub fn read_message(raw: &str) -> ParsedMessage {
         sent_on: header(&headers, "date")
             .map(decode_words)
             .filter(|value| !value.is_empty()),
+        delivery_report: report,
     }
 }
 
