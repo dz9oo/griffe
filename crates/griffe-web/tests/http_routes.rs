@@ -966,6 +966,68 @@ async fn the_help_catalog_covers_each_situation_and_hides_an_empty_shelf() {
                 body.contains("href=\"/aide/trame\""),
                 "les phrases de l'atelier ouvrent la trame : {body}"
             );
+            assert!(
+                body.contains("se rappelle le mercredi"),
+                "l'écart du vendredi a son exemple : {body}"
+            );
+        }
+        if *slug == "courrier" {
+            assert!(
+                body.contains("Rien n'est lu") || body.contains("Rien n&#x27;est lu"),
+                "rien n'est lu avant le choix : {body}"
+            );
+            assert!(
+                body.contains("Trois minutes"),
+                "la relève a son défaut : {body}"
+            );
+            assert!(
+                body.contains("ne sont pas effacées"),
+                "les autres lettres quittent le coffre sans être effacées : {body}"
+            );
+        }
+        if *slug == "boite" {
+            assert!(
+                body.contains("grand paraphe"),
+                "le courriel vide montre le paraphe : {body}"
+            );
+            assert!(
+                body.contains("Relève du courrier en cours."),
+                "la phrase dit l'heure de la relève : {body}"
+            );
+            assert!(
+                body.contains("Elle est bonne"),
+                "l'avis certain se confirme : {body}"
+            );
+            assert!(
+                body.contains("n'est pas cet avis") || body.contains("n&#x27;est pas cet avis"),
+                "un indice par l'objet n'est pas un avis certain : {body}"
+            );
+        }
+        if *slug == "conversation" {
+            assert!(
+                !body.contains("un mot déjà là"),
+                "le genre des phrases n'est plus sur la fiche : {body}"
+            );
+            assert!(
+                body.contains("03 27 44 44 44"),
+                "le téléphone a son exemple : {body}"
+            );
+        }
+        if *slug == "jour" {
+            assert!(
+                body.contains("en partance"),
+                "une lettre en partance quitte les gestes : {body}"
+            );
+        }
+        if *slug == "matin" {
+            assert!(
+                body.contains("boite liste"),
+                "la réponse reçue se lit dans le courriel : {body}"
+            );
+            assert!(
+                body.contains("ne laisse pas repartir"),
+                "l'agent ne laisse pas partir la relance : {body}"
+            );
         }
         if *slug == "relancer" {
             assert!(

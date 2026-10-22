@@ -9,7 +9,7 @@ pub(super) const JOUR: Letter = Letter {
     lede: "Le jour dit ce qu'il y a à faire, et où en est l'argent.",
     steps: &[
         "La phrase du matin dit ce qu'il y a en banque, combien de mois de piste, et ce qu'il reste à encaisser.",
-        "Les gestes sont des verbes : écrire, relancer, ranger un mouvement, savoir pour une échéance.",
+        "Les gestes sont des verbes : écrire, relancer, ranger un mouvement, savoir pour une échéance. Une lettre en partance, pendant les cinq secondes, quitte ces gestes. Annuler la ramène.",
         "Les premiers messages et les premiers contacts ne sont pas écrits un par un. Ils tiennent sur une ligne : « et N autres », ou « N autres conversations ». Le nom se retrouve dans Les affaires.",
         "Le mois, sous la lettre, pose les échéances et la clôture quand elles viennent.",
     ],

@@ -1,5 +1,8 @@
 # Brief — relances (lot 47, à concevoir)
 
+Brief daté du 5 septembre 2026. Le produit envoie désormais depuis Le courrier.
+Ce texte garde les décisions d’alors. La spec tenue est [`relances-design.md`](./relances-design.md).
+
 Handoff pour une session neuve. Décisions déjà prises ; le design n’est pas encore figé.
 Date : 2026-09-05. Dernier commit utile : `265db56` (lot 46, coque fenêtre).
 

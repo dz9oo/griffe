@@ -110,7 +110,7 @@ Lire `docs/legal.md` et `docs/livre.md`. Tu ne « corriges » pas une règle de 
 liasse ou de FEC sur ta culture générale. Source primaire (BOFIP, CGI,
 C. com., notice Cerfa) + montant attendu posé à la main dans le test.
 CODEOWNERS (`* @dz9oo`, plus les chemins fiscaux) exige une revue humaine.
-`docs/livre.md` décrit le livre pour tout utilisateur. Aucun dossier réel
+L’aide interne (`/aide`) est le mode d’emploi. `docs/livre.md` décrit le livre et les déclarations, pas les écrans. Aucun dossier réel
 n’y entre. La situation d’une société précise reste dans `notes-perso/`,
 hors git.
 

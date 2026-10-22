@@ -1,6 +1,7 @@
 # Le livre
 
-Cette page décrit Griffe pour toute personne qui l’utilise ou qui y
+Le mode d’emploi est dans l’application : le pied, Aide. Cette page
+décrit le livre et les déclarations, pour qui s’en sert et pour qui
 contribue. Elle ne décrit pas une société réelle. Aucun nom, aucun
 identifiant, aucune adresse et aucun montant repris d’un dossier n’ont
 leur place ici. Un dossier particulier reste hors du dépôt.
@@ -16,106 +17,48 @@ La phrase du produit, pour l’administration : on recopie, rien n’est télét
 
 ## Le courrier
 
-Le courrier est le chapitre de La société qui dit d’où partent les lettres.
-D’où elles partent réunit l’adresse qui signe, l’identifiant du serveur, l’hôte,
-le port et le mot de passe. Le mot de passe reste dans le coffre et la page
-ne le réécrit pas. Enregistrer essaie la liaison : une coche si le serveur
-accepte l’identifiant, une croix s’il refuse. Deux ports, tous deux chiffrés :
-587, ou 465. Un préréglage remplit le serveur d’iCloud. L’identifiant est alors
-l’adresse complète du compte, et le mot de passe est un mot de passe
-d’application. L’hôte et le port restent lisibles.
+Un seul compte. Le mot de passe reste dans le coffre et n’est pas réécrit
+sur la page. Enregistrer essaie la liaison. Deux ports, tous deux chiffrés :
+587, ou 465. iCloud remplit le serveur. L’identifiant est alors l’adresse,
+et le mot de passe est un mot de passe d’application.
 
-Envoyer, sur une lettre, laisse cinq secondes pour se raviser. Annuler,
-pendant ces cinq secondes et jusqu’à l’envoi, retient la lettre. La ligne
-nomme l’adresse qui partira, et le compte s’affiche, une seconde après
-l’autre. Si l’adresse manque, elle dit que la lettre ne partira pas. Au
-bout, Annuler s’efface, la ligne dit Courrier envoyé, et le bouton revient.
-Fermer la fenêtre pendant ces cinq secondes retient la lettre. C’est parti
-n’est là que lorsqu’aucun serveur n’est configuré. Il classe le double dans
-l’historique et ne contacte pas le serveur. En cours dit alors que cela
-suppose un envoi hors de Griffe, et ouvre Le courrier.
+Envoyer laisse cinq secondes. Annuler, ou fermer la fenêtre pendant ce
+délai, retient la lettre. Sans serveur, C’est parti classe le double et
+n’envoie rien.
 
-La lettre part en page, et le texte seul reste pour les boîtes qui ne
-lisent pas la page. Une adresse suivie de ?utm_… se lit sans cette
-partie. Le lien la garde. Un navigateur peut la retirer en ouvrant
-la page. La barre d’adresse est alors plus courte que le lien parti.
+Une lettre partie est aussi déposée dans Envoyés. iCloud le fait. Un autre
+serveur le fait si l’hôte du serveur des lettres est saisi, sur le port 993.
+Vide, la lettre part, la copie n’est pas déposée, et le courriel n’est pas
+lu. Si le dépôt échoue, la lettre est quand même partie.
 
-Dans Les affaires, Écrire s’ouvre sur la lettre telle qu’elle part.
-Éditer reprend le texte. Relire y revient. Le texte tapé reste.
-Une lettre déjà classée s’ouvre sur ce qui a été gardé : la formule
-d’aujourd’hui ne s’y ajoute pas.
+La relève ne copie que les adresses tenues, reçues et envoyées. Rien n’est
+lu tant que ce choix n’est pas gardé. Les autres lettres quittent le coffre.
+Elles ne sont pas effacées sur le serveur. Lire tout le compte est un geste
+à part. La période est une, trois, quinze ou trente minutes. Trois minutes,
+sinon.
 
-La fiche d’un dossier porte Quoi, ce dont il s’agit. Sous Qui répond :
-le prénom, le nom, et Monsieur ou Madame. Courriel et Téléphone restent
-ceux du standard, ou de l’accueil. En écrivant, on choisit le standard,
-ou le courriel de la personne lorsqu’il est là.
+Un avis certain dit que l’adresse ne reçoit pas. On la corrige, ou on dit
+qu’elle est bonne. Cela ne promet pas la boîte du destinataire au-delà de
+cet avis.
 
-La série choisie en écrivant donne les mots. Sur la lettre, la ligne
-ne montre que son nom. Le nom ouvre les autres, sous lui. Garder referme
-sans changer. Une autre en crée une. On les écrit dans La société, Les
-phrases. Le type du dossier ne les choisit pas. Les affaires ne
-réécrivent pas les phrases.
+L’envoi du jour est éteint. L’activer poste, coffre ouvert, les lettres
+dont la date prévue est aujourd’hui. Une lettre de la veille reste à la main.
 
-L'écart entre deux moments compte les jours du lundi au vendredi.
-Un courrier parti un vendredi, à trois jours, se rappelle le mercredi.
+L’écart entre deux moments d’une série compte les jours du lundi au
+vendredi. Un courrier parti un vendredi, à trois jours, se rappelle le
+mercredi. Une facture, un report, ou une date posée à la main, restent
+en jours du calendrier. Le type du dossier ne choisit pas la série.
 
 Les phrases prennent aussi `<nom>`, `<genre>`, et une formule
 `<Monsieur le Maire/Madame la Maire>`. `<genre>` suit Monsieur ou
 Madame. Sans genre, les deux côtés restent visibles.
 Un `<constat>` vide disparaît, et la ligne qui ne porte que lui aussi.
 
-Le courrier s’ouvre sur la lettre d’essai, pour un prénom fictif. La
-formule est sous la lettre, dans la même mesure, et la lettre suit la frappe. Enregistrer l’écrit dans
-le coffre. D’où elles partent tient sur une ligne une fois le serveur
-connu : le nom, l’adresse, le serveur, et si la liaison répond. Modifier
-ouvre la feuille. L’identifiant du serveur n’apparaît que lorsqu’il
-diffère de l’adresse. L’envoi du jour reste à part.
+Une adresse suivie de ?utm_… se lit sans cette partie. Le lien la garde.
 
-Une lettre partie est aussi déposée dans Envoyés du compte qui l’envoie.
-iCloud le fait sans champ de plus. Un autre serveur le fait si l’hôte du
-serveur des lettres est saisi, sur le port 993. Vide, la lettre part, la
-copie n’est pas déposée, et le courriel n’est pas lu. Si le dépôt échoue, la lettre
-est quand même partie. Griffe réessaie plus tard.
-
-Le courriel lit ce même compte : les lettres reçues, et celles déjà envoyées.
-Dans la barre, le mot Courriel, avec une enveloppe, entre les pièces et la date.
-Ouvrir la page le dit : le grand paraphe seulement si le courriel est encore
-vide, et une phrase si le compte ne répond pas ou ne se lit pas.
-Elle dit aussi si la relève est en cours, ou l'heure de la dernière qui
-a abouti. « Relever le courrier » en demande une. La période se règle
-dans Le courrier : une minute, trois, quinze ou trente. Trois minutes,
-sinon. Les adresses, dans le même chapitre, disent ce qui est lu :
-reçues et envoyées. Rien n’est lu tant que ce choix n’est pas gardé.
-Les autres ne restent pas dans le coffre. Tout le compte est un geste à part.
-Les lettres déjà lues ne sont pas dans À lire : elles sont dans Tout.
-Le texte d'une lettre lourde n'est pas recopié ici.
-Ouvrir une lettre la marque lue. On la rattache à un dossier. Sur le
-dossier, elle rejoint l’histoire, avec les lettres parties : une ligne,
-qu’on ouvre. Le texte reçu reste celui qui est arrivé. Répondre
-arme une lettre, avec cinq secondes pour la retenir. Une réponse reçue
-retient la relance. Laisser partir la relance la rend à son jour. Un avis
-certain dit que l’adresse ne reçoit pas. On la corrige, ou on dit qu’elle
-est bonne. Cela ne promet pas la boîte du destinataire au-delà de cet avis.
-
-L’envoi du jour est éteint. L’activer poste, pendant que le coffre est
-ouvert, les lettres dont la date prévue est aujourd’hui. Une lettre de la
-veille reste à envoyer à la main.
-
-La formule, écrite dans ce chapitre, ferme chaque lettre à la relecture
-et à l’envoi. Elle n’est pas recopiée dans la zone d’écriture. À l’écran,
-ses lignes se tiennent un peu plus serrées, et restent lisibles. Vide, la
-lettre se termine par Bien à vous, le nom, la société. Un mail, un
-numéro ou une adresse, seuls sur leur ligne, restent cliquables, dans
-la couleur de la feuille, sans soulignement. Une adresse suivie de
-?utm_… se lit sans cette partie. Le lien la garde. La lettre d’essai part vers l’adresse
-choisie. La fenêtre dit Courrier envoyé. Cela ne promet pas la boîte du
-destinataire.
-
-Deux feuilles : Clair, un ivoire, et Sauge, un vert pâle. Le choix est sous la lettre d’essai.
-La lettre au-dessus est la page qui part : le papier remplit le message, l’encre
-et les liens sont ceux de la feuille. Changer de feuille la repeint.
-Une troisième peut venir d’un fichier sur la machine, jamais du dépôt.
-Il se nomme `lettre.toml`, dans le dossier `griffe` de la configuration
+La formule, vide, termine la lettre par Bien à vous, le nom, la société.
+Une troisième feuille peut venir d’un fichier sur la machine, jamais du
+dépôt. Il se nomme `lettre.toml`, dans le dossier `griffe` de la configuration
 (`XDG_CONFIG_HOME`, sinon `~/.config`). Cinq lignes, pas davantage :
 
 ```
@@ -126,7 +69,7 @@ encre = #2a2622
 lien = #3d5c66
 ```
 
-La marge et le papier peuvent être la même couleur : le message est alors une seule page. L’encre et le lien restent lisibles sur le papier. Sur Le courrier, ce fichier apparaît à côté de Clair et de Sauge, marqué votre feuille. Lisible, on peut le choisir. Illisible, la ligne le dit, et la lettre reste sur Clair ou sur Sauge.
+La marge et le papier peuvent être la même couleur : le message est alors une seule page. L’encre et le lien restent lisibles sur le papier. Illisible, la lettre reste sur Clair ou sur Sauge.
 
 ## Les mots
 

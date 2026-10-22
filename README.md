@@ -8,9 +8,21 @@ Captures : [`site/shots/`](site/shots/).
 
 ## Aujourd’hui
 
-Prospection, devis, missions, factures (nées ailleurs ou émises),
-dépenses, relevé, relances en `.eml` ou postées depuis Le courrier, TVA au réel, se payer, clôture
-indicative, coffre SQLCipher sur ta machine.
+Trois pièces : Le jour, Les affaires, La société. Le courriel se lit dans
+la barre. Ce n’est pas une quatrième pièce.
+
+Le jour dit quoi faire, et où en est l’argent. Les affaires tiennent les
+conversations, l’estimation (des lignes, pas un devis rédigé ici), les
+missions et les factures. La société tient la piste, le relevé que vous
+importez, ce que vous vous versez, les échéances et la clôture indicative.
+
+Les lettres partent du compte réglé dans Le courrier. Les réponses de ce
+compte se lisent dans Courriel. Sans serveur, une relance peut encore
+ouvrir un brouillon `.eml`. La fenêtre n’écoute aucun port. Le coffre
+reste sur la machine.
+
+Le mode d’emploi est dans l’application : le pied, Aide. Cette page dit
+ce qu’est le projet, comment l’installer, et comment y contribuer.
 
 ## Ce que ça ne fait pas
 
@@ -112,7 +124,7 @@ native (`~/.local/lib/griffe/`) existe, la retirer **avant** `pacman -U`
 ```bash
 rm -f ~/.local/bin/griffe-desktop \
   ~/.local/lib/griffe/griffe-desktop ~/.local/lib/griffe/typst
-sudo pacman -U ./griffe-bin-0.3.16-1-x86_64.pkg.tar.zst
+sudo pacman -U ./griffe-bin-*-x86_64.pkg.tar.zst
 ```
 
 Pour une Release qui publie le `.minisig`, la vérification précède `pacman -U` :
@@ -147,14 +159,12 @@ cargo run -p griffe-desktop
 
 ## Architecture
 
-Une seule couche applicative (`griffe-core::app`). CLI, MCP et fenêtre sont
-trois adaptateurs équivalents : une règle métier n’y entre pas. Mutations via
-`Command` (dry-run, idempotence, confirmation, audit chaîné) ; lectures via
-`Query`. Aucun port TCP — Tauri exécute `griffe://` en mémoire contre le
-routeur axum. Coffre SQLCipher, WAL multi-process, zéro connexion sortante.
+La fenêtre, la commande et l’agent ouvrent le même coffre et les mêmes
+gestes. Aucun port n’écoute. Le courriel sort vers le serveur écrit dans
+Le courrier, coffre ouvert, liaison chiffrée, et nulle part ailleurs.
 
-Détail : [`docs/architecture.md`](docs/architecture.md). Invariants pour un
-agent : [`AGENTS.md`](AGENTS.md).
+Le détail, pour qui contribue : [`docs/architecture.md`](docs/architecture.md).
+Les invariants : [`AGENTS.md`](AGENTS.md).
 
 ## Licence
 

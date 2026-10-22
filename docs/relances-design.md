@@ -1,10 +1,14 @@
 # Relances (lot 47) — spec
 
+Le geste d’origine ouvrait un brouillon. Depuis Le courrier, la lettre peut
+partir du compte réglé. Sans serveur, le brouillon `.eml` reste. Le modèle
+de faits ci-dessous n’a pas changé.
+
 Surface : **file d’une carte** (écran Relances, flux quotidien). Tableau « où j’en suis »
 en second mode. Tableau de bord = briefing qui pointe ici.
 
-Modèle : **journal de faits** + file dérivée. Pas d’instance de séquence. FreeFlow n’envoie
-jamais le mail (`.eml` RFC 5322 + `xdg-open`).
+Modèle : **journal de faits** + file dérivée. Pas d’instance de séquence. Sans serveur,
+le brouillon reste un `.eml` (RFC 5322 + `xdg-open`).
 
 ## Faits
 

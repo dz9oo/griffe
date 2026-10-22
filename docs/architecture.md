@@ -59,6 +59,10 @@ ensuite, sans second compte et sans port en écoute. Marquer lu ouvre une
 liaison courte pour ne pas attendre la fin de l'index. L'heure et l'échec
 de la relève sont sur le miroir, pas dans le journal d'audit : un passage
 par minute ne doit pas l'allonger. La période, elle, est une commande.
+La relève ne copie que les adresses tenues, reçues et envoyées, ou tout
+le compte si ce geste a été fait. Rien n’est lu tant que ce choix n’est
+pas gardé. Les autres lettres quittent le coffre. Elles ne sont pas
+effacées sur le serveur.
 Les relances peuvent encore produire un brouillon `.eml`. Pas de Google
 Fonts, pas de CDN.
 

@@ -84,7 +84,7 @@ const ATELIER_SECTIONS: &[Section] = &[
             ("lentille", "geste, livre, tas, sorties, arrêtés"),
             ("conversation", "un nom, une phrase, la fiche"),
             ("relancer", "cinq secondes pour retenir la lettre"),
-            ("courrier", "la liaison, la formule, l'essai"),
+            ("courrier", "la liaison, les adresses, la relève"),
             ("boite", "lire, répondre, retenir la relance"),
             ("devis", "des lignes, pas un devis rédigé ici"),
             ("travaux", "le récit, gardé tout seul"),
@@ -298,7 +298,7 @@ pub fn index() -> Markup {
             h1 { "Laissez-vous guider." }
             p class="lede" {
                 "Ce qu'il y a à faire aujourd'hui est sur Le jour — pas un tableau de bord. \
-                 Cette lettre dit pourquoi l'app ne ressemble pas à un logiciel de compta, \
+                 Cette lettre est le mode d'emploi : pourquoi l'app ne ressemble pas à un logiciel de compta, \
                  et comment faire les gestes courants. Vous pouvez vous laisser guider. \
                  Le sommaire range les lettres. Avec un agent dit la commande, le MCP, \
                  et le fichier d'à côté. La commande liste chaque geste, avec un exemple."
