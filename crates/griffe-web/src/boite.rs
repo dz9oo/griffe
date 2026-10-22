@@ -1,19 +1,21 @@
-//! Page Boîte. La socket, si la fenêtre en a installé une, reste hors du cœur.
+//! Page Courriel. La socket, si la fenêtre en a installé une, reste hors du cœur.
 
 use axum::extract::{Form, Query, State};
 use axum::http::{HeaderMap, HeaderValue};
 use axum::response::{Html, IntoResponse, Response};
 use griffe_core::app::{Executor, Outcome};
 use griffe_core::mail::{
-    AddressFault, BoxQuery, BoxVue, MarkAddress, SeenMark, SeenTarget, file_human,
-    french_submit_error, prepare_seen, read_box, releve_plan, seal_count,
+    AddressFault, BoxQuery, BoxVue, LectureAsk, LectureShow, MarkAddress, SeenMark, SeenTarget,
+    file_human, french_submit_error, lecture_face, prepare_seen, read_box, releve_plan,
+    releve_waits, seal_count,
 };
 use maud::{Markup, html};
 use serde::Deserialize;
 
 use crate::layout::{self, ViewId};
+use crate::releve::kick_releve;
 use crate::state::AppState;
-use crate::views::boite::Keep;
+use crate::views::boite::{Keep, LectureView};
 
 #[derive(Debug, Deserialize, Default)]
 pub struct BoiteForm {
@@ -35,12 +37,107 @@ pub struct BoiteForm {
     address: String,
 }
 
+#[derive(Debug, Deserialize, Default)]
+pub(crate) struct LectureForm {
+    #[serde(default)]
+    vue: String,
+    #[serde(default)]
+    q: String,
+    #[serde(default)]
+    lettre: String,
+    #[serde(default)]
+    dossier: String,
+    #[serde(default, rename = "gen")]
+    generation: u64,
+    #[serde(default)]
+    mode: String,
+    #[serde(default)]
+    col: String,
+    #[serde(default)]
+    stall: String,
+}
+
+pub async fn relever(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(form): Form<BoiteForm>,
+) -> Response {
+    state.request_releve();
+    kick_releve(&state).await;
+    show(&state, &headers, &form, None, false).await
+}
+
 pub async fn page(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(form): Query<BoiteForm>,
 ) -> Response {
+    kick_releve(&state).await;
     show(&state, &headers, &form, None, false).await
+}
+
+pub(crate) async fn lecture(
+    State(state): State<AppState>,
+    Query(form): Query<LectureForm>,
+) -> Response {
+    let keep = keep_of(&form.vue, &form.q, &form.lettre, &form.dossier);
+    let Some(page) = read_page(&state, &keep).await else {
+        return Html(r#"<p class="plateau-sentence">Le coffre est verrouillé.</p>"#.to_string())
+            .into_response();
+    };
+    let Ok(page) = page else {
+        return Html(r#"<p class="plateau-sentence">Le courriel ne s'ouvre pas.</p>"#.to_string())
+            .into_response();
+    };
+    if !state.lecture_engaged() {
+        return Html(crate::views::boite::render(&page, &keep, None, None).into_string())
+            .into_response();
+    }
+    let readable = account_readable(&state).await;
+    let waiting_addresses = account_waiting(&state).await;
+    let snap = state.take_lecture(Some(form.generation));
+    let face = lecture_face(&LectureAsk {
+        phase: snap.phase,
+        address: snap.address,
+        mirror_empty: page.counts.tout == 0,
+        readable,
+        waiting_addresses,
+    });
+    let col = if matches!(face.show, LectureShow::Glyph { .. }) {
+        "glyph"
+    } else {
+        "letter"
+    };
+    let stall = match &face.show {
+        LectureShow::Glyph { stall: true, .. } => "1",
+        _ => "0",
+    };
+    let requested_col = if form.col.is_empty() && form.mode == "glyph" {
+        "glyph"
+    } else {
+        form.col.as_str()
+    };
+    let refresh_list = form.generation != snap.generation;
+    let refresh_column = (keep.lettre.is_empty()
+        && (requested_col != col || (col == "glyph" && form.stall != stall)))
+        || (refresh_list && col == "letter");
+    let view = LectureView {
+        face,
+        generation: snap.generation,
+        fresh: snap.fresh_ids,
+        busy: lecture_busy(snap.phase),
+    };
+    let mut response = Html(
+        crate::views::boite::poll_fragment(&page, &keep, &view, refresh_list, refresh_column)
+            .into_string(),
+    )
+    .into_response();
+    if refresh_list {
+        response
+            .headers_mut()
+            .insert("HX-Trigger", HeaderValue::from_static("griffe:box"));
+    }
+    response
 }
 
 pub async fn seal(State(state): State<AppState>) -> Html<String> {
@@ -48,7 +145,7 @@ pub async fn seal(State(state): State<AppState>) -> Html<String> {
         .with_store(|store| seal_count(store).unwrap_or(0))
         .await
         .unwrap_or(0);
-    Html(layout::boite_link(count, false).into_string())
+    Html(layout::boite_count(count).into_string())
 }
 
 pub async fn classer(
@@ -146,7 +243,7 @@ async fn show(
             return page_response(
                 state,
                 headers,
-                crate::views::boite::render(&first, &keep, note.as_deref()),
+                crate::views::boite::render(&first, &keep, note.as_deref(), None),
                 saved,
                 false,
             );
@@ -167,12 +264,101 @@ async fn show(
     } else {
         first
     };
+    ask_for_body(state, page.open.as_ref()).await;
+    let lecture = paint_lecture(state, &page).await;
     page_response(
         state,
         headers,
-        crate::views::boite::render(&page, &keep, note.as_deref()),
+        crate::views::boite::render(&page, &keep, note.as_deref(), lecture.as_ref()),
         saved,
         marked,
+    )
+}
+
+fn keep_of(vue: &str, q: &str, lettre: &str, dossier: &str) -> Keep {
+    Keep {
+        vue: BoxVue::parse(vue),
+        q: q.to_string(),
+        lettre: lettre.to_string(),
+        dossier: dossier.to_string(),
+    }
+}
+
+async fn read_page(
+    state: &AppState,
+    keep: &Keep,
+) -> Option<Result<griffe_core::mail::BoxPage, griffe_core::app::AppError>> {
+    let query = BoxQuery {
+        vue: keep.vue,
+        q: &keep.q,
+        letter: nonempty(&keep.lettre),
+        folder: nonempty(&keep.dossier),
+    };
+    state.with_store(|store| read_box(store, query)).await
+}
+
+async fn ask_for_body(state: &AppState, letter: Option<&griffe_core::mail::BoxLetter>) {
+    let Some(letter) = letter else {
+        return;
+    };
+    if letter.body_state != "pending" {
+        return;
+    }
+    let id = letter.id.clone();
+    let Some(Ok(Some(body))) = state
+        .with_store(move |store| -> Result<_, griffe_core::app::AppError> {
+            if !griffe_core::mailbox::mailbox_file(store.db_path()).exists() {
+                return Ok(None);
+            }
+            store.open_mailbox()?.pending_of(&id)
+        })
+        .await
+    else {
+        return;
+    };
+    crate::releve::request_body(state, body);
+}
+
+async fn account_readable(state: &AppState) -> bool {
+    state
+        .with_store(|store| releve_plan(store).ok().flatten().is_some())
+        .await
+        .unwrap_or(false)
+}
+
+async fn account_waiting(state: &AppState) -> bool {
+    state
+        .with_store(|store| releve_waits(store).unwrap_or(false))
+        .await
+        .unwrap_or(false)
+}
+
+async fn paint_lecture(state: &AppState, page: &griffe_core::mail::BoxPage) -> Option<LectureView> {
+    if !state.lecture_engaged() {
+        return None;
+    }
+    let readable = account_readable(state).await;
+    let waiting_addresses = account_waiting(state).await;
+    let snap = state.take_lecture(None);
+    let face = lecture_face(&LectureAsk {
+        phase: snap.phase,
+        address: snap.address,
+        mirror_empty: page.counts.tout == 0,
+        readable,
+        waiting_addresses,
+    });
+    Some(LectureView {
+        face,
+        generation: snap.generation,
+        fresh: snap.fresh_ids,
+        busy: lecture_busy(snap.phase),
+    })
+}
+
+fn lecture_busy(phase: griffe_core::mail::LecturePhase) -> bool {
+    matches!(
+        phase,
+        griffe_core::mail::LecturePhase::Opening | griffe_core::mail::LecturePhase::Reading { .. }
     )
 }
 

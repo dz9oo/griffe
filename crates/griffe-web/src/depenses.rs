@@ -6,7 +6,7 @@
 //! Seule différence avec les autres écrans : les formulaires de création et de modification
 //! sont en `multipart/form-data` (lot 29), pour le champ fichier du justificatif. Le fichier
 //! reçu est archivé chiffré par `griffe_core::receipts::archive` — la même IO d'adaptateur que
-//! `freeflow expense record --receipt`, jamais réimplémentée ici — *avant* de construire la
+//! `griffe expense record --receipt`, jamais réimplémentée ici — *avant* de construire la
 //! commande du cœur, qui ne reçoit que le hash et le nom archivé (voir `CLAUDE.md`, « les
 //! `Command` ne touchent que `&Connection` »). Le corps du protocole `griffe://` arrive
 //! entier en mémoire (voir `griffe-desktop/src/main.rs`) : le multipart y passe comme

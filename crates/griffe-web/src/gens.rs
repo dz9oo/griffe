@@ -3100,7 +3100,7 @@ pub async fn fiche_post(
                 .with_store(|store| -> Result<_, AppError> {
                     let dossier = person(store.connection(), &id.to_string(), today)?;
                     let href = person_href(&dossier.name);
-                    let markup = gens::dossier_markup(&dossier, today, Some("Fiche à jour."));
+                    let markup = gens::dossier_live(store, &dossier, today, Some("Fiche à jour."));
                     Ok((href, markup))
                 })
                 .await;
@@ -3755,7 +3755,7 @@ pub async fn import_invoice(
             let content = state
                 .with_store(
                     |store| match person(store.connection(), &reference, today) {
-                        Ok(fresh) => gens::dossier_markup(&fresh, today, Some(&flash)),
+                        Ok(fresh) => gens::dossier_live(store, &fresh, today, Some(&flash)),
                         Err(err) => html! { div class="empty-state" { (err.to_string()) } },
                     },
                 )
@@ -4046,7 +4046,7 @@ async fn dossier_flash(
         Some(Ok(flash)) => {
             let content = state
                 .with_store(|store| match person(store.connection(), reference, today) {
-                    Ok(fresh) => gens::dossier_markup(&fresh, today, Some(&flash)),
+                    Ok(fresh) => gens::dossier_live(store, &fresh, today, Some(&flash)),
                     Err(err) => html! { div class="empty-state" { (err.to_string()) } },
                 })
                 .await
@@ -4450,7 +4450,11 @@ pub async fn dossier_types(
             )
             .into_response(),
             Some(Ok(fresh)) => {
-                saved_page(&state, &headers, gens::dossier_markup(&fresh, today, None))
+                let markup = state
+                    .with_store(|store| gens::dossier_live(store, &fresh, today, None))
+                    .await
+                    .unwrap_or_else(|| gens::dossier_markup(&fresh, today, None));
+                saved_page(&state, &headers, markup)
             }
         },
     }

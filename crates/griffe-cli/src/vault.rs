@@ -33,7 +33,7 @@ pub struct PassphraseOpts {
     )]
     pub passphrase_file: Option<PathBuf>,
     /// Exécute cette commande et prend sa sortie standard comme passphrase — ex.
-    /// `pass show freeflow`, `op read op://Perso/freeflow/passphrase`.
+    /// `pass show griffe`, `op read op://Perso/griffe/passphrase`.
     #[arg(
         long,
         global = true,
@@ -96,7 +96,7 @@ pub fn open_or_prompt(db_path: &Path, opts: &PassphraseOpts) -> Result<Store, Cl
         Err(e) => return Err(map_store_err(db_path, e)),
     }
 
-    let passphrase = resolve_passphrase(opts, "Passphrase du coffre FreeFlow : ")?;
+    let passphrase = resolve_passphrase(opts, "Passphrase du coffre Griffe : ")?;
     let store =
         Store::open_with_passphrase(db_path, &passphrase).map_err(|e| map_store_err(db_path, e))?;
     if opts.wants_remember()
@@ -216,7 +216,7 @@ fn trim_one_newline(raw: &str) -> &str {
         .map_or(raw, |s| s.strip_suffix('\r').unwrap_or(s))
 }
 
-/// `freeflow init` : crée le coffre. Échoue s'il existe déjà — contrairement à l'ancien
+/// `griffe init` : crée le coffre. Échoue s'il existe déjà — contrairement à l'ancien
 /// `unlock`, qui créait silencieusement un coffre vide sur une faute de frappe de chemin.
 ///
 /// # Errors
@@ -256,7 +256,7 @@ pub fn init(db_path: &Path, opts: &PassphraseOpts) -> Result<String, CliError> {
     Ok(format!("✓ coffre créé : {}", db_path.display()))
 }
 
-/// `freeflow unlock` : vérifie la passphrase et, seulement si `--remember`/`--ttl` est demandé,
+/// `griffe unlock` : vérifie la passphrase et, seulement si `--remember`/`--ttl` est demandé,
 /// met la clé en cache dans le trousseau OS. Ne crée jamais le coffre.
 ///
 /// # Errors
@@ -271,7 +271,7 @@ pub fn unlock(db_path: &Path, opts: &PassphraseOpts) -> Result<String, CliError>
         return Ok(format!("✓ session déjà active pour {}", db_path.display()));
     }
 
-    let passphrase = resolve_passphrase(opts, "Passphrase du coffre FreeFlow : ")?;
+    let passphrase = resolve_passphrase(opts, "Passphrase du coffre Griffe : ")?;
     let store =
         Store::open_with_passphrase(db_path, &passphrase).map_err(|e| map_store_err(db_path, e))?;
 
@@ -298,7 +298,7 @@ pub fn unlock(db_path: &Path, opts: &PassphraseOpts) -> Result<String, CliError>
     }
 }
 
-/// `freeflow lock` : purge la session en cache. Propage l'échec au lieu de le passer sous
+/// `griffe lock` : purge la session en cache. Propage l'échec au lieu de le passer sous
 /// silence — contrairement au comportement précédent, qui annonçait toujours un succès.
 ///
 /// # Errors
@@ -312,7 +312,7 @@ pub fn lock(db_path: &Path) -> Result<String, CliError> {
     }
 }
 
-/// `freeflow vault status` : chemin résolu, existence, version du sidecar, session en cache —
+/// `griffe vault status` : chemin résolu, existence, version du sidecar, session en cache —
 /// sans jamais déverrouiller le coffre.
 ///
 /// # Errors
@@ -348,7 +348,7 @@ pub fn status(db_path: &Path, json: bool) -> Result<String, CliError> {
 
     Ok(match &status {
         VaultStatus::Absent => format!(
-            "aucun coffre à {} — lancez `freeflow init`",
+            "aucun coffre à {} — lancez `griffe init`",
             db_path.display()
         ),
         VaultStatus::Exists {
@@ -369,7 +369,7 @@ pub fn status(db_path: &Path, json: bool) -> Result<String, CliError> {
             if *passphrase_change_pending {
                 format!(
                     "{base}\n⚠ un changement de passphrase a été interrompu : réessayez \
-                     `freeflow unlock`/toute commande avec la NOUVELLE passphrase, ou restaurez \
+                     `griffe unlock`/toute commande avec la NOUVELLE passphrase, ou restaurez \
                      la sauvegarde `pre-passphrase-change-*` écrite juste avant"
                 )
             } else {
@@ -379,7 +379,7 @@ pub fn status(db_path: &Path, json: bool) -> Result<String, CliError> {
     })
 }
 
-/// `freeflow passphrase change`.
+/// `griffe passphrase change`.
 #[derive(Debug, Subcommand)]
 pub enum PassphraseCommand {
     /// Ré-chiffre l'intégralité du coffre sous une clé neuve. L'ancienne passphrase est exigée
@@ -453,7 +453,7 @@ fn resolve_new_passphrase(
     Ok(first)
 }
 
-/// `freeflow passphrase change` : voir [`PassphraseCommand::Change`]. `--dry-run` acquiert et
+/// `griffe passphrase change` : voir [`PassphraseCommand::Change`]. `--dry-run` acquiert et
 /// valide les deux passphrases (l'ancienne vérifiée contre le coffre, la nouvelle non vide et
 /// différente de l'ancienne) et affiche ce qui serait fait, sans rien écrire — ni sauvegarde, ni
 /// sidecar en attente, ni entrée d'audit.

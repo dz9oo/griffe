@@ -5,7 +5,7 @@
 //! La session de la fenêtre (en mémoire, ici) et la session de la CLI (dans le trousseau OS,
 //! `griffe_core::store`) sont deux objets distincts : verrouiller la fenêtre ferme la
 //! connexion en mémoire *et* purge la session trousseau (pour que « verrouiller » veuille dire
-//! une seule chose), mais un `freeflow lock` tapé dans un terminal pendant que la fenêtre est
+//! une seule chose), mais un `griffe lock` tapé dans un terminal pendant que la fenêtre est
 //! ouverte ne referme pas cette fenêtre tant qu'elle n'a pas relu son propre état — limite
 //! acceptée, documentée dans `CLAUDE.md`.
 
@@ -15,7 +15,12 @@ use std::time::{Duration, Instant};
 
 use griffe_core::app::{Actor, ExecutionContext};
 use griffe_core::domain::parse_date;
-use griffe_core::mail::{ImapEndpoint, MailSecret, MailSubmitError, ProbeVerdict, SmtpEndpoint};
+use griffe_core::mail::{
+    AbsorbBeat, AbsorbReport, ImapEndpoint, LectureFolder, LecturePhase, MailSecret,
+    MailSubmitError, ProbeVerdict, PullEvent, PullRole, PullScope, PullTick, PulledMessage,
+    SmtpEndpoint, beat_after_absorb,
+};
+use griffe_core::mailbox::PendingBody;
 use griffe_core::store::{AUTO_BACKUP_MAX_AGE, Passphrase, Store, StoreError, VaultStatus};
 use tokio::sync::Mutex;
 
@@ -26,6 +31,73 @@ pub type MailProbe =
 /// Marque lu sur le compte. Absente dans les tests : le miroir seul est mis à jour.
 pub type MarkSeen =
     Arc<dyn Fn(&ImapEndpoint, &MailSecret, &str, u32) -> Result<(), MailSubmitError> + Send + Sync>;
+
+/// Relève IMAP. Absente dans les tests et `griffe-web-dev` : la page ne joue pas la lecture.
+/// Le rappel reçoit chaque lot. Il ne doit pas ouvrir le coffre : le fil qui absorbe le fait.
+pub type ReleveFetch = Arc<
+    dyn for<'a> Fn(
+            &ImapEndpoint,
+            &MailSecret,
+            &PullScope<'a>,
+            &mut dyn FnMut(PullEvent),
+        ) -> Result<(), MailSubmitError>
+        + Send
+        + Sync,
+>;
+
+/// Corps d'une lettre déjà indexée. Absente : le texte reste en attente.
+pub type BodyFetch = Arc<
+    dyn Fn(&ImapEndpoint, &MailSecret, &str, u32) -> Result<PulledMessage, MailSubmitError>
+        + Send
+        + Sync,
+>;
+
+/// Phase lue pour peindre la page. Les identifiants nouveaux ne sortent qu'une fois.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LectureSnapshot {
+    /// Phase avant consommation d'un battement unique.
+    pub phase: LecturePhase,
+    /// Adresse du compte.
+    pub address: String,
+    /// Génération du miroir.
+    pub generation: u64,
+    /// Lignes nouvelles, prises une fois.
+    pub fresh_ids: Vec<String>,
+}
+
+struct LectureMemory {
+    phase: LecturePhase,
+    address: String,
+    generation: u64,
+    fresh_ids: Vec<String>,
+    running: bool,
+    finished_at: Option<Instant>,
+    /// Demande manuelle. Elle saute l'attente, pas une relève déjà en cours.
+    force: bool,
+    report: AbsorbReport,
+}
+
+impl Default for LectureMemory {
+    fn default() -> Self {
+        Self {
+            phase: LecturePhase::Idle,
+            address: String::new(),
+            generation: 0,
+            fresh_ids: Vec::new(),
+            running: false,
+            finished_at: None,
+            force: false,
+            report: AbsorbReport::default(),
+        }
+    }
+}
+
+fn releve_wait_over(finished: Option<Instant>, every: Duration) -> bool {
+    match finished {
+        None => true,
+        Some(at) => at.elapsed() >= every,
+    }
+}
 
 /// Lit `GRIFFE_TODAY` (`AAAA-MM-JJ`). `None` ou une chaîne vide : horloge locale. Une valeur
 /// illisible est une erreur — le binaire de dev refuse de démarrer plutôt que de photographier
@@ -162,6 +234,14 @@ pub struct AppState {
     mail_probe: Arc<std::sync::Mutex<Option<MailProbe>>>,
     /// Marque lu sur le compte. Absente : le miroir est mis à jour sans socket.
     mark_seen: Arc<std::sync::Mutex<Option<MarkSeen>>>,
+    /// Relève. Absente : aucun réseau, la page ne joue pas la lecture.
+    releve_fetch: Arc<std::sync::Mutex<Option<ReleveFetch>>>,
+    /// Corps différé. Absent : la page dit que le texte arrive, sans le demander.
+    body_fetch: Arc<std::sync::Mutex<Option<BodyFetch>>>,
+    /// Corps à prendre avant la file des quarante.
+    body_rush: Arc<std::sync::Mutex<Vec<PendingBody>>>,
+    /// Où en est la lecture. Mutex standard : le fil bloquant l'écrit sans le coffre.
+    lecture: Arc<std::sync::Mutex<LectureMemory>>,
 }
 
 /// Instantané de l'état du coffre pour le rendu et le middleware — ne donne jamais accès au
@@ -190,6 +270,10 @@ impl AppState {
             mail_session: fresh_mail_session(),
             mail_probe: Arc::new(std::sync::Mutex::new(None)),
             mark_seen: Arc::new(std::sync::Mutex::new(None)),
+            releve_fetch: Arc::new(std::sync::Mutex::new(None)),
+            body_fetch: Arc::new(std::sync::Mutex::new(None)),
+            body_rush: Arc::new(std::sync::Mutex::new(Vec::new())),
+            lecture: Arc::new(std::sync::Mutex::new(LectureMemory::default())),
         }
     }
 
@@ -225,6 +309,233 @@ impl AppState {
 
     pub(crate) fn mark_seen(&self) -> Option<MarkSeen> {
         self.mark_seen.lock().ok().and_then(|slot| slot.clone())
+    }
+
+    /// Installe la relève. La fenêtre passe `griffe_mail::fetch_reporting`.
+    pub fn set_releve_fetch(
+        &self,
+        fetch: impl for<'a> Fn(
+            &ImapEndpoint,
+            &MailSecret,
+            &PullScope<'a>,
+            &mut dyn FnMut(PullEvent),
+        ) -> Result<(), MailSubmitError>
+        + Send
+        + Sync
+        + 'static,
+    ) {
+        if let Ok(mut slot) = self.releve_fetch.lock() {
+            *slot = Some(Arc::new(fetch));
+        }
+    }
+
+    pub(crate) fn releve_fetch(&self) -> Option<ReleveFetch> {
+        self.releve_fetch.lock().ok().and_then(|slot| slot.clone())
+    }
+
+    /// Installe la lecture d'un corps. La fenêtre passe le fil IMAP.
+    pub fn set_body_fetch(
+        &self,
+        fetch: impl Fn(&ImapEndpoint, &MailSecret, &str, u32) -> Result<PulledMessage, MailSubmitError>
+        + Send
+        + Sync
+        + 'static,
+    ) {
+        if let Ok(mut slot) = self.body_fetch.lock() {
+            *slot = Some(Arc::new(fetch));
+        }
+    }
+
+    pub(crate) fn body_fetch(&self) -> Option<BodyFetch> {
+        self.body_fetch.lock().ok().and_then(|slot| slot.clone())
+    }
+
+    /// Demande ce corps avant les autres. La page n'attend pas.
+    pub(crate) fn prefer_body(&self, body: PendingBody) {
+        let Ok(mut slot) = self.body_rush.lock() else {
+            return;
+        };
+        slot.retain(|item| item.mailbox != body.mailbox || item.uid != body.uid);
+        slot.insert(0, body);
+    }
+
+    pub(crate) fn take_preferred(&self) -> Option<PendingBody> {
+        let Ok(mut slot) = self.body_rush.lock() else {
+            return None;
+        };
+        if slot.is_empty() {
+            None
+        } else {
+            Some(slot.remove(0))
+        }
+    }
+
+    /// Vrai quand la fenêtre sait lire. Les tests et `griffe-web-dev` restent sur la page d'aujourd'hui.
+    #[must_use]
+    pub fn lecture_engaged(&self) -> bool {
+        self.releve_fetch
+            .lock()
+            .ok()
+            .is_some_and(|slot| slot.is_some())
+    }
+
+    /// Pose une phase sans ouvrir de socket. Les tests s'en servent.
+    pub fn note_lecture(&self, phase: LecturePhase, address: impl Into<String>) {
+        let Ok(mut slot) = self.lecture.lock() else {
+            return;
+        };
+        let active = matches!(phase, LecturePhase::Opening | LecturePhase::Reading { .. });
+        slot.phase = phase;
+        slot.address = address.into();
+        slot.running = active;
+        slot.finished_at = if active { None } else { Some(Instant::now()) };
+    }
+
+    /// Pose la génération du miroir et les lignes nouvelles. Les tests s'en servent.
+    pub fn note_fresh(&self, generation: u64, fresh: Vec<String>) {
+        let Ok(mut slot) = self.lecture.lock() else {
+            return;
+        };
+        slot.generation = generation;
+        slot.fresh_ids = fresh;
+    }
+
+    /// Demande une relève tout de suite. Une relève déjà en cours n'est pas doublée.
+    pub fn request_releve(&self) {
+        let Ok(mut slot) = self.lecture.lock() else {
+            return;
+        };
+        if !slot.running {
+            slot.force = true;
+        }
+    }
+
+    pub(crate) fn lecture_due(&self, every: Duration) -> bool {
+        let Ok(slot) = self.lecture.lock() else {
+            return false;
+        };
+        !slot.running && (slot.force || releve_wait_over(slot.finished_at, every))
+    }
+
+    /// Passe en ouverture. `lecture_due` a déjà tranché l'attente.
+    pub(crate) fn begin_lecture(&self, address: &str) -> bool {
+        let Ok(mut slot) = self.lecture.lock() else {
+            return false;
+        };
+        if slot.running {
+            return false;
+        }
+        slot.running = true;
+        slot.force = false;
+        slot.report = AbsorbReport::default();
+        slot.phase = LecturePhase::Opening;
+        slot.address = address.to_string();
+        true
+    }
+
+    pub(crate) fn cancel_lecture(&self) {
+        let Ok(mut slot) = self.lecture.lock() else {
+            return;
+        };
+        if slot.running {
+            slot.running = false;
+            slot.phase = LecturePhase::Idle;
+        }
+    }
+
+    pub(crate) fn note_pull(&self, tick: PullTick) {
+        let Ok(mut slot) = self.lecture.lock() else {
+            return;
+        };
+        let folder = match tick.role {
+            PullRole::Inbox => LectureFolder::Reception,
+            PullRole::Sent => LectureFolder::Envoyees,
+        };
+        slot.phase = LecturePhase::Reading {
+            folder,
+            read: tick.read,
+            total: tick.total,
+        };
+        slot.running = true;
+    }
+
+    pub(crate) fn note_pull_failed(&self) {
+        let Ok(mut slot) = self.lecture.lock() else {
+            return;
+        };
+        slot.running = false;
+        slot.finished_at = Some(Instant::now());
+        slot.phase = LecturePhase::Failed;
+    }
+
+    /// Un lot est rangé. La relève reste en cours, la liste peut se rafraîchir.
+    pub(crate) fn note_batch(&self, report: &AbsorbReport, changed: bool, fresh: Vec<String>) {
+        let Ok(mut slot) = self.lecture.lock() else {
+            return;
+        };
+        slot.report.stored = slot.report.stored.saturating_add(report.stored);
+        slot.report.held = slot.report.held.saturating_add(report.held);
+        slot.report.failed = slot.report.failed.saturating_add(report.failed);
+        slot.report.choices = slot.report.choices.saturating_add(report.choices);
+        slot.report.on_dossier = slot.report.on_dossier.saturating_add(report.on_dossier);
+        if changed {
+            slot.generation = slot.generation.saturating_add(1);
+            slot.fresh_ids.extend(fresh);
+        }
+    }
+
+    /// Le corps d'une lettre ouverte est arrivé. La colonne se redessine.
+    pub(crate) fn note_body_landed(&self) {
+        let Ok(mut slot) = self.lecture.lock() else {
+            return;
+        };
+        slot.generation = slot.generation.saturating_add(1);
+    }
+
+    /// La relève est finie. La phrase vient du compte accumulé.
+    pub(crate) fn finish_lecture(&self, was_empty: bool) {
+        let Ok(mut slot) = self.lecture.lock() else {
+            return;
+        };
+        let report = std::mem::take(&mut slot.report);
+        slot.running = false;
+        slot.finished_at = Some(Instant::now());
+        slot.phase = beat_after_absorb(AbsorbBeat {
+            on_dossier: report.on_dossier,
+            stored: report.stored,
+            was_empty,
+        });
+    }
+
+    /// Lit la phase. `request_gen` absent : la page entière prend les lignes nouvelles.
+    /// Un battement « nouvelles » ou « se pose » redevient le repos après cette lecture.
+    pub(crate) fn take_lecture(&self, request_gen: Option<u64>) -> LectureSnapshot {
+        let Ok(mut slot) = self.lecture.lock() else {
+            return LectureSnapshot {
+                phase: LecturePhase::Idle,
+                address: String::new(),
+                generation: 0,
+                fresh_ids: Vec::new(),
+            };
+        };
+        let take_fresh = request_gen.is_none_or(|generation| generation != slot.generation);
+        let fresh_ids = if take_fresh {
+            std::mem::take(&mut slot.fresh_ids)
+        } else {
+            Vec::new()
+        };
+        let phase = slot.phase;
+        if matches!(phase, LecturePhase::Arrived { fresh } if fresh > 0)
+            || matches!(phase, LecturePhase::Filing { on_dossier } if on_dossier > 0)
+        {
+            slot.phase = LecturePhase::Idle;
+        }
+        LectureSnapshot {
+            phase,
+            address: slot.address.clone(),
+            generation: slot.generation,
+            fresh_ids,
+        }
     }
 
     /// Jeton de cette fenêtre, posé à la création de l'état.
@@ -349,7 +660,7 @@ impl AppState {
     }
 
     /// Ferme la connexion et purge la session du trousseau OS — pour que « verrouiller » veuille
-    /// dire une seule chose, que ce soit le bouton de la fenêtre ou `freeflow lock` tapé dans la
+    /// dire une seule chose, que ce soit le bouton de la fenêtre ou `griffe lock` tapé dans la
     /// console intégrée. La fermeture est immédiate, même pendant la suspension des 12 h.
     pub async fn lock(&self) {
         if !Store::lock(&self.db_path) {
@@ -396,7 +707,7 @@ impl AppState {
 
     /// Marque une activité humaine réelle, prolongeant la session jusqu'au prochain
     /// `idle_timeout`. Le middleware l'appelle pour toute route protégée *sauf*
-    /// `/audit/recent` : son polling toutes les deux secondes n'est pas de l'activité humaine,
+    /// `/audit/recent` et `/boite/lecture` : leur sondage n'est pas de l'activité humaine,
     /// sans quoi la session n'expirerait jamais.
     pub async fn touch(&self) {
         if let VaultSession::Unlocked { last_activity, .. } = &mut *self.session.lock().await {

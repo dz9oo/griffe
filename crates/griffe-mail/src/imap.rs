@@ -2,23 +2,27 @@
 //! `BODY.PEEK` : le relevé ne marque pas lu. La liaison est chiffrée sur le
 //! port 993. Aucun dossier n'est créé, rien n'est détruit.
 
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
 use std::time::Duration;
 
 use griffe_core::mail::{
-    ICLOUD_SENT_MAILBOX, IMAP_PORT, ImapEndpoint, MailSecret, MailSubmitError, PulledMailbox,
-    PulledMessage, SentCopyStatus,
+    BODY_CAP_BYTES, HEADER_BATCH, ICLOUD_SENT_MAILBOX, IMAP_PORT, ImapEndpoint, MailSecret,
+    MailSubmitError, PullEvent, PullRole, PullScope, PullTick, PulledBody, PulledMailbox,
+    PulledMessage, SentCopyStatus, message_kept,
 };
 use griffe_core::mailbox::MailboxCursor;
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, ClientConnection, StreamOwned};
 use zeroize::Zeroize;
 
-const TIMEOUT: Duration = Duration::from_secs(20);
-const MAX_LINE: usize = 1024 * 1024;
-const FETCH_MAX: usize = 4 * 1024 * 1024;
+const TIMEOUT: Duration = Duration::from_secs(60);
+const MAX_PREFIX: usize = 256 * 1024;
+const HEADER_LITERAL: usize = 1024 * 1024;
+const SEARCH_PREFIX: usize = 8 * 1024 * 1024;
+const MAX_UNTAGGED: usize = 200_000;
+const OVERSIZE_MARK: &[u8] = b" GRF-OVERSIZE";
 
 /// Noms d'essai, sans doublon : celui qui a déjà marché, la partie avant `@`,
 /// puis l'adresse complète.
@@ -61,9 +65,94 @@ pub struct ListedMailbox {
 pub fn fetch_new(
     endpoint: &ImapEndpoint,
     secret: &MailSecret,
-    cursors: &[MailboxCursor],
+    scope: &PullScope<'_>,
 ) -> Result<Vec<PulledMailbox>, MailSubmitError> {
+    let mut batches = Vec::new();
+    fetch_reporting(endpoint, secret, scope, &mut |event| {
+        if let PullEvent::Batch(batch) = event {
+            batches.push(batch);
+        }
+    })?;
+    Ok(batches)
+}
+
+/// Comme [`fetch_new`], et annonce chaque lot dès qu'il est lu.
+/// Le rappel ne reçoit ni mot de passe ni corps.
+///
+/// # Errors
+///
+/// La liaison, l'identifiant ou la lecture échoue. Le mot de passe n'est pas dans le message.
+pub fn fetch_reporting(
+    endpoint: &ImapEndpoint,
+    secret: &MailSecret,
+    scope: &PullScope<'_>,
+    on: &mut dyn FnMut(PullEvent),
+) -> Result<(), MailSubmitError> {
     let (mut session, _) = login(endpoint, secret)?;
+    sync_folders(&mut session, endpoint, secret, scope, on)?;
+    session.logout();
+    Ok(())
+}
+
+/// Corps d'un message déjà indexé. Au-delà du plafond, les en-têtes restent.
+///
+/// # Errors
+///
+/// La liaison ou la lecture échoue.
+pub fn fetch_body(
+    endpoint: &ImapEndpoint,
+    secret: &MailSecret,
+    mailbox: &str,
+    uid: u32,
+) -> Result<PulledMessage, MailSubmitError> {
+    let (mut session, _) = login(endpoint, secret)?;
+    let message = session.fetch_one_body(secret.expose(), mailbox, uid)?;
+    session.logout();
+    Ok(message)
+}
+
+/// Corps des lignes encore `pending`, dans une seule liaison.
+///
+/// # Errors
+///
+/// La liaison ou la lecture échoue.
+pub fn fetch_pending(
+    endpoint: &ImapEndpoint,
+    secret: &MailSecret,
+    pending: &[griffe_core::mailbox::PendingBody],
+) -> Result<Vec<PulledMailbox>, MailSubmitError> {
+    if pending.is_empty() {
+        return Ok(Vec::new());
+    }
+    let (mut session, _) = login(endpoint, secret)?;
+    let mut batches = Vec::with_capacity(pending.len());
+    for item in pending {
+        let Ok(uid) = u32::try_from(item.uid) else {
+            continue;
+        };
+        let message = session.fetch_one_body(secret.expose(), &item.mailbox, uid)?;
+        batches.push(PulledMailbox {
+            name: item.mailbox.clone(),
+            uidvalidity: item.uidvalidity,
+            resync: false,
+            role: "inbox".to_string(),
+            messages: vec![message],
+            modseq: None,
+            examined_uid: 0,
+            keep_uids: None,
+        });
+    }
+    session.logout();
+    Ok(batches)
+}
+
+fn sync_folders(
+    session: &mut Session,
+    endpoint: &ImapEndpoint,
+    secret: &MailSecret,
+    scope: &PullScope<'_>,
+    on: &mut dyn FnMut(PullEvent),
+) -> Result<(), MailSubmitError> {
     let password = secret.expose();
     let listed = session.list(password)?;
     let mut names = Vec::new();
@@ -76,19 +165,17 @@ pub fn fetch_new(
     if let Some(sent) = choose_sent_mailbox(&listed, endpoint.icloud)
         && !names.iter().any(|name| name.eq_ignore_ascii_case(&sent))
     {
-        names.push(sent.clone());
+        names.push(sent);
     }
-    let mut pulled = Vec::new();
     for name in names {
         let role = if name.eq_ignore_ascii_case("INBOX") {
             "inbox"
         } else {
             "sent"
         };
-        pulled.push(session.pull(password, &name, role, cursors)?);
+        session.pull_headers(password, &name, role, scope, on)?;
     }
-    session.logout();
-    Ok(pulled)
+    Ok(())
 }
 
 /// Marque un message lu sur le serveur.
@@ -110,6 +197,26 @@ pub fn store_seen(
         .map(|_| ())?;
     session.logout();
     Ok(())
+}
+
+/// `EXISTS` lu dans la réponse `SELECT`. `* 14 EXISTS`.
+#[must_use]
+pub fn parse_exists(lines: &[String]) -> Option<u32> {
+    for line in lines {
+        let Some(rest) = line.trim().strip_prefix('*') else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        let Some((number, tail)) = rest.split_once(char::is_whitespace) else {
+            continue;
+        };
+        if tail.trim().eq_ignore_ascii_case("EXISTS")
+            && let Ok(value) = number.parse()
+        {
+            return Some(value);
+        }
+    }
+    None
 }
 
 /// `UIDVALIDITY` lu dans la réponse `SELECT`.
@@ -151,7 +258,51 @@ pub fn parse_fetch_line(line: &[u8]) -> Option<PulledMessage> {
         uid: i64::from(uid_of(prefix)?),
         seen: prefix.contains("\\Seen"),
         raw: String::from_utf8_lossy(&line[start..end]).into_owned(),
+        body: PulledBody::Ready,
+        size: rfc822_size(prefix),
     })
+}
+
+fn rfc822_size(prefix: &str) -> Option<i64> {
+    let upper = prefix.to_ascii_uppercase();
+    let at = upper.find("RFC822.SIZE")?;
+    let rest = prefix[at + "RFC822.SIZE".len()..].trim_start();
+    let number: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    number.parse().ok()
+}
+
+/// `UIDNEXT` ou `HIGHESTMODSEQ` dans une réponse `SELECT`.
+#[must_use]
+pub fn parse_code_number(lines: &[String], key: &str) -> Option<u64> {
+    let needle = format!("[{key} ");
+    for line in lines {
+        let Some(at) = line.find(&needle) else {
+            continue;
+        };
+        let rest = &line[at + needle.len()..];
+        let number: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        if let Ok(value) = number.parse() {
+            return Some(value);
+        }
+    }
+    None
+}
+
+/// UID renvoyés par `UID SEARCH`.
+#[must_use]
+pub fn parse_search_uids(lines: &[String]) -> Vec<i64> {
+    let mut uids = Vec::new();
+    for line in lines {
+        let Some(rest) = line.trim().strip_prefix("* SEARCH") else {
+            continue;
+        };
+        for token in rest.split_whitespace() {
+            if let Ok(uid) = token.parse() {
+                uids.push(uid);
+            }
+        }
+    }
+    uids
 }
 
 fn uid_of(prefix: &str) -> Option<u32> {
@@ -274,6 +425,13 @@ fn copy_sentence(error: &MailSubmitError) -> String {
     }
 }
 
+pub(crate) fn open_session(
+    endpoint: &ImapEndpoint,
+    secret: &MailSecret,
+) -> Result<Session, MailSubmitError> {
+    login(endpoint, secret).map(|(session, _)| session)
+}
+
 fn login(
     endpoint: &ImapEndpoint,
     secret: &MailSecret,
@@ -309,7 +467,7 @@ fn connect(endpoint: &ImapEndpoint) -> Result<Session, MailSubmitError> {
         .map_err(|_| MailSubmitError::Timeout)?;
     sock.set_write_timeout(Some(TIMEOUT))
         .map_err(|_| MailSubmitError::Timeout)?;
-    let stream = StreamOwned::new(connection, sock);
+    let stream = BufReader::new(StreamOwned::new(connection, sock));
     let mut session = Session { stream, tag: 0 };
     let greeting = session.read_line()?;
     let upper = greeting.to_ascii_uppercase();
@@ -331,9 +489,18 @@ fn tls_config() -> Result<Arc<ClientConfig>, MailSubmitError> {
     Ok(Arc::new(config))
 }
 
-struct Session {
-    stream: StreamOwned<ClientConnection, TcpStream>,
+pub(crate) struct Session {
+    stream: BufReader<StreamOwned<ClientConnection, TcpStream>>,
     tag: u32,
+}
+
+struct FlagWatch<'a> {
+    secret: &'a str,
+    name: &'a str,
+    role: &'a str,
+    uidvalidity: i64,
+    cursor: Option<&'a MailboxCursor>,
+    highest: Option<i64>,
 }
 
 impl Session {
@@ -367,52 +534,434 @@ impl Session {
         self.command(&format!("SELECT {}", quote(mailbox)), secret)
     }
 
-    fn pull(
+    fn pull_headers(
         &mut self,
         secret: &str,
         name: &str,
         role: &str,
-        cursors: &[MailboxCursor],
-    ) -> Result<PulledMailbox, MailSubmitError> {
-        let lines = self.select_lines(name, secret)?;
+        scope: &PullScope<'_>,
+        on: &mut dyn FnMut(PullEvent),
+    ) -> Result<(), MailSubmitError> {
+        if !scope.addresses.is_empty() {
+            return self.pull_kept(secret, name, role, scope, on);
+        }
+        let cursors = scope.cursors;
+        let lines = self.select_for_pull(name, secret)?;
+        let total = parse_exists(&lines);
+        let role_tick = PullRole::parse(role);
+        on(PullEvent::Tick(PullTick {
+            role: role_tick,
+            read: 0,
+            total,
+        }));
         let uidvalidity = parse_uidvalidity(&lines)
-            .map(i64::try_from)
-            .transpose()
-            .map_err(|_| unread(secret, ""))?
+            .and_then(|value| i64::try_from(value).ok())
             .ok_or_else(|| unread(secret, ""))?;
+        let uidnext =
+            parse_code_number(&lines, "UIDNEXT").and_then(|value| i64::try_from(value).ok());
+        let highest =
+            parse_code_number(&lines, "HIGHESTMODSEQ").and_then(|value| i64::try_from(value).ok());
         let cursor = cursors
             .iter()
             .find(|cursor| cursor.name.eq_ignore_ascii_case(name));
         let resync = cursor.is_some_and(|cursor| cursor.uidvalidity != uidvalidity);
-        let start = if resync {
-            1
-        } else {
-            cursor
-                .map(|cursor| cursor.last_uid.saturating_add(1))
-                .unwrap_or(1)
+        let start = match cursor {
+            Some(cursor) if !resync => cursor.last_uid.saturating_add(1).max(1),
+            _ => 1,
         };
-        let fetched = self.fetch(
-            &format!("UID FETCH {start}:* (UID FLAGS BODY.PEEK[])"),
+        let watch = FlagWatch {
             secret,
-        )?;
-        let mut messages = Vec::new();
-        for line in fetched {
-            if let Some(message) = parse_fetch_line(&line) {
-                messages.push(message);
-            }
-        }
-        Ok(PulledMailbox {
-            name: name.to_string(),
+            name,
+            role,
             uidvalidity,
-            resync,
-            role: role.to_string(),
-            messages,
-        })
+            cursor,
+            highest,
+        };
+        if !resync && uidnext.is_some_and(|next| start >= next) {
+            if !self.pull_flag_changes(&watch, on)? {
+                emit_batch(
+                    on,
+                    name,
+                    uidvalidity,
+                    false,
+                    role,
+                    Vec::new(),
+                    highest,
+                    0,
+                    None,
+                );
+            }
+            return Ok(());
+        }
+        let searched =
+            self.command_wide(&format!("UID SEARCH UID {start}:*"), secret, SEARCH_PREFIX)?;
+        let mut uids = parse_search_uids(&searched);
+        uids.sort_unstable();
+        uids.dedup();
+        if uids.is_empty() {
+            if resync {
+                emit_batch(
+                    on,
+                    name,
+                    uidvalidity,
+                    true,
+                    role,
+                    Vec::new(),
+                    highest,
+                    0,
+                    None,
+                );
+            } else if !self.pull_flag_changes(&watch, on)? {
+                emit_batch(
+                    on,
+                    name,
+                    uidvalidity,
+                    false,
+                    role,
+                    Vec::new(),
+                    highest,
+                    0,
+                    None,
+                );
+            }
+            return Ok(());
+        }
+        let mut read = 0_u32;
+        let chunks: Vec<&[i64]> = uids.chunks(HEADER_BATCH).collect();
+        for (index, chunk) in chunks.iter().enumerate() {
+            let fetched = self.fetch(
+                &format!(
+                    "UID FETCH {} (UID FLAGS RFC822.SIZE BODY.PEEK[HEADER])",
+                    uid_set(chunk)
+                ),
+                secret,
+                HEADER_LITERAL,
+            )?;
+            let mut messages = Vec::new();
+            for line in &fetched {
+                if let Some(message) = message_from_header(line) {
+                    messages.push(message);
+                }
+            }
+            self.complete_reports(secret, &mut messages)?;
+            read = read.saturating_add(u32::try_from(messages.len()).unwrap_or(u32::MAX));
+            on(PullEvent::Tick(PullTick {
+                role: role_tick,
+                read,
+                total,
+            }));
+            emit_batch(
+                on,
+                name,
+                uidvalidity,
+                resync && index == 0,
+                role,
+                messages,
+                highest.filter(|_| index + 1 == chunks.len()),
+                0,
+                None,
+            );
+        }
+        if !resync {
+            self.pull_flag_changes(&watch, on)?;
+        }
+        Ok(())
     }
 
-    fn fetch(&mut self, body: &str, secret: &str) -> Result<Vec<Vec<u8>>, MailSubmitError> {
+    /// Ne lit que les adresses tenues. Le curseur avance aussi sur ce qui est ignoré.
+    /// Une passe entière (`sweep`) retire du miroir les UID qui ne sont plus tenus.
+    fn pull_kept(
+        &mut self,
+        secret: &str,
+        name: &str,
+        role: &str,
+        scope: &PullScope<'_>,
+        on: &mut dyn FnMut(PullEvent),
+    ) -> Result<(), MailSubmitError> {
+        let lines = self.select_for_pull(name, secret)?;
+        let total = parse_exists(&lines);
+        let role_tick = PullRole::parse(role);
+        on(PullEvent::Tick(PullTick {
+            role: role_tick,
+            read: 0,
+            total,
+        }));
+        let uidvalidity = parse_uidvalidity(&lines)
+            .and_then(|value| i64::try_from(value).ok())
+            .ok_or_else(|| unread(secret, ""))?;
+        let uidnext =
+            parse_code_number(&lines, "UIDNEXT").and_then(|value| i64::try_from(value).ok());
+        let highest =
+            parse_code_number(&lines, "HIGHESTMODSEQ").and_then(|value| i64::try_from(value).ok());
+        let cursor = scope
+            .cursors
+            .iter()
+            .find(|cursor| cursor.name.eq_ignore_ascii_case(name));
+        let resync = cursor.is_some_and(|cursor| cursor.uidvalidity != uidvalidity);
+        let start = if scope.sweep || resync {
+            1
+        } else {
+            match cursor {
+                Some(cursor) => cursor.last_uid.saturating_add(1).max(1),
+                None => 1,
+            }
+        };
+        let watch = FlagWatch {
+            secret,
+            name,
+            role,
+            uidvalidity,
+            cursor,
+            highest,
+        };
+        if !scope.sweep && !resync && uidnext.is_some_and(|next| start >= next) {
+            if !self.pull_flag_changes(&watch, on)? {
+                emit_batch(
+                    on,
+                    name,
+                    uidvalidity,
+                    false,
+                    role,
+                    Vec::new(),
+                    highest,
+                    0,
+                    None,
+                );
+            }
+            return Ok(());
+        }
+        let searched =
+            self.command_wide(&format!("UID SEARCH UID {start}:*"), secret, SEARCH_PREFIX)?;
+        let mut span = parse_search_uids(&searched);
+        span.sort_unstable();
+        span.dedup();
+        let examined = span.iter().copied().max().unwrap_or_else(|| {
+            uidnext
+                .map(|next| next.saturating_sub(1).max(0))
+                .unwrap_or(0)
+        });
+        let mut messages = self.kept_headers(secret, start, scope.addresses, &span)?;
+        messages.retain(|message| header_kept(message, scope.addresses));
+        messages.sort_by_key(|message| message.uid);
+        messages.dedup_by_key(|message| message.uid);
+        self.complete_reports(secret, &mut messages)?;
+        let mut keep_ids: Vec<i64> = messages.iter().map(|message| message.uid).collect();
+        keep_ids.sort_unstable();
+        keep_ids.dedup();
+        let keep = scope.sweep.then_some(keep_ids);
+        emit_kept(
+            on,
+            name,
+            uidvalidity,
+            resync,
+            role,
+            role_tick,
+            total,
+            messages,
+            highest,
+            examined,
+            keep,
+        );
+        if !resync {
+            self.pull_flag_changes(&watch, on)?;
+        }
+        Ok(())
+    }
+
+    /// En-têtes des UID tenus. Une recherche trop large est relue, puis filtrée ici.
+    fn kept_headers(
+        &mut self,
+        secret: &str,
+        start: i64,
+        addresses: &[String],
+        span: &[i64],
+    ) -> Result<Vec<PulledMessage>, MailSubmitError> {
+        if span.is_empty() {
+            return Ok(Vec::new());
+        }
+        let uids = match self.search_kept(secret, start, addresses) {
+            Ok(mut found) => {
+                found.sort_unstable();
+                found.dedup();
+                found.retain(|uid| span.binary_search(uid).is_ok());
+                found
+            }
+            Err(
+                error @ (MailSubmitError::Auth | MailSubmitError::Tls | MailSubmitError::Timeout),
+            ) => return Err(error),
+            Err(_) => span.to_vec(),
+        };
+        self.fetch_headers(secret, &uids)
+    }
+
+    fn search_kept(
+        &mut self,
+        secret: &str,
+        start: i64,
+        addresses: &[String],
+    ) -> Result<Vec<i64>, MailSubmitError> {
+        if addresses.iter().any(|address| contains_break(address)) {
+            return Err(MailSubmitError::Other(
+                "Le courriel n'a pas pu être lu.".into(),
+            ));
+        }
+        let mut found = Vec::new();
+        for address in addresses {
+            let lines =
+                self.command_wide(&kept_search_query(start, address), secret, SEARCH_PREFIX)?;
+            found.extend(parse_search_uids(&lines));
+        }
+        Ok(found)
+    }
+
+    fn fetch_headers(
+        &mut self,
+        secret: &str,
+        uids: &[i64],
+    ) -> Result<Vec<PulledMessage>, MailSubmitError> {
+        let mut messages = Vec::new();
+        for chunk in uids.chunks(HEADER_BATCH) {
+            let fetched = self.fetch(
+                &format!(
+                    "UID FETCH {} (UID FLAGS RFC822.SIZE BODY.PEEK[HEADER])",
+                    uid_set(chunk)
+                ),
+                secret,
+                HEADER_LITERAL,
+            )?;
+            for line in &fetched {
+                if let Some(message) = message_from_header(line) {
+                    messages.push(message);
+                }
+            }
+        }
+        Ok(messages)
+    }
+
+    fn select_for_pull(
+        &mut self,
+        mailbox: &str,
+        secret: &str,
+    ) -> Result<Vec<String>, MailSubmitError> {
+        match self.command(&format!("SELECT {} (CONDSTORE)", quote(mailbox)), secret) {
+            Ok(lines) => Ok(lines),
+            Err(
+                error @ (MailSubmitError::Auth | MailSubmitError::Tls | MailSubmitError::Timeout),
+            ) => Err(error),
+            Err(_) => self.select_lines(mailbox, secret),
+        }
+    }
+
+    fn pull_flag_changes(
+        &mut self,
+        watch: &FlagWatch<'_>,
+        on: &mut dyn FnMut(PullEvent),
+    ) -> Result<bool, MailSubmitError> {
+        let Some(previous) = watch.cursor.and_then(|cursor| cursor.modseq) else {
+            return Ok(false);
+        };
+        let Some(highest) = watch.highest else {
+            return Ok(false);
+        };
+        if previous >= highest {
+            return Ok(false);
+        }
+        let fetched = self.fetch(
+            &format!("UID FETCH 1:* (UID FLAGS) (CHANGEDSINCE {previous})"),
+            watch.secret,
+            HEADER_LITERAL,
+        )?;
+        let messages: Vec<_> = fetched
+            .iter()
+            .filter_map(|line| message_from_flags(line))
+            .collect();
+        if messages.is_empty() {
+            return Ok(false);
+        }
+        emit_batch(
+            on,
+            watch.name,
+            watch.uidvalidity,
+            false,
+            watch.role,
+            messages,
+            Some(highest),
+            0,
+            None,
+        );
+        Ok(true)
+    }
+
+    fn complete_reports(
+        &mut self,
+        secret: &str,
+        messages: &mut [PulledMessage],
+    ) -> Result<(), MailSubmitError> {
+        for message in messages.iter_mut() {
+            if message.body != PulledBody::Pending
+                || !message
+                    .raw
+                    .to_ascii_lowercase()
+                    .contains("multipart/report")
+            {
+                continue;
+            }
+            let Ok(uid) = u32::try_from(message.uid) else {
+                continue;
+            };
+            let fetched = self.fetch(
+                &format!("UID FETCH {uid} (UID FLAGS BODY.PEEK[])"),
+                secret,
+                body_cap(),
+            )?;
+            if let Some(line) = fetched
+                .iter()
+                .find(|line| std::str::from_utf8(line).is_ok_and(|text| text.contains(" FETCH ")))
+            {
+                apply_full_body(message, line);
+            }
+        }
+        Ok(())
+    }
+
+    fn fetch_one_body(
+        &mut self,
+        secret: &str,
+        mailbox: &str,
+        uid: u32,
+    ) -> Result<PulledMessage, MailSubmitError> {
+        self.select(mailbox, secret)?;
+        let fetched = self.fetch(
+            &format!("UID FETCH {uid} (UID FLAGS RFC822.SIZE BODY.PEEK[])"),
+            secret,
+            body_cap(),
+        )?;
+        let line = fetched
+            .into_iter()
+            .find(|line| std::str::from_utf8(line).is_ok_and(|text| text.contains(" FETCH ")))
+            .ok_or_else(|| unread(secret, ""))?;
+        let mut message = PulledMessage {
+            uid: i64::from(uid),
+            seen: false,
+            raw: String::new(),
+            body: PulledBody::Pending,
+            size: None,
+        };
+        apply_full_body(&mut message, &line);
+        if message.body == PulledBody::Pending {
+            return Err(unread(secret, ""));
+        }
+        Ok(message)
+    }
+
+    fn fetch(
+        &mut self,
+        body: &str,
+        secret: &str,
+        max_literal: usize,
+    ) -> Result<Vec<Vec<u8>>, MailSubmitError> {
         self.write_command(body)?;
-        self.read_tagged_bytes(secret)
+        self.read_tagged_bytes(secret, max_literal)
     }
 
     fn already_there(&mut self, message_id: &str, secret: &str) -> Result<bool, MailSubmitError> {
@@ -434,9 +983,8 @@ impl Session {
         if !cont.starts_with('+') {
             return Err(classify(&cont, secret));
         }
-        self.stream.write_all(bytes).map_err(io_error)?;
-        self.stream.write_all(b"\r\n").map_err(io_error)?;
-        self.stream.flush().map_err(io_error)?;
+        self.write_raw(bytes)?;
+        self.write_raw(b"\r\n")?;
         self.read_tagged(secret).map(|_| ())
     }
 
@@ -444,25 +992,75 @@ impl Session {
         let _ = self.write_command("LOGOUT");
     }
 
+    pub(crate) fn still_there(&mut self) -> bool {
+        self.command("NOOP", "").is_ok()
+    }
+
+    pub(crate) fn close(&mut self) {
+        self.logout();
+    }
+
+    pub(crate) fn read_folders(
+        &mut self,
+        endpoint: &ImapEndpoint,
+        secret: &MailSecret,
+        scope: &PullScope<'_>,
+        on: &mut dyn FnMut(PullEvent),
+    ) -> Result<(), MailSubmitError> {
+        sync_folders(self, endpoint, secret, scope, on)
+    }
+
+    pub(crate) fn read_one(
+        &mut self,
+        secret: &str,
+        mailbox: &str,
+        uid: u32,
+    ) -> Result<PulledMessage, MailSubmitError> {
+        self.fetch_one_body(secret, mailbox, uid)
+    }
+
     fn command(&mut self, body: &str, secret: &str) -> Result<Vec<String>, MailSubmitError> {
+        self.command_wide(body, secret, MAX_PREFIX)
+    }
+
+    fn command_wide(
+        &mut self,
+        body: &str,
+        secret: &str,
+        max_prefix: usize,
+    ) -> Result<Vec<String>, MailSubmitError> {
         self.write_command(body)?;
-        self.read_tagged(secret)
+        self.read_tagged_capped(secret, max_prefix)
     }
 
     fn write_command(&mut self, body: &str) -> Result<(), MailSubmitError> {
         self.tag += 1;
         let mut line = format!("A{} {body}\r\n", self.tag);
-        let result = self.stream.write_all(line.as_bytes()).map_err(io_error);
+        let result = self.write_raw(line.as_bytes());
         line.zeroize();
-        self.stream.flush().map_err(io_error)?;
         result
     }
 
+    fn write_raw(&mut self, bytes: &[u8]) -> Result<(), MailSubmitError> {
+        let stream = self.stream.get_mut();
+        stream.write_all(bytes).map_err(io_error)?;
+        stream.flush().map_err(io_error)?;
+        Ok(())
+    }
+
     fn read_tagged(&mut self, secret: &str) -> Result<Vec<String>, MailSubmitError> {
+        self.read_tagged_capped(secret, MAX_PREFIX)
+    }
+
+    fn read_tagged_capped(
+        &mut self,
+        secret: &str,
+        max_prefix: usize,
+    ) -> Result<Vec<String>, MailSubmitError> {
         let tag = format!("A{}", self.tag);
         let mut lines = Vec::new();
         loop {
-            let line = self.read_line()?;
+            let line = self.read_line_capped(max_prefix)?;
             if let Some(rest) = line.strip_prefix(&tag) {
                 let rest = rest.trim_start();
                 if rest.starts_with("OK") {
@@ -486,35 +1084,24 @@ impl Session {
     }
 
     fn read_line(&mut self) -> Result<String, MailSubmitError> {
-        let mut buf = Vec::new();
-        loop {
-            let byte = self.read_byte()?;
-            buf.push(byte);
-            if buf.len() > MAX_LINE {
-                return Err(MailSubmitError::Other(
-                    "La copie n'a pas pu être déposée.".into(),
-                ));
-            }
-            if buf.ends_with(b"\r\n") {
-                buf.truncate(buf.len() - 2);
-                if let Some(len) = trailing_literal(&buf) {
-                    let mut rest = vec![0_u8; len];
-                    self.stream.read_exact(&mut rest).map_err(io_error)?;
-                    buf.extend(rest);
-                    continue;
-                }
-                return String::from_utf8(buf).map_err(|_| {
-                    MailSubmitError::Other("La copie n'a pas pu être déposée.".into())
-                });
-            }
-        }
+        self.read_line_capped(MAX_PREFIX)
     }
 
-    fn read_tagged_bytes(&mut self, secret: &str) -> Result<Vec<Vec<u8>>, MailSubmitError> {
+    fn read_line_capped(&mut self, max_prefix: usize) -> Result<String, MailSubmitError> {
+        let bytes = read_logical_line(&mut self.stream, HEADER_LITERAL, max_prefix)?;
+        String::from_utf8(bytes)
+            .map_err(|_| MailSubmitError::Other("La copie n'a pas pu être déposée.".into()))
+    }
+
+    fn read_tagged_bytes(
+        &mut self,
+        secret: &str,
+        max_literal: usize,
+    ) -> Result<Vec<Vec<u8>>, MailSubmitError> {
         let tag = format!("A{}", self.tag);
         let mut lines = Vec::new();
         loop {
-            let line = self.read_line_bytes(FETCH_MAX)?;
+            let line = read_logical_line(&mut self.stream, max_literal, MAX_PREFIX)?;
             let text = String::from_utf8_lossy(&line);
             if let Some(rest) = text.strip_prefix(&tag) {
                 let rest = rest.trim_start();
@@ -527,44 +1114,10 @@ impl Session {
                 return Err(unread(secret, &text));
             }
             lines.push(line);
-            if lines.len() > 5_000 {
+            if lines.len() > MAX_UNTAGGED {
                 return Err(unread(secret, ""));
             }
         }
-    }
-
-    fn read_line_bytes(&mut self, max: usize) -> Result<Vec<u8>, MailSubmitError> {
-        let mut buf = Vec::new();
-        loop {
-            let byte = self.read_byte()?;
-            buf.push(byte);
-            if buf.len() > max {
-                return Err(MailSubmitError::Other(
-                    "La boîte n'a pas pu être lue.".into(),
-                ));
-            }
-            if buf.ends_with(b"\r\n") {
-                buf.truncate(buf.len() - 2);
-                if let Some(len) = trailing_literal(&buf) {
-                    if len > max {
-                        return Err(MailSubmitError::Other(
-                            "La boîte n'a pas pu être lue.".into(),
-                        ));
-                    }
-                    let mut rest = vec![0_u8; len];
-                    self.stream.read_exact(&mut rest).map_err(io_error)?;
-                    buf.extend(rest);
-                    continue;
-                }
-                return Ok(buf);
-            }
-        }
-    }
-
-    fn read_byte(&mut self) -> Result<u8, MailSubmitError> {
-        let mut byte = [0_u8; 1];
-        self.stream.read_exact(&mut byte).map_err(io_error)?;
-        Ok(byte[0])
     }
 }
 
@@ -593,12 +1146,14 @@ fn unread(secret: &str, line: &str) -> MailSubmitError {
         MailSubmitError::Timeout => MailSubmitError::Timeout,
         MailSubmitError::Refused(message) => {
             if !secret.is_empty() && message.contains(secret) {
-                MailSubmitError::Other("La boîte n'a pas pu être lue.".into())
+                MailSubmitError::Other("Le courriel n'a pas pu être lu.".into())
             } else {
                 MailSubmitError::Refused(message)
             }
         }
-        MailSubmitError::Other(_) => MailSubmitError::Other("La boîte n'a pas pu être lue.".into()),
+        MailSubmitError::Other(_) => {
+            MailSubmitError::Other("Le courriel n'a pas pu être lu.".into())
+        }
     }
 }
 
@@ -628,17 +1183,281 @@ fn io_error(error: std::io::Error) -> MailSubmitError {
     }
 }
 
-fn trailing_literal(line: &[u8]) -> Option<usize> {
+fn trailing_literal(line: &[u8]) -> Result<Option<usize>, MailSubmitError> {
     if !line.ends_with(b"}") {
-        return None;
+        return Ok(None);
     }
-    let open = line.iter().rposition(|byte| *byte == b'{')?;
+    let Some(open) = line.iter().rposition(|byte| *byte == b'{') else {
+        return Ok(None);
+    };
     if !quotes_even(&line[..open]) {
+        return Ok(None);
+    }
+    let Ok(raw) = std::str::from_utf8(&line[open + 1..line.len() - 1]) else {
+        return Ok(None);
+    };
+    let raw = raw.strip_suffix('+').unwrap_or(raw);
+    if raw.is_empty() || !raw.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Ok(None);
+    }
+    raw.parse::<usize>().map(Some).map_err(|_| unread("", ""))
+}
+
+fn read_logical_line(
+    reader: &mut impl BufRead,
+    max_literal: usize,
+    max_prefix: usize,
+) -> Result<Vec<u8>, MailSubmitError> {
+    let mut buf = Vec::new();
+    loop {
+        if buf.len() > max_literal.saturating_add(max_prefix) {
+            return Err(unread("", ""));
+        }
+        let segment = buf.len();
+        loop {
+            let byte = read_one(reader)?;
+            buf.push(byte);
+            if buf.len() - segment > max_prefix {
+                return Err(unread("", ""));
+            }
+            if buf.ends_with(b"\r\n") {
+                buf.truncate(buf.len() - 2);
+                break;
+            }
+        }
+        let Some(len) = trailing_literal(&buf)? else {
+            return Ok(buf);
+        };
+        let over = len > max_literal
+            || buf.len().saturating_add(len) > max_literal.saturating_add(max_prefix);
+        if over {
+            discard_exact(reader, len)?;
+            buf.extend_from_slice(OVERSIZE_MARK);
+            continue;
+        }
+        let mut rest = vec![0_u8; len];
+        reader.read_exact(&mut rest).map_err(io_error)?;
+        buf.extend(rest);
+    }
+}
+
+fn read_one(reader: &mut impl BufRead) -> Result<u8, MailSubmitError> {
+    let mut byte = [0_u8; 1];
+    reader.read_exact(&mut byte).map_err(io_error)?;
+    Ok(byte[0])
+}
+
+fn discard_exact(reader: &mut impl BufRead, mut len: usize) -> Result<(), MailSubmitError> {
+    let mut chunk = [0_u8; 8 * 1024];
+    while len > 0 {
+        let take = len.min(chunk.len());
+        reader.read_exact(&mut chunk[..take]).map_err(io_error)?;
+        len -= take;
+    }
+    Ok(())
+}
+
+fn body_cap() -> usize {
+    usize::try_from(BODY_CAP_BYTES).unwrap_or(usize::MAX)
+}
+
+fn body_cap_i64() -> i64 {
+    i64::try_from(BODY_CAP_BYTES).unwrap_or(i64::MAX)
+}
+
+fn uid_set(uids: &[i64]) -> String {
+    let mut out = String::new();
+    for (index, uid) in uids.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push_str(&uid.to_string());
+    }
+    out
+}
+
+fn header_kept(message: &PulledMessage, addresses: &[String]) -> bool {
+    message.raw.trim().is_empty() || message_kept(&message.raw, addresses)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_kept(
+    on: &mut dyn FnMut(PullEvent),
+    name: &str,
+    uidvalidity: i64,
+    resync: bool,
+    role: &str,
+    role_tick: PullRole,
+    total: Option<u32>,
+    messages: Vec<PulledMessage>,
+    modseq: Option<i64>,
+    examined_uid: i64,
+    keep_uids: Option<Vec<i64>>,
+) {
+    if messages.is_empty() {
+        emit_batch(
+            on,
+            name,
+            uidvalidity,
+            resync,
+            role,
+            Vec::new(),
+            modseq,
+            examined_uid,
+            keep_uids,
+        );
+        return;
+    }
+    let chunks = messages.len().div_ceil(HEADER_BATCH);
+    let mut read = 0_u32;
+    let mut keep_uids = keep_uids;
+    for (index, chunk) in messages.chunks(HEADER_BATCH).enumerate() {
+        let last = index + 1 == chunks;
+        read = read.saturating_add(u32::try_from(chunk.len()).unwrap_or(u32::MAX));
+        on(PullEvent::Tick(PullTick {
+            role: role_tick,
+            read,
+            total,
+        }));
+        emit_batch(
+            on,
+            name,
+            uidvalidity,
+            resync && index == 0,
+            role,
+            chunk.to_vec(),
+            modseq.filter(|_| last),
+            if last { examined_uid } else { 0 },
+            if last { keep_uids.take() } else { None },
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_batch(
+    on: &mut dyn FnMut(PullEvent),
+    name: &str,
+    uidvalidity: i64,
+    resync: bool,
+    role: &str,
+    messages: Vec<PulledMessage>,
+    modseq: Option<i64>,
+    examined_uid: i64,
+    keep_uids: Option<Vec<i64>>,
+) {
+    on(PullEvent::Batch(PulledMailbox {
+        name: name.to_string(),
+        uidvalidity,
+        resync,
+        role: role.to_string(),
+        messages,
+        modseq,
+        examined_uid,
+        keep_uids,
+    }));
+}
+
+/// `UID SEARCH` limité aux en-têtes d'une adresse tenue.
+#[must_use]
+pub fn kept_search_query(start: i64, address: &str) -> String {
+    format!("UID SEARCH UID {start}:* {}", kept_search_clause(address))
+}
+
+fn kept_search_clause(address: &str) -> String {
+    let quoted = quote(address);
+    let keys = [
+        format!("(FROM {quoted})"),
+        format!("(TO {quoted})"),
+        format!("(CC {quoted})"),
+        format!("(BCC {quoted})"),
+        format!("(HEADER Delivered-To {quoted})"),
+        format!("(HEADER X-Delivered-To {quoted})"),
+        format!("(HEADER X-Original-To {quoted})"),
+        format!("(HEADER Envelope-To {quoted})"),
+        format!("(HEADER X-Envelope-To {quoted})"),
+        format!("(HEADER Resent-To {quoted})"),
+    ];
+    let mut out = String::new();
+    for key in &keys[..keys.len() - 1] {
+        out.push_str("OR ");
+        out.push_str(key);
+        out.push(' ');
+    }
+    out.push_str(&keys[keys.len() - 1]);
+    out
+}
+
+fn message_from_header(line: &[u8]) -> Option<PulledMessage> {
+    let text = std::str::from_utf8(line).ok()?;
+    if !text.contains(" FETCH ") {
         return None;
     }
-    let number = std::str::from_utf8(&line[open + 1..line.len() - 1]).ok()?;
-    let len = number.parse().ok()?;
-    (len <= MAX_LINE).then_some(len)
+    let uid = i64::from(uid_of(text)?);
+    let seen = text.contains("\\Seen");
+    let size = rfc822_size(text);
+    if text.contains("GRF-OVERSIZE") {
+        return Some(PulledMessage {
+            uid,
+            seen,
+            raw: String::new(),
+            body: PulledBody::Unreadable,
+            size,
+        });
+    }
+    let Some(parsed) = parse_fetch_line(line) else {
+        return Some(PulledMessage {
+            uid,
+            seen,
+            raw: String::new(),
+            body: PulledBody::Unreadable,
+            size,
+        });
+    };
+    let too_large = size.is_some_and(|bytes| bytes > body_cap_i64());
+    Some(PulledMessage {
+        uid: parsed.uid,
+        seen: parsed.seen,
+        raw: parsed.raw,
+        body: if too_large {
+            PulledBody::TooLarge
+        } else {
+            PulledBody::Pending
+        },
+        size: size.or(parsed.size),
+    })
+}
+
+fn message_from_flags(line: &[u8]) -> Option<PulledMessage> {
+    let text = std::str::from_utf8(line).ok()?;
+    if !text.contains(" FETCH ") || text.contains("BODY") {
+        return None;
+    }
+    Some(PulledMessage {
+        uid: i64::from(uid_of(text)?),
+        seen: text.contains("\\Seen"),
+        raw: String::new(),
+        body: PulledBody::Flags,
+        size: None,
+    })
+}
+
+fn apply_full_body(message: &mut PulledMessage, line: &[u8]) {
+    let text = String::from_utf8_lossy(line);
+    message.seen = text.contains("\\Seen");
+    message.size = message.size.or_else(|| rfc822_size(&text));
+    if text.contains("GRF-OVERSIZE") || message.size.is_some_and(|bytes| bytes > body_cap_i64()) {
+        message.body = PulledBody::TooLarge;
+        return;
+    }
+    if let Some(parsed) = parse_fetch_line(line) {
+        message.uid = parsed.uid;
+        message.seen = parsed.seen;
+        message.raw = parsed.raw;
+        message.body = PulledBody::Ready;
+        message.size = message.size.or(parsed.size);
+        return;
+    }
+    message.body = PulledBody::Unreadable;
 }
 
 fn quotes_even(bytes: &[u8]) -> bool {
@@ -692,8 +1511,8 @@ fn skip_astring(input: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::{
-        choose_sent_mailbox, login_names, parse_fetch_line, parse_list_line, parse_uidvalidity,
-        probe_copy,
+        choose_sent_mailbox, kept_search_query, login_names, parse_exists, parse_fetch_line,
+        parse_list_line, parse_uidvalidity, probe_copy,
     };
     use griffe_core::mail::{ImapEndpoint, MailSecret, MailSubmitError};
 
@@ -733,6 +1552,32 @@ mod tests {
     }
 
     #[test]
+    fn a_kept_search_names_the_ten_headers_and_not_the_reply() {
+        let query = kept_search_query(4, "ada@lumen.test");
+        assert!(query.starts_with("UID SEARCH UID 4:* "), "{query}");
+        for key in [
+            "FROM",
+            "TO",
+            "CC",
+            "BCC",
+            "Delivered-To",
+            "X-Delivered-To",
+            "X-Original-To",
+            "Envelope-To",
+            "X-Envelope-To",
+            "Resent-To",
+        ] {
+            assert!(query.contains(key), "{key} absent de {query}");
+        }
+        assert!(query.contains("\"ada@lumen.test\""), "{query}");
+        assert_eq!(query.matches("OR ").count(), 9, "{query}");
+        assert_eq!(query.matches('(').count(), 10, "{query}");
+        let lower = query.to_ascii_lowercase();
+        assert!(!lower.contains("reply-to"), "{query}");
+        assert!(!lower.contains("sender"), "{query}");
+    }
+
+    #[test]
     fn a_port_other_than_993_is_refused_before_a_socket() {
         let endpoint = ImapEndpoint {
             host: "127.0.0.1".into(),
@@ -754,6 +1599,21 @@ mod tests {
             "A1 OK [READ-WRITE] SELECT completed".to_string(),
         ];
         assert_eq!(parse_uidvalidity(&lines), Some(3_857_529_045));
+        assert_eq!(parse_exists(&lines), None);
+    }
+
+    #[test]
+    fn a_select_response_gives_exists() {
+        let lines = [
+            "* 14 EXISTS".to_string(),
+            "* 3 RECENT".to_string(),
+            "* OK [UIDVALIDITY 3857529045] UIDs valid".to_string(),
+            "A1 OK [READ-WRITE] SELECT completed".to_string(),
+        ];
+        assert_eq!(parse_exists(&lines), Some(14));
+        assert_eq!(parse_exists(&["* 0 EXISTS".to_string()]), Some(0));
+        assert_eq!(parse_exists(&["A1 OK SELECT".to_string()]), None);
+        assert_eq!(parse_uidvalidity(&lines), Some(3_857_529_045));
     }
 
     #[test]
@@ -770,5 +1630,56 @@ mod tests {
         assert_eq!(message.uid, 7);
         assert!(!message.seen);
         assert_eq!(message.raw, "lu ?");
+    }
+
+    #[test]
+    fn an_oversized_literal_does_not_swallow_the_next_letter() {
+        let mut raw = b"* 1 FETCH (UID 1 BODY[HEADER] {4}\r\n".to_vec();
+        raw.extend(b"H: a)\r\n");
+        raw.extend(b"* 2 FETCH (UID 2 BODY[HEADER] {24}\r\n");
+        raw.extend(std::iter::repeat_n(b'X', 24));
+        raw.extend(b")\r\n");
+        raw.extend(b"* 3 FETCH (UID 3 BODY[HEADER] {4}\r\n");
+        raw.extend(b"H: c)\r\n");
+        let mut cursor = std::io::Cursor::new(raw);
+        let first = super::read_logical_line(&mut cursor, 8, 256).unwrap();
+        let second = super::read_logical_line(&mut cursor, 8, 256).unwrap();
+        let third = super::read_logical_line(&mut cursor, 8, 256).unwrap();
+        let one = super::message_from_header(&first).unwrap();
+        let two = super::message_from_header(&second).unwrap();
+        let three = super::message_from_header(&third).unwrap();
+        assert_eq!(one.uid, 1);
+        assert_eq!(one.body, griffe_core::mail::PulledBody::Pending);
+        assert_eq!(one.raw, "H: a");
+        assert_eq!(two.uid, 2);
+        assert_eq!(two.body, griffe_core::mail::PulledBody::Unreadable);
+        assert!(!String::from_utf8_lossy(&second).contains("XXXX"));
+        assert_eq!(three.uid, 3);
+        assert_eq!(three.raw, "H: c");
+    }
+
+    #[test]
+    fn a_header_heavier_than_the_cap_stays_a_header() {
+        let size = griffe_core::mail::BODY_CAP_BYTES + 1;
+        let mut line =
+            format!("* 1 FETCH (UID 5 FLAGS () RFC822.SIZE {size} BODY[HEADER] {{5}}").into_bytes();
+        line.extend(b"Hello)");
+        let message = super::message_from_header(&line).unwrap();
+        assert_eq!(message.body, griffe_core::mail::PulledBody::TooLarge);
+        assert_eq!(message.raw, "Hello");
+        assert_eq!(message.uid, 5);
+    }
+
+    #[test]
+    fn uidnext_and_search_are_read_from_the_server_lines() {
+        let lines = [
+            "* OK [UIDNEXT 42] Predicted next UID".to_string(),
+            "* OK [HIGHESTMODSEQ 7] Highest".to_string(),
+            "* SEARCH 3 8 12".to_string(),
+            "A1 OK SEARCH done".to_string(),
+        ];
+        assert_eq!(super::parse_code_number(&lines, "UIDNEXT"), Some(42));
+        assert_eq!(super::parse_code_number(&lines, "HIGHESTMODSEQ"), Some(7));
+        assert_eq!(super::parse_search_uids(&lines), vec![3, 8, 12]);
     }
 }

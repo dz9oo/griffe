@@ -3,15 +3,58 @@
 use rusqlite::OptionalExtension;
 
 use super::commands::{AddressFault, FileMessage, FilingSource, HoldReply, MarkAddress};
-use super::inbound::{DossierLink, FicheAddress, KnownLetter, Notice, classify, read_message};
+use super::inbound::{
+    DossierLink, FicheAddress, KnownLetter, Notice, classify, message_kept, read_message,
+};
+use super::lecture::PullTick;
 use super::model::ImapEndpoint;
 use super::secret::MailSecret;
 use super::{probe_material, store};
 use crate::app::{AppError, ExecutionContext, Executor, Outcome};
 use crate::mailbox::{Mailbox, MailboxCursor, MirrorInsert, MirrorMessage};
 
-/// Écart entre deux relèves de la fenêtre, en secondes.
+/// Écart entre deux relèves de la fenêtre, en secondes. Défaut : trois minutes.
 pub const RELEVE_EVERY_SECS: u64 = 180;
+
+/// Périodes acceptées : une minute, trois, quinze, trente.
+pub const RELEVE_CHOICES_SECS: [u64; 4] = [60, 180, 900, 1_800];
+
+/// Corps gardé dans le miroir, en octets. Au-delà, les en-têtes restent.
+pub const BODY_CAP_BYTES: u64 = 15 * 1024 * 1024;
+
+/// Corps récents demandés après l'index des en-têtes.
+pub const RECENT_BODIES: u32 = 40;
+
+/// En-têtes demandés ensemble.
+pub const HEADER_BATCH: usize = 100;
+
+/// Ce que la liaison a déjà du corps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PulledBody {
+    /// En-têtes seuls. Le corps viendra.
+    Pending,
+    /// `raw` est le message entier.
+    Ready,
+    /// Au-delà de [`BODY_CAP_BYTES`]. `raw` est les en-têtes.
+    TooLarge,
+    /// En-têtes illisibles.
+    Unreadable,
+    /// Drapeaux seulement. La ligne existe déjà.
+    Flags,
+}
+
+impl PulledBody {
+    /// Valeur rangée dans le miroir.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Ready | Self::Flags => "ready",
+            Self::TooLarge => "too_large",
+            Self::Unreadable => "unreadable",
+        }
+    }
+}
 
 /// Un dossier du serveur, tel que la liaison l'a rapporté.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,6 +65,12 @@ pub struct PulledMailbox {
     /// `inbox`, `sent` ou `other`.
     pub role: String,
     pub messages: Vec<PulledMessage>,
+    /// `HIGHESTMODSEQ` lu au `SELECT`. Absent si le serveur ne le dit pas.
+    pub modseq: Option<i64>,
+    /// Plus grand UID examiné, y compris ceux qui ne sont pas rapportés.
+    pub examined_uid: i64,
+    /// Passe complète : UID à garder dans ce dossier. `None` : ne rien effacer.
+    pub keep_uids: Option<Vec<i64>>,
 }
 
 /// Un message rapporté, pas encore rangé.
@@ -30,6 +79,32 @@ pub struct PulledMessage {
     pub uid: i64,
     pub seen: bool,
     pub raw: String,
+    pub body: PulledBody,
+    /// `RFC822.SIZE`, quand le serveur l'a donné.
+    pub size: Option<i64>,
+}
+
+impl PulledMessage {
+    /// Message entier, tel que les tests et l'ancien lecteur le posaient.
+    #[must_use]
+    pub fn full(uid: i64, seen: bool, raw: impl Into<String>) -> Self {
+        Self {
+            uid,
+            seen,
+            raw: raw.into(),
+            body: PulledBody::Ready,
+            size: None,
+        }
+    }
+}
+
+/// Annonce de la liaison, ou un lot à ranger tout de suite.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PullEvent {
+    /// `EXISTS`, puis chaque message analysé.
+    Tick(PullTick),
+    /// En-têtes, corps, ou drapeaux d'un dossier.
+    Batch(PulledMailbox),
 }
 
 /// Ce qu'il faut pour ouvrir la liaison. Le secret s'efface avec cette valeur.
@@ -37,6 +112,21 @@ pub struct RelevePlan {
     pub endpoint: ImapEndpoint,
     pub secret: MailSecret,
     pub cursors: Vec<MailboxCursor>,
+    /// Adresse du compte. Pas un secret.
+    pub address: String,
+    /// Adresses copiées. Vide avec l'état `all` : tout le compte.
+    pub kept: Vec<String>,
+    /// Génération écrite dans le coffre.
+    pub kept_generation: i64,
+    /// Génération déjà appliquée au miroir.
+    pub applied_generation: i64,
+}
+
+/// Ce que la liaison doit lire. Le secret n'y est pas.
+pub struct PullScope<'a> {
+    pub cursors: &'a [MailboxCursor],
+    pub addresses: &'a [String],
+    pub sweep: bool,
 }
 
 /// Compte du passage. Les corps n'y figurent pas.
@@ -46,6 +136,8 @@ pub struct AbsorbReport {
     pub held: u32,
     pub failed: u32,
     pub choices: u32,
+    /// Lettres posées sur un dossier pendant ce passage.
+    pub on_dossier: u32,
 }
 
 /// Ligne montrée par `griffe boite`, sans le corps.
@@ -62,12 +154,83 @@ pub struct BoxLine {
     pub choice: bool,
 }
 
-/// Prépare la liaison. `None` : le compte ne permet pas de lire.
+/// Phrase de la période. Les quatre valeurs, rien d'autre.
+#[must_use]
+pub fn releve_cadence(seconds: u64) -> &'static str {
+    match seconds {
+        60 => "Toutes les minutes.",
+        900 => "Toutes les 15 minutes.",
+        1_800 => "Toutes les 30 minutes.",
+        _ => "Toutes les 3 minutes.",
+    }
+}
+
+/// Heure locale d'une relève aboutie, « 14 h 32 ».
+#[must_use]
+pub fn releve_clock(at: &str) -> Option<String> {
+    let parsed =
+        time::OffsetDateTime::parse(at, &time::format_description::well_known::Rfc3339).ok()?;
+    let local = time::UtcOffset::local_offset_at(parsed)
+        .ok()
+        .map_or(parsed, |offset| parsed.to_offset(offset));
+    Some(format!("{} h {:02}", local.hour(), local.minute()))
+}
+
+/// Mot des quatre périodes.
+#[must_use]
+pub fn releve_word(seconds: u64) -> &'static str {
+    match seconds {
+        60 => "1 minute",
+        900 => "15 minutes",
+        1_800 => "30 minutes",
+        _ => "3 minutes",
+    }
+}
+
+/// Période retenue, ou trois minutes si le compte n'a rien choisi de valide.
+///
+/// # Errors
+///
+/// Lecture impossible.
+pub fn releve_every(vault: &crate::store::Store) -> Result<u64, AppError> {
+    let raw = store::releve_every_raw(vault.connection())?;
+    Ok(raw
+        .and_then(|seconds| u64::try_from(seconds).ok())
+        .filter(|seconds| RELEVE_CHOICES_SECS.contains(seconds))
+        .unwrap_or(RELEVE_EVERY_SECS))
+}
+
+/// Heure d'une relève aboutie. Efface la phrase d'échec.
+///
+/// # Errors
+///
+/// Le miroir ne s'écrit pas.
+pub fn note_releve_success(vault: &crate::store::Store, at: &str) -> Result<(), AppError> {
+    vault.open_mailbox()?.note_releve(Some(at), None)
+}
+
+/// Phrase d'un échec. L'heure de la dernière réussite reste.
+///
+/// # Errors
+///
+/// Le miroir ne s'écrit pas.
+pub fn note_releve_failure(vault: &crate::store::Store, error: &str) -> Result<(), AppError> {
+    let error = error.trim();
+    if error.is_empty() {
+        return Ok(());
+    }
+    vault.open_mailbox()?.note_releve(None, Some(error))
+}
+
+/// Prépare la liaison. `None` : le compte ne permet pas de lire, ou les adresses ne sont pas choisies.
 ///
 /// # Errors
 ///
 /// Lecture du coffre ou du miroir impossible.
 pub fn releve_plan(vault: &crate::store::Store) -> Result<Option<RelevePlan>, AppError> {
+    if store::kept_scope(vault.connection())? == super::model::KeptScope::Pending {
+        return Ok(None);
+    }
     let Some(material) = probe_material(vault.connection())? else {
         return Ok(None);
     };
@@ -76,11 +239,63 @@ pub fn releve_plan(vault: &crate::store::Store) -> Result<Option<RelevePlan>, Ap
     };
     let mailbox = vault.open_mailbox()?;
     let cursors = mailbox.cursors()?;
+    let applied_generation = mailbox.applied_generation()?;
     Ok(Some(RelevePlan {
         endpoint,
         secret: material.secret,
         cursors,
+        address: material.address,
+        kept: store::kept_addresses(vault.connection())?,
+        kept_generation: store::kept_generation(vault.connection())?,
+        applied_generation,
     }))
+}
+
+/// Vrai quand le compte pourrait être lu et que les adresses ne sont pas encore choisies.
+///
+/// # Errors
+///
+/// Lecture impossible.
+pub fn releve_waits(vault: &crate::store::Store) -> Result<bool, AppError> {
+    if store::kept_scope(vault.connection())? != super::model::KeptScope::Pending {
+        return Ok(false);
+    }
+    let Some(material) = probe_material(vault.connection())? else {
+        return Ok(false);
+    };
+    Ok(material.copy.is_some())
+}
+
+/// Aligne les curseurs sur la liste. Vrai : la passe suivante efface ce qui n'est plus tenu.
+///
+/// # Errors
+///
+/// Le miroir ne s'écrit pas.
+pub fn prepare_pull(vault: &crate::store::Store, plan: &mut RelevePlan) -> Result<bool, AppError> {
+    if plan.kept_generation == plan.applied_generation {
+        return Ok(false);
+    }
+    if plan.kept.is_empty() {
+        let mailbox = vault.open_mailbox()?;
+        mailbox.rewind_cursors()?;
+        mailbox.set_applied_generation(plan.kept_generation)?;
+        for cursor in &mut plan.cursors {
+            cursor.last_uid = 0;
+            cursor.modseq = None;
+        }
+        plan.applied_generation = plan.kept_generation;
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+/// Note que le miroir a appliqué cette génération d'adresses.
+///
+/// # Errors
+///
+/// Le miroir ne s'écrit pas.
+pub fn note_kept_applied(vault: &crate::store::Store, generation: i64) -> Result<(), AppError> {
+    vault.open_mailbox()?.set_applied_generation(generation)
 }
 
 /// Range le lot. Une ligne humaine déjà posée n'est pas reprise.
@@ -101,11 +316,13 @@ pub fn absorb(
     let fiches = fiche_addresses(vault.connection())?;
     let own = own_addresses(vault.connection())?;
     let open = open_dossiers(vault.connection())?;
+    let kept = store::kept_addresses(vault.connection())?;
     let books = Books {
         known: &known,
         fiches: &fiches,
         own: &own,
         open: &open,
+        kept: &kept,
     };
     let mut report = AbsorbReport::default();
     for folder in pulled {
@@ -119,6 +336,7 @@ struct Books<'a> {
     fiches: &'a [FicheAddress],
     own: &'a [String],
     open: &'a [OpenDossier],
+    kept: &'a [String],
 }
 
 fn absorb_folder(
@@ -132,10 +350,33 @@ fn absorb_folder(
     if folder.resync {
         mailbox.clear_mailbox(&folder.name)?;
     }
-    let mut last_uid = 0_i64;
+    if let Some(keep) = &folder.keep_uids {
+        let removed = mailbox.retain_uids(&folder.name, folder.uidvalidity, keep)?;
+        forget_messages(vault.connection(), &removed)?;
+    }
+    let mut last_uid = folder.examined_uid;
     for message in &folder.messages {
         last_uid = last_uid.max(message.uid);
         if mailbox.has_uid(&folder.name, folder.uidvalidity, message.uid)? {
+            if message.body == PulledBody::Flags {
+                mailbox.set_seen_uid(
+                    &folder.name,
+                    folder.uidvalidity,
+                    message.uid,
+                    message.seen,
+                )?;
+            } else if message.body != PulledBody::Pending {
+                fill_if_pending(vault, mailbox, folder, message, ctx, books, report)?;
+            }
+            continue;
+        }
+        if message.body == PulledBody::Flags {
+            continue;
+        }
+        if !books.kept.is_empty()
+            && !message.raw.trim().is_empty()
+            && !message_kept(&message.raw, books.kept)
+        {
             continue;
         }
         let placed = place(vault, mailbox, folder, message, ctx, books)?;
@@ -143,15 +384,58 @@ fn absorb_folder(
         report.held += u32::from(placed.held);
         report.failed += u32::from(placed.failed);
         report.choices += u32::from(placed.choice);
+        report.on_dossier += u32::from(placed.on_dossier);
     }
-    mailbox.remember(&folder.name, folder.uidvalidity, last_uid)?;
+    mailbox.remember(&folder.name, folder.uidvalidity, last_uid, folder.modseq)?;
     Ok(())
 }
 
+fn fill_if_pending(
+    vault: &mut crate::store::Store,
+    mailbox: &mut Mailbox,
+    folder: &PulledMailbox,
+    message: &PulledMessage,
+    ctx: &ExecutionContext,
+    books: &Books<'_>,
+    report: &mut AbsorbReport,
+) -> Result<(), AppError> {
+    let Some(state) = mailbox.body_state_of(&folder.name, folder.uidvalidity, message.uid)? else {
+        return Ok(());
+    };
+    if state != PulledBody::Pending.as_str() {
+        return Ok(());
+    }
+    let parsed = read_message(&message.raw);
+    let own = own_refs(books.own);
+    let filing = classify(&parsed, books.known, books.fiches, &own);
+    let (link, _, _, _) = resolve(&filing.link, filing.hold, books.open);
+    let failed = mark_notice(
+        vault,
+        ctx,
+        parsed.message_id.as_ref(),
+        &link,
+        filing.notice.as_ref(),
+    )?;
+    report.failed += u32::from(failed);
+    mailbox.fill_body(
+        &folder.name,
+        folder.uidvalidity,
+        message.uid,
+        &parsed.text,
+        parsed.html.as_deref(),
+        message.body.as_str(),
+        notice_label(filing.notice.as_ref()).as_deref(),
+        notice_address(filing.notice.as_ref()).as_deref(),
+    )?;
+    Ok(())
+}
+
+#[allow(clippy::struct_excessive_bools)]
 struct Placed {
     held: bool,
     failed: bool,
     choice: bool,
+    on_dossier: bool,
 }
 
 struct OpenDossier {
@@ -168,6 +452,7 @@ fn place(
     books: &Books<'_>,
 ) -> Result<Placed, AppError> {
     let parsed = read_message(&message.raw);
+    let defer_notice = message.body == PulledBody::Pending && parsed.delivery_report;
     let already = match parsed.message_id.as_deref() {
         Some(id) => store::filing_source(vault.connection(), id)?.is_some(),
         None => false,
@@ -185,16 +470,26 @@ fn place(
         held: false,
         failed: false,
         choice: choice_ids.is_some(),
+        on_dossier: false,
     };
     if !already && !ours {
         placed.held = file_link(vault, ctx, parsed.message_id.as_ref(), &link, hold)?;
-        placed.failed = mark_notice(
-            vault,
-            ctx,
-            parsed.message_id.as_ref(),
-            &link,
-            filing.notice.as_ref(),
-        )?;
+        placed.on_dossier = parsed.message_id.is_some()
+            && matches!(
+                link,
+                DossierLink::One {
+                    opportunity_id: Some(_),
+                    ..
+                }
+            );
+        placed.failed = !defer_notice
+            && mark_notice(
+                vault,
+                ctx,
+                parsed.message_id.as_ref(),
+                &link,
+                filing.notice.as_ref(),
+            )?;
     }
     mailbox.insert(&MirrorInsert {
         mailbox: folder.name.clone(),
@@ -212,13 +507,62 @@ fn place(
         text: parsed.text,
         html: parsed.html,
         seen: message.seen,
-        notice: notice_label(filing.notice.as_ref()),
-        notice_address: notice_address(filing.notice.as_ref()),
+        notice: if defer_notice {
+            None
+        } else {
+            notice_label(filing.notice.as_ref())
+        },
+        notice_address: if defer_notice {
+            None
+        } else {
+            notice_address(filing.notice.as_ref())
+        },
         folder_role: folder.role.clone(),
         choice_of,
         choice_ids,
+        body_state: message.body.as_str().to_string(),
     })?;
     Ok(placed)
+}
+
+fn forget_messages(conn: &rusqlite::Connection, message_ids: &[String]) -> Result<(), AppError> {
+    for message_id in message_ids {
+        let message_id = message_id.trim();
+        if message_id.is_empty() {
+            continue;
+        }
+        let opportunity_id: Option<String> = conn
+            .query_row(
+                "SELECT opportunity_id FROM mail_filing WHERE message_id = ?1",
+                [message_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        conn.execute(
+            "DELETE FROM mail_filing WHERE message_id = ?1",
+            [message_id],
+        )?;
+        conn.execute(
+            "DELETE FROM address_fault
+             WHERE message_id = ?1 AND status IN ('failed', 'probable')",
+            [message_id],
+        )?;
+        let Some(opportunity_id) = opportunity_id.filter(|id| !id.is_empty()) else {
+            continue;
+        };
+        let left: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM mail_filing WHERE opportunity_id = ?1",
+            [&opportunity_id],
+            |row| row.get(0),
+        )?;
+        if left == 0 {
+            conn.execute(
+                "UPDATE opportunities SET reply_hold = 0 WHERE id = ?1",
+                [opportunity_id],
+            )?;
+        }
+    }
+    Ok(())
 }
 
 fn file_link(
@@ -546,8 +890,12 @@ pub fn releve_due(last: Option<time::OffsetDateTime>, now: time::OffsetDateTime)
 mod tests {
     use time::OffsetDateTime;
 
-    use super::{PulledMailbox, PulledMessage, absorb, list_box, releve_due};
-    use crate::app::{Actor, ExecutionContext, recent_audit_entries};
+    use super::{
+        PulledBody, PulledMailbox, PulledMessage, absorb, list_box, note_releve_failure,
+        note_releve_success, prepare_pull, releve_due, releve_every,
+    };
+    use crate::app::{Actor, ExecutionContext, Executor, recent_audit_entries};
+    use crate::mail::{SetKeptAddresses, SetReleveInterval};
     use crate::store::testing::test_store;
 
     const REPLY: &str = "\
@@ -634,15 +982,14 @@ Message-ID: <dead@griffe.local>\n\
             resync,
             role: "inbox".to_string(),
             messages,
+            modseq: None,
+            examined_uid: 0,
+            keep_uids: None,
         }
     }
 
     fn pulled(uid: i64, raw: &str) -> PulledMessage {
-        PulledMessage {
-            uid,
-            seen: false,
-            raw: raw.to_string(),
-        }
+        PulledMessage::full(uid, false, raw)
     }
 
     #[test]
@@ -654,9 +1001,13 @@ Message-ID: <dead@griffe.local>\n\
         let report = absorb(&mut vault, &mut mailbox, &batch, &system()).unwrap();
         assert_eq!(report.stored, 2);
         assert_eq!(report.held, 1);
+        assert_eq!(report.on_dossier, 1);
+        assert_eq!(mailbox.count().unwrap(), 2);
+        assert_eq!(mailbox.recent_ids(report.stored).unwrap().len(), 2);
         let again = absorb(&mut vault, &mut mailbox, &batch, &system()).unwrap();
         assert_eq!(again.stored, 0);
         assert_eq!(again.held, 0);
+        assert_eq!(again.on_dossier, 0);
         let hold: i64 = vault
             .connection()
             .query_row(
@@ -763,6 +1114,345 @@ Message-ID: <dead@griffe.local>\n\
         assert_eq!(mailbox.list().unwrap().len(), 1);
         let lines = list_box(&restored, &mailbox).unwrap();
         assert_eq!(lines[0].subject, "Re: Votre proposition");
+    }
+
+    #[test]
+    fn headers_are_stored_before_the_body_and_a_report_waits() {
+        let mut vault = test_store("releve-headers");
+        seed(&mut vault);
+        let mut mailbox = vault.open_mailbox().unwrap();
+        let reply_headers = format!("{}\n\n", REPLY.split("\n\n").next().unwrap_or(REPLY));
+        let other = "\
+From: Ada <ada@example.test>\n\
+Subject: Bonjour\n\
+Message-ID: <ada@example.test>\n\
+\n";
+        let report_headers = format!("{}\n\n", DSN.split("\n\n").next().unwrap_or(DSN));
+        let batch = folder(
+            7,
+            false,
+            vec![
+                PulledMessage {
+                    uid: 1,
+                    seen: false,
+                    raw: reply_headers,
+                    body: PulledBody::Pending,
+                    size: Some(2_000_000),
+                },
+                PulledMessage {
+                    uid: 2,
+                    seen: true,
+                    raw: other.to_string(),
+                    body: PulledBody::Pending,
+                    size: Some(400),
+                },
+                PulledMessage {
+                    uid: 3,
+                    seen: false,
+                    raw: report_headers,
+                    body: PulledBody::Pending,
+                    size: Some(800),
+                },
+            ],
+        );
+        let report = absorb(&mut vault, &mut mailbox, &[batch], &system()).unwrap();
+        assert_eq!(report.stored, 3);
+        assert_eq!(report.held, 1);
+        assert_eq!(report.on_dossier, 1);
+        assert_eq!(report.failed, 0);
+        assert_eq!(
+            mailbox.body_state_of("INBOX", 7, 1).unwrap().as_deref(),
+            Some("pending")
+        );
+        let filled = absorb(
+            &mut vault,
+            &mut mailbox,
+            &[folder(7, false, vec![PulledMessage::full(3, false, DSN)])],
+            &system(),
+        )
+        .unwrap();
+        assert_eq!(filled.stored, 0);
+        assert_eq!(filled.failed, 1);
+        assert_eq!(
+            mailbox.body_state_of("INBOX", 7, 3).unwrap().as_deref(),
+            Some("ready")
+        );
+    }
+
+    #[test]
+    fn a_kept_list_drops_the_other_address_and_the_cursor_still_advances() {
+        let mut vault = test_store("releve-kept");
+        seed(&mut vault);
+        let human = ExecutionContext::new(Actor::Human, false);
+        let refused = Executor::new(&mut vault)
+            .execute(
+                &SetKeptAddresses {
+                    addresses: vec!["Nicolas@Lumen.test".into(), "pas une adresse".into()],
+                    all: false,
+                },
+                &human,
+            )
+            .unwrap_err();
+        assert!(refused.to_string().contains("illisible"), "{refused}");
+        Executor::new(&mut vault)
+            .execute(
+                &SetKeptAddresses {
+                    addresses: vec!["Nicolas@Lumen.test".into(), "nicolas@lumen.test".into()],
+                    all: false,
+                },
+                &human,
+            )
+            .unwrap();
+        let personal = "\
+From: Ami <ami@exemple.test>\n\
+To: perso@icloud.com\n\
+Subject: Privé\n\
+Message-ID: <prive@exemple.test>\n\
+\n\
+secret\n";
+        let mut batch = folder(9, false, vec![pulled(1, REPLY), pulled(2, personal)]);
+        batch.examined_uid = 8;
+        let mut mailbox = vault.open_mailbox().unwrap();
+        let report = absorb(&mut vault, &mut mailbox, &[batch], &system()).unwrap();
+        assert_eq!(report.stored, 1);
+        let mailbox = vault.open_mailbox().unwrap();
+        let lines = list_box(&vault, &mailbox).unwrap();
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].subject, "Re: Votre proposition");
+        assert_eq!(mailbox.cursors().unwrap()[0].last_uid, 8);
+        drop(mailbox);
+        let again = Executor::new(&mut vault)
+            .execute(
+                &SetKeptAddresses {
+                    addresses: vec!["nicolas@lumen.test".into()],
+                    all: false,
+                },
+                &human,
+            )
+            .unwrap();
+        assert!(matches!(again, crate::app::Outcome::Applied(())));
+    }
+
+    #[test]
+    fn a_sweep_removes_the_stored_letter_and_keeps_a_confirmed_fault() {
+        let mut vault = test_store("releve-sweep");
+        seed(&mut vault);
+        let personal = "\
+From: Ami <ami@exemple.test>\n\
+To: perso@icloud.com\n\
+Subject: Privé\n\
+Message-ID: <prive@exemple.test>\n\
+\n\
+secret\n";
+        let mut mailbox = vault.open_mailbox().unwrap();
+        absorb(
+            &mut vault,
+            &mut mailbox,
+            &[folder(4, false, vec![pulled(2, personal)])],
+            &system(),
+        )
+        .unwrap();
+        drop(mailbox);
+        vault
+            .connection()
+            .execute_batch(
+                "INSERT INTO mail_filing (message_id, client_id, opportunity_id, source)
+                 VALUES ('prive@exemple.test', 'c2', 'o2', 'auto');
+                 UPDATE opportunities SET reply_hold = 1 WHERE id = 'o2';
+                 INSERT INTO address_fault (client_id, address, status, message_id) VALUES
+                    ('c2', 'contact@atelier-du-mail.fr', 'failed', 'prive@exemple.test'),
+                    ('c1', 'camille@riviere.test', 'confirmed', 'prive@exemple.test');",
+            )
+            .unwrap();
+        let mut sweep = folder(4, false, Vec::new());
+        sweep.keep_uids = Some(Vec::new());
+        sweep.examined_uid = 2;
+        let mut mailbox = vault.open_mailbox().unwrap();
+        absorb(&mut vault, &mut mailbox, &[sweep], &system()).unwrap();
+        drop(mailbox);
+        let mailbox = vault.open_mailbox().unwrap();
+        assert!(list_box(&vault, &mailbox).unwrap().is_empty());
+        let hold: i64 = vault
+            .connection()
+            .query_row(
+                "SELECT reply_hold FROM opportunities WHERE id = 'o2'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(hold, 0);
+        let failed: i64 = vault
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM address_fault WHERE status = 'failed'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let confirmed: i64 = vault
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM address_fault WHERE status = 'confirmed'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(failed, 0);
+        assert_eq!(confirmed, 1);
+        let sent: i64 = vault
+            .connection()
+            .query_row("SELECT COUNT(*) FROM outbound_mail", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(sent, 2);
+    }
+
+    #[test]
+    fn seventeen_addresses_are_refused_and_an_empty_list_is_kept() {
+        let mut vault = test_store("releve-kept-cap");
+        let human = ExecutionContext::new(Actor::Human, false);
+        let mut many = Vec::new();
+        for index in 0..17 {
+            many.push(format!("a{index}@exemple.test"));
+        }
+        let refused = Executor::new(&mut vault)
+            .execute(
+                &SetKeptAddresses {
+                    addresses: many,
+                    all: false,
+                },
+                &human,
+            )
+            .unwrap_err();
+        assert!(refused.to_string().contains("Seize"), "{refused}");
+        Executor::new(&mut vault)
+            .execute(
+                &SetKeptAddresses {
+                    addresses: vec!["ada@exemple.test".into(), "  ".into()],
+                    all: false,
+                },
+                &human,
+            )
+            .unwrap();
+        assert_eq!(
+            crate::mail::kept_addresses(vault.connection()).unwrap(),
+            vec!["ada@exemple.test".to_string()]
+        );
+        Executor::new(&mut vault)
+            .execute(
+                &SetKeptAddresses {
+                    addresses: Vec::new(),
+                    all: false,
+                },
+                &human,
+            )
+            .unwrap();
+        assert!(
+            crate::mail::kept_addresses(vault.connection())
+                .unwrap()
+                .is_empty()
+        );
+        let scope: String = vault
+            .connection()
+            .query_row(
+                "SELECT kept_scope FROM mail_account WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(scope, "pending");
+    }
+
+    #[test]
+    fn choosing_addresses_sweeps_the_letter_that_is_outside() {
+        let mut vault = test_store("releve-choose-sweep");
+        seed(&mut vault);
+        let personal = "\
+From: Ami <ami@exemple.test>\n\
+To: perso@icloud.com\n\
+Subject: Privé\n\
+Message-ID: <prive-choix@exemple.test>\n\
+\n\
+secret\n";
+        let mut mailbox = vault.open_mailbox().unwrap();
+        absorb(
+            &mut vault,
+            &mut mailbox,
+            &[folder(4, false, vec![pulled(2, personal)])],
+            &system(),
+        )
+        .unwrap();
+        drop(mailbox);
+        let human = ExecutionContext::new(Actor::Human, false);
+        Executor::new(&mut vault)
+            .execute(
+                &SetKeptAddresses {
+                    addresses: vec!["nicolas@lumen.test".into()],
+                    all: false,
+                },
+                &human,
+            )
+            .unwrap();
+        let kept = crate::mail::kept_addresses(vault.connection()).unwrap();
+        let generation: i64 = vault
+            .connection()
+            .query_row(
+                "SELECT kept_generation FROM mail_account WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let mut plan = super::RelevePlan {
+            endpoint: crate::mail::ImapEndpoint {
+                host: "imap.mail.me.com".to_string(),
+                port: 993,
+                username: "nicolas@lumen.test".to_string(),
+                remembered: None,
+                icloud: true,
+            },
+            secret: crate::mail::MailSecret::new("mot-de-passe-application").unwrap(),
+            cursors: vault.open_mailbox().unwrap().cursors().unwrap(),
+            address: "nicolas@lumen.test".to_string(),
+            kept,
+            kept_generation: generation,
+            applied_generation: 0,
+        };
+        assert!(prepare_pull(&vault, &mut plan).unwrap());
+        let mut sweep = folder(4, false, Vec::new());
+        sweep.keep_uids = Some(Vec::new());
+        sweep.examined_uid = 2;
+        let mut mailbox = vault.open_mailbox().unwrap();
+        absorb(&mut vault, &mut mailbox, &[sweep], &system()).unwrap();
+        drop(mailbox);
+        let mailbox = vault.open_mailbox().unwrap();
+        assert!(list_box(&vault, &mailbox).unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_interval_accepts_four_values_and_the_stamp_keeps_the_hour() {
+        let mut vault = test_store("releve-interval");
+        let human = ExecutionContext::new(Actor::Human, false);
+        for seconds in [60_u64, 180, 900, 1_800] {
+            Executor::new(&mut vault)
+                .execute(&SetReleveInterval { seconds }, &human)
+                .unwrap();
+            assert_eq!(releve_every(&vault).unwrap(), seconds);
+        }
+        let refused = Executor::new(&mut vault)
+            .execute(&SetReleveInterval { seconds: 2 }, &human)
+            .unwrap_err();
+        assert!(refused.to_string().contains("1, 3, 15 ou 30"), "{refused}");
+        assert_eq!(releve_every(&vault).unwrap(), 1_800);
+        note_releve_success(&vault, "2026-10-22T12:32:00Z").unwrap();
+        note_releve_failure(&vault, "Le serveur n'a pas répondu.").unwrap();
+        let mailbox = vault.open_mailbox().unwrap();
+        let (at, error) = mailbox.releve_stamp().unwrap();
+        assert_eq!(at.as_deref(), Some("2026-10-22T12:32:00Z"));
+        assert_eq!(error.as_deref(), Some("Le serveur n'a pas répondu."));
+        note_releve_success(&vault, "2026-10-22T12:35:00Z").unwrap();
+        let mailbox = vault.open_mailbox().unwrap();
+        let (at, error) = mailbox.releve_stamp().unwrap();
+        assert_eq!(at.as_deref(), Some("2026-10-22T12:35:00Z"));
+        assert_eq!(error, None);
     }
 
     #[test]

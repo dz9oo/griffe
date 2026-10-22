@@ -966,6 +966,68 @@ async fn the_help_catalog_covers_each_situation_and_hides_an_empty_shelf() {
                 body.contains("href=\"/aide/trame\""),
                 "les phrases de l'atelier ouvrent la trame : {body}"
             );
+            assert!(
+                body.contains("se rappelle le mercredi"),
+                "l'écart du vendredi a son exemple : {body}"
+            );
+        }
+        if *slug == "courrier" {
+            assert!(
+                body.contains("Rien n'est lu") || body.contains("Rien n&#x27;est lu"),
+                "rien n'est lu avant le choix : {body}"
+            );
+            assert!(
+                body.contains("Trois minutes"),
+                "la relève a son défaut : {body}"
+            );
+            assert!(
+                body.contains("ne sont pas effacées"),
+                "les autres lettres quittent le coffre sans être effacées : {body}"
+            );
+        }
+        if *slug == "boite" {
+            assert!(
+                body.contains("grand paraphe"),
+                "le courriel vide montre le paraphe : {body}"
+            );
+            assert!(
+                body.contains("Relève du courrier en cours."),
+                "la phrase dit l'heure de la relève : {body}"
+            );
+            assert!(
+                body.contains("Elle est bonne"),
+                "l'avis certain se confirme : {body}"
+            );
+            assert!(
+                body.contains("n'est pas cet avis") || body.contains("n&#x27;est pas cet avis"),
+                "un indice par l'objet n'est pas un avis certain : {body}"
+            );
+        }
+        if *slug == "conversation" {
+            assert!(
+                !body.contains("un mot déjà là"),
+                "le genre des phrases n'est plus sur la fiche : {body}"
+            );
+            assert!(
+                body.contains("03 27 44 44 44"),
+                "le téléphone a son exemple : {body}"
+            );
+        }
+        if *slug == "jour" {
+            assert!(
+                body.contains("en partance"),
+                "une lettre en partance quitte les gestes : {body}"
+            );
+        }
+        if *slug == "matin" {
+            assert!(
+                body.contains("boite liste"),
+                "la réponse reçue se lit dans le courriel : {body}"
+            );
+            assert!(
+                body.contains("ne laisse pas repartir"),
+                "l'agent ne laisse pas partir la relance : {body}"
+            );
         }
         if *slug == "relancer" {
             assert!(
@@ -2473,7 +2535,9 @@ async fn la_societe_opens_on_the_plateau_and_folds_each_chapter() {
             }
             "/societe/courrier" => {
                 assert!(page.contains("courrier-desk"), "{page}");
-                assert_eq!(page.matches("reglages-card").count(), 4, "{page}");
+                assert_eq!(page.matches("reglages-card").count(), 6, "{page}");
+                assert!(page.contains(">Les adresses<"), "{page}");
+                assert!(page.contains(">La relève<"), "{page}");
                 assert!(
                     page.contains("Pas encore branché") || page.contains("Prêt"),
                     "{page}"
@@ -6283,7 +6347,7 @@ async fn closing_a_year_from_the_window_then_downloading_its_documents() {
     );
 
     // Le FEC de l'exercice se télécharge sous son nom réglementaire, en texte brut — le même
-    // fichier que `freeflow fec export 2026` (lot 28).
+    // fichier que `griffe fec export 2026` (lot 28).
     let fec = router
         .clone()
         .oneshot(
@@ -6803,7 +6867,7 @@ async fn expense_reconciliation_through_the_panel() {
 #[tokio::test]
 async fn a_receipt_uploaded_from_the_panel_is_archived_like_the_cli_does() {
     // Le fichier reçu en multipart est archivé à côté du coffre (`receipts/<hash>-<nom>`, en
-    // 0600) par le même helper que `freeflow expense record --receipt`, et la dépense porte le
+    // 0600) par le même helper que `griffe expense record --receipt`, et la dépense porte le
     // hash SHA-256 du contenu. La case « détacher » vide les deux champs sans supprimer le
     // fichier archivé — exactement `expense edit --clear-receipt`.
     let db_path = test_db_path("depenses-receipt");
@@ -13918,9 +13982,10 @@ fn plant_letter(
             folder_role: "inbox".into(),
             choice_of: None,
             choice_ids: None,
+            body_state: "ready".into(),
         })
         .unwrap();
-    mailbox.remember("INBOX", 1, uid).unwrap();
+    mailbox.remember("INBOX", 1, uid, None).unwrap();
     mailbox
         .list()
         .unwrap()
@@ -14042,7 +14107,16 @@ async fn the_box_page_reads_a_letter_and_confirms_a_failed_address() {
             .unwrap(),
     )
     .await;
-    assert!(jour.contains("Boîte"), "{jour}");
+    assert!(jour.contains("Courriel"), "{jour}");
+    let jour_link = jour
+        .split("class=\"boite-link\"")
+        .nth(1)
+        .and_then(|rest| rest.split('>').next())
+        .unwrap_or("");
+    assert!(
+        !jour_link.contains("aria-current"),
+        "le courriel n'est pas ouvert : {jour_link}"
+    );
     assert!(jour.contains("class=\"today\""), "{jour}");
     assert!(
         !jour.contains("class=\"n\""),
@@ -14065,6 +14139,10 @@ async fn the_box_page_reads_a_letter_and_confirms_a_failed_address() {
     assert!(
         seal.contains("class=\"n\">2<"),
         "réponse non lue et adresse en échec : {seal}"
+    );
+    assert!(
+        !seal.contains("<a"),
+        "le sceau ne remplace pas le lien : {seal}"
     );
     assert!(!seal.contains("<!DOCTYPE"), "{seal}");
 
@@ -14092,6 +14170,20 @@ async fn the_box_page_reads_a_letter_and_confirms_a_failed_address() {
     assert!(!failed_body.contains("Reponse Camille"), "{failed_body}");
     assert!(failed_body.contains("Elle est bonne"), "{failed_body}");
     assert!(failed_body.contains("data-view=\"boite\""), "{failed_body}");
+    assert!(failed_body.contains("Courriel"), "{failed_body}");
+    assert!(
+        failed_body.contains("Aucune adresse choisie"),
+        "{failed_body}"
+    );
+    let boite_link = failed_body
+        .split("class=\"boite-link\"")
+        .nth(1)
+        .and_then(|rest| rest.split('>').next())
+        .unwrap_or("");
+    assert!(
+        boite_link.contains("aria-current=\"page\""),
+        "le courriel ouvert est souligné : {boite_link}"
+    );
     assert!(!failed_body.contains("hx-on"), "{failed_body}");
 
     let opened = router
@@ -14285,6 +14377,478 @@ async fn the_box_page_reads_a_letter_and_confirms_a_failed_address() {
 }
 
 #[tokio::test]
+async fn les_adresses_se_gardent_sans_enregistrer_une_ligne_de_plus() {
+    let db_path = test_db_path("adresses-tenues");
+    let state = unlocked_state(&db_path).await;
+    let router = griffe_web::router(state);
+    let page = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/societe/courrier")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(page.contains("Les adresses"), "{page}");
+    assert!(
+        page_has(&page, "Rien n'est lu tant que ce choix n'est pas gardé."),
+        "{page}"
+    );
+    assert!(page.contains("La relève attend les adresses."), "{page}");
+    assert!(page.contains("Le serveur des lettres"), "{page}");
+    assert!(page_has(&page, "Rien n'est lu avant ce choix."), "{page}");
+    assert!(page.contains("name=\"imap_port\" value=\"993\""), "{page}");
+    assert!(!page.contains("Port des copies"), "{page}");
+    let releve_at = page.find("id=\"releve\"").unwrap_or(0);
+    let adresses_at = page.find("id=\"adresses\"").unwrap_or(usize::MAX);
+    assert!(adresses_at < releve_at, "la carte précède la relève");
+
+    let added = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/societe/courrier/adresses")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from("address=ada%40lumen.test&intent=ajouter"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(added.headers().get("HX-Trigger").is_none());
+    let added_body = body_text(added).await;
+    assert_eq!(
+        added_body.matches("name=\"address\"").count(),
+        2,
+        "{added_body}"
+    );
+    assert!(added_body.contains("ada@lumen.test"), "{added_body}");
+
+    let saved = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/societe/courrier/adresses")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from(
+                    "address=Nicolas%40Lumen.test&address=&intent=garder",
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        saved
+            .headers()
+            .get("HX-Trigger")
+            .and_then(|value| value.to_str().ok()),
+        Some("griffe:saved")
+    );
+    let saved_body = body_text(saved).await;
+    assert!(
+        saved_body.contains("Ces adresses sont gardées."),
+        "{saved_body}"
+    );
+    assert!(
+        saved_body.contains("value=\"nicolas@lumen.test\""),
+        "{saved_body}"
+    );
+
+    let refused = post_form(
+        &router,
+        "/societe/courrier/adresses",
+        "address=pas-une-adresse&intent=garder",
+    )
+    .await;
+    assert!(refused.contains("illisible"), "{refused}");
+    assert!(refused.contains("pas-une-adresse"), "{refused}");
+
+    let empty = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/societe/courrier/adresses")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from("address=&scope=listed&intent=garder"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(empty.headers().get("HX-Trigger").is_none());
+    let empty_body = body_text(empty).await;
+    assert!(
+        page_has(&empty_body, "Écrivez une adresse."),
+        "{empty_body}"
+    );
+    let (_, _, kept) = read_route(&router, "/societe/courrier").await;
+    assert!(
+        kept.contains("value=\"nicolas@lumen.test\""),
+        "le refus laisse l'adresse déjà gardée : {kept}"
+    );
+    assert!(page_has(&kept, "Griffe ne relève que celles-ci"), "{kept}");
+
+    let whole = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/societe/courrier/adresses")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from("scope=all&intent=garder"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        whole
+            .headers()
+            .get("HX-Trigger")
+            .and_then(|value| value.to_str().ok()),
+        Some("griffe:saved")
+    );
+    let whole_body = body_text(whole).await;
+    assert!(
+        whole_body.contains("Tout le compte est lu."),
+        "{whole_body}"
+    );
+}
+
+fn engage_releve(state: &AppState) {
+    state.set_releve_fetch(|_endpoint, _secret, _scope, _on| Ok(()));
+}
+
+fn keep_all(store: &mut Store) {
+    let ctx = ExecutionContext::new(Actor::System, false);
+    Executor::new(store)
+        .execute(
+            &griffe_core::mail::SetKeptAddresses {
+                addresses: Vec::new(),
+                all: true,
+            },
+            &ctx,
+        )
+        .unwrap();
+}
+
+fn save_account(store: &mut Store, preset: &str, imap_host: &str) {
+    let ctx = ExecutionContext::new(Actor::System, false);
+    Executor::new(store)
+        .execute(
+            &griffe_core::mail::SaveMailAccount {
+                from_name: Some("Nicolas".to_string()),
+                from_address: "nicolas@lumen-conseil.fr".to_string(),
+                host: "smtp.exemple.test".to_string(),
+                port: 587,
+                tls: "starttls".to_string(),
+                username: "nicolas@lumen-conseil.fr".to_string(),
+                preset: preset.to_string(),
+                imap_host: imap_host.to_string(),
+                imap_port: 993,
+            },
+            &ctx,
+        )
+        .unwrap();
+    Executor::new(store)
+        .execute(
+            &griffe_core::mail::SaveMailSecret {
+                secret: griffe_core::mail::MailSecret::new("mot-de-passe-application").unwrap(),
+            },
+            &ctx,
+        )
+        .unwrap();
+}
+
+async fn open_saved(db_path: &Path) -> AppState {
+    let state = AppState::new(db_path.to_path_buf());
+    state
+        .unlock(&Passphrase::from(PASSPHRASE), false)
+        .await
+        .unwrap();
+    state
+}
+
+async fn read_route(router: &axum::Router, uri: &str) -> (StatusCode, Option<String>, String) {
+    let response = router
+        .clone()
+        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let trigger = response
+        .headers()
+        .get("HX-Trigger")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let body = body_text(response).await;
+    (status, trigger, body)
+}
+
+#[tokio::test]
+async fn the_box_says_it_is_reading_and_the_poll_stops_at_rest() {
+    let quiet_path = test_db_path("boite-lecture-quiet");
+    let quiet = unlocked_state(&quiet_path).await;
+    let quiet_router = griffe_web::router(quiet);
+    let (_, _, quiet_body) = read_route(&quiet_router, "/boite").await;
+    assert!(
+        !quiet_body.contains("hx-trigger=\"every 1s\"")
+            && !quiet_body.contains("hx-trigger=\"every 2s\""),
+        "sans crochet, pas de sondage : {quiet_body}"
+    );
+    assert!(!quiet_body.contains("Griffe ouvre"), "{quiet_body}");
+    assert!(!quiet_body.contains("hx-on"), "{quiet_body}");
+    assert!(
+        quiet_body.contains("Aucune lettre dans cette vue."),
+        "{quiet_body}"
+    );
+
+    let empty_path = test_db_path("boite-lecture-vide");
+    let mut empty_store = Store::create(&empty_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    save_account(&mut empty_store, "icloud", "");
+    keep_all(&mut empty_store);
+    drop(empty_store);
+    let empty = open_saved(&empty_path).await;
+    engage_releve(&empty);
+    empty.note_lecture(
+        griffe_core::mail::LecturePhase::Reading {
+            folder: griffe_core::mail::LectureFolder::Reception,
+            read: 3,
+            total: Some(14),
+        },
+        "nicolas@lumen-conseil.fr",
+    );
+    let empty_router = griffe_web::router(empty.clone());
+    let (_, trigger, reading) = read_route(&empty_router, "/boite").await;
+    assert_eq!(trigger.as_deref(), None);
+    assert!(reading.contains("Griffe lit la réception."), "{reading}");
+    assert!(reading.contains("3 sur 14"), "{reading}");
+    assert!(
+        reading.contains("La réception · nicolas@lumen-conseil.fr"),
+        "{reading}"
+    );
+    assert!(reading.contains("Les lettres arrivent."), "{reading}");
+    assert!(reading.contains("every 1s"), "{reading}");
+    assert!(reading.contains("class=\"glyph draw\""), "{reading}");
+    assert!(reading.contains("pathLength=\"100\""), "{reading}");
+    assert!(!reading.contains("hx-on"), "{reading}");
+
+    let (_, trigger, poll) = read_route(
+        &empty_router,
+        "/boite/lecture?gen=0&mode=glyph&col=glyph&stall=0",
+    )
+    .await;
+    assert_eq!(trigger.as_deref(), None);
+    assert!(poll.contains("Griffe lit la réception."), "{poll}");
+    assert!(poll.contains("3 sur 14"), "{poll}");
+    assert!(
+        !poll.contains("pathLength"),
+        "le sondage ne relance pas le trait : {poll}"
+    );
+    assert!(!poll.contains("hx-on"), "{poll}");
+    assert!(poll.contains("every 1s"), "{poll}");
+
+    empty.note_lecture(
+        griffe_core::mail::LecturePhase::Failed,
+        "nicolas@lumen-conseil.fr",
+    );
+    let (_, _, failed) = read_route(&empty_router, "/boite").await;
+    assert!(failed.contains("Le compte n'a pas répondu."), "{failed}");
+    assert!(
+        failed.contains("nicolas@lumen-conseil.fr · nouvel essai dans un instant."),
+        "{failed}"
+    );
+    assert!(failed.contains("Aucune lettre pour l'instant."), "{failed}");
+    assert!(failed.contains("class=\"glyph stall\""), "{failed}");
+    assert!(failed.contains("every 1s"), "{failed}");
+    assert!(!failed.contains("hx-on"), "{failed}");
+
+    let (_, _, stalled) = read_route(
+        &empty_router,
+        "/boite/lecture?gen=0&mode=fail&col=glyph&stall=1",
+    )
+    .await;
+    assert!(
+        !stalled.contains("pathLength"),
+        "un échec déjà montré ne retrace pas : {stalled}"
+    );
+
+    empty.note_lecture(
+        griffe_core::mail::LecturePhase::Filing { on_dossier: 1 },
+        "nicolas@lumen-conseil.fr",
+    );
+    let (_, _, filing) = read_route(&empty_router, "/boite").await;
+    assert!(
+        filing.contains("Une lettre se pose sur un dossier."),
+        "{filing}"
+    );
+    assert!(filing.contains("every 1s"), "{filing}");
+    let (_, _, after) = read_route(&empty_router, "/boite").await;
+    assert!(
+        !after.contains("Une lettre se pose sur un dossier."),
+        "{after}"
+    );
+    assert!(
+        !after.contains("every 1s"),
+        "au repos le sondage ralentit : {after}"
+    );
+    assert!(
+        after.contains("hx-trigger=\"every 2s\""),
+        "au repos la phrase de relève reste : {after}"
+    );
+    assert!(after.contains("Relever le courrier"), "{after}");
+    assert!(after.contains("Toutes les 3 minutes."), "{after}");
+
+    let (_, trigger, rest) = read_route(
+        &empty_router,
+        "/boite/lecture?gen=0&mode=idle&col=letter&stall=0",
+    )
+    .await;
+    assert_ne!(trigger.as_deref(), Some("griffe:saved"));
+    assert!(!rest.contains("every 1s"), "{rest}");
+    assert!(rest.contains("hx-trigger=\"every 2s\""), "{rest}");
+    assert!(!rest.contains("hx-on"), "{rest}");
+
+    let filled_path = test_db_path("boite-lecture-pleine");
+    let filled_store = Store::create(&filled_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    let letter = plant_letter(
+        &filled_store,
+        4,
+        "<camille-lecture@riviere.test>",
+        None,
+        "Reponse Camille",
+        "PHRASE-SECRETE-LECTURE",
+        None,
+    );
+    drop(filled_store);
+    let mut filled_store =
+        Store::open_with_passphrase(&filled_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    save_account(&mut filled_store, "icloud", "");
+    keep_all(&mut filled_store);
+    drop(filled_store);
+    let filled = open_saved(&filled_path).await;
+    engage_releve(&filled);
+    filled.note_lecture(
+        griffe_core::mail::LecturePhase::Reading {
+            folder: griffe_core::mail::LectureFolder::Reception,
+            read: 1,
+            total: Some(1),
+        },
+        "nicolas@lumen-conseil.fr",
+    );
+    let filled_router = griffe_web::router(filled.clone());
+    let (_, _, reread) = read_route(&filled_router, "/boite").await;
+    assert!(reread.contains("Griffe relit la réception."), "{reread}");
+    assert!(reread.contains("Reponse Camille"), "{reread}");
+    assert!(!reread.contains("class=\"glyph"), "{reread}");
+    assert!(!reread.contains("hx-on"), "{reread}");
+
+    let (_, _, kept) = read_route(
+        &filled_router,
+        &format!("/boite/lecture?gen=0&mode=quiet&col=letter&stall=0&lettre={letter}"),
+    )
+    .await;
+    assert!(kept.contains("Griffe relit la réception."), "{kept}");
+    assert!(
+        !kept.contains("PHRASE-SECRETE-LECTURE"),
+        "la lettre ouverte n'est pas remplacée : {kept}"
+    );
+    assert!(!kept.contains("hx-on"), "{kept}");
+
+    filled.note_fresh(2, vec![letter.clone()]);
+    let (status, trigger, arrived_rows) = read_route(
+        &filled_router,
+        "/boite/lecture?vue=tout&gen=0&mode=idle&col=letter&stall=0",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(trigger.as_deref(), Some("griffe:box"));
+    assert_ne!(trigger.as_deref(), Some("griffe:saved"));
+    assert!(arrived_rows.contains("arriving"), "{arrived_rows}");
+    assert!(arrived_rows.contains("Reponse Camille"), "{arrived_rows}");
+    assert!(!arrived_rows.contains("hx-on"), "{arrived_rows}");
+
+    filled.note_lecture(
+        griffe_core::mail::LecturePhase::Arrived { fresh: 1 },
+        "nicolas@lumen-conseil.fr",
+    );
+    let (_, _, one) = read_route(&filled_router, "/boite").await;
+    assert!(one.contains("Une lettre nouvelle."), "{one}");
+    let (_, _, settled) = read_route(&filled_router, "/boite").await;
+    assert!(!settled.contains("Une lettre nouvelle."), "{settled}");
+    assert!(!settled.contains("every 1s"), "{settled}");
+
+    filled.note_lecture(
+        griffe_core::mail::LecturePhase::Failed,
+        "nicolas@lumen-conseil.fr",
+    );
+    let (_, _, quiet_fail) = read_route(&filled_router, "/boite?vue=tout").await;
+    assert!(
+        quiet_fail.contains("Le compte n'a pas répondu. Nouvel essai dans un instant."),
+        "{quiet_fail}"
+    );
+    assert!(quiet_fail.contains("Reponse Camille"), "{quiet_fail}");
+    assert!(!quiet_fail.contains("class=\"glyph"), "{quiet_fail}");
+    assert!(quiet_fail.contains("every 1s"), "{quiet_fail}");
+    assert!(!quiet_fail.contains("hx-on"), "{quiet_fail}");
+
+    let mute_path = test_db_path("boite-lecture-muet");
+    let mut mute_store = Store::create(&mute_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    save_account(&mut mute_store, "custom", "");
+    drop(mute_store);
+    let mute = open_saved(&mute_path).await;
+    engage_releve(&mute);
+    let mute_router = griffe_web::router(mute);
+    let (_, _, unreadable) = read_route(&mute_router, "/boite").await;
+    assert!(
+        unreadable.contains("Le compte ne se lit pas."),
+        "{unreadable}"
+    );
+    assert!(unreadable.contains("/societe/courrier"), "{unreadable}");
+    assert!(
+        unreadable.contains("Aucune lettre dans cette vue."),
+        "{unreadable}"
+    );
+    assert!(!unreadable.contains("every 1s"), "{unreadable}");
+    assert!(!unreadable.contains("class=\"glyph"), "{unreadable}");
+    assert!(!unreadable.contains("hx-on"), "{unreadable}");
+}
+
+#[tokio::test]
+async fn a_ready_icloud_box_waits_for_the_addresses() {
+    let path = test_db_path("boite-attend-adresses");
+    let mut store = Store::create(&path, &Passphrase::from(PASSPHRASE)).unwrap();
+    save_account(&mut store, "icloud", "");
+    drop(store);
+    let state = open_saved(&path).await;
+    engage_releve(&state);
+    state.note_lecture(
+        griffe_core::mail::LecturePhase::Opening,
+        "nicolas@lumen-conseil.fr",
+    );
+    let router = griffe_web::router(state);
+    let (_, _, body) = read_route(&router, "/boite").await;
+    assert!(
+        body.contains("Choisissez les adresses dans Le courrier."),
+        "{body}"
+    );
+    assert!(body.contains("Aucune adresse choisie"), "{body}");
+    assert!(body.contains("/societe/courrier"), "{body}");
+    assert!(!body.contains("Le compte ne se lit pas."), "{body}");
+    assert!(!body.contains("Griffe ouvre"), "{body}");
+    assert!(!body.contains("every 1s"), "{body}");
+    assert!(!body.contains("hx-on"), "{body}");
+}
+
+#[tokio::test]
 async fn the_dossier_thread_holds_the_reply_and_refuses_a_dead_address() {
     let db_path = test_db_path("boite-fil");
     let mut store = Store::create(&db_path, &Passphrase::from(PASSPHRASE)).unwrap();
@@ -14390,6 +14954,29 @@ async fn the_dossier_thread_holds_the_reply_and_refuses_a_dead_address() {
     assert!(dossier.contains("Répondre"), "{dossier}");
     assert!(dossier.contains("Laisser partir la relance"), "{dossier}");
     assert!(dossier.contains("<textarea"), "{dossier}");
+    assert!(
+        !dossier.contains("class=\"msg\""),
+        "pas de fil à gauche : {dossier}"
+    );
+    let histoire = dossier
+        .find("<h3>Histoire</h3>")
+        .expect("l'histoire est là");
+    assert!(
+        dossier[histoire..].contains("PHRASE-FIL"),
+        "la lettre reçue est dans l'histoire : {dossier}"
+    );
+    assert!(
+        dossier[histoire..].contains("PARTIE-FIL"),
+        "la lettre partie est dans l'histoire : {dossier}"
+    );
+    assert!(
+        dossier[histoire..].contains("letter-fold"),
+        "la lettre reçue se replie : {dossier}"
+    );
+    assert!(
+        dossier[histoire..].contains(">Reçu<"),
+        "la ligne reçue se nomme : {dossier}"
+    );
     assert!(!dossier.contains("hx-on"), "{dossier}");
 
     let released = router
@@ -14570,7 +15157,8 @@ fn plant_from(
             folder_role: "inbox".into(),
             choice_of: None,
             choice_ids: None,
+            body_state: "ready".into(),
         })
         .unwrap();
-    mailbox.remember("INBOX", 1, uid).unwrap();
+    mailbox.remember("INBOX", 1, uid, None).unwrap();
 }

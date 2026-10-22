@@ -7,9 +7,9 @@ use uuid::Uuid;
 
 use super::error::MailError;
 use super::model::{
-    HOURLY_CAP, LetterChrome, MISSING_ADDRESS, MailPreset, MailProbeStatus, MailProfile, MailTick,
-    OutboundMessage, OutboundStatus, OutboundView, ProbeMaterial, ReadyLetter, SmtpEndpoint,
-    SubmissionBatch, TlsMode,
+    HOURLY_CAP, KeptScope, LetterChrome, MISSING_ADDRESS, MailPreset, MailProbeStatus, MailProfile,
+    MailTick, OutboundMessage, OutboundStatus, OutboundView, ProbeMaterial, ReadyLetter,
+    SmtpEndpoint, SubmissionBatch, TlsMode,
 };
 use super::secret::MailSecret;
 use super::theme::LetterTheme;
@@ -26,7 +26,7 @@ pub(super) fn profile(conn: &Connection) -> Result<MailProfile, AppError> {
             "SELECT from_name, from_address, smtp_host, smtp_port, smtp_tls, smtp_username,
                     secret IS NOT NULL AND length(secret) > 0, preset, auto_send, signature,
                     probe_ok, probe_detail, imap_host, imap_port, imap_username,
-                    link_ink, metier, site
+                    link_ink, metier, site, releve_every_secs, kept_scope
              FROM mail_account WHERE id = 1",
             [],
             |row| {
@@ -49,6 +49,8 @@ pub(super) fn profile(conn: &Connection) -> Result<MailProfile, AppError> {
                     row.get::<_, String>(15)?,
                     row.get::<_, String>(16)?,
                     row.get::<_, String>(17)?,
+                    row.get::<_, i64>(18)?,
+                    row.get::<_, String>(19)?,
                 ))
             },
         )
@@ -72,6 +74,8 @@ pub(super) fn profile(conn: &Connection) -> Result<MailProfile, AppError> {
         link_ink,
         metier,
         site,
+        releve_every,
+        kept_scope,
     )) = row
     else {
         return Ok(MailProfile::default());
@@ -102,6 +106,8 @@ pub(super) fn profile(conn: &Connection) -> Result<MailProfile, AppError> {
         link_ink: LetterTheme::read(link_ink.as_str()),
         metier,
         site,
+        releve_every_secs: u64::try_from(releve_every).unwrap_or(super::RELEVE_EVERY_SECS),
+        kept_scope: KeptScope::parse(&kept_scope),
     })
 }
 
@@ -233,6 +239,100 @@ pub(super) fn clear_secret(conn: &Connection, now: &str) -> Result<(), AppError>
     Ok(())
 }
 
+pub(super) fn releve_every_raw(conn: &Connection) -> Result<Option<i64>, AppError> {
+    conn.query_row(
+        "SELECT releve_every_secs FROM mail_account WHERE id = 1",
+        [],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(AppError::from)
+}
+
+pub(super) fn kept_addresses(conn: &Connection) -> Result<Vec<String>, AppError> {
+    let mut stmt =
+        conn.prepare("SELECT address FROM mail_kept_address ORDER BY position, address")?;
+    let rows = stmt.query_map([], |row| row.get(0))?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+}
+
+pub(super) fn kept_scope(conn: &Connection) -> Result<KeptScope, AppError> {
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT kept_scope FROM mail_account WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(raw.map_or(KeptScope::Pending, |value| KeptScope::parse(&value)))
+}
+
+pub(super) fn kept_generation(conn: &Connection) -> Result<i64, AppError> {
+    let generation = conn
+        .query_row(
+            "SELECT kept_generation FROM mail_account WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(generation.unwrap_or(0))
+}
+
+pub(super) fn replace_kept_addresses(
+    conn: &Connection,
+    addresses: &[String],
+    scope: KeptScope,
+    now: &str,
+) -> Result<(), AppError> {
+    let current = kept_addresses(conn)?;
+    if current == addresses && kept_scope(conn)? == scope {
+        return Ok(());
+    }
+    let exists: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM mail_account WHERE id = 1",
+        [],
+        |row| row.get(0),
+    )?;
+    if exists == 0 {
+        conn.execute(
+            "INSERT INTO mail_account (id, smtp_tls, preset, auto_send, releve_every_secs, updated_at)
+             VALUES (1, 'starttls', 'custom', 0, ?1, ?2)",
+            params![i64::try_from(super::RELEVE_EVERY_SECS).unwrap_or(180), now],
+        )?;
+    }
+    conn.execute("DELETE FROM mail_kept_address", [])?;
+    {
+        let mut stmt =
+            conn.prepare("INSERT INTO mail_kept_address (address, position) VALUES (?1, ?2)")?;
+        for (index, address) in addresses.iter().enumerate() {
+            let position = i64::try_from(index).unwrap_or(i64::MAX);
+            stmt.execute(params![address, position])?;
+        }
+    }
+    conn.execute(
+        "UPDATE mail_account
+         SET kept_scope = ?1, kept_generation = kept_generation + 1, updated_at = ?2
+         WHERE id = 1",
+        params![scope.as_str(), now],
+    )?;
+    Ok(())
+}
+
+pub(super) fn set_releve_every(conn: &Connection, seconds: i64, now: &str) -> Result<(), AppError> {
+    let updated = conn.execute(
+        "UPDATE mail_account SET releve_every_secs = ?1, updated_at = ?2 WHERE id = 1",
+        params![seconds, now],
+    )?;
+    if updated == 0 {
+        conn.execute(
+            "INSERT INTO mail_account (id, smtp_tls, preset, auto_send, releve_every_secs, updated_at)
+             VALUES (1, 'starttls', 'custom', 0, ?1, ?2)",
+            params![seconds, now],
+        )?;
+    }
+    Ok(())
+}
+
 pub(super) fn set_auto(conn: &Connection, enabled: bool, now: &str) -> Result<(), AppError> {
     let updated = conn.execute(
         "UPDATE mail_account SET auto_send = ?1, updated_at = ?2 WHERE id = 1",
@@ -274,6 +374,7 @@ pub(super) fn probe_material(conn: &Connection) -> Result<Option<ProbeMaterial>,
     let Some(secret) = load_secret(conn)? else {
         return Ok(None);
     };
+    let address = current.from_address.clone();
     let copy = current.copy_target();
     Ok(Some(ProbeMaterial {
         endpoint: SmtpEndpoint {
@@ -284,6 +385,7 @@ pub(super) fn probe_material(conn: &Connection) -> Result<Option<ProbeMaterial>,
         },
         copy,
         secret,
+        address,
     }))
 }
 

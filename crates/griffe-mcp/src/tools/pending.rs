@@ -1,11 +1,11 @@
-//! Outils `pending.*`, `audit.*` — miroir de `freeflow pending/audit` (CLI, lot 7).
+//! Outils `pending.*`, `audit.*` — miroir de `griffe pending/audit` (CLI, lot 7).
 //!
 //! **Pas d'outil `pending.confirm` ici, volontairement** (lot 15) : rien côté MCP ne distingue
 //! un appel d'outil émis par l'agent lui-même d'une confirmation humaine réelle — un agent
 //! pouvait donc proposer une action sensible (`invoice.emit`…) *et* la confirmer dans le même
 //! tour, ce qui annulait entièrement le rail de confirmation que `requires_confirmation()` est
 //! censé garantir (voir `CLAUDE.md`). `pending.list` reste : l'agent peut voir ce qu'il attend,
-//! mais la confirmation elle-même se fait au terminal (`freeflow confirm <id>`) ou dans la
+//! mais la confirmation elle-même se fait au terminal (`griffe confirm <id>`) ou dans la
 //! fenêtre — un vrai geste humain, hors du canal que l'agent contrôle.
 
 use griffe_core::app;

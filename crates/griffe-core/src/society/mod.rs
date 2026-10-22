@@ -86,7 +86,7 @@ pub struct PayYourself {
     pub dividend_cost_per_thousand: Money,
 }
 
-/// La porte salaire : toujours ouverte — `FreeFlow` n'est pas un logiciel de paie, il dit
+/// La porte salaire : toujours ouverte — `Griffe` n'est pas un logiciel de paie, il dit
 /// seulement ce que la société débourse.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SalaryDoor {
@@ -727,7 +727,7 @@ pub struct Duty {
     /// « mois » ou « trimestre ».
     pub vat_scheme: VatFilingScheme,
     /// `due_on` est antérieure au premier jour d'usage de ce coffre : ce n'est pas un retard
-    /// dans `FreeFlow`, c'est un rattrapage.
+    /// dans `Griffe`, c'est un rattrapage.
     pub catch_up: bool,
 }
 
@@ -1227,7 +1227,7 @@ fn fallback_due(kind: FiscalDeadlineKind, today: Date) -> Date {
     }
 }
 
-/// Briefing d'une démarche à faire hors de `FreeFlow`.
+/// Briefing d'une démarche à faire hors de `Griffe`.
 ///
 /// `period_key` désigne une occurrence (`AAAA-MM` pour une CA3, `AAAA-MM-JJ` sinon). `None` vise
 /// la prochaine occurrence non déposée dont `due_on >= today`, à défaut la prochaine du

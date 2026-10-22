@@ -1,4 +1,4 @@
-//! `freeflow backup ...`
+//! `griffe backup ...`
 //!
 //! Une sauvegarde automatique et silencieuse tourne déjà à chaque commande (voir
 //! [`crate::dispatch`]) : ces sous-commandes ne sont utiles que pour en forcer une

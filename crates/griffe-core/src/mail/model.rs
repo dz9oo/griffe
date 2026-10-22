@@ -140,6 +140,40 @@ pub struct MailProbeStatus {
     pub detail: String,
 }
 
+/// Ce que la relève a le droit de lire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum KeptScope {
+    /// Rien n'est choisi. La relève n'ouvre pas le compte.
+    #[default]
+    Pending,
+    /// Les adresses écrites, reçues et envoyées.
+    Listed,
+    /// INBOX et Envoyés. Geste explicite.
+    All,
+}
+
+impl KeptScope {
+    /// `listed`, `all`, ou `pending` pour tout le reste.
+    #[must_use]
+    pub fn parse(raw: &str) -> Self {
+        match raw {
+            "listed" => Self::Listed,
+            "all" => Self::All,
+            _ => Self::Pending,
+        }
+    }
+
+    /// Mot stocké.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Listed => "listed",
+            Self::All => "all",
+        }
+    }
+}
+
 /// Compte tel que l'écran le montre. Jamais le secret.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MailProfile {
@@ -169,6 +203,10 @@ pub struct MailProfile {
     pub metier: String,
     /// Adresse en bas de la lettre. Vide : pas de ligne.
     pub site: String,
+    /// Secondes entre deux relèves. Une des quatre valeurs.
+    pub releve_every_secs: u64,
+    /// Adresses tenues, tout le compte, ou pas encore choisi.
+    pub kept_scope: KeptScope,
 }
 
 /// Ce qui habille la lettre au moment où elle part. Indépendant du texte écrit.
@@ -210,6 +248,8 @@ pub struct ProbeMaterial {
     /// `None` : la copie n'est pas demandée.
     pub copy: Option<ImapEndpoint>,
     pub secret: MailSecret,
+    /// Adresse d'envoi. La page la montre pendant la lecture.
+    pub address: String,
 }
 
 /// Où déposer la copie de la lettre partie.
@@ -272,6 +312,8 @@ impl Default for MailProfile {
             link_ink: LetterTheme::Clair,
             metier: String::new(),
             site: String::new(),
+            releve_every_secs: super::RELEVE_EVERY_SECS,
+            kept_scope: KeptScope::Pending,
         }
     }
 }

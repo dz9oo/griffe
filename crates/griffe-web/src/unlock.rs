@@ -63,8 +63,8 @@ fn setup_page(error: Option<&str>) -> Html<String> {
 /// pas déverrouillé, une requête htmx reçoit `HX-Redirect` (géré par htmx.js), une navigation
 /// directe reçoit l'écran cible rendu directement (voir le commentaire de module — jamais un 303
 /// `Location`, que le protocole URI custom de la coque desktop ne suit pas de façon fiable).
-/// Marque aussi l'activité humaine pour l'auto-verrouillage — sauf pour `/audit/recent`, dont le
-/// polling toutes les 2s n'en est pas une.
+/// Marque aussi l'activité humaine pour l'auto-verrouillage — sauf pour `/audit/recent` et
+/// `/boite/lecture`, dont le sondage n'en est pas une.
 pub async fn require_unlocked(
     State(state): State<AppState>,
     request: Request,
@@ -94,7 +94,7 @@ pub async fn require_unlocked(
         };
     }
 
-    if path != "/audit/recent" {
+    if path != "/audit/recent" && path != "/boite/lecture" {
         state.touch().await;
     }
     next.run(request).await
@@ -121,7 +121,10 @@ pub async fn submit(State(state): State<AppState>, Form(form): Form<UnlockForm>)
     let passphrase = Passphrase::from(form.passphrase);
     let remember = form.remember.is_some();
     match state.unlock(&passphrase, remember).await {
-        Ok(()) => Html(dashboard_page(&state).await).into_response(),
+        Ok(()) => {
+            crate::releve::kick_releve(&state).await;
+            Html(dashboard_page(&state).await).into_response()
+        }
         // Le message de `StoreError::PassphraseChangeInterrupted` porte déjà toute la
         // conduite à tenir : pas besoin du bandeau proactif en plus, qui ferait doublon.
         Err(e) => unlock_page(Some(&e.to_string()), false).into_response(),

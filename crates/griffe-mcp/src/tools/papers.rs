@@ -211,7 +211,7 @@ impl FreeflowServer {
         }
     }
 
-    /// Checklist de conservation d'un exercice : originaux que FreeFlow doit avoir figés
+    /// Checklist de conservation d'un exercice : originaux que `Griffe` doit avoir figés
     /// (`required`), pièces extérieures en avertissement (statuts, Kbis, relevé, accusé).
     /// Lecture seule. `today` facultatif. Voir aussi la ressource `griffe://papers/{period}`.
     #[tool(

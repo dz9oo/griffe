@@ -4,7 +4,7 @@
 //!
 //! La structure (ordre des éléments, wrapping) suit le schéma XSD officiel vendorisé dans
 //! `spec/xsd/` — voir `spec/reference_example.xml` pour un exemple annoté dont ce module
-//! reprend directement l'agencement, réduit aux seuls champs que le domaine FreeFlow porte
+//! reprend directement l'agencement, réduit aux seuls champs que le domaine `Griffe` porte
 //! réellement (pas de champs optionnels inventés : GTIN, contact acheteur, remises globales,
 //! etc. n'existent pas encore dans notre modèle de données et ne sont donc pas émis).
 
@@ -100,7 +100,7 @@ fn write_context(writer: &mut Writer<Vec<u8>>) -> Result<(), InvoiceError> {
     Ok(())
 }
 
-/// 380 = facture commerciale, 381 = avoir — les seuls deux types de document que FreeFlow émet.
+/// 380 = facture commerciale, 381 = avoir — les seuls deux types de document que `Griffe` émet.
 fn document_type_code(invoice: &Invoice) -> &'static str {
     if invoice.credited_invoice_id.is_some() {
         "381"

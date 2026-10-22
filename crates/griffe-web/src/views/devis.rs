@@ -1,7 +1,7 @@
 //! Écran `devis` — lecture et transitions (lot 21), puis création et révision (lot 23).
 //!
 //! L'éditeur de lignes polymorphes (régie/forfait/récurrent) est un `<textarea>`, une ligne de
-//! devis par ligne de texte, parsée par `QuoteLine: FromStr` — le même parseur que `freeflow
+//! devis par ligne de texte, parsée par `QuoteLine: FromStr` — le même parseur que `griffe
 //! quote create --line`, jamais réimplémenté par façade (thèse « Studio »). C'est la leçon du
 //! lot 16 (jalons de mission) appliquée telle quelle : `serde_urlencoded` ne conserve que la
 //! dernière valeur d'une clé répétée, et la CSP `script-src 'self'` de la fenêtre packagée

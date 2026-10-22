@@ -1,4 +1,4 @@
-//! Boîte : liste, relève, classement, adresse, réponse, relance. Le mot de passe ne sort pas de l'outil.
+//! Courriel : liste, relève, classement, adresse, réponse, relance. Le mot de passe ne sort pas de l'outil.
 
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock};
@@ -77,7 +77,7 @@ impl FreeflowServer {
 
     #[tool(
         name = "boite.relever",
-        description = "Relève la boîte de réception et Envoyés du compte déjà réglé. Ne renvoie pas le mot de passe ni les corps."
+        description = "Relève le courriel du compte déjà réglé : réception et Envoyés. Ne renvoie pas le mot de passe ni les corps."
     )]
     async fn boite_relever(&self) -> CallToolResult {
         let mut store = self.store.lock().await;

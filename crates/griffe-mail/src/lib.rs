@@ -2,9 +2,14 @@
 //! Seule crate qui connaît `lettre` et IMAP.
 //! Le cœur décide du moment et du texte ; ici on ouvre la liaison et on la referme.
 
+mod hub;
 mod imap;
 
-pub use imap::{fetch_new, parse_fetch_line, parse_uidvalidity, store_seen};
+pub use hub::MailHub;
+pub use imap::{
+    fetch_body, fetch_new, fetch_pending, fetch_reporting, parse_code_number, parse_exists,
+    parse_fetch_line, parse_search_uids, parse_uidvalidity, store_seen,
+};
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 

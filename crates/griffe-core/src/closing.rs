@@ -1647,7 +1647,7 @@ pub struct GlossaryEntry {
 }
 
 /// Lexique de la clôture (lot 35) — écrit pour un indépendant sans notion de comptabilité, et
-/// partagé tel quel par les trois façades (`freeflow year glossary`, volet « lexique » du
+/// partagé tel quel par les trois façades (`griffe year glossary`, volet « lexique » du
 /// panneau « parcours » de la fenêtre, ressource MCP `griffe://closing-glossary`) : le
 /// vocabulaire est expliqué une fois, dans le cœur, jamais paraphrasé par une façade. Dans
 /// l'ordre où l'on rencontre les mots en clôturant.

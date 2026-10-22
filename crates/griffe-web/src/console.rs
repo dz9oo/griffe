@@ -45,7 +45,7 @@ pub async fn run(State(state): State<AppState>, Form(input): Form<ConsoleInput>)
         }
     };
 
-    let args = std::iter::once("freeflow".to_string()).chain(tokens);
+    let args = std::iter::once("griffe".to_string()).chain(tokens);
     let db_path = state.db_path().to_path_buf();
     let outcome = state
         .with_store_mut(|store| {

@@ -187,7 +187,7 @@ fn aggregate(
         } else {
             warnings.push(format!(
                 "Immobilisation(s) reprise(s) : {} — déclarez chacune avec sa durée d'usage \
-                 (freeflow asset add, ou --duration à l'import) pour que l'amortissement \
+                 (griffe asset add, ou --duration à l'import) pour que l'amortissement \
                  linéaire soit calculé ; sans ça le résultat sera surestimé.",
                 candidates
                     .iter()

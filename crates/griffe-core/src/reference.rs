@@ -343,7 +343,7 @@ pub fn resolve_paper(conn: &Connection, needle: &str) -> Result<RefMatch<PaperId
 
 /// Résout `needle` en identifiant de devis. Un devis n'a pas de nom propre : le matching par
 /// libellé se fait sur le **nom du client** (un UUID ou son préfixe restent prioritaires, comme
-/// partout) — « `freeflow quote show acme` » suffit tant qu'Acme n'a qu'un devis, et l'ambiguïté
+/// partout) — « `griffe quote show acme` » suffit tant qu'Acme n'a qu'un devis, et l'ambiguïté
 /// est qualifiée par la version, la date et le statut pour choisir parmi plusieurs.
 ///
 /// # Errors

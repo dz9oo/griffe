@@ -22,7 +22,7 @@ pub enum StoreError {
     #[error("passphrase incorrecte, ou fichier de coffre corrompu")]
     WrongPassphrase,
 
-    #[error("aucun coffre à {0} — lancez `freeflow init` pour en créer un")]
+    #[error("aucun coffre à {0} — lancez `griffe init` pour en créer un")]
     VaultNotFound(PathBuf),
 
     #[error("un coffre existe déjà à {0}")]
@@ -50,7 +50,7 @@ pub enum StoreError {
     SchemaTooNew,
 
     #[error(
-        "le coffre est ouvert par un autre process : fermez la fenêtre FreeFlow et les autres \
+        "le coffre est ouvert par un autre process : fermez la fenêtre Griffe et les autres \
          commandes en cours, puis réessayez"
     )]
     VaultBusy,

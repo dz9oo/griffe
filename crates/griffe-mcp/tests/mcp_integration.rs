@@ -49,7 +49,7 @@ fn tool_text(result: &CallToolResult) -> &str {
             ContentBlock::Text(t) => Some(t.text.as_str()),
             _ => None,
         })
-        .expect("chaque réponse d'outil FreeFlow porte un bloc de texte JSON")
+        .expect("chaque réponse d'outil Griffe porte un bloc de texte JSON")
 }
 
 fn json_of(result: &CallToolResult) -> Value {
@@ -189,7 +189,9 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "follow_up.retract",
         "mail.show",
         "mail.arm",
+        "mail.adresses",
         "mail.automatic",
+        "mail.rythme",
         "mail.save_letterface",
         "mail.save_signature",
         "mail.trial",
@@ -311,6 +313,7 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "papers.purge",
         "people.delete_work_kind",
         "mail.arm",
+        "mail.adresses",
         "mail.automatic",
         "mail.trial",
         "boite.classer",
@@ -479,7 +482,7 @@ async fn golden_path_from_prospection_to_paid_invoice_over_mcp() {
 
     // La confirmation elle-même n'est volontairement pas un outil MCP (lot 15, voir
     // `tools/pending.rs`) : c'est ici un vrai geste humain hors du canal de l'agent, une
-    // seconde connexion sur le même coffre — exactement ce que fait `freeflow confirm <id>`
+    // seconde connexion sur le même coffre — exactement ce que fait `griffe confirm <id>`
     // dans un terminal séparé pendant que le serveur MCP tourne.
     let mut confirming_store =
         Store::open_with_passphrase(&db_path, &Passphrase::from("s3cret")).unwrap();
@@ -691,7 +694,7 @@ async fn contact_lifecycle_over_mcp() {
 
     // Suppression définitive proposée par l'agent : elle dépose une action en attente plutôt que
     // de s'appliquer, comme toute suppression (cohérent avec `clients.delete`). Un humain la
-    // confirme par une seconde connexion — le geste `freeflow confirm <id>`.
+    // confirme par une seconde connexion — le geste `griffe confirm <id>`.
     let deleted = call(
         &client,
         "clients.contacts.delete",
@@ -2632,7 +2635,7 @@ async fn papers_export_over_mcp_refuses_an_existing_destination() {
     client.cancel().await.unwrap();
 }
 
-/// Lot 58 : `invoice.emit` dépose une action ; `freeflow confirm` (humain) fige l'original.
+/// Lot 58 : `invoice.emit` dépose une action ; `griffe confirm` (humain) fige l'original.
 #[tokio::test]
 async fn confirming_an_invoice_emit_captures_the_issued_original() {
     let db_path = test_db_path("papers-emit-mcp");
@@ -2661,7 +2664,7 @@ async fn confirming_an_invoice_emit_captures_the_issued_original() {
         Store::open_with_passphrase(&db_path, &Passphrase::from("s3cret")).unwrap();
     let (out, code) = griffe_cli::run_capturing_with_vault(
         [
-            "freeflow",
+            "griffe",
             "--db",
             db_path.to_str().expect("chemin UTF-8"),
             "confirm",
@@ -2682,7 +2685,7 @@ async fn confirming_an_invoice_emit_captures_the_issued_original() {
     client.cancel().await.unwrap();
 }
 
-/// `invoice.import` dépose une action ; `freeflow confirm` (humain) crée la ligne importée
+/// `invoice.import` dépose une action ; `griffe confirm` (humain) crée la ligne importée
 /// sans papier `Issued` — le pending n'emporte pas les octets, MCP n'archive pas.
 #[tokio::test]
 async fn confirming_an_invoice_import_records_origin_imported_without_an_issued_paper() {
@@ -2751,7 +2754,7 @@ async fn confirming_an_invoice_import_records_origin_imported_without_an_issued_
         Store::open_with_passphrase(&db_path, &Passphrase::from("s3cret")).unwrap();
     let (out, code) = griffe_cli::run_capturing_with_vault(
         [
-            "freeflow",
+            "griffe",
             "--db",
             db_path.to_str().expect("chemin UTF-8"),
             "confirm",

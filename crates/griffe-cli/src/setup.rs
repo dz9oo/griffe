@@ -1,4 +1,4 @@
-//! `freeflow setup status` — où en est la configuration du coffre (lot 39). Les prérequis et le
+//! `griffe setup status` — où en est la configuration du coffre (lot 39). Les prérequis et le
 //! prochain geste viennent du cœur (`griffe_core::setup`) ; cette façade ne fait que les
 //! afficher et, avec `--new-company`, enregistrer le choix « société nouvelle ».
 
@@ -57,10 +57,10 @@ pub fn run(
                 ""
             };
             let hint = match status.next_step {
-                SetupStep::Profile => "freeflow company set-profile …",
-                SetupStep::Origin => "freeflow year opening set … (ou freeflow setup new-company)",
-                SetupStep::Bank => "freeflow bank import <export de votre banque>",
-                SetupStep::Done => "freeflow year checklist <année>",
+                SetupStep::Profile => "griffe company set-profile …",
+                SetupStep::Origin => "griffe year opening set … (ou griffe setup new-company)",
+                SetupStep::Bank => "griffe bank import <export de votre banque>",
+                SetupStep::Done => "griffe year checklist <année>",
             };
             Ok(format!(
                 "Premier lancement\n  {} profil de la société{}\n  {} point de départ{}{}\n  {} \

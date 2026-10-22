@@ -89,7 +89,7 @@ pub struct PassphraseChangeReport {
     pub reencrypted: bool,
 }
 
-/// Un coffre `FreeFlow` ouvert : une connexion `SQLCipher` déverrouillée.
+/// Un coffre `Griffe` ouvert : une connexion `SQLCipher` déverrouillée.
 pub struct Store {
     conn: Connection,
     db_path: PathBuf,
@@ -507,7 +507,7 @@ impl Store {
         passphrase: &Passphrase,
     ) -> Result<Self, StoreError> {
         // Ne jamais écraser un coffre existant à la destination : restaurer se fait vers un
-        // chemin neuf, explicite (cf. `freeflow backup restore --to`). Sans ce contrôle, un
+        // chemin neuf, explicite (cf. `griffe backup restore --to`). Sans ce contrôle, un
         // `fs::copy` inconditionnel remplaçait silencieusement le coffre visé.
         if dest_db_path.exists()
             || kdf::sidecar_path(dest_db_path).exists()

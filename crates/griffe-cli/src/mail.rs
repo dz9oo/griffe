@@ -7,12 +7,12 @@ use std::path::PathBuf;
 use clap::{ArgGroup, Subcommand};
 use griffe_core::app::{ExecutionContext, Executor};
 use griffe_core::mail::{
-    ArmOutbound, CancelOutbound, ClearMailSecret, CustomSheet, DeliveryOutcome, LetterTheme,
-    MailPreset, MailSecret, RecordMailProbe, RememberImapUsername, SaveLetterface, SaveMailAccount,
-    SaveMailSecret, SaveMailSignature, SentCopyStatus, SetAutomaticSend, SubmissionBatch,
-    UNDO_SECS, abandon_held, commit_outbound, custom_sheet, french_submit_error, hourly_pause,
-    probe_material, profile, record_copies, record_deliveries, selected_id, take_copies, take_due,
-    trial_letter,
+    ArmOutbound, CancelOutbound, ClearMailSecret, CustomSheet, DeliveryOutcome, KeptScope,
+    LetterTheme, MailPreset, MailSecret, RecordMailProbe, RememberImapUsername, SaveLetterface,
+    SaveMailAccount, SaveMailSecret, SaveMailSignature, SentCopyStatus, SetAutomaticSend,
+    SetKeptAddresses, SetReleveInterval, SubmissionBatch, UNDO_SECS, abandon_held, commit_outbound,
+    custom_sheet, french_submit_error, hourly_pause, kept_addresses, probe_material, profile,
+    record_copies, record_deliveries, selected_id, take_copies, take_due, trial_letter,
 };
 use griffe_core::store::Store;
 use time::OffsetDateTime;
@@ -58,6 +58,20 @@ pub enum MailCommand {
         /// Retire le mot de passe du coffre.
         #[arg(long)]
         clear: bool,
+    },
+    /// Période de la relève : 1, 3, 15 ou 30 minutes.
+    Rythme {
+        /// Minutes entre deux relèves.
+        minutes: u16,
+    },
+    /// Adresses que la relève copie, reçues et envoyées. Sans argument, les montre.
+    /// Rien n'est lu avant une adresse ou --tout.
+    Adresses {
+        /// Adresses tenues.
+        addresses: Vec<String>,
+        /// Lit tout le compte.
+        #[arg(long, conflicts_with = "addresses")]
+        tout: bool,
     },
     /// Active ou éteint l'envoi des lettres dont la date est aujourd'hui.
     #[command(group(ArgGroup::new("mode").required(true).args(["on", "off"])))]
@@ -111,6 +125,54 @@ pub enum MailCommand {
     Flush,
 }
 
+fn adresses(
+    store: &mut Store,
+    ctx: &ExecutionContext,
+    json: bool,
+    addresses: Vec<String>,
+    tout: bool,
+) -> Result<String, CliError> {
+    if !tout && addresses.is_empty() {
+        let scope = profile(store.connection())?.kept_scope;
+        let kept = kept_addresses(store.connection())?;
+        if json {
+            return Ok(format_json(&serde_json::json!({
+                "scope": scope.as_str(),
+                "addresses": kept,
+            })));
+        }
+        return Ok(scope_line(scope, &kept));
+    }
+    let blank = !tout && addresses.iter().all(|line| line.trim().is_empty());
+    let list = if tout { Vec::new() } else { addresses };
+    let outcome = Executor::new(store).execute(
+        &SetKeptAddresses {
+            addresses: list,
+            all: tout,
+        },
+        ctx,
+    )?;
+    Ok(format_outcome_as(&outcome, json, |_| {
+        if tout {
+            "Tout le compte est lu.".to_string()
+        } else if blank {
+            "Rien n'est lu.".to_string()
+        } else {
+            "Ces adresses sont gardées.".to_string()
+        }
+    }))
+}
+
+fn scope_line(scope: KeptScope, kept: &[String]) -> String {
+    if scope == KeptScope::All {
+        return "Tout le compte.".to_string();
+    }
+    if kept.is_empty() {
+        return "Rien n'est lu.".to_string();
+    }
+    kept.join("\n")
+}
+
 pub fn run(
     command: MailCommand,
     store: &mut Store,
@@ -161,6 +223,13 @@ pub fn run(
                 "Le mot de passe est dans le coffre.".to_string()
             }))
         }
+        MailCommand::Rythme { minutes } => {
+            let seconds = u64::from(minutes).saturating_mul(60);
+            let outcome = Executor::new(store).execute(&SetReleveInterval { seconds }, ctx)?;
+            let sentence = griffe_core::mail::releve_cadence(seconds);
+            Ok(format_outcome_as(&outcome, json, |_| sentence.to_string()))
+        }
+        MailCommand::Adresses { addresses, tout } => adresses(store, ctx, json, addresses, tout),
         MailCommand::Auto { on, .. } => {
             let outcome = Executor::new(store).execute(&SetAutomaticSend { enabled: on }, ctx)?;
             let sentence = if on {

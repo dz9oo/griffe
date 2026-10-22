@@ -1,6 +1,6 @@
 //! Grand livre **dérivé** d'un exercice (lot 31) — la généralisation du FEC du lot 28.
 //!
-//! `FreeFlow` ne tient pas de comptabilité : les écritures sont *dérivées* des faits du domaine,
+//! `Griffe` ne tient pas de comptabilité : les écritures sont *dérivées* des faits du domaine,
 //! qui sont déjà immuables ou contre-écrits (factures et avoirs, encaissements et annulations,
 //! dépenses), du bilan d'ouverture (lot 30) et des snapshots de clôture (lot 20). Ce module
 //! porte les types d'écriture ([`Journal`], [`Account`], [`LedgerEntry`]), la construction pure

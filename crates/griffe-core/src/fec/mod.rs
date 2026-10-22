@@ -221,7 +221,7 @@ impl Fec {
     }
 
     /// Relit ce FEC tel qu'il serait écrit sur disque — le round-trip que les tests et
-    /// `freeflow fec check --period` empruntent.
+    /// `griffe fec check --period` empruntent.
     #[must_use]
     pub fn check(&self) -> FecCheck {
         check_fec(self.render().as_bytes(), Some(&self.file_name()))

@@ -1,4 +1,4 @@
-//! Outils `fec.export` / `fec.check` — miroir de `freeflow fec export` / `fec check`.
+//! Outils `fec.export` / `fec.check` — miroir de `griffe fec export` / `fec check`.
 //!
 //! Le cœur construit et rend le Fichier des Écritures Comptables ; l'écriture sur disque est de
 //! l'IO d'adaptateur et, comme `invoice.render`/`fiscal.render_year`, refuse d'écraser un

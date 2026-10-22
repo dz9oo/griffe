@@ -1,4 +1,4 @@
-//! `freeflow papers list|show|add|rm|checklist|export` — Les papiers. Les helpers
+//! `griffe papers list|show|add|rm|checklist|export` — Les papiers. Les helpers
 //! [`capture_invoice`], [`capture_imported_invoice`], [`capture_year`],
 //! [`capture_bank_statement`], [`capture_expense_receipt`],
 //! [`write_uncollectible_notice`] et [`write_control_pack`]
@@ -680,7 +680,7 @@ fn try_capture_year_kind(
             Err(e) => Err(e.to_string()),
         }
     } else {
-        Err("nature non générée par FreeFlow".into())
+        Err("nature non générée par Griffe".into())
     };
     let (original_name, bytes) = match rendered {
         Ok(pair) => pair,

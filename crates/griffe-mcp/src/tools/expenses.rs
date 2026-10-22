@@ -1,4 +1,4 @@
-//! Outils `expense.*` — miroir de `freeflow expense ...` (lot 21 : première apparition des
+//! Outils `expense.*` — miroir de `griffe expense ...` (lot 21 : première apparition des
 //! dépenses côté MCP, qui étaient jusqu'ici la principale dette de parité du serveur).
 //!
 //! Pas de justificatif ici : l'archivage d'un fichier (lecture, hash, copie en `receipts/`) est
@@ -226,7 +226,7 @@ impl FreeflowServer {
 
     /// Rapproche une dépense existante d'un débit du relevé importé, au montant exact — le
     /// pendant de `bank.reconcile` pour les sorties d'argent. Action de rapprochement bancaire :
-    /// un agent la propose, seul un humain (`freeflow confirm`) l'applique. Défaire :
+    /// un agent la propose, seul un humain (`griffe confirm`) l'applique. Défaire :
     /// `bank.unreconcile` (la dépense reste, la transaction est libérée).
     #[tool(
         name = "expense.reconcile",
@@ -378,7 +378,7 @@ impl FreeflowServer {
     }
 
     /// Supprime une dépense pour de bon — action sensible : un agent la propose, seul un humain
-    /// (`freeflow confirm`) peut l'appliquer. Refusé si sa date tombe dans un exercice clôturé.
+    /// (`griffe confirm`) peut l'appliquer. Refusé si sa date tombe dans un exercice clôturé.
     #[tool(
         name = "expense.delete",
         annotations(

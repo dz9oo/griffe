@@ -1,4 +1,4 @@
-//! Outils `invoice.*`, `payment.*`, `bank.*` — miroir de `freeflow invoice/payment/bank ...`
+//! Outils `invoice.*`, `payment.*`, `bank.*` — miroir de `griffe invoice/payment/bank ...`
 //! (CLI, lot 7). `invoice.emit`, `invoice.import`, `invoice.credit_note`, `invoice.write_off`
 //! et `invoice.retract_write_off` sont marqués `destructive_hint` : la politique de
 //! confirmation (lot 2) dépose une `PendingAction` plutôt que d'appliquer l'effet quand
@@ -173,7 +173,7 @@ pub(crate) struct BankSettleArgs {
     /// (crédit de TVA remboursé), `455000` (compte courant d'associé), `457000` (dividendes
     /// payés), `580000` (virement entre les comptes de la société), `164000` (emprunt).
     account: String,
-    /// Libellé du compte, requis seulement s'il n'est pas dans le plan de comptes de FreeFlow.
+    /// Libellé du compte, requis seulement s'il n'est pas dans le plan de comptes de `Griffe`.
     label: Option<String>,
     #[serde(default)]
     dry_run: bool,
@@ -594,7 +594,7 @@ impl FreeflowServer {
     }
 
     /// Supprime une transaction importée par erreur — non rapprochée seulement (défaire
-    /// d'abord). Action sensible : un agent la propose, seul un humain (`freeflow confirm`)
+    /// d'abord). Action sensible : un agent la propose, seul un humain (`griffe confirm`)
     /// l'applique.
     #[tool(
         name = "bank.delete",
@@ -660,7 +660,7 @@ impl FreeflowServer {
     /// Annule un encaissement saisi à tort — contre-écriture, jamais une suppression : il reste
     /// dans l'historique mais sort de tous les calculs, et la transaction bancaire liée est
     /// libérée s'il était issu d'un rapprochement. Action sensible : un agent la propose, seul
-    /// un humain (`freeflow confirm`) peut l'appliquer.
+    /// un humain (`griffe confirm`) peut l'appliquer.
     #[tool(
         name = "payment.void",
         annotations(
@@ -706,7 +706,7 @@ impl FreeflowServer {
     /// honoraires, 444 solde d'IS, 4455 TVA), compte courant d'associé (455), dividendes (457),
     /// virement entre les comptes de la société (580), emprunt (164). Le libellé vient du plan
     /// de comptes ; `label` pour un compte hors plan. Action sensible : un agent la propose,
-    /// seul un humain (`freeflow confirm`) l'applique.
+    /// seul un humain (`griffe confirm`) l'applique.
     #[tool(
         name = "bank.settle",
         annotations(

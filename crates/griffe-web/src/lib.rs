@@ -22,11 +22,13 @@ mod papiers;
 mod premiers_pas;
 mod prospection;
 mod relances;
+mod releve;
 mod societe;
 mod state;
 mod unlock;
 mod views;
 
+pub use releve::kick_releve;
 pub use state::{AppState, parse_today_opt};
 
 use axum::Router;
@@ -154,6 +156,8 @@ pub fn router(state: AppState) -> Router {
         .route("/", get(handlers::index))
         .route("/jour", get(handlers::jour))
         .route("/boite", get(boite::page))
+        .route("/boite/relever", post(boite::relever))
+        .route("/boite/lecture", get(boite::lecture))
         .route("/boite/sceau", get(boite::seal))
         .route("/boite/classer", post(boite::classer))
         .route("/boite/adresse", post(boite::adresse))
@@ -316,6 +320,8 @@ pub fn router(state: AppState) -> Router {
         .route("/societe/courrier/secret", post(courrier::save_secret))
         .route("/societe/courrier/retirer", post(courrier::clear_secret))
         .route("/societe/courrier/automatique", post(courrier::automatic))
+        .route("/societe/courrier/releve", post(courrier::releve_interval))
+        .route("/societe/courrier/adresses", post(courrier::save_addresses))
         .route(
             "/societe/courrier/signature",
             post(courrier::save_signature),

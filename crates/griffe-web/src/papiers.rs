@@ -292,7 +292,7 @@ pub struct ExportForm {
 }
 
 fn control_pack_temp_dir(period: i32) -> std::path::PathBuf {
-    let base = std::env::temp_dir().join(format!("freeflow-controle-{period}"));
+    let base = std::env::temp_dir().join(format!("griffe-controle-{period}"));
     if !base.exists() {
         return base;
     }
@@ -300,7 +300,7 @@ fn control_pack_temp_dir(period: i32) -> std::path::PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    std::env::temp_dir().join(format!("freeflow-controle-{period}-{nanos}"))
+    std::env::temp_dir().join(format!("griffe-controle-{period}-{nanos}"))
 }
 
 fn open_dir(path: &std::path::Path) {

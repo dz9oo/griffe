@@ -30,7 +30,7 @@ use time::format_description::well_known::{Rfc2822, Rfc3339};
 
 use crate::layout::ViewId;
 use crate::markdown::render_work_markdown;
-use crate::views::copy::{letter_date, month_fr};
+use crate::views::copy::letter_date;
 use crate::views::form;
 
 pub fn path_encode(s: &str) -> String {
@@ -695,6 +695,27 @@ pub fn dossier_shown(
     ))
 }
 
+/// Dossier déjà chargé, avec le courrier replié dans l'histoire.
+pub fn dossier_live(
+    store: &Store,
+    dossier: &PersonDossier,
+    today: Date,
+    flash: Option<&str>,
+) -> Markup {
+    let look = LetterLook::from_store(store);
+    let fil = fil_of(store, dossier).ok().flatten();
+    dossier_body(
+        dossier,
+        today,
+        DossierNotice::text(flash),
+        None,
+        &look,
+        &ListKeep::default(),
+        DossierDoor::Cours,
+        fil.as_ref(),
+    )
+}
+
 /// En cours, après « C'est parti » sans serveur : la note explique l'envoi hors de Griffe.
 pub fn dossier_after_own_send(
     store: &Store,
@@ -983,11 +1004,11 @@ fn dossier_body(
             @for action in &fate {
                 (action_button(action, &href))
             }
+            @if let Some(fil) = fil {
+                (fil_status(dossier, fil, &href))
+            }
             div class="blocks" {
                 div class="col-main" {
-                    @if let Some(fil) = fil {
-                        (fil_markup(dossier, fil, look))
-                    }
                     @if let Some(body) = current_paragraph(&dossier.current, dossier) {
                         div class="block" {
                             h3 { "En cours" }
@@ -1041,16 +1062,7 @@ fn dossier_body(
                             }
                         }
                     }
-                    @if !dossier.history.is_empty() {
-                        div class="block" {
-                            h3 { "Histoire" }
-                            ul class="hist" {
-                                @for event in &dossier.history {
-                                    (history_item(event, look))
-                                }
-                            }
-                        }
-                    }
+                    (history_block(dossier, fil, look, &href))
                 }
             }
         }
@@ -1076,17 +1088,14 @@ pub(crate) fn thread_opportunity(dossier: &PersonDossier) -> Option<String> {
         })
 }
 
-fn fil_markup(dossier: &PersonDossier, fil: &DossierFil, look: &LetterLook) -> Markup {
-    if fil.lines.is_empty() && !fil.held && fil.armed.is_none() && fil.failed.is_empty() {
+/// La phrase de retenue, au-dessus des colonnes. Les lettres elles-mêmes sont dans l'histoire.
+fn fil_status(dossier: &PersonDossier, fil: &DossierFil, href: &str) -> Markup {
+    if !fil.held && fil.armed.is_none() && fil.failed.is_empty() {
         return html! {};
     }
-    let href = person_href(&dossier.name);
     html! {
-        div class="block fil" {
+        div class="fil-status" {
             (fil_sentence(dossier, fil))
-            @for line in &fil.lines {
-                (fil_line(&href, fil, line, look))
-            }
             @if let Some(armed) = &fil.armed {
                 p class="depart-line" { "Elle part dans cinq secondes." }
                 form method="post" action=(format!("{href}/reponse/annuler"))
@@ -1128,43 +1137,35 @@ fn fil_sentence(dossier: &PersonDossier, fil: &DossierFil) -> Markup {
     }
 }
 
-fn fil_line(href: &str, fil: &DossierFil, line: &FilLine, look: &LetterLook) -> Markup {
+fn fil_line_actions(href: &str, fil: &DossierFil, line: &FilLine, look: &LetterLook) -> Markup {
     let blocked = blocked_address(fil, line);
     html! {
-        article class="msg" {
-            header {
-                span class="when" { (fil_when(line.when.as_deref())) }
-                span { (line.who) }
+        @if let Some(address) = blocked {
+            p class="note" { (address) " ne reçoit pas. L'envoi ne part pas." }
+            div class="actions" {
+                a class="quiet" href=(format!("{href}/fiche"))
+                  hx-get=(format!("{href}/fiche"))
+                  hx-target="#content"
+                  hx-push-url="true" { "Corriger l'adresse" }
+                (bonne_form(href, address))
             }
-            h3 { (line.subject) }
-            div class="corps" { (line.text) }
-            @if let Some(address) = blocked {
-                p class="note" { (address) " ne reçoit pas. L'envoi ne part pas." }
-                div class="actions" {
-                    a class="quiet" href=(format!("{href}/fiche"))
-                      hx-get=(format!("{href}/fiche"))
-                      hx-target="#content"
-                      hx-push-url="true" { "Corriger l'adresse" }
-                    (bonne_form(href, address))
-                }
-            } @else if line.can_reply {
-                @if let Some(message) = &line.message_id {
-                    details class="fil-reply" {
-                        summary class="seal" { "Répondre" }
-                        form class="reply" method="post" action=(format!("{href}/repondre"))
-                             hx-post=(format!("{href}/repondre"))
-                             hx-target="#content" {
-                            input type="hidden" name="message" value=(message);
-                            (form::text("subject", "Sujet", &reply_subject(&line.subject), None))
-                            (form::textarea("body", "Ta réponse", "", 8, None))
-                            (letter_stage("", "", &look.chrome, true, false))
-                            div class="actions" {
-                                button class="seal" type="submit" { "Envoyer" }
-                                a class="quiet" href=(href)
-                                  hx-get=(href)
-                                  hx-target="#content"
-                                  hx-push-url="true" { "Annuler" }
-                            }
+        } @else if line.can_reply {
+            @if let Some(message) = &line.message_id {
+                details class="fil-reply" {
+                    summary class="seal" { "Répondre" }
+                    form class="reply" method="post" action=(format!("{href}/repondre"))
+                         hx-post=(format!("{href}/repondre"))
+                         hx-target="#content" {
+                        input type="hidden" name="message" value=(message);
+                        (form::text("subject", "Sujet", &reply_subject(&line.subject), None))
+                        (form::textarea("body", "Ta réponse", "", 8, None))
+                        (letter_stage("", "", &look.chrome, true, false))
+                        div class="actions" {
+                            button class="seal" type="submit" { "Envoyer" }
+                            a class="quiet" href=(href)
+                              hx-get=(href)
+                              hx-target="#content"
+                              hx-push-url="true" { "Annuler" }
                         }
                     }
                 }
@@ -1212,17 +1213,163 @@ fn reply_subject(subject: &str) -> String {
     }
 }
 
-fn fil_when(raw: Option<&str>) -> String {
-    let Some(raw) = raw else {
-        return "—".to_string();
+fn fil_when(raw: Option<&str>) -> Option<OffsetDateTime> {
+    raw.and_then(|value| {
+        OffsetDateTime::parse(value, &Rfc2822)
+            .or_else(|_| OffsetDateTime::parse(value, &Rfc3339))
+            .ok()
+    })
+}
+
+fn fil_date(raw: Option<&str>) -> String {
+    fil_when(raw).map_or_else(|| "—".to_string(), |at| format_date_fr(at.date()))
+}
+
+/// Une lettre de la série est déjà une ligne d'histoire. Son double d'envoi ne la répète pas.
+fn already_in_history(line: &FilLine, history: &[HistoryEvent]) -> bool {
+    if !line.sent {
+        return false;
+    }
+    let subject = line.subject.trim();
+    let body = line.text.trim();
+    history.iter().any(|event| {
+        matches!(
+            &event.kind,
+            HistoryKind::Letter {
+                subject: filed,
+                body: filed_body,
+            } if filed.trim() == subject && filed_body.trim() == body
+        )
+    })
+}
+
+fn matching_sent<'a>(event: &HistoryEvent, fil: Option<&'a DossierFil>) -> Option<&'a FilLine> {
+    let HistoryKind::Letter { subject, body } = &event.kind else {
+        return None;
     };
-    let parsed = OffsetDateTime::parse(raw, &Rfc2822)
-        .or_else(|_| OffsetDateTime::parse(raw, &Rfc3339))
-        .ok();
-    parsed.map_or_else(
-        || "—".to_string(),
-        |at| format!("{} {}", at.day(), month_fr(u8::from(at.month()))),
-    )
+    fil?.lines.iter().find(|line| {
+        line.sent && line.subject.trim() == subject.trim() && line.text.trim() == body.trim()
+    })
+}
+
+fn event_stamp(event: &HistoryEvent, fil: Option<&DossierFil>) -> i64 {
+    matching_sent(event, fil)
+        .and_then(|line| fil_when(line.when.as_deref()))
+        .map_or_else(
+            || {
+                event
+                    .on
+                    .midnight()
+                    .assume_utc()
+                    .unix_timestamp()
+                    .saturating_add(12 * 60 * 60)
+            },
+            |at| at.unix_timestamp(),
+        )
+}
+
+enum Story<'a> {
+    Event(&'a HistoryEvent),
+    Received(&'a FilLine),
+    Sent(&'a FilLine),
+}
+
+fn story_rows<'a>(dossier: &'a PersonDossier, fil: Option<&'a DossierFil>) -> Vec<Story<'a>> {
+    let mut rows = Vec::new();
+    for event in &dossier.history {
+        rows.push((event_stamp(event, fil), Story::Event(event)));
+    }
+    if let Some(fil) = fil {
+        for line in &fil.lines {
+            if line.sent && already_in_history(line, &dossier.history) {
+                continue;
+            }
+            let stamp = fil_when(line.when.as_deref()).map_or(0, |at| at.unix_timestamp());
+            if line.sent {
+                rows.push((stamp, Story::Sent(line)));
+            } else {
+                rows.push((stamp, Story::Received(line)));
+            }
+        }
+    }
+    rows.sort_by_key(|row| std::cmp::Reverse(row.0));
+    rows.into_iter().map(|(_, row)| row).collect()
+}
+
+fn history_block(
+    dossier: &PersonDossier,
+    fil: Option<&DossierFil>,
+    look: &LetterLook,
+    href: &str,
+) -> Markup {
+    let rows = story_rows(dossier, fil);
+    if rows.is_empty() {
+        return html! {};
+    }
+    html! {
+        div class="block" {
+            h3 { "Histoire" }
+            ul class="hist" {
+                @for row in &rows {
+                    @match row {
+                        Story::Event(event) => (history_item(event, look)),
+                        Story::Received(line) => (received_item(href, fil, line, look)),
+                        Story::Sent(line) => (sent_item(line, look)),
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn received_title(line: &FilLine) -> String {
+    let subject = line.subject.trim();
+    if subject.is_empty() {
+        "Lettre".to_string()
+    } else {
+        subject.to_string()
+    }
+}
+
+fn received_item(
+    href: &str,
+    fil: Option<&DossierFil>,
+    line: &FilLine,
+    look: &LetterLook,
+) -> Markup {
+    let Some(fil) = fil else {
+        return html! {};
+    };
+    html! {
+        li {
+            time { (fil_date(line.when.as_deref())) }
+            details class="letter-fold" {
+                summary {
+                    span class="nature" { "Reçu" }
+                    span class="preview" { (received_title(line)) }
+                    span class="fold-mark" aria-hidden="true" {}
+                }
+                @if !line.text.trim().is_empty() {
+                    pre { (line.text) }
+                }
+                (fil_line_actions(href, fil, line, look))
+            }
+        }
+    }
+}
+
+fn sent_item(line: &FilLine, look: &LetterLook) -> Markup {
+    let title = if line.subject.trim().is_empty() {
+        "Lettre".to_string()
+    } else {
+        line.subject.clone()
+    };
+    html! {
+        li {
+            time { (fil_date(line.when.as_deref())) }
+            (folded_letter(&title, &line.subject, &line.text, look))
+        }
+    }
 }
 
 fn subtitle(d: &PersonDossier, today: Date) -> String {
@@ -1663,6 +1810,18 @@ fn note_preview(note: &str) -> String {
     preview
 }
 
+fn folded_letter(title: &str, subject: &str, body: &str, look: &LetterLook) -> Markup {
+    html! {
+        details class="letter-fold" {
+            summary {
+                span class="preview" { (title) }
+                span class="fold-mark" aria-hidden="true" {}
+            }
+            (letter_stage(subject, body, &look.chrome, false, false))
+        }
+    }
+}
+
 fn fold(summary: Markup, body: &str) -> Markup {
     html! {
         details class="letter-fold" {
@@ -1684,15 +1843,7 @@ fn history_body(event: &HistoryEvent, look: &LetterLook) -> Markup {
                 subject.clone()
             };
             // Le texte classé, tel quel. La formule d'aujourd'hui ne s'y ajoute pas.
-            html! {
-                details class="letter-fold" {
-                    summary {
-                        span class="preview" { (title) }
-                        span class="fold-mark" aria-hidden="true" {}
-                    }
-                    (letter_stage(subject, body, &look.chrome, false, false))
-                }
-            }
+            folded_letter(&title, subject, body, look)
         }
         HistoryKind::Interaction { interaction } => {
             let nature = nature_fr(*interaction);

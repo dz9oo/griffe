@@ -101,6 +101,8 @@ pub struct BoxLetter {
     pub place: LetterPlace,
     /// Adresse en échec certain, quand la fiche est unique.
     pub dead_address: Option<String>,
+    /// `pending`, `ready`, `too_large` ou `unreadable`.
+    pub body_state: String,
 }
 
 /// Compteurs des cinq vues, avant la recherche.
@@ -122,6 +124,16 @@ pub struct BoxPage {
     pub folders: Vec<String>,
     pub cards: Vec<BoxCard>,
     pub open: Option<BoxLetter>,
+    /// Secondes entre deux relèves.
+    pub releve_every_secs: u64,
+    /// Dernière relève aboutie, RFC 3339. L'échec ne l'efface pas.
+    pub releve_at: Option<String>,
+    /// Phrase de l'échec encore en cours.
+    pub releve_error: Option<String>,
+    /// Adresses copiées. Vide : pas encore choisi, ou tout le compte.
+    pub kept_addresses: Vec<String>,
+    /// Choix qui distingue une liste vide d'un compte entier.
+    pub kept_scope: super::KeptScope,
 }
 
 /// Ce qu'on demande à la page.
@@ -177,6 +189,11 @@ pub fn read_box(vault: &Store, query: BoxQuery<'_>) -> Result<BoxPage, AppError>
             folders: Vec::new(),
             cards: Vec::new(),
             open: None,
+            releve_every_secs: super::releve_every(vault)?,
+            releve_at: None,
+            releve_error: None,
+            kept_addresses: super::kept_addresses(vault.connection())?,
+            kept_scope: profile_scope(vault)?,
         });
     }
     let mailbox = vault.open_mailbox()?;
@@ -209,6 +226,7 @@ pub fn read_box(vault: &Store, query: BoxQuery<'_>) -> Result<BoxPage, AppError>
     } else {
         shown
     };
+    let (releve_at, releve_error) = mailbox.releve_stamp()?;
     Ok(BoxPage {
         dossier_letters,
         failed_addresses,
@@ -216,7 +234,16 @@ pub fn read_box(vault: &Store, query: BoxQuery<'_>) -> Result<BoxPage, AppError>
         folders,
         cards,
         open,
+        releve_every_secs: super::releve_every(vault)?,
+        releve_at,
+        releve_error,
+        kept_addresses: super::kept_addresses(vault.connection())?,
+        kept_scope: profile_scope(vault)?,
     })
+}
+
+fn profile_scope(vault: &Store) -> Result<super::KeptScope, AppError> {
+    Ok(super::profile(vault.connection())?.kept_scope)
 }
 
 /// Range le message, puis retient la relance si un dossier est choisi.
@@ -571,7 +598,7 @@ fn line_of(letter: MirrorLetter) -> FilLine {
 fn received_letter(vault: &Store, token: &str) -> Result<MirrorLetter, AppError> {
     if !mailbox_exists(vault) {
         return Err(AppError::Domain(
-            "Ce message n'est pas dans la boîte.".into(),
+            "Ce message n'est pas dans le courriel.".into(),
         ));
     }
     let mailbox = vault.open_mailbox()?;
@@ -594,7 +621,7 @@ fn received_letter(vault: &Store, token: &str) -> Result<MirrorLetter, AppError>
         }
     }
     Err(AppError::Domain(
-        "Ce message n'est pas dans la boîte.".into(),
+        "Ce message n'est pas dans le courriel.".into(),
     ))
 }
 
@@ -852,6 +879,7 @@ fn open_letter(
         notice_address: letter.notice_address,
         place,
         dead_address,
+        body_state: letter.body_state,
     }))
 }
 
@@ -1085,9 +1113,10 @@ mod tests {
                 folder_role: role.into(),
                 choice_of: None,
                 choice_ids: None,
+                body_state: "ready".into(),
             })
             .unwrap();
-        mailbox.remember("INBOX", 1, uid).unwrap();
+        mailbox.remember("INBOX", 1, uid, None).unwrap();
     }
 
     #[test]

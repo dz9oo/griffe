@@ -44,7 +44,7 @@ pub enum PapersError {
     RetentionNotElapsed { until: Option<Date> },
 
     #[error(
-        "un original né dans FreeFlow ne se remplace pas : le premier figé gagne — déposez une \
+        "un original né dans Griffe ne se remplace pas : le premier figé gagne — déposez une \
          copie de travail, ou laissez l'original"
     )]
     IssuedImmutable,

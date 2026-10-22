@@ -454,7 +454,7 @@ fn a_preexisting_sasu_closes_two_exercises_alone_from_the_cli() {
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "freeflow expense edit <RÉF> --receipt <fichier>",
+            "griffe expense edit <RÉF> --receipt <fichier>",
         ));
 
     // On joint la pièce : l'étape passe au vert.
@@ -802,7 +802,7 @@ fn a_preexisting_sasu_closes_two_exercises_alone_from_the_cli() {
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "freeflow year close --period 2027 --legal-reserve 100.00",
+            "griffe year close --period 2027 --legal-reserve 100.00",
         ));
 
     // Clôture avec l'affectation décidée : réserve légale minimale, 3 000 € de dividendes.
@@ -943,7 +943,7 @@ fn a_preexisting_sasu_closes_two_exercises_alone_from_the_cli() {
         .args(["year", "checklist", "2028", "--today", "2027-12-15"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("freeflow year glossary"));
+        .stdout(predicate::str::contains("griffe year glossary"));
     unlocked(&db)
         .args(["year", "glossary"])
         .assert()

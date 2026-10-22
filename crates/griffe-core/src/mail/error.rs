@@ -59,6 +59,12 @@ pub enum MailError {
 
     #[error("le site commence par https:// ou http://")]
     Site,
+
+    #[error("la relève se règle à 1, 3, 15 ou 30 minutes")]
+    ReleveInterval,
+
+    #[error("Seize adresses au plus.")]
+    KeptCap,
 }
 
 impl From<MailError> for AppError {

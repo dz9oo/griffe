@@ -1,6 +1,6 @@
 //! Premier lancement (lot 39) : **où en est la configuration du coffre**, et quel est le
 //! prochain geste — une requête, consommée telle quelle par le tableau de bord, la palette, le
-//! parcours de clôture, `freeflow setup status` et l'outil MCP `setup.status`. Aucune façade
+//! parcours de clôture, `griffe setup status` et l'outil MCP `setup.status`. Aucune façade
 //! ne devine ce qui manque : c'est ici, une fois.
 //!
 //! Trois prérequis : le **profil** (nom, SIREN, adresse — et pour que le calendrier et la
@@ -200,7 +200,7 @@ pub fn setup_status(conn: &Connection) -> Result<SetupStatus, AppError> {
 }
 
 /// Jour où ce coffre a commencé à être utilisé. Les échéances d'État antérieures ne sont pas
-/// des retards dans `FreeFlow` : c'est un rattrapage.
+/// des retards dans `Griffe` : c'est un rattrapage.
 ///
 /// Ordre : `setup.created_on` s'il est posé, sinon la date du premier événement d'audit, sinon
 /// `today` (coffre encore vierge).
@@ -257,7 +257,7 @@ impl Command for DeclareNewCompany {
     }
 }
 
-/// La vue JSON partagée par `freeflow setup status --json` et `setup.status`.
+/// La vue JSON partagée par `griffe setup status --json` et `setup.status`.
 #[must_use]
 pub fn setup_json(status: &SetupStatus) -> serde_json::Value {
     serde_json::json!({

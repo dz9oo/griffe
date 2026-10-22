@@ -1,4 +1,4 @@
-//! Le contrat `Command` : la seule façon de muter l'état de `FreeFlow`. La CLI, le serveur MCP
+//! Le contrat `Command` : la seule façon de muter l'état de `Griffe`. La CLI, le serveur MCP
 //! et la GUI construisent tous des `Command` et les font exécuter par [`super::Executor`] — la
 //! logique de dry-run, d'idempotence, de confirmation et d'audit ne vit qu'à un seul endroit.
 

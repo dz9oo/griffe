@@ -60,6 +60,7 @@ pub(super) const MATIN: Letter = Letter {
         "Il prépare le brouillon et ne l'ouvre pas. follow_up.prepare, ou griffe follow-up draft \"Refonte du site\" --body-file lettre.txt --no-open. Rien ne part. Dans la fenêtre, c'est Écrire, sur le dossier.",
         "L'estimation, si elle n'est pas encore posée, est une ligne par mission, le montant copié. griffe prospect estimation set \"Refonte du site\" --line \"Refonte du site=1200,00\". Cet outil n'est pas dans le MCP : la fenêtre et la commande le font.",
         "Dire que la lettre est partie attend que vous l'ayez vraiment postée. follow_up.mark_sent, ou griffe follow-up sent \"Refonte du site\" --actor agent:matin, dépose l'attente. griffe pending list la montre. griffe confirm l'applique.",
+        "La mairie répond. La relance ne part pas. L'agent lit le courriel avec boite liste, ou sur la page Courriel. Il ne laisse pas repartir la relance. Ce geste est le vôtre : boite relance, ou Laisser partir la relance, sur le dossier.",
     ],
     does_not: Some("L'agent prépare. Vous décidez de l'envoi."),
     href: Some("/aide/demandes"),

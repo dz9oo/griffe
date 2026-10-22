@@ -100,7 +100,7 @@ pub enum BillingError {
     TransactionNotSettled(BankTransactionId),
 
     #[error(
-        "le compte {0} n'est pas dans le plan de comptes de FreeFlow : donnez-lui un libellé \
+        "le compte {0} n'est pas dans le plan de comptes de Griffe : donnez-lui un libellé \
          (--label), comme au bilan d'ouverture"
     )]
     SettlementLabelRequired(String),

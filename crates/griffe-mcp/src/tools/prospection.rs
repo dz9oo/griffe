@@ -1,4 +1,4 @@
-//! Outils `prospect.*` — miroir de `freeflow prospect ...` (CLI, lot 7). Lot 16 : ajout de
+//! Outils `prospect.*` — miroir de `griffe prospect ...` (CLI, lot 7). Lot 16 : ajout de
 //! `show`/`list`/`update`/`archive`/`unarchive`/`delete`/`references` et de
 //! `interactions.list`/`interactions.update`/`interactions.delete` — `log_interaction` reste tel
 //! quel (asymétrie assumée avec les nouveaux verbes au pluriel `interactions.*`, cohérente avec

@@ -29,7 +29,7 @@ Options:
       --passphrase-file <PASSPHRASE_FILE>
           Lit la passphrase dans ce fichier (refusé si son mode est plus ouvert que 0600)
       --passphrase-command <PASSPHRASE_COMMAND>
-          Exécute cette commande et prend sa sortie standard comme passphrase — ex. `pass show freeflow`, `op read op://Perso/freeflow/passphrase`
+          Exécute cette commande et prend sa sortie standard comme passphrase — ex. `pass show griffe`, `op read op://Perso/griffe/passphrase`
       --passphrase-stdin
           Lit la passphrase sur l'entrée standard (une ligne)
       --non-interactive

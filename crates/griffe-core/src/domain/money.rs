@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 /// Un montant en centimes d'euro.
 ///
-/// `FreeFlow` ne manipule que l'euro : le statut fiscal visé (SASU/EURL française) ne justifie
+/// `Griffe` ne manipule que l'euro : le statut fiscal visé (SASU/EURL française) ne justifie
 /// pas une gestion multi-devise avant qu'un besoin réel existe.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,

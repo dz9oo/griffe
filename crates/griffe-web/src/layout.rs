@@ -132,7 +132,7 @@ impl ViewId {
             Self::Cloture => "Clôture",
             Self::Console => "Console",
             Self::Aide => "Aide",
-            Self::Boite => "Boîte",
+            Self::Boite => "Courriel",
         }
     }
 
@@ -180,7 +180,7 @@ impl ViewId {
     ];
 }
 
-/// Le mot Boîte, entre les pièces et la date. Le nombre arrive par `GET /boite/sceau`.
+/// Le mot Courriel, entre les pièces et la date. Le nombre arrive par `GET /boite/sceau`.
 pub fn boite_link(count: u32, current: bool) -> Markup {
     html! {
         a class="boite-link" href="/boite"
@@ -189,10 +189,29 @@ pub fn boite_link(count: u32, current: bool) -> Markup {
           hx-push-url="true"
           hx-swap="innerHTML"
           aria-current=[current.then_some("page")] {
-            "Boîte"
-            @if count > 0 {
-                span class="n" { (count) }
-            }
+            span class="env" aria-hidden="true" { (envelope()) }
+            "Courriel"
+            (boite_count(count))
+        }
+    }
+}
+
+/// Le compte seul. Le sondage remplace cet élément, pas le lien.
+pub fn boite_count(count: u32) -> Markup {
+    html! {
+        @if count > 0 {
+            span id="boite-count" class="n" { (count) }
+        } @else {
+            span id="boite-count" {}
+        }
+    }
+}
+
+fn envelope() -> Markup {
+    html! {
+        svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 12" width="14" height="12" fill="none" aria-hidden="true" {
+            rect x="1" y="1" width="14" height="10" rx="1.2" stroke="currentColor" stroke-width="1.25" {}
+            path d="M1 2.2 8 7.2 15 2.2" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" {}
         }
     }
 }
@@ -335,7 +354,8 @@ pub fn page(active: ViewId, vault_label: &str, today: Date, content: Markup) -> 
                             span class="boite-slot" id="boite-slot"
                               hx-get="/boite/sceau"
                               hx-trigger="load, griffe:saved from:body, griffe:box from:body"
-                              hx-swap="innerHTML" {
+                              hx-target="#boite-count"
+                              hx-swap="outerHTML" {
                                 (boite_link(0, active == ViewId::Boite))
                             }
                             span class="today" { (crate::views::copy::letter_date(today)) }

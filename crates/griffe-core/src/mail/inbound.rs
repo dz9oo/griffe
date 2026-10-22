@@ -65,6 +65,83 @@ pub struct ParsedMessage {
     pub notice: Option<Notice>,
     /// En-tête `Date`, tel qu'il est écrit. Absent s'il manque.
     pub sent_on: Option<String>,
+    /// `Content-Type: multipart/report`. L'avis certain attend le corps.
+    pub delivery_report: bool,
+}
+
+/// Nombre d'adresses tenues. Au-delà, la commande refuse.
+pub const KEPT_ADDRESS_CAP: usize = 16;
+
+/// En-têtes où une adresse tenue fait entrer le message. Pas `Reply-To`, pas `Sender`.
+const KEPT_HEADER_NAMES: [&str; 10] = [
+    "from",
+    "to",
+    "cc",
+    "bcc",
+    "delivered-to",
+    "x-delivered-to",
+    "x-original-to",
+    "envelope-to",
+    "x-envelope-to",
+    "resent-to",
+];
+
+/// Vrai si le message est copié. Liste vide : tout passe. `user+tag@` ne vaut pas `user@`.
+#[must_use]
+pub fn message_kept(raw: &str, kept: &[String]) -> bool {
+    if kept.is_empty() {
+        return true;
+    }
+    let raw = raw.replace("\r\n", "\n").replace('\r', "\n");
+    let (header_text, _) = split_headers(&raw);
+    let headers = unfold(header_text);
+    for (name, value) in &headers {
+        if !KEPT_HEADER_NAMES.contains(&name.as_str()) {
+            continue;
+        }
+        for found in addresses_in(value) {
+            if kept
+                .iter()
+                .any(|allowed| allowed.eq_ignore_ascii_case(&found))
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn addresses_in(value: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    if value.contains('<') {
+        let mut rest = value;
+        while let Some(start) = rest.find('<') {
+            let after = &rest[start + 1..];
+            let Some(end) = after.find('>') else {
+                break;
+            };
+            if let Ok(address) = parse_email(after[..end].trim()) {
+                push_address(&mut found, address);
+            }
+            rest = &after[end + 1..];
+        }
+        if !found.is_empty() {
+            return found;
+        }
+    }
+    for piece in value.split(',') {
+        if let Ok(address) = parse_email(piece.trim()) {
+            push_address(&mut found, address);
+        }
+    }
+    found
+}
+
+fn push_address(into: &mut Vec<String>, address: String) {
+    if into.iter().any(|seen| seen.eq_ignore_ascii_case(&address)) {
+        return;
+    }
+    into.push(address);
 }
 
 /// Lit un message RFC 822. Le HTML n'est gardé que s'il est présent.
@@ -114,6 +191,7 @@ pub fn read_message(raw: &str) -> ParsedMessage {
         sent_on: header(&headers, "date")
             .map(decode_words)
             .filter(|value| !value.is_empty()),
+        delivery_report: report,
     }
 }
 
@@ -653,7 +731,10 @@ fn decode_base64(input: &str) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{DossierLink, FicheAddress, Filing, KnownLetter, Notice, classify, read_message};
+    use super::{
+        DossierLink, FicheAddress, Filing, KnownLetter, Notice, classify, message_kept,
+        read_message,
+    };
 
     const REPLY: &str = "\
 From: =?utf-8?Q?Camille_Rivi=C3=A8re?= <camille@riviere.test>\r\n\
@@ -727,6 +808,56 @@ La lettre.\n\
                 address: "contact@atelier-du-mail.fr".into(),
             },
         ]
+    }
+
+    #[test]
+    fn a_kept_address_admits_the_message_on_either_side() {
+        let kept = vec!["nicolas@domaine.test".to_string()];
+        let incoming = "\
+From: Ada <ada@client.test>\n\
+To: Nicolas <Nicolas@Domaine.test>\n\
+Subject: Bonjour\n\
+\n\
+Texte\n";
+        let outgoing = "\
+From: Nicolas <nicolas@domaine.test>\n\
+To: Ada <ada@client.test>\n\
+Subject: Re: Bonjour\n\
+\n\
+Texte\n";
+        let other = "\
+From: Ada <ada@client.test>\n\
+To: Nicolas <nicolas@icloud.com>\n\
+Delivered-To: nicolas@icloud.com\n\
+Subject: Perso\n\
+\n\
+Texte\n";
+        let delivered = "\
+From: Ada <ada@client.test>\n\
+To: liste@client.test\n\
+Delivered-To: nicolas@domaine.test\n\
+Subject: Liste\n\
+\n\
+Texte\n";
+        let both = "\
+From: Ada <ada@client.test>\n\
+To: nicolas@icloud.com, nicolas@domaine.test\n\
+Subject: Les deux\n\
+\n\
+Texte\n";
+        let tagged = "\
+From: Ada <ada@client.test>\n\
+To: nicolas+tag@domaine.test\n\
+Subject: Alias\n\
+\n\
+Texte\n";
+        assert!(message_kept(incoming, &kept));
+        assert!(message_kept(outgoing, &kept));
+        assert!(!message_kept(other, &kept));
+        assert!(message_kept(delivered, &kept));
+        assert!(message_kept(both, &kept));
+        assert!(!message_kept(tagged, &kept));
+        assert!(message_kept(other, &[]));
     }
 
     #[test]

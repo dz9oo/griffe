@@ -3,7 +3,7 @@
 //!
 //! Ces fonctions renvoient une `String` plutôt que d'imprimer directement : c'est ce qui permet
 //! à la console de la GUI (lot 9) de capturer la sortie sans dupliquer le moindre formatage —
-//! seul le binaire `freeflow` (`main.rs` / `lib.rs::run`) l'imprime sur stdout.
+//! seul le binaire `griffe` (`main.rs` / `lib.rs::run`) l'imprime sur stdout.
 //!
 //! **Plus aucun repli `Debug` (lot 36).** Jusqu'ici, tout ce qui n'avait pas de rendu texte
 //! dédié sortait en `{value:?}` — la structure Rust brute (`FiscalDeadline { kind: Ca3, due_on:

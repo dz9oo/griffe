@@ -1,4 +1,4 @@
-//! `freeflow follow-up` — file de relances, brouillon `.eml`, jamais d'envoi.
+//! `griffe follow-up` — file de relances, brouillon `.eml`, jamais d'envoi.
 
 use std::path::{Path, PathBuf};
 
@@ -398,7 +398,7 @@ pub fn write_and_open_draft(
 fn drafts_dir(db_path: &Path) -> PathBuf {
     let mut name = db_path
         .file_name()
-        .map_or_else(|| "freeflow.db".into(), std::ffi::OsStr::to_os_string);
+        .map_or_else(|| "griffe.db".into(), std::ffi::OsStr::to_os_string);
     name.push(".drafts");
     db_path.with_file_name(name)
 }

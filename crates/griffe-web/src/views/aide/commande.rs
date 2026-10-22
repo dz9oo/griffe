@@ -429,6 +429,16 @@ const COURRIER: &[Cmd] = &[
         example: r#"griffe courrier secret --secret-file secret.txt"#,
     },
     Cmd {
+        verb: r#"courrier rythme"#,
+        said: r#"Règle la relève à 1, 3, 15 ou 30 minutes. La fenêtre s'en sert pendant que le coffre est ouvert."#,
+        example: r#"griffe courrier rythme 3"#,
+    },
+    Cmd {
+        verb: r#"courrier adresses"#,
+        said: r#"Adresses que la relève copie, reçues et envoyées. Sans argument, les montre. Rien n'est lu avant une adresse ou --tout. Avec un agent, le geste attend une personne."#,
+        example: r#"griffe courrier adresses --tout"#,
+    },
+    Cmd {
         verb: r#"courrier auto"#,
         said: r#"Allume ou éteint l'envoi des lettres dont la date est aujourd'hui. Avec un agent, le geste attend une personne."#,
         example: r#"griffe courrier auto --off"#,
@@ -475,7 +485,7 @@ const COURRIER: &[Cmd] = &[
     },
     Cmd {
         verb: r#"boite relever"#,
-        said: r#"Lit la boîte de réception et Envoyés du compte déjà réglé."#,
+        said: r#"Relève le courriel du compte déjà réglé : réception et Envoyés."#,
         example: r#"griffe boite relever"#,
     },
     Cmd {
@@ -1074,6 +1084,6 @@ mod tests {
                 assert!(!blob.contains("collection://"), "{}", cmd.verb);
             }
         }
-        assert_eq!(seen.len(), 197);
+        assert_eq!(seen.len(), 199);
     }
 }

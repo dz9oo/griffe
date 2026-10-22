@@ -1,5 +1,5 @@
 //! Écran `facturation` : les factures émises, les plus récentes d'abord — la même donnée que
-//! `freeflow invoice` en CLI.
+//! `griffe invoice` en CLI.
 //!
 //! Lot 22 : l'écran passe de lecture pure à liste cliquable + panneau de détail (facture,
 //! encaissements, annulation d'un encaissement saisi à tort — contre-écriture). Le statut

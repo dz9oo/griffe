@@ -359,6 +359,78 @@ impl Command for SetAutomaticSend {
     }
 }
 
+/// Adresses que la relève copie.
+/// `all` lit tout le compte. Une liste vide sans `all` n'ouvre pas la relève.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetKeptAddresses {
+    pub addresses: Vec<String>,
+    /// INBOX et Envoyés. La liste est ignorée.
+    #[serde(default)]
+    pub all: bool,
+}
+
+impl Command for SetKeptAddresses {
+    type Output = ();
+    const NAME: &'static str = "mail.set_kept_addresses";
+
+    fn requires_confirmation(&self) -> bool {
+        true
+    }
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        let (addresses, scope) = if self.all {
+            (Vec::new(), super::model::KeptScope::All)
+        } else {
+            let addresses = normalize_kept(&self.addresses)?;
+            if addresses.is_empty() {
+                (Vec::new(), super::model::KeptScope::Pending)
+            } else {
+                (addresses, super::model::KeptScope::Listed)
+            }
+        };
+        store::replace_kept_addresses(conn, &addresses, scope, &now_stamp()?)
+    }
+}
+
+fn normalize_kept(addresses: &[String]) -> Result<Vec<String>, AppError> {
+    let mut kept = Vec::new();
+    for raw in addresses {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let parsed = parse_email(trimmed).map_err(|_| MailError::Address)?;
+        let address = parsed.to_ascii_lowercase();
+        if kept.iter().any(|seen: &String| seen == &address) {
+            continue;
+        }
+        kept.push(address);
+    }
+    if kept.len() > super::inbound::KEPT_ADDRESS_CAP {
+        return Err(MailError::KeptCap.into());
+    }
+    Ok(kept)
+}
+
+/// Période entre deux relèves. Quatre valeurs, rien d'autre.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetReleveInterval {
+    pub seconds: u64,
+}
+
+impl Command for SetReleveInterval {
+    type Output = ();
+    const NAME: &'static str = "mail.set_releve_interval";
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        if !super::RELEVE_CHOICES_SECS.contains(&self.seconds) {
+            return Err(MailError::ReleveInterval.into());
+        }
+        let seconds = i64::try_from(self.seconds).map_err(|_| MailError::ReleveInterval)?;
+        store::set_releve_every(conn, seconds, &now_stamp()?)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArmOutbound {
     pub kind: String,

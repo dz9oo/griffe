@@ -60,7 +60,7 @@ impl FreeflowServer {
     }
 
     /// Dossier d'une personne : en cours, projet, papiers, histoire. `reference` comme
-    /// `freeflow people show`.
+    /// `griffe people show`.
     #[tool(
         name = "people.show",
         annotations(read_only_hint = true, open_world_hint = false)

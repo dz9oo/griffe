@@ -10,7 +10,7 @@
 //!
 //! **Lecture tolérante.** La désérialisation accepte *aussi* l'ancienne forme en tableau : les
 //! entrées du journal d'audit et les actions en attente écrites avant ce lot (`command_json`)
-//! restent rejouables — un `freeflow confirm` sur une action déposée la veille de la mise à
+//! restent rejouables — un `griffe confirm` sur une action déposée la veille de la mise à
 //! jour ne doit pas échouer sur un détail de format.
 
 /// `time::Date` ↔ `"AAAA-MM-JJ"`.

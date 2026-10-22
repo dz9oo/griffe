@@ -1,4 +1,4 @@
-//! `freeflow forecast ...`
+//! `griffe forecast ...`
 
 use clap::Subcommand;
 use griffe_core::clock::today_local;

@@ -1,4 +1,4 @@
-//! `freeflow society` — paysage, se payer, relevé, chapitres. Lectures pures, `today` d'adaptateur.
+//! `griffe society` — paysage, se payer, relevé, chapitres. Lectures pures, `today` d'adaptateur.
 
 use clap::Subcommand;
 use griffe_core::app::{ExecutionContext, Executor};
@@ -886,7 +886,7 @@ fn run_vat_credit(
             Some(record) => Ok(format_value(&record, json)),
             None if json => Ok(format_json(&serde_json::Value::Null)),
             None => Ok(
-                "aucun crédit de TVA repris — `freeflow society vat-credit set --after AAAA-MM --amount …`"
+                "aucun crédit de TVA repris — `griffe society vat-credit set --after AAAA-MM --amount …`"
                     .into(),
             ),
         },

@@ -4,6 +4,28 @@ Griffe est en **alpha** (Linux, SASU à l’IS). Attends-toi à des aspérités.
 N’ouvre pas une issue avec un coffre, un SIREN réel, une passphrase ou un
 relevé de production.
 
+Le mode d’emploi est dans l’application, pied **Aide**. Cette page dit
+ce qu’un contributeur peut proposer.
+
+## Ce qu’on peut proposer
+
+Un correctif, une clarté, un parcours de la SASU à l’impôt sur les
+sociétés sur Linux.
+
+Un geste visible met à jour la lettre d’aide correspondante, avec un
+exemple, dans le même changement. L’exemple reste fictif. La Mairie de
+Valvert et la conversation « Refonte du site » sont déjà le fil de l’aide.
+
+Une règle de TVA, d’impôt, de liasse ou de FEC suit [`docs/legal.md`](docs/legal.md) :
+source primaire, montant écrit à la main dans le test, revue `@dz9oo`.
+On ne l’invente pas.
+
+Hors sujet, sans demande explicite : EURL, micro-entreprise, impôt sur
+le revenu, Windows, macOS, télédéclaration, thème sombre, second compte
+de courriel, port en écoute.
+
+Le métier reste dans `griffe-core`. L’interface est en français.
+
 ## Setup
 
     direnv allow    # ou : nix develop

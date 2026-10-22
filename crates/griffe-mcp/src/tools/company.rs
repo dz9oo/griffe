@@ -1,4 +1,4 @@
-//! Outils `company.*` — miroir de `freeflow company ...` (CLI). Le profil est un singleton en
+//! Outils `company.*` — miroir de `griffe company ...` (CLI). Le profil est un singleton en
 //! état complet (doctrine du lot 15 : jamais un patch) : `company.set_profile` remplace tout,
 //! `company.show` lit tout — voir aussi la ressource `griffe://company`.
 
