@@ -1,19 +1,28 @@
 //! Courrier. Le cœur décide du texte, de la retenue et du rattachement.
 //! La crate qui parle au serveur reste hors d'ici.
 
+mod boite;
 mod commands;
 mod error;
 mod inbound;
 mod model;
 mod present;
+mod releve;
 mod secret;
 mod store;
 mod theme;
 
+pub use boite::{
+    ArmedReply, BoxCard, BoxCounts, BoxLetter, BoxPage, BoxQuery, BoxVue, ClassChoice, DossierFil,
+    FilLine, LetterPlace, ReplyDraft, SeenMark, SeenTarget, address_failed, arm_reply,
+    cancel_reply, dossier_fil, file_human, hold_filed, in_view, prepare_seen, read_box,
+    reply_is_held, resolve_message_id, seal_count,
+};
 pub use commands::{
-    AddressFault, ArmOutbound, CancelOutbound, ClearMailSecret, HoldReply, MarkAddress,
-    RecordMailProbe, ReleaseReplyHold, RememberImapUsername, ResolveUncertain, RetryOutbound,
-    SaveLetterface, SaveMailAccount, SaveMailSecret, SaveMailSignature, SetAutomaticSend,
+    AddressFault, ArmOutbound, CancelOutbound, ClearMailSecret, FileMessage, FilingSource,
+    HoldReply, MarkAddress, RecordMailProbe, ReleaseReplyHold, RememberImapUsername,
+    ResolveUncertain, RetryOutbound, SaveLetterface, SaveMailAccount, SaveMailSecret,
+    SaveMailSignature, SetAutomaticSend,
 };
 pub use error::MailError;
 pub use inbound::{
@@ -27,6 +36,10 @@ pub use model::{
     SmtpEndpoint, SubmissionBatch, SubmissionReceipt, TlsMode, UNDO_SECS,
 };
 pub use present::{LINK_HINT, LetterParts, close_letter, letter_card, letter_html, readable_links};
+pub use releve::{
+    AbsorbReport, BoxLine, PulledMailbox, PulledMessage, RELEVE_EVERY_SECS, RelevePlan, absorb,
+    list_box, releve_due, releve_plan,
+};
 pub use secret::MailSecret;
 pub use theme::{
     CustomLetter, CustomSheet, LetterChoice, LetterFileError, LetterPalette, LetterTheme,
@@ -756,6 +769,8 @@ mod tests {
                     follow_cycle: None,
                     follow_step: None,
                     client_id: None,
+                    in_reply_to: None,
+                    references: None,
                 },
                 &human(),
             )
@@ -840,6 +855,8 @@ mod tests {
                     follow_cycle: None,
                     follow_step: None,
                     client_id: None,
+                    in_reply_to: None,
+                    references: None,
                 },
                 &human(),
             )
@@ -870,6 +887,8 @@ mod tests {
                     follow_cycle: None,
                     follow_step: None,
                     client_id: None,
+                    in_reply_to: None,
+                    references: None,
                 },
                 &human(),
             )
@@ -913,6 +932,8 @@ mod tests {
                     follow_cycle: None,
                     follow_step: None,
                     client_id: None,
+                    in_reply_to: None,
+                    references: None,
                 },
                 &human(),
             )
@@ -956,6 +977,8 @@ mod tests {
                     follow_cycle: None,
                     follow_step: None,
                     client_id: None,
+                    in_reply_to: None,
+                    references: None,
                 },
                 &human(),
             )
@@ -1026,6 +1049,8 @@ mod tests {
                     follow_cycle: None,
                     follow_step: None,
                     client_id: None,
+                    in_reply_to: None,
+                    references: None,
                 },
                 &human(),
             )
@@ -1051,6 +1076,8 @@ mod tests {
                     follow_cycle: None,
                     follow_step: None,
                     client_id: None,
+                    in_reply_to: None,
+                    references: None,
                 },
                 &human(),
             )
@@ -1123,6 +1150,8 @@ mod tests {
                     follow_cycle: None,
                     follow_step: None,
                     client_id: None,
+                    in_reply_to: None,
+                    references: None,
                 },
                 &human(),
             )
@@ -1193,6 +1222,8 @@ mod tests {
                     follow_cycle: None,
                     follow_step: None,
                     client_id: None,
+                    in_reply_to: None,
+                    references: None,
                 },
                 &human(),
             )
@@ -1228,6 +1259,8 @@ mod tests {
                     follow_cycle: None,
                     follow_step: None,
                     client_id: None,
+                    in_reply_to: None,
+                    references: None,
                 },
                 &human(),
             )
@@ -1436,6 +1469,8 @@ mod tests {
                     follow_cycle: None,
                     follow_step: None,
                     client_id: Some(client_id.to_string()),
+                    in_reply_to: None,
+                    references: None,
                 },
                 &human(),
             )
@@ -1727,6 +1762,8 @@ mod tests {
                     follow_cycle: None,
                     follow_step: None,
                     client_id: None,
+                    in_reply_to: None,
+                    references: None,
                 },
                 &human(),
             )
@@ -1919,6 +1956,8 @@ mod tests {
                 follow_cycle: None,
                 follow_step: None,
                 client_id: Some(client_id.clone()),
+                in_reply_to: None,
+                references: None,
             },
             &human(),
         );
@@ -1994,6 +2033,8 @@ mod tests {
                     follow_cycle: None,
                     follow_step: None,
                     client_id: Some(client_id),
+                    in_reply_to: None,
+                    references: None,
                 },
                 &human(),
             )
@@ -2008,6 +2049,72 @@ mod tests {
             .unwrap();
         assert_eq!(hold, 0);
         assert_eq!(next, "2026-09-05");
+    }
+
+    #[test]
+    fn a_reply_armed_while_held_keeps_the_hold_and_the_date() {
+        let mut store = test_store("mail-reply-held");
+        save_ready(&mut store);
+        let today = Date::from_calendar_date(2026, Month::September, 5).unwrap();
+        let FollowUpSubject::Opportunity(id) = seed(&mut store, today) else {
+            panic!("dossier");
+        };
+        let client_id: String = store
+            .connection()
+            .query_row(
+                "SELECT client_id FROM opportunities WHERE id = ?1",
+                [id.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        store
+            .connection()
+            .execute(
+                "UPDATE opportunities SET reply_hold = 1, next_action_at = '2026-09-20' WHERE id = ?1",
+                [id.to_string()],
+            )
+            .unwrap();
+        Executor::new(&mut store)
+            .execute(
+                &ArmOutbound {
+                    kind: "letter".into(),
+                    anchor: Some(format!("opportunity:{id}")),
+                    to_address: "marie@acme.test".into(),
+                    subject: "Re: suite".into(),
+                    body: "Je réponds.".into(),
+                    delay_secs: 0,
+                    session_token: None,
+                    follow_subject: None,
+                    follow_subject_id: None,
+                    follow_cycle: None,
+                    follow_step: None,
+                    client_id: Some(client_id),
+                    in_reply_to: Some("<recu@exemple.test>".into()),
+                    references: Some("<recu@exemple.test>".into()),
+                },
+                &human(),
+            )
+            .unwrap();
+        let (hold, next): (i64, String) = store
+            .connection()
+            .query_row(
+                "SELECT reply_hold, next_action_at FROM opportunities WHERE id = ?1",
+                [id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(hold, 1);
+        assert_eq!(next, "2026-09-20");
+        let (reply_to, refs): (Option<String>, Option<String>) = store
+            .connection()
+            .query_row(
+                "SELECT in_reply_to, \"references\" FROM outbound_mail WHERE status = 'armed'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(reply_to.as_deref(), Some("<recu@exemple.test>"));
+        assert_eq!(refs.as_deref(), Some("<recu@exemple.test>"));
     }
 
     fn insert_sent(

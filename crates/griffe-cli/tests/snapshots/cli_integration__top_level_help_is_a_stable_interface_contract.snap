@@ -19,6 +19,7 @@ Commands:
   society     La société : paysage, se payer, impôts, clôture, relevé, identité
   follow-up   Relances : file du jour, brouillon `.eml`, jamais d'envoi
   courrier    Courrier : compte d'envoi, essai, lettres à poster
+  boite       Boîte : lettres reçues, rattachement, relances retenues
   prospect    Prospection : opportunités, pipeline, interactions
   mission     Missions : création, saisie de temps, TJM effectif, capacité
   quote       Devis : création, révision, envoi, acceptation

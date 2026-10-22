@@ -468,6 +468,36 @@ const COURRIER: &[Cmd] = &[
         said: r#"Poste les lettres échues préparées dans ce terminal. Celles que la fenêtre retient encore restent. C'est l'envoi."#,
         example: r#"griffe courrier flush"#,
     },
+    Cmd {
+        verb: r#"boite liste"#,
+        said: r#"Les lettres déjà relevées, sans leur corps."#,
+        example: r#"griffe boite liste"#,
+    },
+    Cmd {
+        verb: r#"boite relever"#,
+        said: r#"Lit la boîte de réception et Envoyés du compte déjà réglé."#,
+        example: r#"griffe boite relever"#,
+    },
+    Cmd {
+        verb: r#"boite classer"#,
+        said: r#"Range une lettre sur une fiche. --dossier la pose aussi sur le dossier. Avec un agent, le geste attend une personne."#,
+        example: r#"griffe boite classer --message ID --fiche "Mairie de Valvert" --dossier "Refonte du site""#,
+    },
+    Cmd {
+        verb: r#"boite adresse"#,
+        said: r#"Dit qu'une adresse en échec est bonne. On ne l'efface pas. Avec un agent, le geste attend une personne."#,
+        example: r#"griffe boite adresse --fiche "Mairie de Valvert" --adresse ADRESSE"#,
+    },
+    Cmd {
+        verb: r#"boite repondre"#,
+        said: r#"Arme une réponse sur le dossier. Le corps vient de --corps ou de --corps-file. La relance reste retenue. Avec un agent, le geste attend une personne."#,
+        example: r#"griffe boite repondre --message ID --dossier "Refonte du site" --sujet "Re: le site" --corps "Bonjour.""#,
+    },
+    Cmd {
+        verb: r#"boite relance"#,
+        said: r#"Laisse repartir la relance retenue. Avec un agent, le geste attend une personne."#,
+        example: r#"griffe boite relance --dossier "Refonte du site""#,
+    },
 ];
 
 const ARGENT: &[Cmd] = &[
@@ -1044,6 +1074,6 @@ mod tests {
                 assert!(!blob.contains("collection://"), "{}", cmd.verb);
             }
         }
-        assert_eq!(seen.len(), 191);
+        assert_eq!(seen.len(), 197);
     }
 }

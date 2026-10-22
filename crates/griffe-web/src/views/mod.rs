@@ -1,5 +1,6 @@
 pub mod aide;
 pub mod banque;
+pub mod boite;
 pub mod clients;
 pub mod cloture;
 pub mod console;

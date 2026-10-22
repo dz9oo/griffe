@@ -4,6 +4,7 @@
 
 mod asset;
 mod backup;
+pub mod boite;
 mod client;
 mod company;
 mod day;
@@ -112,6 +113,9 @@ enum TopCommand {
     /// Courrier : compte d'envoi, essai, lettres à poster.
     #[command(subcommand)]
     Courrier(mail::MailCommand),
+    /// Boîte : lettres reçues, rattachement, relances retenues.
+    #[command(subcommand)]
+    Boite(boite::BoiteCommand),
     /// Prospection : opportunités, pipeline, interactions.
     #[command(subcommand)]
     Prospect(prospect::ProspectCommand),
@@ -404,6 +408,7 @@ fn run_command(
         TopCommand::Society(cmd) => society::run(cmd, store, ctx, json),
         TopCommand::FollowUp(cmd) => follow_up::run(cmd, store, ctx, json),
         TopCommand::Courrier(cmd) => mail::run(cmd, store, ctx, json),
+        TopCommand::Boite(cmd) => boite::run(cmd, store, ctx, json),
         TopCommand::Prospect(cmd) => prospect::run(cmd, store, ctx, json),
         TopCommand::Mission(cmd) => mission::run(cmd, store, ctx, json),
         TopCommand::Quote(cmd) => quote::run(cmd, store, ctx, json),

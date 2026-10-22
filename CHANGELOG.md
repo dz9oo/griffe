@@ -2,6 +2,16 @@
 
 Ce qui change pour qui se sert de Griffe. Une section par version publiée.
 
+## 0.3.16
+
+- La boîte est dans le bandeau, entre les trois pièces et la date. Un compte apparaît quand une réponse de dossier n'a pas encore été ouverte, ou quand une adresse ne reçoit pas.
+- Elle lit le compte déjà réglé dans Le courrier. À lire, Avec les dossiers, Envoyées, Tout, En échec. Ouvrir une lettre la marque lue. Ranger sur un dossier la pose sur la conversation.
+- Sur le dossier, le fil tient le haut d'En cours. Quand la personne a répondu, la phrase le dit et la relance ne part pas. Laisser partir la relance la rend de nouveau.
+- Répondre suit la lettre reçue. Elle part dans cinq secondes. Annuler la retient. Cette réponse ne relance pas la série.
+- Quand une adresse ne reçoit pas, l'envoi vers elle est retenu. On la corrige, ou on confirme qu'elle est bonne.
+- Le courrier reçu se lit tel qu'il est arrivé.
+- Ouvrir un coffre déjà créé avance son schéma. La version précédente ne peut plus l'ouvrir.
+
 ## 0.3.15
 
 - Écrire s'ouvre sur la lettre telle qu'elle part. Éditer reprend le texte. Relire y revient. C'est parti n'est là que lorsqu'aucun serveur n'est configuré : il classe le double et n'envoie rien. En cours dit alors que cela suppose un envoi hors de Griffe, et ouvre Le courrier.

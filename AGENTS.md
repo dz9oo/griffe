@@ -34,12 +34,12 @@ Aucun port TCP en écoute. Tauri enregistre `griffe://` ; le handler exécute le
 ouvrent le même fichier SQLCipher (WAL). Le rail d’audit de la GUI poll
 `PRAGMA data_version` (pas de SSE : le transport URI ne streame pas).
 
-La seule connexion sortante est la soumission SMTP vers le serveur écrit dans
-Le courrier, coffre ouvert, liaison chiffrée (port 587 STARTTLS ou 465
-implicite). Le mot de passe reste dans le coffre (`MailSecret`), hors journal
-d’audit. `griffe-mail` est la seule crate qui connaît la bibliothèque
-d’envoi ; le cœur décide du moment et du texte. Les relances peuvent encore
-produire un `.eml`. Pas de CDN, pas de Google Fonts, pas de réception.
+Les connexions sortantes sont la soumission SMTP vers le serveur écrit dans
+Le courrier (port 587 STARTTLS ou 465 implicite) et la relève du même compte,
+coffre ouvert, liaison chiffrée. Le mot de passe reste dans le coffre
+(`MailSecret`), hors journal d’audit. `griffe-mail` est la seule crate qui
+connaît la bibliothèque d’envoi ; le cœur décide du moment et du texte. Les
+relances peuvent encore produire un `.eml`. Pas de CDN, pas de Google Fonts.
 
 ## Crates
 

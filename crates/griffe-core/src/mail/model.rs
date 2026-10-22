@@ -341,6 +341,10 @@ pub struct OutboundMessage {
     pub message_id: String,
     /// Instant figé dans l'en-tête `Date`, pour que la copie reprenne les mêmes octets.
     pub at: time::OffsetDateTime,
+    /// En-tête `In-Reply-To`. Absent : lettre qui n'est pas une réponse.
+    pub in_reply_to: Option<String>,
+    /// En-tête `References`. Absent : lettre qui n'est pas une réponse.
+    pub references: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

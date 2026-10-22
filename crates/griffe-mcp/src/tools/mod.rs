@@ -1,4 +1,5 @@
 pub(crate) mod billing;
+pub(crate) mod boite;
 pub(crate) mod clients;
 pub(crate) mod company;
 pub(crate) mod day;

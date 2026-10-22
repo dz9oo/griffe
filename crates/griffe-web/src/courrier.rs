@@ -727,6 +727,8 @@ fn arm_trial(store: &mut griffe_core::store::Store, to: &str, token: &str) -> Re
                 follow_cycle: None,
                 follow_step: None,
                 client_id: None,
+                in_reply_to: None,
+                references: None,
             },
             &AppState::human_ctx(),
         )

@@ -4,6 +4,7 @@
 mod assets;
 mod audit;
 mod banque;
+mod boite;
 mod brand;
 mod clients;
 mod cloture;
@@ -90,6 +91,10 @@ fn people_routes() -> Router<AppState> {
         .route("/{reference}/relire", post(gens::relire))
         .route("/{reference}/envoye", post(gens::sent))
         .route("/{reference}/envoyer", post(gens::send_letter))
+        .route("/{reference}/repondre", post(gens::repondre))
+        .route("/{reference}/relance", post(gens::relance))
+        .route("/{reference}/adresse", post(gens::confirmer_adresse))
+        .route("/{reference}/reponse/annuler", post(gens::annuler_reponse))
         .route("/{reference}/envoi", get(gens::send_status))
         .route("/{reference}/envoi/annuler", post(gens::send_cancel))
         .route("/{reference}/envoi/reessayer", post(gens::send_retry))
@@ -148,6 +153,10 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(handlers::index))
         .route("/jour", get(handlers::jour))
+        .route("/boite", get(boite::page))
+        .route("/boite/sceau", get(boite::seal))
+        .route("/boite/classer", post(boite::classer))
+        .route("/boite/adresse", post(boite::adresse))
         .nest("/affaires", people_routes())
         .nest("/dossiers", people_routes())
         .nest("/gens", people_routes())

@@ -50,6 +50,7 @@ const ATELIER_LETTERS: &[&Letter] = &[
     &parler::CONVERSATION,
     &parler::RELANCER,
     &parler::COURRIER,
+    &parler::BOITE,
     &parler::DEVIS,
     &parler::TRAVAUX,
     &parler::PHRASES,
@@ -84,6 +85,7 @@ const ATELIER_SECTIONS: &[Section] = &[
             ("conversation", "un nom, une phrase, la fiche"),
             ("relancer", "cinq secondes pour retenir la lettre"),
             ("courrier", "la liaison, la formule, l'essai"),
+            ("boite", "lire, répondre, retenir la relance"),
             ("devis", "des lignes, pas un devis rédigé ici"),
             ("travaux", "le récit, gardé tout seul"),
             ("phrases", "la série, le genre"),
@@ -429,6 +431,15 @@ fn bridge(slug: &str) -> Markup {
                 a href="/aide/demandes"
                   hx-get="/aide/demandes" hx-target="#content" hx-push-url="true" {
                     "Ce que l'agent demande."
+                }
+            }
+        },
+        "boite" => html! {
+            p class="prose" {
+                "La même boîte se lit en commande. "
+                a href="/aide/cmd-courrier"
+                  hx-get="/aide/cmd-courrier" hx-target="#content" hx-push-url="true" {
+                    "Le courrier, en commande."
                 }
             }
         },

@@ -63,6 +63,8 @@ pub struct ParsedMessage {
     pub html: Option<String>,
     pub auto_submitted: bool,
     pub notice: Option<Notice>,
+    /// En-tête `Date`, tel qu'il est écrit. Absent s'il manque.
+    pub sent_on: Option<String>,
 }
 
 /// Lit un message RFC 822. Le HTML n'est gardé que s'il est présent.
@@ -109,6 +111,9 @@ pub fn read_message(raw: &str) -> ParsedMessage {
             .filter(|value| !value.is_empty()),
         auto_submitted: auto_submitted(header(&headers, "auto-submitted")),
         notice,
+        sent_on: header(&headers, "date")
+            .map(decode_words)
+            .filter(|value| !value.is_empty()),
     }
 }
 
