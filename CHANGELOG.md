@@ -2,6 +2,16 @@
 
 Ce qui change pour qui se sert de Griffe. Une section par version publiée.
 
+## 0.3.17
+
+- Courriel se souligne dans la barre. Tant qu'aucune lettre n'est là, le grand paraphe tient la page. Il s'efface dès qu'une lettre arrive.
+- La page dit si la relève est en cours, l'heure de la dernière qui a abouti, ou qu'elle n'a pas encore eu lieu. Elle dit aussi la période. « Relever le courrier » en demande une. Sans adresse choisie, la phrase ouvre Le courrier.
+- Dans Le courrier, on choisit ce qui est lu. Rien n'est lu tant que le choix n'est pas gardé. Quelques adresses, reçues et envoyées, ou tout le compte. Une lettre d'une autre adresse quitte le coffre à la relève. Elle n'est pas effacée sur le serveur.
+- La relève se règle à une minute, trois, quinze ou trente. Trois minutes, si on ne choisit pas. Elle tourne pendant que le coffre est ouvert.
+- Sur le dossier, les lettres reçues et les lettres parties sont dans l'histoire, une ligne qu'on ouvre.
+- Les messages et les commandes portent le nom Griffe. Une session de douze heures déjà ouverte est reprise.
+- Ouvrir un coffre déjà créé avance son schéma. La version précédente ne peut plus l'ouvrir.
+
 ## 0.3.16
 
 - La boîte est dans le bandeau, entre les trois pièces et la date. Un compte apparaît quand une réponse de dossier n'a pas encore été ouverte, ou quand une adresse ne reçoit pas.
