@@ -5,7 +5,7 @@
 //!
 //! Les documents (`GET /cloture/{id}/doc/{kind}`) sont la seule famille de routes du crate qui
 //! renvoie autre chose que du HTML : les octets du PDF (ou le JSON de liasse) rendus par
-//! `griffe-docs`, comme `freeflow year render` côté CLI — l'IO documentaire vit dans
+//! `griffe-docs`, comme `griffe year render` côté CLI — l'IO documentaire vit dans
 //! l'adaptateur, jamais dans le cœur.
 
 use axum::Form;
@@ -403,7 +403,7 @@ pub async fn approve(
         approved_on,
         today: Some(state.today()),
     };
-    // Sauvegarde préalable obligatoire (lot 36), comme `freeflow year approve` : l'approbation
+    // Sauvegarde préalable obligatoire (lot 36), comme `griffe year approve` : l'approbation
     // rend l'exercice immuable, la sauvegarde est le seul retour en arrière. Son échec abandonne
     // l'approbation. IO d'adaptateur, jamais dans la commande.
     let backup = match state

@@ -1,4 +1,4 @@
-//! `freeflow fec ...` — export et contrôle du Fichier des Écritures Comptables (lot 28).
+//! `griffe fec ...` — export et contrôle du Fichier des Écritures Comptables (lot 28).
 //!
 //! Le cœur construit et rend le fichier (`griffe_core::fec`) ; l'écriture sur disque est de
 //! l'IO d'adaptateur, ici. Contrairement à `invoice render`/`year render` côté MCP, la CLI

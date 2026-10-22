@@ -1,4 +1,4 @@
-//! Outils `fiscal.*` — miroir de `freeflow fiscal ...` et `freeflow year ...` (CLI). Le
+//! Outils `fiscal.*` — miroir de `griffe fiscal ...` et `griffe year ...` (CLI). Le
 //! calendrier chiffré (lot 19) en lecture seule, puis la clôture d'exercice (lot 20) :
 //! `fiscal.close_year`, `fiscal.approve_year` et `fiscal.delete_year` portent
 //! `requires_confirmation()` côté cœur, donc un agent ne clôt, n'approuve ni ne supprime jamais
@@ -38,7 +38,7 @@ use crate::server::FreeflowServer;
 use crate::support::{err_text, ok_json, ok_or_return, outcome_json};
 
 /// L'exercice clos dont la clôture tombe dans l'année civile `period` — même désignation que
-/// `freeflow year show <period>` (un exercice n'a pas de nom, sa période dérive du profil).
+/// `griffe year show <period>` (un exercice n'a pas de nom, sa période dérive du profil).
 fn require_year(store: &Store, period: i32) -> Result<FiscalYearRecord, String> {
     match fiscal_year_ending_in(store.connection(), period) {
         Ok(Some(record)) => Ok(record),
@@ -289,7 +289,7 @@ pub(crate) fn opening_json(r: &OpeningBalanceRecord) -> serde_json::Value {
 
 #[tool_router(router = fiscal_router, vis = "pub(crate)")]
 impl FreeflowServer {
-    /// Le bilan d'ouverture (reprise du dernier bilan tenu avant FreeFlow) : lignes, totaux,
+    /// Le bilan d'ouverture (reprise du dernier bilan tenu avant `Griffe`) : lignes, totaux,
     /// capitaux propres repris — ou `null` s'il n'est pas enregistré. Voir aussi la ressource
     /// `griffe://opening-balance`.
     #[tool(
@@ -308,7 +308,7 @@ impl FreeflowServer {
     /// Enregistre le bilan d'ouverture, ou le remplace en entier s'il existe déjà (état
     /// complet, jamais un patch). Refusé dès qu'un exercice est clos dans l'application. Fait
     /// comptable fondateur : l'appel dépose une action en attente qu'un humain doit confirmer
-    /// (`freeflow confirm <id>`), jamais un effet direct.
+    /// (`griffe confirm <id>`), jamais un effet direct.
     #[tool(
         name = "fiscal.set_opening_balance",
         annotations(
@@ -575,9 +575,9 @@ impl FreeflowServer {
 
     /// Clôt un exercice : fige le résultat calculé (CA, charges, IS) et enregistre
     /// l'affectation (réserve légale, dividendes) en projet. Acte à portée juridique : l'appel
-    /// dépose une action en attente qu'un humain doit confirmer (`freeflow confirm <id>`),
+    /// dépose une action en attente qu'un humain doit confirmer (`griffe confirm <id>`),
     /// jamais un effet direct. L'approbation (date d'AG) et les documents de clôture se font
-    /// ensuite au terminal (`freeflow year approve|render`) ou dans la fenêtre.
+    /// ensuite au terminal (`griffe year approve|render`) ou dans la fenêtre.
     #[tool(
         name = "fiscal.close_year",
         annotations(
@@ -598,7 +598,7 @@ impl FreeflowServer {
                     Ok(Some(p)) => p,
                     Ok(None) => {
                         return err_text(
-                            "aucun profil d'entreprise défini : freeflow company set-profile",
+                            "aucun profil d'entreprise défini : griffe company set-profile",
                         );
                     }
                     Err(e) => return err_text(e.to_string()),
@@ -715,7 +715,7 @@ impl FreeflowServer {
     /// Approuve un exercice (date de l'AG, ni avant la clôture ni dans le futur) — il devient
     /// immuable ; une approbation au-delà des six mois légaux est acceptée mais rapportée
     /// (`late_by_days`). Acte à portée juridique : l'appel dépose une action en attente qu'un
-    /// humain doit confirmer (`freeflow confirm <id>`, qui écrit d'abord une sauvegarde du
+    /// humain doit confirmer (`griffe confirm <id>`, qui écrit d'abord une sauvegarde du
     /// coffre), jamais un effet direct.
     #[tool(
         name = "fiscal.approve_year",
@@ -755,7 +755,7 @@ impl FreeflowServer {
     }
 
     /// Supprime un exercice encore en projet (clos par erreur) — action sensible : un agent la
-    /// propose, seul un humain (`freeflow confirm`) peut l'appliquer.
+    /// propose, seul un humain (`griffe confirm`) peut l'appliquer.
     #[tool(
         name = "fiscal.delete_year",
         annotations(

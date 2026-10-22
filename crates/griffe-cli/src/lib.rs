@@ -210,7 +210,7 @@ pub enum VaultAccess<'a> {
 
 /// Analyse `args` et exécute la commande correspondante — imprime sur stdout/stderr, renvoie
 /// un code de sortie normalisé (voir [`error::CliError::exit_code`]). C'est le point d'entrée
-/// du binaire `freeflow`.
+/// du binaire `griffe`.
 pub fn run<I, T>(args: I) -> i32
 where
     I: IntoIterator<Item = T>,

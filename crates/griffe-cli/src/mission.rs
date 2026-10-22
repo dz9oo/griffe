@@ -1,4 +1,4 @@
-//! `freeflow mission ...` — les références (`<RÉFÉRENCE>`) acceptent un UUID complet, un préfixe
+//! `griffe mission ...` — les références (`<RÉFÉRENCE>`) acceptent un UUID complet, un préfixe
 //! d'UUID d'au moins 4 caractères hexadécimaux, ou un nom de mission (insensible à la casse et
 //! aux accents, exact puis par préfixe) : voir `griffe_core::reference`.
 

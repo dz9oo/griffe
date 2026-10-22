@@ -1,4 +1,4 @@
-//! `freeflow quote ...`
+//! `griffe quote ...`
 //!
 //! Les lignes (`QuoteLine`, polymorphes régie/forfait/récurrent) se passent de deux façons
 //! exclusives :

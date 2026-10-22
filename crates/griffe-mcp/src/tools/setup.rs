@@ -1,5 +1,5 @@
 //! `setup.status` (lot 39) : où en est la configuration du coffre — la même vue que
-//! `freeflow setup status` et le bandeau de la fenêtre, calculée par `griffe_core::setup`.
+//! `griffe setup status` et le bandeau de la fenêtre, calculée par `griffe_core::setup`.
 
 use griffe_core::app::Executor;
 use griffe_core::setup::{DeclareNewCompany, setup_json, setup_status};

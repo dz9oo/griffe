@@ -14,7 +14,7 @@
 //! se modifie et ne se supprime plus** ([`ExpensesError::FiscalYearClosed`]). Le snapshot figé
 //! par `CloseFiscalYear` a été calculé sur ces lignes-là ; les faire bouger après coup ferait
 //! silencieusement diverger la comptabilité vivante de ce qui a été déclaré. L'échappatoire,
-//! tant que l'exercice n'est qu'un projet non approuvé : `freeflow year rm` d'abord, corriger,
+//! tant que l'exercice n'est qu'un projet non approuvé : `griffe year rm` d'abord, corriger,
 //! re-clore. Un exercice approuvé, lui, est définitif — comme la liasse qu'il a produite.
 //!
 //! **Paiement conservé.** Rapprocher un débit, ou noter que l'associé a avancé,

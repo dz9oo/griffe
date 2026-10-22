@@ -1,4 +1,4 @@
-//! `freeflow company ...`
+//! `griffe company ...`
 
 use clap::{Args, Subcommand};
 use griffe_core::app::{ExecutionContext, Executor};
@@ -168,7 +168,7 @@ pub struct SetProfileArgs {
 #[derive(Debug, Subcommand)]
 pub enum CompanyCommand {
     /// Définit (ou remplace) l'identité légale de l'émetteur — nécessaire aux mentions
-    /// obligatoires d'une facture (`freeflow invoice render`).
+    /// obligatoires d'une facture (`griffe invoice render`).
     ///
     /// La date de clôture est sur vos statuts et votre dernier bilan (`--fiscal-year-end 30/09`).
     /// Régimes de TVA (`--vat-regime`) : `real_normal_monthly`, une déclaration CA3 par mois

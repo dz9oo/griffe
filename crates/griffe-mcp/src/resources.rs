@@ -94,7 +94,7 @@ pub(crate) fn list() -> ListResourcesResult {
             .with_mime_type("application/json"),
         Resource::new(OPENING_BALANCE_URI, "opening-balance")
             .with_description(
-                "Bilan d'ouverture (reprise du dernier bilan tenu avant FreeFlow) : lignes, \
+                "Bilan d'ouverture (reprise du dernier bilan tenu avant Griffe) : lignes, \
                  totaux, capitaux propres repris — ou null s'il n'est pas enregistré.",
             )
             .with_mime_type("application/json"),

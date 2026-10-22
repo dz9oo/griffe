@@ -1,4 +1,4 @@
-//! `freeflow client ...` — les références (`--id`, `<RÉFÉRENCE>`) acceptent un UUID complet, un
+//! `griffe client ...` — les références (`--id`, `<RÉFÉRENCE>`) acceptent un UUID complet, un
 //! préfixe d'UUID d'au moins 4 caractères hexadécimaux (à la manière d'un hash git court), ou un
 //! nom de client (insensible à la casse et aux accents, exact puis par préfixe) : voir
 //! `griffe_core::reference`.

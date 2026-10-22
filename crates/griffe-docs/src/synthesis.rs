@@ -1,5 +1,5 @@
 //! Synthèse comptable : compte de résultat simplifié de l'exercice, avec la colonne N−1 quand
-//! l'exercice précédent est clos dans FreeFlow. Le périmètre est celui de
+//! l'exercice précédent est clos dans `Griffe`. Le périmètre est celui de
 //! [`griffe_core::accounting`] — prestation de services : pas de provisions ni de variation
 //! de stock, et le « bilan » se limite aux capitaux propres reconstituables (capital, réserve
 //! légale, report à nouveau). Les dotations aux amortissements (lot 42) figurent au compte
@@ -13,7 +13,7 @@ use crate::error::DocsError;
 use crate::typst::{Bindings, DISCLAIMER, company_header, compile, fr_date};
 
 /// Rend le compte de résultat simplifié en PDF. `prior` est l'exercice précédent s'il est clos
-/// dans FreeFlow — sa colonne est simplement omise sinon.
+/// dans `Griffe` — sa colonne est simplement omise sinon.
 ///
 /// # Errors
 ///

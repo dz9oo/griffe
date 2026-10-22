@@ -5,7 +5,7 @@
 //! La session de la fenêtre (en mémoire, ici) et la session de la CLI (dans le trousseau OS,
 //! `griffe_core::store`) sont deux objets distincts : verrouiller la fenêtre ferme la
 //! connexion en mémoire *et* purge la session trousseau (pour que « verrouiller » veuille dire
-//! une seule chose), mais un `freeflow lock` tapé dans un terminal pendant que la fenêtre est
+//! une seule chose), mais un `griffe lock` tapé dans un terminal pendant que la fenêtre est
 //! ouverte ne referme pas cette fenêtre tant qu'elle n'a pas relu son propre état — limite
 //! acceptée, documentée dans `CLAUDE.md`.
 
@@ -660,7 +660,7 @@ impl AppState {
     }
 
     /// Ferme la connexion et purge la session du trousseau OS — pour que « verrouiller » veuille
-    /// dire une seule chose, que ce soit le bouton de la fenêtre ou `freeflow lock` tapé dans la
+    /// dire une seule chose, que ce soit le bouton de la fenêtre ou `griffe lock` tapé dans la
     /// console intégrée. La fermeture est immédiate, même pendant la suspension des 12 h.
     pub async fn lock(&self) {
         if !Store::lock(&self.db_path) {

@@ -1,4 +1,4 @@
-//! `freeflow asset list|show|add|rm` — immobilisations et plan d'amortissement (lot 42).
+//! `griffe asset list|show|add|rm` — immobilisations et plan d'amortissement (lot 42).
 
 use clap::{Args, Subcommand};
 use griffe_core::app::{ExecutionContext, Executor};
@@ -98,7 +98,7 @@ pub fn run(
             }
             if assets.is_empty() {
                 return Ok(
-                    "aucune immobilisation — `freeflow asset add` (ou depuis une dépense \
+                    "aucune immobilisation — `griffe asset add` (ou depuis une dépense \
                      matériel au-delà de 500 € HT)"
                         .to_string(),
                 );

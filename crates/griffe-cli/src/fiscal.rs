@@ -1,4 +1,4 @@
-//! `freeflow fiscal ...`
+//! `griffe fiscal ...`
 
 use clap::Subcommand;
 use griffe_core::clock::today_local;

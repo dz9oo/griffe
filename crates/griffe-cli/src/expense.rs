@@ -1,4 +1,4 @@
-//! `freeflow expense ...` — les références (`<RÉFÉRENCE>`) acceptent un UUID complet, un préfixe
+//! `griffe expense ...` — les références (`<RÉFÉRENCE>`) acceptent un UUID complet, un préfixe
 //! d'UUID d'au moins 4 caractères hexadécimaux, ou un libellé de dépense (insensible à la casse
 //! et aux accents, exact puis par préfixe) : voir `griffe_core::reference::resolve_expense`.
 
@@ -452,8 +452,9 @@ pub fn run(
             let open_viewer = out.is_none();
             let target = match out {
                 Some(path) => path,
-                None => std::env::temp_dir()
-                    .join(format!("freeflow-{}-{original}", &id.to_string()[..8])),
+                None => {
+                    std::env::temp_dir().join(format!("griffe-{}-{original}", &id.to_string()[..8]))
+                }
             };
             write_private(&target, &content)?;
             if json {

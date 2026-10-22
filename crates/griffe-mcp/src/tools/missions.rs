@@ -1,4 +1,4 @@
-//! Outils `mission.*` — miroir de `freeflow mission ...` (CLI, lot 7). Lot 16 : ajout de
+//! Outils `mission.*` — miroir de `griffe mission ...` (CLI, lot 7). Lot 16 : ajout de
 //! `show`/`list`/`update`/`close`/`reopen`/`archive`/`unarchive`/`delete`/`references`/
 //! `schedule` et de `time.list`/`time.update`/`time.delete` — `log_time` reste tel quel (même
 //! asymétrie assumée que `prospect.log_interaction`, voir `tools/prospection.rs`).

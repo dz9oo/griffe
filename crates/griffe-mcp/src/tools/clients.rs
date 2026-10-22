@@ -1,4 +1,4 @@
-//! Outils `clients.*` — miroir de `freeflow client ...` (CLI). Toute référence à un client
+//! Outils `clients.*` — miroir de `griffe client ...` (CLI). Toute référence à un client
 //! (`client`, `id`) accepte un UUID complet, un préfixe d'UUID, ou un nom (voir
 //! `griffe_core::reference`) : un agent n'a pas à retenir un identifiant pour agir sur un
 //! client qu'il vient de lister.

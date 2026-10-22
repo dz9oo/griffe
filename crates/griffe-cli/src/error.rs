@@ -9,16 +9,16 @@ use griffe_core::store::StoreError;
 #[derive(Debug, thiserror::Error)]
 pub enum CliError {
     #[error(
-        "coffre verrouillé : lancez `freeflow unlock`, ou fournissez --passphrase-file, \
+        "coffre verrouillé : lancez `griffe unlock`, ou fournissez --passphrase-file, \
          --passphrase-command ou --passphrase-stdin"
     )]
     Locked,
 
-    #[error("aucun coffre à {0} — lancez `freeflow init` pour en créer un")]
+    #[error("aucun coffre à {0} — lancez `griffe init` pour en créer un")]
     NoVault(PathBuf),
 
     #[error(
-        "le coffre est occupé par un autre process : fermez la fenêtre FreeFlow et les autres \
+        "le coffre est occupé par un autre process : fermez la fenêtre Griffe et les autres \
          commandes en cours, puis réessayez"
     )]
     VaultBusy,

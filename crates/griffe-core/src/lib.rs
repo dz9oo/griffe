@@ -1,4 +1,4 @@
-//! Domaine métier, persistance chiffrée et couche applicative de `FreeFlow`.
+//! Domaine métier, persistance chiffrée et couche applicative de `Griffe`.
 //!
 //! `domain` ne fait aucune IO. `store` porte la persistance `SQLCipher`. `app` expose les
 //! `Command`/`Query` : c'est l'unique surface que consomment la CLI, le serveur MCP et la GUI.

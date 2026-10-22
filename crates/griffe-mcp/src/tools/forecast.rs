@@ -1,4 +1,4 @@
-//! Outil `forecast.*` — miroir de `freeflow forecast show` (CLI). Une lecture pure : le
+//! Outil `forecast.*` — miroir de `griffe forecast show` (CLI). Une lecture pure : le
 //! prévisionnel est recalculé à chaque appel depuis les factures impayées, les missions signées
 //! non facturées et le pipeline pondéré — rien n'est persisté.
 

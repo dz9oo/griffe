@@ -1,4 +1,4 @@
-//! `freeflow day` — mât, gestes, mois. Lectures pures, `today` d'adaptateur.
+//! `griffe day` — mât, gestes, mois. Lectures pures, `today` d'adaptateur.
 
 use clap::Subcommand;
 use griffe_core::clock::today_local;

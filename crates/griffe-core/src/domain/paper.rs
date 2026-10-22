@@ -52,7 +52,7 @@ pub enum PaperOrigin {
     Uploaded,
 }
 
-/// Qui produit la pièce : `FreeFlow` la fige, ou l'utilisateur l'apporte.
+/// Qui produit la pièce : `Griffe` la fige, ou l'utilisateur l'apporte.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaperWhence {
     /// Originaux nés ici (facture, FEC, PV, liasse…).
@@ -207,7 +207,7 @@ impl PaperKind {
                 what: "Toutes les écritures de l'exercice, dans le format que l'administration \
                        impose. Ce n'est pas une attestation : c'est le fichier qu'on tend le \
                        jour d'un contrôle.",
-                whence: "FreeFlow le fige à la clôture. Vous n'allez nulle part le chercher.",
+                whence: "Griffe le fige à la clôture. Vous n'allez nulle part le chercher.",
                 origin: PaperWhence::BornHere,
             },
             Self::Minutes => PaperBrief {
@@ -216,7 +216,7 @@ impl PaperKind {
                 what: "En SASU, c'est vous qui arrêtez les comptes. Le PV consigne cette \
                        décision, à prendre dans les six mois de la clôture. Signez-le, datez-le, \
                        tenez-le au registre des décisions.",
-                whence: "FreeFlow le rédige à l'approbation.",
+                whence: "Griffe le rédige à l'approbation.",
                 origin: PaperWhence::BornHere,
             },
             Self::Appropriation => PaperBrief {
@@ -224,7 +224,7 @@ impl PaperKind {
                 official: "Décision d'affectation du résultat",
                 what: "Répartir le bénéfice : réserve légale d'abord, puis dividendes et/ou \
                        report à nouveau. Une perte va en entier au report à nouveau.",
-                whence: "FreeFlow le rédige à l'approbation, d'après ce que vous avez décidé à \
+                whence: "Griffe le rédige à l'approbation, d'après ce que vous avez décidé à \
                          la clôture.",
                 origin: PaperWhence::BornHere,
             },
@@ -233,7 +233,7 @@ impl PaperKind {
                 official: "Compte de résultat simplifié",
                 what: "Les ventes moins les charges, puis l'impôt. La photo de l'exercice en une \
                        page, avec l'année d'avant si elle est close.",
-                whence: "FreeFlow le fige à la clôture.",
+                whence: "Griffe le fige à la clôture.",
                 origin: PaperWhence::BornHere,
             },
             Self::BalanceSheet => PaperBrief {
@@ -241,7 +241,7 @@ impl PaperKind {
                 official: "Bilan (imprimé 2033-A)",
                 what: "Ce que la société possède (banque, créances) et ce qu'elle doit (dettes, \
                        capital, bénéfices non distribués). Les deux totaux sont toujours égaux.",
-                whence: "FreeFlow le dérive du grand livre, à la clôture.",
+                whence: "Griffe le dérive du grand livre, à la clôture.",
                 origin: PaperWhence::BornHere,
             },
             Self::Inventory => PaperBrief {
@@ -249,15 +249,15 @@ impl PaperKind {
                 official: "Inventaire (balance des comptes)",
                 what: "Le détail, compte par compte, qui justifie le bilan. La loi demande de le \
                        tenir.",
-                whence: "FreeFlow le produit à la clôture, avec le bilan.",
+                whence: "Griffe le produit à la clôture, avec le bilan.",
                 origin: PaperWhence::BornHere,
             },
             Self::EfiNotice => PaperBrief {
                 title: "La notice pour recopier les cases",
                 official: "Notice de saisie EFI (espace professionnel impots.gouv.fr)",
                 what: "Chaque case de la liasse, le montant, et où la saisir sur le site des \
-                       impôts. FreeFlow ne transmet rien : vous recopiez.",
-                whence: "FreeFlow la rédige à la clôture. Le dépôt se fait sur impots.gouv.fr.",
+                       impôts. Griffe ne transmet rien : vous recopiez.",
+                whence: "Griffe la rédige à la clôture. Le dépôt se fait sur impots.gouv.fr.",
                 origin: PaperWhence::BornHere,
             },
             Self::Liasse => PaperBrief {
@@ -265,7 +265,7 @@ impl PaperKind {
                 official: "Liasse fiscale (formulaire 2065 et tableaux 2033)",
                 what: "La déclaration annuelle de résultat : bilan, compte de résultat, suivi \
                        des déficits. À télétransmettre dans les trois mois de la clôture.",
-                whence: "FreeFlow en fournit les cases. Vous les recopiez sur impots.gouv.fr \
+                whence: "Griffe en fournit les cases. Vous les recopiez sur impots.gouv.fr \
                          (régime simplifié, en EFI).",
                 origin: PaperWhence::BornHere,
             },
@@ -275,7 +275,7 @@ impl PaperKind {
                 what: "La liste des mouvements telle que la banque l'a vue. C'est elle qui fait \
                        foi pour le solde.",
                 whence: "Exportez-le depuis votre banque (CSV, OFX ou Excel), puis importez-le \
-                         ici. FreeFlow fige le fichier importé.",
+                         ici. Griffe fige le fichier importé.",
                 origin: PaperWhence::Bring,
             },
             Self::ExpenseReceipt => PaperBrief {
@@ -351,7 +351,7 @@ impl PaperKind {
             Self::Payroll => PaperBrief {
                 title: "Le bulletin de paie",
                 official: "Bulletin de paie",
-                what: "Si le président est rémunéré, chaque bulletin. FreeFlow ne fait pas la \
+                what: "Si le président est rémunéré, chaque bulletin. Griffe ne fait pas la \
                        paie : il en archive la pièce.",
                 whence: "Chez l'expert-paie ou l'outil de paie. Déposez le PDF.",
                 origin: PaperWhence::Bring,
@@ -366,7 +366,7 @@ impl PaperKind {
         }
     }
 
-    /// `true` si `FreeFlow` produit et fige cette nature.
+    /// `true` si `Griffe` produit et fige cette nature.
     #[must_use]
     pub const fn is_born_here(self) -> bool {
         matches!(self.brief().origin, PaperWhence::BornHere)
@@ -580,7 +580,7 @@ mod tests {
         );
         assert_eq!(b.origin, PaperWhence::BornHere);
         assert!(
-            b.whence.contains("clôture") || b.whence.contains("FreeFlow"),
+            b.whence.contains("clôture") || b.whence.contains("Griffe"),
             "{}",
             b.whence
         );

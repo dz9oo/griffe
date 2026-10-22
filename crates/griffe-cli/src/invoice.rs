@@ -1,4 +1,4 @@
-//! `freeflow invoice ...`, `freeflow payment ...`, `freeflow bank ...`
+//! `griffe invoice ...`, `griffe payment ...`, `griffe bank ...`
 //!
 //! Les lignes de facture suivent le même principe que les lignes de devis (lot `quote.rs`) :
 //! JSON via `--lines`, ex. `--lines '[{"description":"Sept.","quantity":9.5,"unit_price":65000,"vat_rate":"Standard"}]'`
@@ -50,7 +50,7 @@ pub enum InvoiceCommand {
     /// Enregistre une facture née ailleurs (PA, outil tiers) — conserve son numéro, archive le
     /// fichier. Nécessite confirmation humaine quand `--actor agent:...`.
     Import {
-        /// Original produit hors de FreeFlow (PDF de la PA, scan…).
+        /// Original produit hors de `Griffe` (PDF de la PA, scan…).
         #[arg(long)]
         file: PathBuf,
         #[arg(long, value_parser = clap::value_parser!(ClientId))]
@@ -198,7 +198,7 @@ pub enum BankCommand {
         /// Compte de bilan réglé (classes 1 à 5, hors 512), ex. `401000`.
         #[arg(long, value_parser = clap::value_parser!(griffe_core::domain::SettlementAccount))]
         account: griffe_core::domain::SettlementAccount,
-        /// Libellé du compte, requis s'il n'est pas dans le plan de comptes de FreeFlow.
+        /// Libellé du compte, requis s'il n'est pas dans le plan de comptes de `Griffe`.
         #[arg(long)]
         label: Option<String>,
     },
@@ -412,8 +412,7 @@ pub fn run_invoice(
             let profile =
                 griffe_core::company::company_profile(store.connection())?.ok_or_else(|| {
                     CliError::Domain(
-                        "aucun profil d'entreprise défini : freeflow company set-profile"
-                            .to_string(),
+                        "aucun profil d'entreprise défini : griffe company set-profile".to_string(),
                     )
                 })?;
             let pdf = griffe_invoice::render_pdf(&invoice, &client, &profile, None)

@@ -1,4 +1,4 @@
-//! `freeflow year ...` — clôture d'exercice (lot 20) : snapshot du résultat, affectation,
+//! `griffe year ...` — clôture d'exercice (lot 20) : snapshot du résultat, affectation,
 //! approbation, documents de clôture (`griffe-docs`).
 //!
 //! Depuis le lot 31, `year balance` et `year render … balance-sheet` exposent le grand livre
@@ -9,7 +9,7 @@
 //! (`griffe_core::closing`) : les étapes viennent du cœur, seule l'*action* suggérée pour
 //! chacune (une commande à taper) est propre à cette façade — voir `cli_hint`.
 //!
-//! Un exercice se désigne par l'**année civile de sa clôture** (`freeflow year show 2026`) :
+//! Un exercice se désigne par l'**année civile de sa clôture** (`griffe year show 2026`) :
 //! contrairement aux clients/missions, il n'a pas de nom et sa période dérive du profil — pas
 //! besoin du résolveur de référence générique. Comme pour `invoice render`, l'écriture disque
 //! et l'appel `typst` vivent ici, dans l'adaptateur : le cœur ne touche que `&Connection`.
@@ -161,7 +161,7 @@ pub enum YearCommand {
         #[arg(long, value_parser = parse_date)]
         today: Option<Date>,
     },
-    /// Bilan d'ouverture : reprise du dernier bilan tenu avant FreeFlow (expert-comptable),
+    /// Bilan d'ouverture : reprise du dernier bilan tenu avant `Griffe` (expert-comptable),
     /// point de départ du report à nouveau, de la réserve légale et des à-nouveaux du FEC.
     #[command(subcommand)]
     Opening(OpeningCommand),
@@ -231,7 +231,7 @@ pub enum OpeningCommand {
         #[arg(long, value_parser = parse_money)]
         prior_vat: Option<Money>,
         /// Durée d'usage en mois appliquée à chaque immobilisation reprise (couple 2xx/28x).
-        /// Sans elle, les candidats sont seulement signalés : `freeflow asset add` ensuite.
+        /// Sans elle, les candidats sont seulement signalés : `griffe asset add` ensuite.
         #[arg(long)]
         duration: Option<u32>,
     },
@@ -445,7 +445,7 @@ fn run_opening(
             Some(record) if json => format_json(&opening_json(&record)),
             Some(record) => opening_human(&record),
             None if json => format_json(&serde_json::Value::Null),
-            None => "aucun bilan d'ouverture — `freeflow year opening set`".to_string(),
+            None => "aucun bilan d'ouverture — `griffe year opening set`".to_string(),
         },
         OpeningCommand::Set {
             opens_on,
@@ -624,14 +624,14 @@ fn year_json(r: &FiscalYearRecord) -> serde_json::Value {
 fn require_year(store: &Store, period: i32) -> Result<FiscalYearRecord, CliError> {
     fiscal_year_ending_in(store.connection(), period)?.ok_or_else(|| {
         CliError::Domain(format!(
-            "aucun exercice clos ne se termine en {period} — voir `freeflow year list`"
+            "aucun exercice clos ne se termine en {period} — voir `griffe year list`"
         ))
     })
 }
 
 fn require_profile(store: &Store) -> Result<CompanyProfile, CliError> {
     company_profile(store.connection())?.ok_or_else(|| {
-        CliError::Domain("aucun profil d'entreprise défini : freeflow company set-profile".into())
+        CliError::Domain("aucun profil d'entreprise défini : griffe company set-profile".into())
     })
 }
 
@@ -660,7 +660,7 @@ fn resolve_close_period(
 }
 
 /// La sauvegarde écrite avant une approbation : `backups/pre-approve-<période>-<horodatage>.db`
-/// à côté du coffre, chiffrée comme lui. Partagée par `year approve` et `freeflow confirm`.
+/// à côté du coffre, chiffrée comme lui. Partagée par `year approve` et `griffe confirm`.
 ///
 /// # Errors
 ///
@@ -702,7 +702,7 @@ pub(crate) fn pre_approve_backup(store: &Store, period: i32) -> Result<PathBuf, 
     Ok(dest)
 }
 
-/// La sauvegarde préalable d'une approbation confirmée après coup (`freeflow confirm`) : la
+/// La sauvegarde préalable d'une approbation confirmée après coup (`griffe confirm`) : la
 /// période se relit dans l'action en attente.
 pub(crate) fn pre_approve_backup_for_action(
     store: &Store,
@@ -747,31 +747,31 @@ fn cli_hint(checklist: &ClosingChecklist, step: &ClosingStep) -> Option<String> 
             format!(" --legal-reserve {}", m.to_decimal_string())
         });
     let hint = match step.key {
-        ClosingStepKey::Profile => "freeflow company set-profile …".to_string(),
+        ClosingStepKey::Profile => "griffe company set-profile …".to_string(),
         ClosingStepKey::PeriodEnded => return None,
         ClosingStepKey::OpeningBalance => format!(
-            "freeflow year opening set --opens-on {} --line \"compte:libellé:D|C:montant\" …",
+            "griffe year opening set --opens-on {} --line \"compte:libellé:D|C:montant\" …",
             format_date(checklist.exercise.start())
         ),
         ClosingStepKey::PreviousYear => format!(
-            "freeflow year approve {} --approved-on AAAA-MM-JJ (ou year amend / year rm)",
+            "griffe year approve {} --approved-on AAAA-MM-JJ (ou year amend / year rm)",
             period - 1
         ),
         ClosingStepKey::Invoices => {
-            "freeflow invoice aged-balance ; freeflow payment record …".to_string()
+            "griffe invoice aged-balance ; griffe payment record …".to_string()
         }
         ClosingStepKey::Expenses => {
-            "freeflow expense edit <RÉF> --receipt <fichier> ; asset add (matériel ≥ 500 € HT)"
+            "griffe expense edit <RÉF> --receipt <fichier> ; asset add (matériel ≥ 500 € HT)"
                 .to_string()
         }
         ClosingStepKey::Bank => {
-            "freeflow bank list --unmatched ; bank reconcile / expense reconcile".to_string()
+            "griffe bank list --unmatched ; bank reconcile / expense reconcile".to_string()
         }
         ClosingStepKey::Result | ClosingStepKey::BalanceSheet => {
-            format!("freeflow year balance {period}")
+            format!("griffe year balance {period}")
         }
         ClosingStepKey::Close => format!(
-            "freeflow year close --period {period}{reserve}{}",
+            "griffe year close --period {period}{reserve}{}",
             if checklist.carry_back_available.is_some() {
                 " [--carry-back]"
             } else {
@@ -779,7 +779,7 @@ fn cli_hint(checklist: &ClosingChecklist, step: &ClosingStep) -> Option<String> 
             }
         ),
         ClosingStepKey::Appropriation => format!(
-            "freeflow year amend {period}{}",
+            "griffe year amend {period}{}",
             if reserve.is_empty() {
                 " --legal-reserve …".to_string()
             } else {
@@ -787,21 +787,21 @@ fn cli_hint(checklist: &ClosingChecklist, step: &ClosingStep) -> Option<String> 
             }
         ),
         ClosingStepKey::Approve => {
-            format!("freeflow year approve {period} --approved-on AAAA-MM-JJ")
+            format!("griffe year approve {period} --approved-on AAAA-MM-JJ")
         }
-        ClosingStepKey::Documents => format!("freeflow papers checklist {period}"),
+        ClosingStepKey::Documents => format!("griffe papers checklist {period}"),
         ClosingStepKey::Liasse => {
             format!(
-                "freeflow year render {period} efi-notice --out … ; year render {period} liasse --out …"
+                "griffe year render {period} efi-notice --out … ; year render {period} liasse --out …"
             )
         }
         ClosingStepKey::Vat => {
-            "freeflow society vat-credit set --after AAAA-MM --amount … ; fiscal calendar ; \
+            "griffe society vat-credit set --after AAAA-MM --amount … ; fiscal calendar ; \
              company set-profile --vat-regime … si le régime manque"
                 .to_string()
         }
         ClosingStepKey::Das2 => match step.status {
-            StepStatus::Warning => "freeflow expense edit <RÉF> --supplier <nom>".to_string(),
+            StepStatus::Warning => "griffe expense edit <RÉF> --supplier <nom>".to_string(),
             _ => return None,
         },
         ClosingStepKey::CorporateTax | ClosingStepKey::Filing => return None,
@@ -849,7 +849,7 @@ fn checklist_human(checklist: &ClosingChecklist) -> String {
             }
         }
     }
-    out.push_str("\nLes mots de ce parcours sont expliqués par `freeflow year glossary`.");
+    out.push_str("\nLes mots de ce parcours sont expliqués par `griffe year glossary`.");
     out.trim_end().to_string()
 }
 
@@ -1078,7 +1078,7 @@ pub fn run(
             let outcome = Executor::new(store).execute(&command, ctx)?;
             format_outcome_as(&outcome, json, |id| {
                 format!(
-                    "exercice clos en projet ({id}) — `freeflow year show {}`",
+                    "exercice clos en projet ({id}) — `griffe year show {}`",
                     ends_on.year()
                 )
             })

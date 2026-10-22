@@ -1,4 +1,4 @@
-//! `freeflow confirm`, `freeflow pending list`, `freeflow audit verify-chain`
+//! `griffe confirm`, `griffe pending list`, `griffe audit verify-chain`
 //!
 //! Le registre de confirmation (`confirm`) ne liste que les commandes qui déclarent
 //! `requires_confirmation() == true` — à étendre au fil des lots suivants s'il y en a
@@ -75,7 +75,7 @@ pub fn run_pending(cmd: PendingCommand, store: &mut Store, json: bool) -> Result
         })
         .collect();
     Ok(format!(
-        "{}\nConfirmer : freeflow confirm <id>",
+        "{}\nConfirmer : griffe confirm <id>",
         table::render(&["id", "commande", "session", "statut"], &rows)
     ))
 }

@@ -2898,7 +2898,7 @@ fn year_close_by_an_agent_stays_pending_until_a_human_confirms() {
         .clone();
     assert_eq!(json_result(&list_out).as_array().unwrap().len(), 0);
 
-    // ... et `freeflow confirm` sait rejouer cette commande-là.
+    // ... et `griffe confirm` sait rejouer cette commande-là.
     unlocked(&db)
         .args(["confirm", "--id", &pending_id])
         .assert()
@@ -3837,7 +3837,7 @@ fn year_opening_balance_set_show_then_chains_into_the_first_close() {
         .success()
         .stdout(predicate::str::contains("PRÊT À CLORE"))
         .stdout(predicate::str::contains(
-            "freeflow year close --period 2026 --legal-reserve 40.00",
+            "griffe year close --period 2026 --legal-reserve 40.00",
         ));
 
     unlocked(&db)
@@ -3854,10 +3854,10 @@ fn year_opening_balance_set_show_then_chains_into_the_first_close() {
             "Dotation à la réserve légale insuffisante",
         ))
         .stdout(predicate::str::contains(
-            "freeflow year amend 2026 --legal-reserve 40.00",
+            "griffe year amend 2026 --legal-reserve 40.00",
         ))
         .stdout(predicate::str::contains(
-            "freeflow year approve 2026 --approved-on AAAA-MM-JJ",
+            "griffe year approve 2026 --approved-on AAAA-MM-JJ",
         ));
     let year_out = unlocked(&db)
         .args(["--json", "year", "show", "2026"])
@@ -3943,7 +3943,7 @@ fn year_opening_balance_set_show_then_chains_into_the_first_close() {
 // Lot 36 : garde-fous de clôture, `init` sur un nom nu, sorties lisibles, dates ISO.
 // ---------------------------------------------------------------------------------------------
 
-/// `freeflow init --db nom.db` depuis le répertoire courant laissait un sidecar orphelin
+/// `griffe init --db nom.db` depuis le répertoire courant laissait un sidecar orphelin
 /// (`sync_dir("")` échouait après l'écriture du `.kdf`) : le coffre doit se créer, et se rouvrir.
 #[test]
 fn init_with_a_bare_file_name_creates_a_usable_vault_in_the_current_directory() {
@@ -4071,7 +4071,7 @@ fn closing_early_and_approving_in_the_future_are_refused_and_approval_backs_up_f
     assert_eq!(json_result(&shown)["approved_on"], "2027-07-20");
 }
 
-/// `freeflow confirm <ID>` positionnel (lot 36) ; l'ancien `--id` reste accepté un lot.
+/// `griffe confirm <ID>` positionnel (lot 36) ; l'ancien `--id` reste accepté un lot.
 #[test]
 fn confirm_takes_the_pending_action_id_as_a_positional_argument() {
     let db = temp_db("confirm-positional");
@@ -4103,9 +4103,7 @@ fn confirm_takes_the_pending_action_id_as_a_positional_argument() {
         .assert()
         .success()
         .stdout(predicate::str::contains("fiscal.close_year"))
-        .stdout(predicate::str::contains(
-            "Confirmer : freeflow confirm <id>",
-        ));
+        .stdout(predicate::str::contains("Confirmer : griffe confirm <id>"));
     unlocked(&db)
         .args(["confirm", &pending_id])
         .assert()
@@ -4445,7 +4443,7 @@ fn setup_status_lists_what_is_missing_then_goes_green() {
         .stdout(predicate::str::contains(
             "! profil de la société — à compléter : régime de TVA, associé unique, président",
         ))
-        .stdout(predicate::str::contains("freeflow bank import"));
+        .stdout(predicate::str::contains("griffe bank import"));
     unlocked(&db)
         .args([
             "company",

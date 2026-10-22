@@ -6345,7 +6345,7 @@ async fn closing_a_year_from_the_window_then_downloading_its_documents() {
     );
 
     // Le FEC de l'exercice se télécharge sous son nom réglementaire, en texte brut — le même
-    // fichier que `freeflow fec export 2026` (lot 28).
+    // fichier que `griffe fec export 2026` (lot 28).
     let fec = router
         .clone()
         .oneshot(
@@ -6865,7 +6865,7 @@ async fn expense_reconciliation_through_the_panel() {
 #[tokio::test]
 async fn a_receipt_uploaded_from_the_panel_is_archived_like_the_cli_does() {
     // Le fichier reçu en multipart est archivé à côté du coffre (`receipts/<hash>-<nom>`, en
-    // 0600) par le même helper que `freeflow expense record --receipt`, et la dépense porte le
+    // 0600) par le même helper que `griffe expense record --receipt`, et la dépense porte le
     // hash SHA-256 du contenu. La case « détacher » vide les deux champs sans supprimer le
     // fichier archivé — exactement `expense edit --clear-receipt`.
     let db_path = test_db_path("depenses-receipt");

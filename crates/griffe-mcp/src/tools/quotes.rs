@@ -1,4 +1,4 @@
-//! Outils `quote.*` — miroir de `freeflow quote ...` (CLI, lot 7).
+//! Outils `quote.*` — miroir de `griffe quote ...` (CLI, lot 7).
 //!
 //! Les lignes (`QuoteLine`, polymorphes régie/forfait/récurrent) sont passées en JSON via
 //! `lines_json`, comme en CLI : une mini-syntaxe dédiée serait plus complexe à produire, pour
