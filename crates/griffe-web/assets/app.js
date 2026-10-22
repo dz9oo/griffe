@@ -37,6 +37,11 @@ function markNav(slug) {
       link.removeAttribute("aria-current");
     }
   });
+  const boite = document.querySelector(".boite-link");
+  if (boite) {
+    if (slug === "boite") boite.setAttribute("aria-current", "page");
+    else boite.removeAttribute("aria-current");
+  }
   const content = document.getElementById("content");
   if (content) content.classList.toggle("wide", WIDE.has(slug));
 }
@@ -82,6 +87,10 @@ document.body.addEventListener("click", (event) => {
   const pieceLink = event.target.closest(".chrome nav a[data-piece]");
   if (pieceLink) {
     markNav(pieceLink.dataset.piece);
+    return;
+  }
+  if (event.target.closest(".boite-link")) {
+    markNav("boite");
     return;
   }
   if (event.target.closest(".mark")) markNav("jour");

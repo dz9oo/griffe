@@ -210,8 +210,8 @@ fn main() {
     });
     let hub = griffe_mail::MailHub::start();
     let fetch_hub = hub.clone();
-    state.set_releve_fetch(move |endpoint, secret, cursors, on| {
-        fetch_hub.sync(endpoint, secret, cursors, on)
+    state.set_releve_fetch(move |endpoint, secret, scope, on| {
+        fetch_hub.sync(endpoint, secret, scope, on)
     });
     let body_hub = hub;
     state.set_body_fetch(move |endpoint, secret, mailbox, uid| {

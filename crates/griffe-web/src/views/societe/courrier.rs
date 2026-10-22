@@ -27,6 +27,8 @@ pub struct CourrierForm {
     pub signature: Option<String>,
     /// Vrai quand les champs du serveur viennent d'un envoi refusé.
     pub redisplay: bool,
+    /// Lignes retapées. Absentes : la liste enregistrée.
+    pub kept_lines: Option<Vec<String>>,
 }
 
 pub fn page(store: &Store, form: Option<&CourrierForm>) -> Result<Markup, AppError> {
@@ -41,7 +43,32 @@ pub fn page(store: &Store, form: Option<&CourrierForm>) -> Result<Markup, AppErr
         "essai",
         OffsetDateTime::now_utc(),
     )?;
-    Ok(markup(&account, form, pause, &letter, depart.as_ref()))
+    let stored = griffe_core::mail::kept_addresses(store.connection())?;
+    let kept = shown_addresses(form, &stored);
+    Ok(markup(
+        &account,
+        form,
+        pause,
+        &letter,
+        depart.as_ref(),
+        &kept,
+    ))
+}
+
+fn shown_addresses(form: Option<&CourrierForm>, stored: &[String]) -> Vec<String> {
+    let posted = form.and_then(|item| item.kept_lines.clone());
+    let mut lines = posted.clone().unwrap_or_else(|| stored.to_vec());
+    if lines.is_empty() {
+        lines.push(String::new());
+        return lines;
+    }
+    if posted.is_none()
+        && lines.len() < griffe_core::mail::KEPT_ADDRESS_CAP
+        && lines.last().is_some_and(|line| !line.trim().is_empty())
+    {
+        lines.push(String::new());
+    }
+    lines
 }
 
 fn markup(
@@ -50,6 +77,7 @@ fn markup(
     pause: bool,
     letter: &TrialLetter,
     depart: Option<&OutboundView>,
+    kept: &[String],
 ) -> Markup {
     let posted = form.filter(|item| item.redisplay);
     let from_name = posted.map_or(account.from_name.as_str(), |item| item.from_name.as_str());
@@ -254,6 +282,7 @@ fn markup(
                     }
                 }
             }
+            (address_card(kept))
             div id="releve" class="reglages-card courrier-block" {
                 h3 class="panel-title" { "La relève" }
                 p class="prose" {
@@ -312,6 +341,41 @@ pub fn preview_card(store: &Store, signature: &str) -> Result<Markup, AppError> 
         &letter.body,
         &chrome,
     ))
+}
+
+fn address_card(lines: &[String]) -> Markup {
+    let room = lines.len() < griffe_core::mail::KEPT_ADDRESS_CAP;
+    let actions_row = lines.len() + 1;
+    html! {
+        div id="adresses" class="reglages-card courrier-block" {
+            h3 class="panel-title" { "Les adresses" }
+            p class="prose" {
+                "Ce compte peut en porter plusieurs. Griffe ne relève que celles écrites ici, reçues et envoyées. Les autres ne sont pas lues, et ne restent pas dans le coffre. Tant que la liste est vide, tout le compte est lu."
+            }
+            form id="adresses-form" class="address-board" hx-post="/societe/courrier/adresses" hx-target="#content" {
+                @for (index, address) in lines.iter().enumerate() {
+                    input type="text" inputmode="email" name="address" value=(address)
+                          autocomplete="off" spellcheck="false"
+                          aria-label=(format!("Adresse {}", index + 1))
+                          style=(format!("grid-row: {}", index + 1));
+                }
+                div class="row-actions address-actions" style=(format!("grid-row: {actions_row}")) {
+                    button class="seal" type="submit" name="intent" value="garder" { "Garder ces adresses" }
+                    @if room {
+                        button class="quiet" type="submit" name="intent" value="ajouter" { "Une autre" }
+                    }
+                }
+                @for (index, address) in lines.iter().enumerate() {
+                    @if !address.trim().is_empty() {
+                        button class="quiet address-remove" type="submit" name="intent"
+                                value=(format!("retirer:{index}"))
+                                aria-label=(format!("Retirer l'adresse {}", index + 1))
+                                style=(format!("grid-row: {}", index + 1)) { "Retirer" }
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn sheet_choice(account: &MailProfile) -> Markup {

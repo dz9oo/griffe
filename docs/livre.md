@@ -77,13 +77,17 @@ copies est saisi, sur le port 993. Vide, la lettre part et la copie n’ira
 pas dans Envoyés : l’essai de liaison le dit. Si le dépôt échoue, la lettre
 est quand même partie. Griffe réessaie plus tard.
 
-La boîte lit ce même compte : les lettres reçues, et celles déjà envoyées.
-Ouvrir la page le dit : le grand paraphe seulement si la boîte est encore
+Le courriel lit ce même compte : les lettres reçues, et celles déjà envoyées.
+Dans la barre, le mot Courriel, avec une enveloppe, entre les pièces et la date.
+Ouvrir la page le dit : le grand paraphe seulement si le courriel est encore
 vide, et une phrase si le compte ne répond pas ou ne se lit pas.
 Elle dit aussi si la relève est en cours, ou l'heure de la dernière qui
 a abouti. « Relever le courrier » en demande une. La période se règle
 dans Le courrier : une minute, trois, quinze ou trente. Trois minutes,
-sinon. Les lettres déjà lues ne sont pas dans À lire : elles sont dans Tout.
+sinon. Les adresses, dans le même chapitre, limitent ce qui est lu :
+reçues et envoyées. Les autres ne sont pas relevées, et ne restent pas
+dans le coffre. Tant que la liste est vide, tout le compte est lu.
+Les lettres déjà lues ne sont pas dans À lire : elles sont dans Tout.
 Le texte d'une lettre lourde n'est pas recopié ici.
 Ouvrir une lettre la marque lue. On la rattache à un dossier. Répondre
 arme une lettre, avec cinq secondes pour la retenir. Une réponse reçue

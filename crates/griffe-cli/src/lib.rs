@@ -113,7 +113,7 @@ enum TopCommand {
     /// Courrier : compte d'envoi, essai, lettres à poster.
     #[command(subcommand)]
     Courrier(mail::MailCommand),
-    /// Boîte : lettres reçues, rattachement, relances retenues.
+    /// Courriel : lettres reçues, rattachement, relances retenues.
     #[command(subcommand)]
     Boite(boite::BoiteCommand),
     /// Prospection : opportunités, pipeline, interactions.

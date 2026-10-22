@@ -359,6 +359,46 @@ impl Command for SetAutomaticSend {
     }
 }
 
+/// Adresses que la relève copie. Une liste vide relit tout le compte.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetKeptAddresses {
+    pub addresses: Vec<String>,
+}
+
+impl Command for SetKeptAddresses {
+    type Output = ();
+    const NAME: &'static str = "mail.set_kept_addresses";
+
+    fn requires_confirmation(&self) -> bool {
+        true
+    }
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        let addresses = normalize_kept(&self.addresses)?;
+        store::replace_kept_addresses(conn, &addresses, &now_stamp()?)
+    }
+}
+
+fn normalize_kept(addresses: &[String]) -> Result<Vec<String>, AppError> {
+    let mut kept = Vec::new();
+    for raw in addresses {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let parsed = parse_email(trimmed).map_err(|_| MailError::Address)?;
+        let address = parsed.to_ascii_lowercase();
+        if kept.iter().any(|seen: &String| seen == &address) {
+            continue;
+        }
+        kept.push(address);
+    }
+    if kept.len() > super::inbound::KEPT_ADDRESS_CAP {
+        return Err(MailError::KeptCap.into());
+    }
+    Ok(kept)
+}
+
 /// Période entre deux relèves. Quatre valeurs, rien d'autre.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SetReleveInterval {

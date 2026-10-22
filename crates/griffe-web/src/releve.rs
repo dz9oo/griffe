@@ -29,7 +29,7 @@ pub async fn kick_releve(state: &AppState) {
         Ok(Some(plan)) => plan,
         Ok(None) => return,
         Err(error) => {
-            eprintln!("⚠ boîte : {error}");
+            eprintln!("⚠ courriel : {error}");
             return;
         }
     };
@@ -57,12 +57,38 @@ async fn releve_every(state: &AppState) -> u64 {
 async fn run_releve(state: AppState, plan: RelevePlan, fetch: ReleveFetch) {
     let icloud = plan.endpoint.icloud;
     let was_empty = mirror_empty(&state).await;
+    let generation = plan.kept_generation;
+    let prepared = state
+        .with_store(move |store| {
+            let mut plan = plan;
+            mail::prepare_pull(store, &mut plan).map(|sweep| (sweep, plan))
+        })
+        .await;
+    let (sweep, plan) = match prepared {
+        Some(Ok(pair)) => pair,
+        Some(Err(error)) => {
+            eprintln!("⚠ courriel : {error}");
+            note_outcome(&state, false, Some("Le courriel n'a pas pu être lu.")).await;
+            state.note_pull_failed();
+            return;
+        }
+        None => {
+            state.cancel_lecture();
+            return;
+        }
+    };
     let (tx, mut rx) = tokio::sync::mpsc::channel::<PullEvent>(4);
     let endpoint = plan.endpoint;
     let secret = plan.secret;
     let cursors = plan.cursors;
+    let kept = plan.kept;
     let joined = tokio::task::spawn_blocking(move || {
-        fetch(&endpoint, &secret, &cursors, &mut |event| {
+        let scope = mail::PullScope {
+            cursors: &cursors,
+            addresses: &kept,
+            sweep,
+        };
+        fetch(&endpoint, &secret, &scope, &mut |event| {
             let _ = tx.blocking_send(event);
         })
     });
@@ -79,26 +105,39 @@ async fn run_releve(state: AppState, plan: RelevePlan, fetch: ReleveFetch) {
     }
     match joined.await {
         Ok(Ok(())) if !absorb_failed => {
+            if sweep && !kept_applied(&state, generation).await {
+                note_outcome(&state, false, Some("Le courriel n'a pas pu être rangé.")).await;
+                state.note_pull_failed();
+                return;
+            }
             note_outcome(&state, true, None).await;
             state.finish_lecture(was_empty);
             fill_recent(&state).await;
         }
         Ok(Ok(())) => {
-            note_outcome(&state, false, Some("La boîte n'a pas pu être rangée.")).await;
+            note_outcome(&state, false, Some("Le courriel n'a pas pu être rangé.")).await;
             state.note_pull_failed();
         }
         Ok(Err(error)) => {
             let sentence = mail::french_submit_error(&error, icloud);
-            eprintln!("⚠ boîte : {sentence}");
+            eprintln!("⚠ courriel : {sentence}");
             note_outcome(&state, false, Some(&sentence)).await;
             state.note_pull_failed();
         }
         Err(error) => {
-            eprintln!("⚠ boîte : {error}");
-            note_outcome(&state, false, Some("La boîte n'a pas pu être lue.")).await;
+            eprintln!("⚠ courriel : {error}");
+            note_outcome(&state, false, Some("Le courriel n'a pas pu être lu.")).await;
             state.note_pull_failed();
         }
     }
+}
+
+async fn kept_applied(state: &AppState, generation: i64) -> bool {
+    state
+        .with_store(|store| mail::note_kept_applied(store, generation))
+        .await
+        .and_then(Result::ok)
+        .is_some()
 }
 
 async fn mirror_empty(state: &AppState) -> bool {
@@ -133,7 +172,7 @@ async fn absorb_batch(state: &AppState, batch: &PulledMailbox) -> bool {
             true
         }
         Some(Err(error)) => {
-            eprintln!("⚠ boîte : {error}");
+            eprintln!("⚠ courriel : {error}");
             false
         }
         None => false,
@@ -214,6 +253,8 @@ async fn fill_one(state: &AppState, fetch: &BodyFetch, plan: &RelevePlan, item: 
         role: "inbox".to_string(),
         messages: vec![message],
         modseq: None,
+        examined_uid: 0,
+        keep_uids: None,
     };
     if absorb_batch(state, &batch).await {
         state.note_body_landed();

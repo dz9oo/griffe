@@ -14043,7 +14043,16 @@ async fn the_box_page_reads_a_letter_and_confirms_a_failed_address() {
             .unwrap(),
     )
     .await;
-    assert!(jour.contains("Boîte"), "{jour}");
+    assert!(jour.contains("Courriel"), "{jour}");
+    let jour_link = jour
+        .split("class=\"boite-link\"")
+        .nth(1)
+        .and_then(|rest| rest.split('>').next())
+        .unwrap_or("");
+    assert!(
+        !jour_link.contains("aria-current"),
+        "le courriel n'est pas ouvert : {jour_link}"
+    );
     assert!(jour.contains("class=\"today\""), "{jour}");
     assert!(
         !jour.contains("class=\"n\""),
@@ -14066,6 +14075,10 @@ async fn the_box_page_reads_a_letter_and_confirms_a_failed_address() {
     assert!(
         seal.contains("class=\"n\">2<"),
         "réponse non lue et adresse en échec : {seal}"
+    );
+    assert!(
+        !seal.contains("<a"),
+        "le sceau ne remplace pas le lien : {seal}"
     );
     assert!(!seal.contains("<!DOCTYPE"), "{seal}");
 
@@ -14093,6 +14106,17 @@ async fn the_box_page_reads_a_letter_and_confirms_a_failed_address() {
     assert!(!failed_body.contains("Reponse Camille"), "{failed_body}");
     assert!(failed_body.contains("Elle est bonne"), "{failed_body}");
     assert!(failed_body.contains("data-view=\"boite\""), "{failed_body}");
+    assert!(failed_body.contains("Courriel"), "{failed_body}");
+    assert!(failed_body.contains("Tout le compte"), "{failed_body}");
+    let boite_link = failed_body
+        .split("class=\"boite-link\"")
+        .nth(1)
+        .and_then(|rest| rest.split('>').next())
+        .unwrap_or("");
+    assert!(
+        boite_link.contains("aria-current=\"page\""),
+        "le courriel ouvert est souligné : {boite_link}"
+    );
     assert!(!failed_body.contains("hx-on"), "{failed_body}");
 
     let opened = router
@@ -14285,8 +14309,96 @@ async fn the_box_page_reads_a_letter_and_confirms_a_failed_address() {
     );
 }
 
+#[tokio::test]
+async fn les_adresses_se_gardent_sans_enregistrer_une_ligne_de_plus() {
+    let db_path = test_db_path("adresses-tenues");
+    let state = unlocked_state(&db_path).await;
+    let router = griffe_web::router(state);
+    let page = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/societe/courrier")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(page.contains("Les adresses"), "{page}");
+    assert!(page.contains("Tant que la liste est vide"), "{page}");
+    let releve_at = page.find("id=\"releve\"").unwrap_or(0);
+    let adresses_at = page.find("id=\"adresses\"").unwrap_or(usize::MAX);
+    assert!(adresses_at < releve_at, "la carte précède la relève");
+
+    let added = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/societe/courrier/adresses")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from("address=ada%40lumen.test&intent=ajouter"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(added.headers().get("HX-Trigger").is_none());
+    let added_body = body_text(added).await;
+    assert_eq!(
+        added_body.matches("name=\"address\"").count(),
+        2,
+        "{added_body}"
+    );
+    assert!(added_body.contains("ada@lumen.test"), "{added_body}");
+
+    let saved = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/societe/courrier/adresses")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from(
+                    "address=Nicolas%40Lumen.test&address=&intent=garder",
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        saved
+            .headers()
+            .get("HX-Trigger")
+            .and_then(|value| value.to_str().ok()),
+        Some("griffe:saved")
+    );
+    let saved_body = body_text(saved).await;
+    assert!(
+        saved_body.contains("Ces adresses sont gardées."),
+        "{saved_body}"
+    );
+    assert!(
+        saved_body.contains("value=\"nicolas@lumen.test\""),
+        "{saved_body}"
+    );
+
+    let refused = post_form(
+        &router,
+        "/societe/courrier/adresses",
+        "address=pas-une-adresse&intent=garder",
+    )
+    .await;
+    assert!(refused.contains("illisible"), "{refused}");
+    assert!(refused.contains("pas-une-adresse"), "{refused}");
+}
+
 fn engage_releve(state: &AppState) {
-    state.set_releve_fetch(|_endpoint, _secret, _cursors, _on| Ok(()));
+    state.set_releve_fetch(|_endpoint, _secret, _scope, _on| Ok(()));
 }
 
 fn save_account(store: &mut Store, preset: &str, imap_host: &str) {

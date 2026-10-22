@@ -6,9 +6,9 @@ use std::path::PathBuf;
 use clap::Subcommand;
 use griffe_core::app::{ExecutionContext, Executor};
 use griffe_core::mail::{
-    AddressFault, MarkAddress, RECENT_BODIES, ReleaseReplyHold, ReplyDraft, UNDO_SECS, arm_reply,
-    file_human, french_submit_error, list_box, note_releve_failure, note_releve_success,
-    releve_plan, resolve_message_id,
+    AddressFault, MarkAddress, PullScope, RECENT_BODIES, ReleaseReplyHold, ReplyDraft, UNDO_SECS,
+    arm_reply, file_human, french_submit_error, list_box, note_kept_applied, note_releve_failure,
+    note_releve_success, prepare_pull, releve_plan, resolve_message_id,
 };
 use griffe_core::store::Store;
 
@@ -20,7 +20,7 @@ use crate::refs;
 pub enum BoiteCommand {
     /// Lettres déjà relevées, sans leur corps.
     Liste,
-    /// Relève la boîte de réception et Envoyés.
+    /// Relève le courriel du compte déjà réglé : réception et Envoyés.
     Relever,
     /// Range une lettre sur une fiche, et sur un dossier si on le nomme.
     Classer {
@@ -116,7 +116,7 @@ fn liste(store: &Store, json: bool) -> Result<String, CliError> {
         return Ok(format_json(&lines));
     }
     if lines.is_empty() {
-        return Ok("La boîte est vide.".to_string());
+        return Ok("Le courriel est vide.".to_string());
     }
     let mut out = String::new();
     for line in lines {
@@ -142,13 +142,19 @@ fn relever(store: &mut Store, ctx: &ExecutionContext, json: bool) -> Result<Stri
     if ctx.dry_run {
         return Ok("La relève n'écrit rien.".to_string());
     }
-    let Some(plan) = releve_plan(store)? else {
+    let Some(mut plan) = releve_plan(store)? else {
         return Err(CliError::Domain(
-            "Le courrier ne permet pas encore de lire la boîte.".into(),
+            "Le courrier ne permet pas encore de lire le courriel.".into(),
         ));
     };
+    let sweep = prepare_pull(store, &mut plan)?;
     let icloud = plan.endpoint.icloud;
-    let pulled = match griffe_mail::fetch_new(&plan.endpoint, &plan.secret, &plan.cursors) {
+    let scope = PullScope {
+        cursors: &plan.cursors,
+        addresses: &plan.kept,
+        sweep,
+    };
+    let pulled = match griffe_mail::fetch_new(&plan.endpoint, &plan.secret, &scope) {
         Ok(pulled) => pulled,
         Err(error) => {
             let sentence = french_submit_error(&error, icloud);
@@ -166,6 +172,9 @@ fn relever(store: &mut Store, ctx: &ExecutionContext, json: bool) -> Result<Stri
         report.failed = report.failed.saturating_add(filled.failed);
         report.choices = report.choices.saturating_add(filled.choices);
         report.on_dossier = report.on_dossier.saturating_add(filled.on_dossier);
+    }
+    if sweep {
+        note_kept_applied(store, plan.kept_generation)?;
     }
     let stamp = time::OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)

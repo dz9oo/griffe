@@ -436,7 +436,7 @@ fn bridge(slug: &str) -> Markup {
         },
         "boite" => html! {
             p class="prose" {
-                "La même boîte se lit en commande. "
+                "Le même courriel se lit en commande. "
                 a href="/aide/cmd-courrier"
                   hx-get="/aide/cmd-courrier" hx-target="#content" hx-push-url="true" {
                     "Le courrier, en commande."

@@ -9,10 +9,10 @@ use griffe_core::app::{ExecutionContext, Executor};
 use griffe_core::mail::{
     ArmOutbound, CancelOutbound, ClearMailSecret, CustomSheet, DeliveryOutcome, LetterTheme,
     MailPreset, MailSecret, RecordMailProbe, RememberImapUsername, SaveLetterface, SaveMailAccount,
-    SaveMailSecret, SaveMailSignature, SentCopyStatus, SetAutomaticSend, SetReleveInterval,
-    SubmissionBatch, UNDO_SECS, abandon_held, commit_outbound, custom_sheet, french_submit_error,
-    hourly_pause, probe_material, profile, record_copies, record_deliveries, selected_id,
-    take_copies, take_due, trial_letter,
+    SaveMailSecret, SaveMailSignature, SentCopyStatus, SetAutomaticSend, SetKeptAddresses,
+    SetReleveInterval, SubmissionBatch, UNDO_SECS, abandon_held, commit_outbound, custom_sheet,
+    french_submit_error, hourly_pause, kept_addresses, probe_material, profile, record_copies,
+    record_deliveries, selected_id, take_copies, take_due, trial_letter,
 };
 use griffe_core::store::Store;
 use time::OffsetDateTime;
@@ -64,6 +64,14 @@ pub enum MailCommand {
         /// Minutes entre deux relèves.
         minutes: u16,
     },
+    /// Adresses que la relève copie, reçues et envoyées. Sans argument, les montre.
+    Adresses {
+        /// Adresses tenues.
+        addresses: Vec<String>,
+        /// Lit tout le compte.
+        #[arg(long, conflicts_with = "addresses")]
+        tout: bool,
+    },
     /// Active ou éteint l'envoi des lettres dont la date est aujourd'hui.
     #[command(group(ArgGroup::new("mode").required(true).args(["on", "off"])))]
     Auto {
@@ -114,6 +122,35 @@ pub enum MailCommand {
     Annuler { id: String },
     /// Poste les lettres échues de cette commande. Celles de la fenêtre en cours d'annulation restent.
     Flush,
+}
+
+fn adresses(
+    store: &mut Store,
+    ctx: &ExecutionContext,
+    json: bool,
+    addresses: Vec<String>,
+    tout: bool,
+) -> Result<String, CliError> {
+    if !tout && addresses.is_empty() {
+        let kept = kept_addresses(store.connection())?;
+        if json {
+            return Ok(format_json(&kept));
+        }
+        if kept.is_empty() {
+            return Ok("Tout le compte.".to_string());
+        }
+        return Ok(kept.join("\n"));
+    }
+    let list = if tout { Vec::new() } else { addresses };
+    let empty = list.is_empty();
+    let outcome = Executor::new(store).execute(&SetKeptAddresses { addresses: list }, ctx)?;
+    Ok(format_outcome_as(&outcome, json, |_| {
+        if empty {
+            "Tout le compte est lu.".to_string()
+        } else {
+            "Ces adresses sont gardées.".to_string()
+        }
+    }))
 }
 
 pub fn run(
@@ -172,6 +209,7 @@ pub fn run(
             let sentence = griffe_core::mail::releve_cadence(seconds);
             Ok(format_outcome_as(&outcome, json, |_| sentence.to_string()))
         }
+        MailCommand::Adresses { addresses, tout } => adresses(store, ctx, json, addresses, tout),
         MailCommand::Auto { on, .. } => {
             let outcome = Executor::new(store).execute(&SetAutomaticSend { enabled: on }, ctx)?;
             let sentence = if on {

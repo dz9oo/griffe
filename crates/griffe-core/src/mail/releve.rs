@@ -3,7 +3,9 @@
 use rusqlite::OptionalExtension;
 
 use super::commands::{AddressFault, FileMessage, FilingSource, HoldReply, MarkAddress};
-use super::inbound::{DossierLink, FicheAddress, KnownLetter, Notice, classify, read_message};
+use super::inbound::{
+    DossierLink, FicheAddress, KnownLetter, Notice, classify, message_kept, read_message,
+};
 use super::lecture::PullTick;
 use super::model::ImapEndpoint;
 use super::secret::MailSecret;
@@ -65,6 +67,10 @@ pub struct PulledMailbox {
     pub messages: Vec<PulledMessage>,
     /// `HIGHESTMODSEQ` lu au `SELECT`. Absent si le serveur ne le dit pas.
     pub modseq: Option<i64>,
+    /// Plus grand UID examiné, y compris ceux qui ne sont pas rapportés.
+    pub examined_uid: i64,
+    /// Passe complète : UID à garder dans ce dossier. `None` : ne rien effacer.
+    pub keep_uids: Option<Vec<i64>>,
 }
 
 /// Un message rapporté, pas encore rangé.
@@ -108,6 +114,19 @@ pub struct RelevePlan {
     pub cursors: Vec<MailboxCursor>,
     /// Adresse du compte. Pas un secret.
     pub address: String,
+    /// Adresses copiées. Vide : tout le compte.
+    pub kept: Vec<String>,
+    /// Génération écrite dans le coffre.
+    pub kept_generation: i64,
+    /// Génération déjà appliquée au miroir.
+    pub applied_generation: i64,
+}
+
+/// Ce que la liaison doit lire. Le secret n'y est pas.
+pub struct PullScope<'a> {
+    pub cursors: &'a [MailboxCursor],
+    pub addresses: &'a [String],
+    pub sweep: bool,
 }
 
 /// Compte du passage. Les corps n'y figurent pas.
@@ -217,12 +236,48 @@ pub fn releve_plan(vault: &crate::store::Store) -> Result<Option<RelevePlan>, Ap
     };
     let mailbox = vault.open_mailbox()?;
     let cursors = mailbox.cursors()?;
+    let applied_generation = mailbox.applied_generation()?;
     Ok(Some(RelevePlan {
         endpoint,
         secret: material.secret,
         cursors,
         address: material.address,
+        kept: store::kept_addresses(vault.connection())?,
+        kept_generation: store::kept_generation(vault.connection())?,
+        applied_generation,
     }))
+}
+
+/// Aligne les curseurs sur la liste. Vrai : la passe suivante efface ce qui n'est plus tenu.
+///
+/// # Errors
+///
+/// Le miroir ne s'écrit pas.
+pub fn prepare_pull(vault: &crate::store::Store, plan: &mut RelevePlan) -> Result<bool, AppError> {
+    if plan.kept_generation == plan.applied_generation {
+        return Ok(false);
+    }
+    if plan.kept.is_empty() {
+        let mailbox = vault.open_mailbox()?;
+        mailbox.rewind_cursors()?;
+        mailbox.set_applied_generation(plan.kept_generation)?;
+        for cursor in &mut plan.cursors {
+            cursor.last_uid = 0;
+            cursor.modseq = None;
+        }
+        plan.applied_generation = plan.kept_generation;
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+/// Note que le miroir a appliqué cette génération d'adresses.
+///
+/// # Errors
+///
+/// Le miroir ne s'écrit pas.
+pub fn note_kept_applied(vault: &crate::store::Store, generation: i64) -> Result<(), AppError> {
+    vault.open_mailbox()?.set_applied_generation(generation)
 }
 
 /// Range le lot. Une ligne humaine déjà posée n'est pas reprise.
@@ -243,11 +298,13 @@ pub fn absorb(
     let fiches = fiche_addresses(vault.connection())?;
     let own = own_addresses(vault.connection())?;
     let open = open_dossiers(vault.connection())?;
+    let kept = store::kept_addresses(vault.connection())?;
     let books = Books {
         known: &known,
         fiches: &fiches,
         own: &own,
         open: &open,
+        kept: &kept,
     };
     let mut report = AbsorbReport::default();
     for folder in pulled {
@@ -261,6 +318,7 @@ struct Books<'a> {
     fiches: &'a [FicheAddress],
     own: &'a [String],
     open: &'a [OpenDossier],
+    kept: &'a [String],
 }
 
 fn absorb_folder(
@@ -274,7 +332,11 @@ fn absorb_folder(
     if folder.resync {
         mailbox.clear_mailbox(&folder.name)?;
     }
-    let mut last_uid = 0_i64;
+    if let Some(keep) = &folder.keep_uids {
+        let removed = mailbox.retain_uids(&folder.name, folder.uidvalidity, keep)?;
+        forget_messages(vault.connection(), &removed)?;
+    }
+    let mut last_uid = folder.examined_uid;
     for message in &folder.messages {
         last_uid = last_uid.max(message.uid);
         if mailbox.has_uid(&folder.name, folder.uidvalidity, message.uid)? {
@@ -291,6 +353,12 @@ fn absorb_folder(
             continue;
         }
         if message.body == PulledBody::Flags {
+            continue;
+        }
+        if !books.kept.is_empty()
+            && !message.raw.trim().is_empty()
+            && !message_kept(&message.raw, books.kept)
+        {
             continue;
         }
         let placed = place(vault, mailbox, folder, message, ctx, books)?;
@@ -437,6 +505,46 @@ fn place(
         body_state: message.body.as_str().to_string(),
     })?;
     Ok(placed)
+}
+
+fn forget_messages(conn: &rusqlite::Connection, message_ids: &[String]) -> Result<(), AppError> {
+    for message_id in message_ids {
+        let message_id = message_id.trim();
+        if message_id.is_empty() {
+            continue;
+        }
+        let opportunity_id: Option<String> = conn
+            .query_row(
+                "SELECT opportunity_id FROM mail_filing WHERE message_id = ?1",
+                [message_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        conn.execute(
+            "DELETE FROM mail_filing WHERE message_id = ?1",
+            [message_id],
+        )?;
+        conn.execute(
+            "DELETE FROM address_fault
+             WHERE message_id = ?1 AND status IN ('failed', 'probable')",
+            [message_id],
+        )?;
+        let Some(opportunity_id) = opportunity_id.filter(|id| !id.is_empty()) else {
+            continue;
+        };
+        let left: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM mail_filing WHERE opportunity_id = ?1",
+            [&opportunity_id],
+            |row| row.get(0),
+        )?;
+        if left == 0 {
+            conn.execute(
+                "UPDATE opportunities SET reply_hold = 0 WHERE id = ?1",
+                [opportunity_id],
+            )?;
+        }
+    }
+    Ok(())
 }
 
 fn file_link(
@@ -769,7 +877,7 @@ mod tests {
         note_releve_success, releve_due, releve_every,
     };
     use crate::app::{Actor, ExecutionContext, Executor, recent_audit_entries};
-    use crate::mail::SetReleveInterval;
+    use crate::mail::{SetKeptAddresses, SetReleveInterval};
     use crate::store::testing::test_store;
 
     const REPLY: &str = "\
@@ -857,6 +965,8 @@ Message-ID: <dead@griffe.local>\n\
             role: "inbox".to_string(),
             messages,
             modseq: None,
+            examined_uid: 0,
+            keep_uids: None,
         }
     }
 
@@ -1048,6 +1158,169 @@ Message-ID: <ada@example.test>\n\
         assert_eq!(
             mailbox.body_state_of("INBOX", 7, 3).unwrap().as_deref(),
             Some("ready")
+        );
+    }
+
+    #[test]
+    fn a_kept_list_drops_the_other_address_and_the_cursor_still_advances() {
+        let mut vault = test_store("releve-kept");
+        seed(&mut vault);
+        let human = ExecutionContext::new(Actor::Human, false);
+        let refused = Executor::new(&mut vault)
+            .execute(
+                &SetKeptAddresses {
+                    addresses: vec!["Nicolas@Lumen.test".into(), "pas une adresse".into()],
+                },
+                &human,
+            )
+            .unwrap_err();
+        assert!(refused.to_string().contains("illisible"), "{refused}");
+        Executor::new(&mut vault)
+            .execute(
+                &SetKeptAddresses {
+                    addresses: vec!["Nicolas@Lumen.test".into(), "nicolas@lumen.test".into()],
+                },
+                &human,
+            )
+            .unwrap();
+        let personal = "\
+From: Ami <ami@exemple.test>\n\
+To: perso@icloud.com\n\
+Subject: Privé\n\
+Message-ID: <prive@exemple.test>\n\
+\n\
+secret\n";
+        let mut batch = folder(9, false, vec![pulled(1, REPLY), pulled(2, personal)]);
+        batch.examined_uid = 8;
+        let mut mailbox = vault.open_mailbox().unwrap();
+        let report = absorb(&mut vault, &mut mailbox, &[batch], &system()).unwrap();
+        assert_eq!(report.stored, 1);
+        let mailbox = vault.open_mailbox().unwrap();
+        let lines = list_box(&vault, &mailbox).unwrap();
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].subject, "Re: Votre proposition");
+        assert_eq!(mailbox.cursors().unwrap()[0].last_uid, 8);
+        drop(mailbox);
+        let again = Executor::new(&mut vault)
+            .execute(
+                &SetKeptAddresses {
+                    addresses: vec!["nicolas@lumen.test".into()],
+                },
+                &human,
+            )
+            .unwrap();
+        assert!(matches!(again, crate::app::Outcome::Applied(())));
+    }
+
+    #[test]
+    fn a_sweep_removes_the_stored_letter_and_keeps_a_confirmed_fault() {
+        let mut vault = test_store("releve-sweep");
+        seed(&mut vault);
+        let personal = "\
+From: Ami <ami@exemple.test>\n\
+To: perso@icloud.com\n\
+Subject: Privé\n\
+Message-ID: <prive@exemple.test>\n\
+\n\
+secret\n";
+        let mut mailbox = vault.open_mailbox().unwrap();
+        absorb(
+            &mut vault,
+            &mut mailbox,
+            &[folder(4, false, vec![pulled(2, personal)])],
+            &system(),
+        )
+        .unwrap();
+        drop(mailbox);
+        vault
+            .connection()
+            .execute_batch(
+                "INSERT INTO mail_filing (message_id, client_id, opportunity_id, source)
+                 VALUES ('prive@exemple.test', 'c2', 'o2', 'auto');
+                 UPDATE opportunities SET reply_hold = 1 WHERE id = 'o2';
+                 INSERT INTO address_fault (client_id, address, status, message_id) VALUES
+                    ('c2', 'contact@atelier-du-mail.fr', 'failed', 'prive@exemple.test'),
+                    ('c1', 'camille@riviere.test', 'confirmed', 'prive@exemple.test');",
+            )
+            .unwrap();
+        let mut sweep = folder(4, false, Vec::new());
+        sweep.keep_uids = Some(Vec::new());
+        sweep.examined_uid = 2;
+        let mut mailbox = vault.open_mailbox().unwrap();
+        absorb(&mut vault, &mut mailbox, &[sweep], &system()).unwrap();
+        drop(mailbox);
+        let mailbox = vault.open_mailbox().unwrap();
+        assert!(list_box(&vault, &mailbox).unwrap().is_empty());
+        let hold: i64 = vault
+            .connection()
+            .query_row(
+                "SELECT reply_hold FROM opportunities WHERE id = 'o2'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(hold, 0);
+        let failed: i64 = vault
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM address_fault WHERE status = 'failed'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let confirmed: i64 = vault
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM address_fault WHERE status = 'confirmed'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(failed, 0);
+        assert_eq!(confirmed, 1);
+        let sent: i64 = vault
+            .connection()
+            .query_row("SELECT COUNT(*) FROM outbound_mail", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(sent, 2);
+    }
+
+    #[test]
+    fn seventeen_addresses_are_refused_and_an_empty_list_is_kept() {
+        let mut vault = test_store("releve-kept-cap");
+        let human = ExecutionContext::new(Actor::Human, false);
+        let mut many = Vec::new();
+        for index in 0..17 {
+            many.push(format!("a{index}@exemple.test"));
+        }
+        let refused = Executor::new(&mut vault)
+            .execute(&SetKeptAddresses { addresses: many }, &human)
+            .unwrap_err();
+        assert!(refused.to_string().contains("Seize"), "{refused}");
+        Executor::new(&mut vault)
+            .execute(
+                &SetKeptAddresses {
+                    addresses: vec!["ada@exemple.test".into(), "  ".into()],
+                },
+                &human,
+            )
+            .unwrap();
+        assert_eq!(
+            crate::mail::kept_addresses(vault.connection()).unwrap(),
+            vec!["ada@exemple.test".to_string()]
+        );
+        Executor::new(&mut vault)
+            .execute(
+                &SetKeptAddresses {
+                    addresses: Vec::new(),
+                },
+                &human,
+            )
+            .unwrap();
+        assert!(
+            crate::mail::kept_addresses(vault.connection())
+                .unwrap()
+                .is_empty()
         );
     }
 

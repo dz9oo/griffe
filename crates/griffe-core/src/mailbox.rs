@@ -40,11 +40,26 @@ CREATE TABLE IF NOT EXISTS message (
 CREATE TABLE IF NOT EXISTS releve (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     at TEXT,
+    error TEXT,
+    applied_generation INTEGER NOT NULL DEFAULT 0
+);
+";
+
+const MIRROR_V2: &str = "
+ALTER TABLE message ADD COLUMN body_state TEXT NOT NULL DEFAULT 'ready';
+ALTER TABLE mailbox ADD COLUMN modseq INTEGER;
+CREATE TABLE IF NOT EXISTS releve (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    at TEXT,
     error TEXT
 );
 ";
 
-const MIRROR_VERSION: i64 = 2;
+const MIRROR_V3: &str = "
+ALTER TABLE releve ADD COLUMN applied_generation INTEGER NOT NULL DEFAULT 0;
+";
+
+const MIRROR_VERSION: i64 = 3;
 
 /// Où est le miroir d'un coffre. `vault.db` donne `vault.db.mailbox`.
 #[must_use]
@@ -128,17 +143,13 @@ impl Mailbox {
         }
         if version == 0 {
             conn.execute_batch(SCHEMA)?;
-            conn.pragma_update(None, "user_version", MIRROR_VERSION)?;
-        } else if version == 1 {
-            conn.execute_batch(
-                "ALTER TABLE message ADD COLUMN body_state TEXT NOT NULL DEFAULT 'ready';
-                 ALTER TABLE mailbox ADD COLUMN modseq INTEGER;
-                 CREATE TABLE IF NOT EXISTS releve (
-                    id INTEGER PRIMARY KEY CHECK (id = 1),
-                    at TEXT,
-                    error TEXT
-                 );",
-            )?;
+        } else if version < 2 {
+            conn.execute_batch(MIRROR_V2)?;
+        }
+        if version != 0 && version < 3 {
+            conn.execute_batch(MIRROR_V3)?;
+        }
+        if version < MIRROR_VERSION {
             conn.pragma_update(None, "user_version", MIRROR_VERSION)?;
         }
         tighten_file(path);
@@ -161,6 +172,91 @@ impl Mailbox {
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+    }
+
+    /// Remet les curseurs au début. La liste vide relit tout le compte.
+    ///
+    /// # Errors
+    ///
+    /// Écriture impossible.
+    pub fn rewind_cursors(&self) -> Result<(), AppError> {
+        self.conn
+            .execute("UPDATE mailbox SET last_uid = 0, modseq = NULL", [])?;
+        Ok(())
+    }
+
+    /// Génération d'adresses déjà appliquée au miroir. Zéro : aucune.
+    ///
+    /// # Errors
+    ///
+    /// Lecture impossible.
+    pub fn applied_generation(&self) -> Result<i64, AppError> {
+        self.conn
+            .query_row(
+                "SELECT applied_generation FROM releve WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map(|value| value.unwrap_or(0))
+            .map_err(AppError::from)
+    }
+
+    /// Note la génération d'adresses que ce miroir a déjà appliquée.
+    ///
+    /// # Errors
+    ///
+    /// Écriture impossible.
+    pub fn set_applied_generation(&self, generation: i64) -> Result<(), AppError> {
+        self.conn.execute(
+            "INSERT INTO releve (id, applied_generation) VALUES (1, ?1)
+             ON CONFLICT(id) DO UPDATE SET applied_generation = excluded.applied_generation",
+            [generation],
+        )?;
+        Ok(())
+    }
+
+    /// Retire les lignes dont l'UID n'est pas tenu. Renvoie les `message_id` effacés.
+    ///
+    /// # Errors
+    ///
+    /// Écriture impossible.
+    pub fn retain_uids(
+        &self,
+        name: &str,
+        uidvalidity: i64,
+        keep: &[i64],
+    ) -> Result<Vec<String>, AppError> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "CREATE TEMP TABLE IF NOT EXISTS griffe_keep (uid INTEGER PRIMARY KEY)",
+            [],
+        )?;
+        tx.execute("DELETE FROM griffe_keep", [])?;
+        {
+            let mut insert = tx.prepare("INSERT INTO griffe_keep (uid) VALUES (?1)")?;
+            for uid in keep {
+                insert.execute([uid])?;
+            }
+        }
+        let ids = {
+            let mut stmt = tx.prepare(
+                "SELECT message_id FROM message
+                 WHERE mailbox = ?1 AND uidvalidity = ?2
+                   AND message_id IS NOT NULL
+                   AND uid NOT IN (SELECT uid FROM griffe_keep)",
+            )?;
+            let rows = stmt.query_map(params![name, uidvalidity], |row| row.get(0))?;
+            rows.collect::<Result<Vec<String>, _>>()?
+        };
+        tx.execute(
+            "DELETE FROM message
+             WHERE mailbox = ?1 AND uidvalidity = ?2
+               AND uid NOT IN (SELECT uid FROM griffe_keep)",
+            params![name, uidvalidity],
+        )?;
+        tx.commit()?;
+        Ok(ids)
     }
 
     /// Oublie les lignes d'un dossier dont les UID ne valent plus.

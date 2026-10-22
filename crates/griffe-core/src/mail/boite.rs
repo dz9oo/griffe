@@ -130,6 +130,8 @@ pub struct BoxPage {
     pub releve_at: Option<String>,
     /// Phrase de l'échec encore en cours.
     pub releve_error: Option<String>,
+    /// Adresses copiées. Vide : tout le compte.
+    pub kept_addresses: Vec<String>,
 }
 
 /// Ce qu'on demande à la page.
@@ -188,6 +190,7 @@ pub fn read_box(vault: &Store, query: BoxQuery<'_>) -> Result<BoxPage, AppError>
             releve_every_secs: super::releve_every(vault)?,
             releve_at: None,
             releve_error: None,
+            kept_addresses: super::kept_addresses(vault.connection())?,
         });
     }
     let mailbox = vault.open_mailbox()?;
@@ -231,6 +234,7 @@ pub fn read_box(vault: &Store, query: BoxQuery<'_>) -> Result<BoxPage, AppError>
         releve_every_secs: super::releve_every(vault)?,
         releve_at,
         releve_error,
+        kept_addresses: super::kept_addresses(vault.connection())?,
     })
 }
 
@@ -586,7 +590,7 @@ fn line_of(letter: MirrorLetter) -> FilLine {
 fn received_letter(vault: &Store, token: &str) -> Result<MirrorLetter, AppError> {
     if !mailbox_exists(vault) {
         return Err(AppError::Domain(
-            "Ce message n'est pas dans la boîte.".into(),
+            "Ce message n'est pas dans le courriel.".into(),
         ));
     }
     let mailbox = vault.open_mailbox()?;
@@ -609,7 +613,7 @@ fn received_letter(vault: &Store, token: &str) -> Result<MirrorLetter, AppError>
         }
     }
     Err(AppError::Domain(
-        "Ce message n'est pas dans la boîte.".into(),
+        "Ce message n'est pas dans le courriel.".into(),
     ))
 }
 

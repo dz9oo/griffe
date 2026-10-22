@@ -3,8 +3,8 @@
 
 use griffe_core::app::Executor;
 use griffe_core::mail::{
-    ArmOutbound, SaveLetterface, SaveMailSignature, SetAutomaticSend, SetReleveInterval, profile,
-    trial_letter,
+    ArmOutbound, SaveLetterface, SaveMailSignature, SetAutomaticSend, SetKeptAddresses,
+    SetReleveInterval, profile, trial_letter,
 };
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
@@ -61,6 +61,15 @@ pub(crate) struct TrialArgs {
 pub(crate) struct RythmeArgs {
     /// 1, 3, 15 ou 30 minutes.
     minutes: u16,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct AdressesArgs {
+    /// Adresses tenues, reçues et envoyées. Vide : tout le compte est lu.
+    #[serde(default)]
+    addresses: Vec<String>,
     #[serde(default)]
     dry_run: bool,
 }
@@ -243,6 +252,26 @@ impl FreeflowServer {
         let mut store = self.store.lock().await;
         let cmd = SetReleveInterval {
             seconds: u64::from(args.minutes).saturating_mul(60),
+        };
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
+            Ok(outcome) => ok_json(outcome_json(&outcome)),
+            Err(error) => err_text(error.to_string()),
+        }
+    }
+
+    #[tool(
+        name = "mail.adresses",
+        description = "Adresses que la relève copie, reçues et envoyées. Une liste vide lit tout le compte. Un agent laisse le geste en attente.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true
+        )
+    )]
+    async fn mail_adresses(&self, Parameters(args): Parameters<AdressesArgs>) -> CallToolResult {
+        let mut store = self.store.lock().await;
+        let cmd = SetKeptAddresses {
+            addresses: args.addresses,
         };
         match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),

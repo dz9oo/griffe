@@ -136,17 +136,66 @@ button { font-family: inherit; color: inherit; cursor: pointer; background: none
   color: var(--ink-2);
   display: inline-flex;
   align-items: baseline;
-  gap: 6px;
+  gap: 7px;
+}
+.boite-link .env {
+  display: inline-flex;
+  align-self: center;
+  width: 14px;
+  height: 12px;
+  color: inherit;
+}
+.boite-link .env svg {
+  display: block;
+  width: 14px;
+  height: 12px;
+}
+.boite-link:has(.n:not(:empty)) {
+  color: var(--ink);
+}
+.boite-link:has(.n:not(:empty)) .env {
+  color: var(--seal);
 }
 .boite-link[aria-current="page"],
 .boite-link:focus-visible {
   color: var(--ink);
   box-shadow: inset 0 -1px 0 var(--ink);
 }
+.boite-link[aria-current="page"] .env,
+.boite-link:focus-visible .env {
+  color: var(--ink);
+}
 .boite-link .n {
   font-variant-numeric: tabular-nums;
   color: var(--seal);
   font-size: 12px;
+}
+.address-board {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 12px;
+  align-items: center;
+}
+.address-board input[type="text"] {
+  grid-column: 1;
+  min-width: 0;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--rule);
+  box-sizing: border-box;
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 16px;
+}
+.address-board input:focus { border-color: var(--ink); outline: none; }
+.address-remove { grid-column: 2; }
+.address-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 16px;
+  align-items: baseline;
+  margin-top: 4px;
 }
 .chrome .today {
   font-size: 11px;

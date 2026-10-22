@@ -321,6 +321,7 @@ pub fn router(state: AppState) -> Router {
         .route("/societe/courrier/retirer", post(courrier::clear_secret))
         .route("/societe/courrier/automatique", post(courrier::automatic))
         .route("/societe/courrier/releve", post(courrier::releve_interval))
+        .route("/societe/courrier/adresses", post(courrier::save_addresses))
         .route(
             "/societe/courrier/signature",
             post(courrier::save_signature),

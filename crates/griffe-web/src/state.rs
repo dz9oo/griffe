@@ -17,10 +17,10 @@ use griffe_core::app::{Actor, ExecutionContext};
 use griffe_core::domain::parse_date;
 use griffe_core::mail::{
     AbsorbBeat, AbsorbReport, ImapEndpoint, LectureFolder, LecturePhase, MailSecret,
-    MailSubmitError, ProbeVerdict, PullEvent, PullRole, PullTick, PulledMessage, SmtpEndpoint,
-    beat_after_absorb,
+    MailSubmitError, ProbeVerdict, PullEvent, PullRole, PullScope, PullTick, PulledMessage,
+    SmtpEndpoint, beat_after_absorb,
 };
-use griffe_core::mailbox::{MailboxCursor, PendingBody};
+use griffe_core::mailbox::PendingBody;
 use griffe_core::store::{AUTO_BACKUP_MAX_AGE, Passphrase, Store, StoreError, VaultStatus};
 use tokio::sync::Mutex;
 
@@ -35,10 +35,10 @@ pub type MarkSeen =
 /// Relève IMAP. Absente dans les tests et `griffe-web-dev` : la page ne joue pas la lecture.
 /// Le rappel reçoit chaque lot. Il ne doit pas ouvrir le coffre : le fil qui absorbe le fait.
 pub type ReleveFetch = Arc<
-    dyn Fn(
+    dyn for<'a> Fn(
             &ImapEndpoint,
             &MailSecret,
-            &[MailboxCursor],
+            &PullScope<'a>,
             &mut dyn FnMut(PullEvent),
         ) -> Result<(), MailSubmitError>
         + Send
@@ -314,10 +314,10 @@ impl AppState {
     /// Installe la relève. La fenêtre passe `griffe_mail::fetch_reporting`.
     pub fn set_releve_fetch(
         &self,
-        fetch: impl Fn(
+        fetch: impl for<'a> Fn(
             &ImapEndpoint,
             &MailSecret,
-            &[MailboxCursor],
+            &PullScope<'a>,
             &mut dyn FnMut(PullEvent),
         ) -> Result<(), MailSubmitError>
         + Send

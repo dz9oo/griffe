@@ -3,7 +3,9 @@
 
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
 
-use griffe_core::mail::{ImapEndpoint, MailSecret, MailSubmitError, PullEvent, PulledMessage};
+use griffe_core::mail::{
+    ImapEndpoint, MailSecret, MailSubmitError, PullEvent, PullScope, PulledMessage,
+};
 use griffe_core::mailbox::MailboxCursor;
 use zeroize::Zeroize;
 
@@ -14,6 +16,8 @@ enum Job {
         endpoint: ImapEndpoint,
         password: String,
         cursors: Vec<MailboxCursor>,
+        addresses: Vec<String>,
+        sweep: bool,
         reply: SyncSender<SyncNote>,
     },
     Body {
@@ -71,7 +75,7 @@ impl MailHub {
         &self,
         endpoint: &ImapEndpoint,
         secret: &MailSecret,
-        cursors: &[MailboxCursor],
+        scope: &PullScope<'_>,
         on: &mut dyn FnMut(PullEvent),
     ) -> Result<(), MailSubmitError> {
         let (reply, incoming) = mpsc::sync_channel(4);
@@ -79,7 +83,9 @@ impl MailHub {
             .send(Job::Sync {
                 endpoint: endpoint.clone(),
                 password: secret.expose().to_string(),
-                cursors: cursors.to_vec(),
+                cursors: scope.cursors.to_vec(),
+                addresses: scope.addresses.to_vec(),
+                sweep: scope.sweep,
                 reply,
             })
             .map_err(|_| broken())?;
@@ -126,10 +132,18 @@ fn serve(incoming: Receiver<Job>) {
                 endpoint,
                 mut password,
                 cursors,
+                addresses,
+                sweep,
                 reply,
             } => {
-                let outcome = secret_of(&password)
-                    .and_then(|secret| sync_with(&mut live, &endpoint, &secret, &cursors, &reply));
+                let outcome = secret_of(&password).and_then(|secret| {
+                    let scope = PullScope {
+                        cursors: &cursors,
+                        addresses: &addresses,
+                        sweep,
+                    };
+                    sync_with(&mut live, &endpoint, &secret, &scope, &reply)
+                });
                 password.zeroize();
                 let _ = reply.send(SyncNote::Done(outcome));
             }
@@ -155,11 +169,11 @@ fn sync_with(
     live: &mut Option<Live>,
     endpoint: &ImapEndpoint,
     secret: &MailSecret,
-    cursors: &[MailboxCursor],
+    scope: &PullScope<'_>,
     reply: &SyncSender<SyncNote>,
 ) -> Result<(), MailSubmitError> {
     let session = ensure(live, endpoint, secret)?;
-    session.read_folders(endpoint, secret, cursors, &mut |event| {
+    session.read_folders(endpoint, secret, scope, &mut |event| {
         let _ = reply.send(SyncNote::Event(event));
     })
 }
@@ -202,5 +216,5 @@ fn secret_of(password: &str) -> Result<MailSecret, MailSubmitError> {
 }
 
 fn broken() -> MailSubmitError {
-    MailSubmitError::Other("La boîte n'a pas pu être lue.".into())
+    MailSubmitError::Other("Le courriel n'a pas pu être lu.".into())
 }

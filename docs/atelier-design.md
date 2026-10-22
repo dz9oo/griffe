@@ -660,20 +660,28 @@ Ouvrir `docs/mockups/atelier-app.html`. Parcours minimum avant de coder un lot :
 
 Si un futur changement casse ce parcours, ce n’est plus Atelier.
 
-## 13. La boîte
+## 13. Le courriel
 
-La boîte n’est pas une quatrième pièce. Les trois questions restent. Dans la
-chrome, entre les pièces et la date, le mot **Boîte**. Un compte en sceau
+Le courriel n’est pas une quatrième pièce. Les trois questions restent. Dans la
+chrome, entre les pièces et la date, le mot **Courriel**, précédé d’une
+enveloppe au trait. Au repos, le mot et l’enveloppe sont en encre claire.
+Quelque chose à lire : le mot passe à l’encre, l’enveloppe et le compte au sceau.
+La page ouverte souligne le mot, comme les pièces. L’enveloppe reprend alors l’encre. Un compte en sceau
 n’apparaît que si une réponse de dossier, ou une adresse qui ne reçoit pas,
-demande un regard. Rien quand la boîte est calme. Le courrier, chapitre de
+demande un regard. Rien quand le courriel est calme. Le courrier, chapitre de
 La société, reste le réglage du compte. On ne le renomme pas.
+
+Les adresses, dans ce chapitre, disent ce que ce compte mélange. Griffe ne
+relève que celles qui y sont écrites, reçues et envoyées. Les autres ne sont
+pas lues, et ne restent pas dans le coffre. Une liste vide lit tout le compte.
 
 La page prend le bureau (`#e6dfd2`). Trois colonnes dès que la fenêtre le
 permet : les vues (À lire, Avec les dossiers, Envoyées, Tout, En échec), les
 lettres en cartes `#fbf7f0`, puis la lettre. Les dossiers du serveur
 (INBOX, Sent, Brouillons, Archive) restent fermés. Une phrase de statut ouvre
-la page, même carte que le matin. Pendant la lecture, cette phrase le dit.
-Le grand paraphe ne paraît que si la boîte est encore vide. Une relève
+la page, même carte que le matin. Sous la phrase, les adresses tenues, ou
+« Tout le compte ». Pendant la lecture, cette phrase le dit.
+Le grand paraphe ne paraît que si le courriel est encore vide. Une relève
 suivante ne recouvre pas la lettre ouverte. L'échec, et le compte qui ne
 se lit pas, s'écrivent. La phrase dit « Relève du courrier en cours. » ou
 « Dernière relève à 14 h 32. ». « Relever le courrier » demande un passage.
@@ -689,7 +697,7 @@ L’estimation, Les travaux, Noter une rencontre. Répondre suit la lettre reçu
 
 Une lettre partie par Griffe, et la réponse qu’on écrit, reprennent la feuille
 et la formule de Le courrier (Clair, Sauge, ou le fichier lisible). Le courrier
-reçu n’est pas repeint. Ces réglages ne se refont pas dans la boîte.
+reçu n’est pas repeint. Ces réglages ne se refont pas dans le courriel.
 
 Quand la personne répond, le fil le montre et la prochaine relance automatique
 de ce dossier reste là : « Camille a répondu. La relance ne part pas. »

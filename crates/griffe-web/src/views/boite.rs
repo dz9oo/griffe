@@ -1,4 +1,4 @@
-//! La boîte. Le texte reçu est montré tel quel. Le HTML reçu passe dans un cadre fermé.
+//! Le courriel. Le texte reçu est montré tel quel. Le HTML reçu passe dans un cadre fermé.
 
 use griffe_core::mail::{
     BoxCard, BoxPage, BoxVue, ClassChoice, LectureFace, LectureShow, LetterPlace,
@@ -100,6 +100,7 @@ fn facts(page: &BoxPage, keep: &Keep, lecture: Option<&LectureView>) -> Markup {
     let Some(lecture) = lecture else {
         return html! {
             (status(page.dossier_letters, page.failed_addresses))
+            (kept_line(page))
             (releve_bar(page, keep, false))
         };
     };
@@ -112,8 +113,20 @@ fn facts(page: &BoxPage, keep: &Keep, lecture: Option<&LectureView>) -> Markup {
     html! {
         div id="lecture" hx-get=(url) hx-trigger=(trigger) hx-swap="outerHTML" hx-target="this" {
             (shown_sentence(page, &lecture.face))
+            (kept_line(page))
             (releve_bar(page, keep, lecture.busy))
         }
+    }
+}
+
+fn kept_line(page: &BoxPage) -> Markup {
+    let line = if page.kept_addresses.is_empty() {
+        "Tout le compte".to_string()
+    } else {
+        page.kept_addresses.join(" · ")
+    };
+    html! {
+        p class="quiet-line kept-line" { (line) }
     }
 }
 
@@ -267,7 +280,7 @@ fn status(letters: u32, failed: u32) -> Markup {
 fn vues(page: &BoxPage, keep: &Keep, oob: bool) -> Markup {
     let folder_on = !keep.dossier.is_empty();
     html! {
-        nav id="boite-vues" class="vues" aria-label="Vues de la boîte"
+        nav id="boite-vues" class="vues" aria-label="Vues du courriel"
           hx-swap-oob=[oob.then_some("outerHTML")] {
             (vue_link(BoxVue::Lire, "À lire", page.counts.lire, keep, folder_on, false))
             (vue_link(BoxVue::Dossiers, "Avec les dossiers", page.counts.dossiers, keep, folder_on, false))
@@ -489,7 +502,7 @@ fn meta(letter: &griffe_core::mail::BoxLetter) -> String {
 fn actions(letter: &griffe_core::mail::BoxLetter, keep: &Keep) -> Markup {
     match &letter.place {
         LetterPlace::Quiet if letter.message_id.as_deref().is_none_or(str::is_empty) => {
-            html! { p class="soft" { "Ce message n'a pas d'identifiant. Il reste dans la boîte." } }
+            html! { p class="soft" { "Ce message n'a pas d'identifiant. Il reste dans le courriel." } }
         }
         LetterPlace::Quiet => html! {},
         LetterPlace::Filed {
@@ -528,7 +541,7 @@ fn actions(letter: &griffe_core::mail::BoxLetter, keep: &Keep) -> Markup {
         LetterPlace::Pick { choices } => {
             let Some(message_id) = letter.message_id.as_deref() else {
                 return html! {
-                    p class="soft" { "Ce message n'a pas d'identifiant. Il reste dans la boîte." }
+                    p class="soft" { "Ce message n'a pas d'identifiant. Il reste dans le courriel." }
                 };
             };
             html! {

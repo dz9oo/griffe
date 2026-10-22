@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use griffe_core::mail::{
     BODY_CAP_BYTES, HEADER_BATCH, ICLOUD_SENT_MAILBOX, IMAP_PORT, ImapEndpoint, MailSecret,
-    MailSubmitError, PullEvent, PullRole, PullTick, PulledBody, PulledMailbox, PulledMessage,
-    SentCopyStatus,
+    MailSubmitError, PullEvent, PullRole, PullScope, PullTick, PulledBody, PulledMailbox,
+    PulledMessage, SentCopyStatus, message_kept,
 };
 use griffe_core::mailbox::MailboxCursor;
 use rustls::pki_types::ServerName;
@@ -65,10 +65,10 @@ pub struct ListedMailbox {
 pub fn fetch_new(
     endpoint: &ImapEndpoint,
     secret: &MailSecret,
-    cursors: &[MailboxCursor],
+    scope: &PullScope<'_>,
 ) -> Result<Vec<PulledMailbox>, MailSubmitError> {
     let mut batches = Vec::new();
-    fetch_reporting(endpoint, secret, cursors, &mut |event| {
+    fetch_reporting(endpoint, secret, scope, &mut |event| {
         if let PullEvent::Batch(batch) = event {
             batches.push(batch);
         }
@@ -85,11 +85,11 @@ pub fn fetch_new(
 pub fn fetch_reporting(
     endpoint: &ImapEndpoint,
     secret: &MailSecret,
-    cursors: &[MailboxCursor],
+    scope: &PullScope<'_>,
     on: &mut dyn FnMut(PullEvent),
 ) -> Result<(), MailSubmitError> {
     let (mut session, _) = login(endpoint, secret)?;
-    sync_folders(&mut session, endpoint, secret, cursors, on)?;
+    sync_folders(&mut session, endpoint, secret, scope, on)?;
     session.logout();
     Ok(())
 }
@@ -138,6 +138,8 @@ pub fn fetch_pending(
             role: "inbox".to_string(),
             messages: vec![message],
             modseq: None,
+            examined_uid: 0,
+            keep_uids: None,
         });
     }
     session.logout();
@@ -148,7 +150,7 @@ fn sync_folders(
     session: &mut Session,
     endpoint: &ImapEndpoint,
     secret: &MailSecret,
-    cursors: &[MailboxCursor],
+    scope: &PullScope<'_>,
     on: &mut dyn FnMut(PullEvent),
 ) -> Result<(), MailSubmitError> {
     let password = secret.expose();
@@ -171,7 +173,7 @@ fn sync_folders(
         } else {
             "sent"
         };
-        session.pull_headers(password, &name, role, cursors, on)?;
+        session.pull_headers(password, &name, role, scope, on)?;
     }
     Ok(())
 }
@@ -537,9 +539,13 @@ impl Session {
         secret: &str,
         name: &str,
         role: &str,
-        cursors: &[MailboxCursor],
+        scope: &PullScope<'_>,
         on: &mut dyn FnMut(PullEvent),
     ) -> Result<(), MailSubmitError> {
+        if !scope.addresses.is_empty() {
+            return self.pull_kept(secret, name, role, scope, on);
+        }
+        let cursors = scope.cursors;
         let lines = self.select_for_pull(name, secret)?;
         let total = parse_exists(&lines);
         let role_tick = PullRole::parse(role);
@@ -573,7 +579,17 @@ impl Session {
         };
         if !resync && uidnext.is_some_and(|next| start >= next) {
             if !self.pull_flag_changes(&watch, on)? {
-                emit_batch(on, name, uidvalidity, false, role, Vec::new(), highest);
+                emit_batch(
+                    on,
+                    name,
+                    uidvalidity,
+                    false,
+                    role,
+                    Vec::new(),
+                    highest,
+                    0,
+                    None,
+                );
             }
             return Ok(());
         }
@@ -584,9 +600,29 @@ impl Session {
         uids.dedup();
         if uids.is_empty() {
             if resync {
-                emit_batch(on, name, uidvalidity, true, role, Vec::new(), highest);
+                emit_batch(
+                    on,
+                    name,
+                    uidvalidity,
+                    true,
+                    role,
+                    Vec::new(),
+                    highest,
+                    0,
+                    None,
+                );
             } else if !self.pull_flag_changes(&watch, on)? {
-                emit_batch(on, name, uidvalidity, false, role, Vec::new(), highest);
+                emit_batch(
+                    on,
+                    name,
+                    uidvalidity,
+                    false,
+                    role,
+                    Vec::new(),
+                    highest,
+                    0,
+                    None,
+                );
             }
             return Ok(());
         }
@@ -622,12 +658,184 @@ impl Session {
                 role,
                 messages,
                 highest.filter(|_| index + 1 == chunks.len()),
+                0,
+                None,
             );
         }
         if !resync {
             self.pull_flag_changes(&watch, on)?;
         }
         Ok(())
+    }
+
+    /// Ne lit que les adresses tenues. Le curseur avance aussi sur ce qui est ignoré.
+    /// Une passe entière (`sweep`) retire du miroir les UID qui ne sont plus tenus.
+    fn pull_kept(
+        &mut self,
+        secret: &str,
+        name: &str,
+        role: &str,
+        scope: &PullScope<'_>,
+        on: &mut dyn FnMut(PullEvent),
+    ) -> Result<(), MailSubmitError> {
+        let lines = self.select_for_pull(name, secret)?;
+        let total = parse_exists(&lines);
+        let role_tick = PullRole::parse(role);
+        on(PullEvent::Tick(PullTick {
+            role: role_tick,
+            read: 0,
+            total,
+        }));
+        let uidvalidity = parse_uidvalidity(&lines)
+            .and_then(|value| i64::try_from(value).ok())
+            .ok_or_else(|| unread(secret, ""))?;
+        let uidnext =
+            parse_code_number(&lines, "UIDNEXT").and_then(|value| i64::try_from(value).ok());
+        let highest =
+            parse_code_number(&lines, "HIGHESTMODSEQ").and_then(|value| i64::try_from(value).ok());
+        let cursor = scope
+            .cursors
+            .iter()
+            .find(|cursor| cursor.name.eq_ignore_ascii_case(name));
+        let resync = cursor.is_some_and(|cursor| cursor.uidvalidity != uidvalidity);
+        let start = if scope.sweep || resync {
+            1
+        } else {
+            match cursor {
+                Some(cursor) => cursor.last_uid.saturating_add(1).max(1),
+                None => 1,
+            }
+        };
+        let watch = FlagWatch {
+            secret,
+            name,
+            role,
+            uidvalidity,
+            cursor,
+            highest,
+        };
+        if !scope.sweep && !resync && uidnext.is_some_and(|next| start >= next) {
+            if !self.pull_flag_changes(&watch, on)? {
+                emit_batch(
+                    on,
+                    name,
+                    uidvalidity,
+                    false,
+                    role,
+                    Vec::new(),
+                    highest,
+                    0,
+                    None,
+                );
+            }
+            return Ok(());
+        }
+        let searched =
+            self.command_wide(&format!("UID SEARCH UID {start}:*"), secret, SEARCH_PREFIX)?;
+        let mut span = parse_search_uids(&searched);
+        span.sort_unstable();
+        span.dedup();
+        let examined = span.iter().copied().max().unwrap_or_else(|| {
+            uidnext
+                .map(|next| next.saturating_sub(1).max(0))
+                .unwrap_or(0)
+        });
+        let mut messages = self.kept_headers(secret, start, scope.addresses, &span)?;
+        messages.retain(|message| header_kept(message, scope.addresses));
+        messages.sort_by_key(|message| message.uid);
+        messages.dedup_by_key(|message| message.uid);
+        self.complete_reports(secret, &mut messages)?;
+        let mut keep_ids: Vec<i64> = messages.iter().map(|message| message.uid).collect();
+        keep_ids.sort_unstable();
+        keep_ids.dedup();
+        let keep = scope.sweep.then_some(keep_ids);
+        emit_kept(
+            on,
+            name,
+            uidvalidity,
+            resync,
+            role,
+            role_tick,
+            total,
+            messages,
+            highest,
+            examined,
+            keep,
+        );
+        if !resync {
+            self.pull_flag_changes(&watch, on)?;
+        }
+        Ok(())
+    }
+
+    /// En-têtes des UID tenus. Une recherche trop large est relue, puis filtrée ici.
+    fn kept_headers(
+        &mut self,
+        secret: &str,
+        start: i64,
+        addresses: &[String],
+        span: &[i64],
+    ) -> Result<Vec<PulledMessage>, MailSubmitError> {
+        if span.is_empty() {
+            return Ok(Vec::new());
+        }
+        let uids = match self.search_kept(secret, start, addresses) {
+            Ok(mut found) => {
+                found.sort_unstable();
+                found.dedup();
+                found.retain(|uid| span.binary_search(uid).is_ok());
+                found
+            }
+            Err(
+                error @ (MailSubmitError::Auth | MailSubmitError::Tls | MailSubmitError::Timeout),
+            ) => return Err(error),
+            Err(_) => span.to_vec(),
+        };
+        self.fetch_headers(secret, &uids)
+    }
+
+    fn search_kept(
+        &mut self,
+        secret: &str,
+        start: i64,
+        addresses: &[String],
+    ) -> Result<Vec<i64>, MailSubmitError> {
+        if addresses.iter().any(|address| contains_break(address)) {
+            return Err(MailSubmitError::Other(
+                "Le courriel n'a pas pu être lu.".into(),
+            ));
+        }
+        let mut found = Vec::new();
+        for address in addresses {
+            let lines =
+                self.command_wide(&kept_search_query(start, address), secret, SEARCH_PREFIX)?;
+            found.extend(parse_search_uids(&lines));
+        }
+        Ok(found)
+    }
+
+    fn fetch_headers(
+        &mut self,
+        secret: &str,
+        uids: &[i64],
+    ) -> Result<Vec<PulledMessage>, MailSubmitError> {
+        let mut messages = Vec::new();
+        for chunk in uids.chunks(HEADER_BATCH) {
+            let fetched = self.fetch(
+                &format!(
+                    "UID FETCH {} (UID FLAGS RFC822.SIZE BODY.PEEK[HEADER])",
+                    uid_set(chunk)
+                ),
+                secret,
+                HEADER_LITERAL,
+            )?;
+            for line in &fetched {
+                if let Some(message) = message_from_header(line) {
+                    messages.push(message);
+                }
+            }
+        }
+        Ok(messages)
     }
 
     fn select_for_pull(
@@ -678,6 +886,8 @@ impl Session {
             watch.role,
             messages,
             Some(highest),
+            0,
+            None,
         );
         Ok(true)
     }
@@ -794,10 +1004,10 @@ impl Session {
         &mut self,
         endpoint: &ImapEndpoint,
         secret: &MailSecret,
-        cursors: &[MailboxCursor],
+        scope: &PullScope<'_>,
         on: &mut dyn FnMut(PullEvent),
     ) -> Result<(), MailSubmitError> {
-        sync_folders(self, endpoint, secret, cursors, on)
+        sync_folders(self, endpoint, secret, scope, on)
     }
 
     pub(crate) fn read_one(
@@ -936,12 +1146,14 @@ fn unread(secret: &str, line: &str) -> MailSubmitError {
         MailSubmitError::Timeout => MailSubmitError::Timeout,
         MailSubmitError::Refused(message) => {
             if !secret.is_empty() && message.contains(secret) {
-                MailSubmitError::Other("La boîte n'a pas pu être lue.".into())
+                MailSubmitError::Other("Le courriel n'a pas pu être lu.".into())
             } else {
                 MailSubmitError::Refused(message)
             }
         }
-        MailSubmitError::Other(_) => MailSubmitError::Other("La boîte n'a pas pu être lue.".into()),
+        MailSubmitError::Other(_) => {
+            MailSubmitError::Other("Le courriel n'a pas pu être lu.".into())
+        }
     }
 }
 
@@ -1064,6 +1276,64 @@ fn uid_set(uids: &[i64]) -> String {
     out
 }
 
+fn header_kept(message: &PulledMessage, addresses: &[String]) -> bool {
+    message.raw.trim().is_empty() || message_kept(&message.raw, addresses)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_kept(
+    on: &mut dyn FnMut(PullEvent),
+    name: &str,
+    uidvalidity: i64,
+    resync: bool,
+    role: &str,
+    role_tick: PullRole,
+    total: Option<u32>,
+    messages: Vec<PulledMessage>,
+    modseq: Option<i64>,
+    examined_uid: i64,
+    keep_uids: Option<Vec<i64>>,
+) {
+    if messages.is_empty() {
+        emit_batch(
+            on,
+            name,
+            uidvalidity,
+            resync,
+            role,
+            Vec::new(),
+            modseq,
+            examined_uid,
+            keep_uids,
+        );
+        return;
+    }
+    let chunks = messages.len().div_ceil(HEADER_BATCH);
+    let mut read = 0_u32;
+    let mut keep_uids = keep_uids;
+    for (index, chunk) in messages.chunks(HEADER_BATCH).enumerate() {
+        let last = index + 1 == chunks;
+        read = read.saturating_add(u32::try_from(chunk.len()).unwrap_or(u32::MAX));
+        on(PullEvent::Tick(PullTick {
+            role: role_tick,
+            read,
+            total,
+        }));
+        emit_batch(
+            on,
+            name,
+            uidvalidity,
+            resync && index == 0,
+            role,
+            chunk.to_vec(),
+            modseq.filter(|_| last),
+            if last { examined_uid } else { 0 },
+            if last { keep_uids.take() } else { None },
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn emit_batch(
     on: &mut dyn FnMut(PullEvent),
     name: &str,
@@ -1072,6 +1342,8 @@ fn emit_batch(
     role: &str,
     messages: Vec<PulledMessage>,
     modseq: Option<i64>,
+    examined_uid: i64,
+    keep_uids: Option<Vec<i64>>,
 ) {
     on(PullEvent::Batch(PulledMailbox {
         name: name.to_string(),
@@ -1080,7 +1352,39 @@ fn emit_batch(
         role: role.to_string(),
         messages,
         modseq,
+        examined_uid,
+        keep_uids,
     }));
+}
+
+/// `UID SEARCH` limité aux en-têtes d'une adresse tenue.
+#[must_use]
+pub fn kept_search_query(start: i64, address: &str) -> String {
+    format!("UID SEARCH UID {start}:* {}", kept_search_clause(address))
+}
+
+fn kept_search_clause(address: &str) -> String {
+    let quoted = quote(address);
+    let keys = [
+        format!("(FROM {quoted})"),
+        format!("(TO {quoted})"),
+        format!("(CC {quoted})"),
+        format!("(BCC {quoted})"),
+        format!("(HEADER Delivered-To {quoted})"),
+        format!("(HEADER X-Delivered-To {quoted})"),
+        format!("(HEADER X-Original-To {quoted})"),
+        format!("(HEADER Envelope-To {quoted})"),
+        format!("(HEADER X-Envelope-To {quoted})"),
+        format!("(HEADER Resent-To {quoted})"),
+    ];
+    let mut out = String::new();
+    for key in &keys[..keys.len() - 1] {
+        out.push_str("OR ");
+        out.push_str(key);
+        out.push(' ');
+    }
+    out.push_str(&keys[keys.len() - 1]);
+    out
 }
 
 fn message_from_header(line: &[u8]) -> Option<PulledMessage> {
@@ -1207,8 +1511,8 @@ fn skip_astring(input: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::{
-        choose_sent_mailbox, login_names, parse_exists, parse_fetch_line, parse_list_line,
-        parse_uidvalidity, probe_copy,
+        choose_sent_mailbox, kept_search_query, login_names, parse_exists, parse_fetch_line,
+        parse_list_line, parse_uidvalidity, probe_copy,
     };
     use griffe_core::mail::{ImapEndpoint, MailSecret, MailSubmitError};
 
@@ -1245,6 +1549,32 @@ mod tests {
             choose_sent_mailbox(&icloud, true).as_deref(),
             Some("Sent Messages")
         );
+    }
+
+    #[test]
+    fn a_kept_search_names_the_ten_headers_and_not_the_reply() {
+        let query = kept_search_query(4, "ada@lumen.test");
+        assert!(query.starts_with("UID SEARCH UID 4:* "), "{query}");
+        for key in [
+            "FROM",
+            "TO",
+            "CC",
+            "BCC",
+            "Delivered-To",
+            "X-Delivered-To",
+            "X-Original-To",
+            "Envelope-To",
+            "X-Envelope-To",
+            "Resent-To",
+        ] {
+            assert!(query.contains(key), "{key} absent de {query}");
+        }
+        assert!(query.contains("\"ada@lumen.test\""), "{query}");
+        assert_eq!(query.matches("OR ").count(), 9, "{query}");
+        assert_eq!(query.matches('(').count(), 10, "{query}");
+        let lower = query.to_ascii_lowercase();
+        assert!(!lower.contains("reply-to"), "{query}");
+        assert!(!lower.contains("sender"), "{query}");
     }
 
     #[test]

@@ -246,6 +246,61 @@ pub(super) fn releve_every_raw(conn: &Connection) -> Result<Option<i64>, AppErro
     .map_err(AppError::from)
 }
 
+pub(super) fn kept_addresses(conn: &Connection) -> Result<Vec<String>, AppError> {
+    let mut stmt =
+        conn.prepare("SELECT address FROM mail_kept_address ORDER BY position, address")?;
+    let rows = stmt.query_map([], |row| row.get(0))?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+}
+
+pub(super) fn kept_generation(conn: &Connection) -> Result<i64, AppError> {
+    let generation = conn
+        .query_row(
+            "SELECT kept_generation FROM mail_account WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(generation.unwrap_or(0))
+}
+
+pub(super) fn replace_kept_addresses(
+    conn: &Connection,
+    addresses: &[String],
+    now: &str,
+) -> Result<(), AppError> {
+    let current = kept_addresses(conn)?;
+    if current == addresses {
+        return Ok(());
+    }
+    let exists: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM mail_account WHERE id = 1",
+        [],
+        |row| row.get(0),
+    )?;
+    if exists == 0 {
+        conn.execute(
+            "INSERT INTO mail_account (id, smtp_tls, preset, auto_send, releve_every_secs, updated_at)
+             VALUES (1, 'starttls', 'custom', 0, ?1, ?2)",
+            params![i64::try_from(super::RELEVE_EVERY_SECS).unwrap_or(180), now],
+        )?;
+    }
+    conn.execute("DELETE FROM mail_kept_address", [])?;
+    {
+        let mut stmt =
+            conn.prepare("INSERT INTO mail_kept_address (address, position) VALUES (?1, ?2)")?;
+        for (index, address) in addresses.iter().enumerate() {
+            let position = i64::try_from(index).unwrap_or(i64::MAX);
+            stmt.execute(params![address, position])?;
+        }
+    }
+    conn.execute(
+        "UPDATE mail_account SET kept_generation = kept_generation + 1, updated_at = ?1 WHERE id = 1",
+        [now],
+    )?;
+    Ok(())
+}
+
 pub(super) fn set_releve_every(conn: &Connection, seconds: i64, now: &str) -> Result<(), AppError> {
     let updated = conn.execute(
         "UPDATE mail_account SET releve_every_secs = ?1, updated_at = ?2 WHERE id = 1",

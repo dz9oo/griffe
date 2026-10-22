@@ -1,4 +1,4 @@
-//! Page Boîte. La socket, si la fenêtre en a installé une, reste hors du cœur.
+//! Page Courriel. La socket, si la fenêtre en a installé une, reste hors du cœur.
 
 use axum::extract::{Form, Query, State};
 use axum::http::{HeaderMap, HeaderValue};
@@ -85,7 +85,7 @@ pub(crate) async fn lecture(
             .into_response();
     };
     let Ok(page) = page else {
-        return Html(r#"<p class="plateau-sentence">La boîte ne s'ouvre pas.</p>"#.to_string())
+        return Html(r#"<p class="plateau-sentence">Le courriel ne s'ouvre pas.</p>"#.to_string())
             .into_response();
     };
     if !state.lecture_engaged() {
@@ -142,7 +142,7 @@ pub async fn seal(State(state): State<AppState>) -> Html<String> {
         .with_store(|store| seal_count(store).unwrap_or(0))
         .await
         .unwrap_or(0);
-    Html(layout::boite_link(count, false).into_string())
+    Html(layout::boite_count(count).into_string())
 }
 
 pub async fn classer(

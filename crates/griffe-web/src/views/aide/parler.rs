@@ -72,6 +72,7 @@ pub(super) const COURRIER: Letter = Letter {
         "Votre fichier, s'il est là, apparaît à côté, avec la mention votre feuille. Lisible, on peut le choisir. Illisible, la ligne le dit, et la lettre reste sur Clair ou sur Sauge.",
         "Envoyer l'essai laisse cinq secondes. La fenêtre dit Courrier envoyé. Cela ne promet pas la boîte du destinataire.",
         "L'envoi du jour est éteint. L'activer poste, coffre ouvert, les lettres dont la date prévue est aujourd'hui. Une lettre de la veille reste à envoyer à la main.",
+        "Les adresses : celles que Griffe relève, reçues et envoyées. Les autres ne sont pas lues, et ne restent pas dans le coffre. Vide, tout le compte est lu.",
     ],
     does_not: Some("Cela ne promet pas la boîte du destinataire au-delà de l'avis de non-remise."),
     href: Some("/societe/courrier"),
@@ -82,10 +83,10 @@ pub(super) const COURRIER: Letter = Letter {
 pub(super) const BOITE: Letter = Letter {
     slug: "boite",
     kicker: "Parler aux gens",
-    title: "La boîte.",
+    title: "Le courriel.",
     lede: "Les lettres du compte déjà réglé dans Le courrier. Un seul compte.",
     steps: &[
-        "Boîte, dans la barre, entre les trois pièces et la date. Le sceau compte une réponse de dossier pas encore ouverte, et une adresse qui ne reçoit pas.",
+        "Courriel, dans la barre, entre les trois pièces et la date. Une enveloppe l'accompagne. Le sceau compte une réponse de dossier pas encore ouverte, et une adresse qui ne reçoit pas.",
         "À lire, Avec les dossiers, Envoyées, Tout, En échec. Ouvrir une lettre la marque lue.",
         "Plusieurs fiches, ou aucune : on rattache la lettre. Le dossier la montre en haut, avec les lettres parties.",
         "Répondre se déplie sous le message reçu. Envoyer l'arme, avec cinq secondes pour la retenir. Écrire, sur le dossier, reste la lettre de la série.",
@@ -96,7 +97,7 @@ pub(super) const BOITE: Letter = Letter {
         "Griffe ne promet pas la boîte du destinataire au-delà de l'avis de non-remise.",
     ),
     href: Some("/boite"),
-    action: Some("Ouvrir la boîte"),
+    action: Some("Ouvrir le courriel"),
     rayon: Rayon::Atelier,
 };
 

@@ -23,11 +23,12 @@ pub use commands::{
     AddressFault, ArmOutbound, CancelOutbound, ClearMailSecret, FileMessage, FilingSource,
     HoldReply, MarkAddress, RecordMailProbe, ReleaseReplyHold, RememberImapUsername,
     ResolveUncertain, RetryOutbound, SaveLetterface, SaveMailAccount, SaveMailSecret,
-    SaveMailSignature, SetAutomaticSend, SetReleveInterval,
+    SaveMailSignature, SetAutomaticSend, SetKeptAddresses, SetReleveInterval,
 };
 pub use error::MailError;
 pub use inbound::{
-    DossierLink, FicheAddress, Filing, KnownLetter, Notice, ParsedMessage, classify, read_message,
+    DossierLink, FicheAddress, Filing, KEPT_ADDRESS_CAP, KnownLetter, Notice, ParsedMessage,
+    classify, message_kept, read_message,
 };
 pub use lecture::{
     AbsorbBeat, LectureAsk, LectureFace, LectureFolder, LectureMode, LecturePhase, LectureShow,
@@ -42,10 +43,10 @@ pub use model::{
 };
 pub use present::{LINK_HINT, LetterParts, close_letter, letter_card, letter_html, readable_links};
 pub use releve::{
-    AbsorbReport, BODY_CAP_BYTES, BoxLine, HEADER_BATCH, PullEvent, PulledBody, PulledMailbox,
-    PulledMessage, RECENT_BODIES, RELEVE_CHOICES_SECS, RELEVE_EVERY_SECS, RelevePlan, absorb,
-    list_box, note_releve_failure, note_releve_success, releve_cadence, releve_clock, releve_due,
-    releve_every, releve_plan, releve_word,
+    AbsorbReport, BODY_CAP_BYTES, BoxLine, HEADER_BATCH, PullEvent, PullScope, PulledBody,
+    PulledMailbox, PulledMessage, RECENT_BODIES, RELEVE_CHOICES_SECS, RELEVE_EVERY_SECS,
+    RelevePlan, absorb, list_box, note_kept_applied, note_releve_failure, note_releve_success,
+    prepare_pull, releve_cadence, releve_clock, releve_due, releve_every, releve_plan, releve_word,
 };
 pub use secret::MailSecret;
 pub use theme::{
@@ -61,6 +62,15 @@ pub use theme::{
 /// Lecture impossible.
 pub fn profile(conn: &rusqlite::Connection) -> Result<MailProfile, AppError> {
     store::profile(conn)
+}
+
+/// Adresses que la relève copie. Vide : tout le compte.
+///
+/// # Errors
+///
+/// Lecture impossible.
+pub fn kept_addresses(conn: &rusqlite::Connection) -> Result<Vec<String>, AppError> {
+    store::kept_addresses(conn)
 }
 
 /// Identifiant, hôte et mot de passe pour un essai de liaison. N'ouvre aucune socket.

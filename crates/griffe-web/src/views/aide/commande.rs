@@ -434,6 +434,11 @@ const COURRIER: &[Cmd] = &[
         example: r#"griffe courrier rythme 3"#,
     },
     Cmd {
+        verb: r#"courrier adresses"#,
+        said: r#"Adresses que la relève copie, reçues et envoyées. Sans argument, les montre. --tout lit tout le compte. Avec un agent, le geste attend une personne."#,
+        example: r#"griffe courrier adresses ada@exemple.fr"#,
+    },
+    Cmd {
         verb: r#"courrier auto"#,
         said: r#"Allume ou éteint l'envoi des lettres dont la date est aujourd'hui. Avec un agent, le geste attend une personne."#,
         example: r#"griffe courrier auto --off"#,
@@ -480,7 +485,7 @@ const COURRIER: &[Cmd] = &[
     },
     Cmd {
         verb: r#"boite relever"#,
-        said: r#"Lit la boîte de réception et Envoyés du compte déjà réglé."#,
+        said: r#"Relève le courriel du compte déjà réglé : réception et Envoyés."#,
         example: r#"griffe boite relever"#,
     },
     Cmd {
