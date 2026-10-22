@@ -72,7 +72,7 @@ pub(super) const COURRIER: Letter = Letter {
         "Votre fichier, s'il est là, apparaît à côté, avec la mention votre feuille. Lisible, on peut le choisir. Illisible, la ligne le dit, et la lettre reste sur Clair ou sur Sauge.",
         "Envoyer l'essai laisse cinq secondes. La fenêtre dit Courrier envoyé. Cela ne promet pas la boîte du destinataire.",
         "L'envoi du jour est éteint. L'activer poste, coffre ouvert, les lettres dont la date prévue est aujourd'hui. Une lettre de la veille reste à envoyer à la main.",
-        "Les adresses : celles que Griffe relève, reçues et envoyées. Les autres ne sont pas lues, et ne restent pas dans le coffre. Vide, tout le compte est lu.",
+        "Les adresses : celles que Griffe relève, reçues et envoyées. Rien n'est lu tant que ce choix n'est pas gardé. Les autres ne restent pas dans le coffre. Tout le compte est un geste à part.",
     ],
     does_not: Some("Cela ne promet pas la boîte du destinataire au-delà de l'avis de non-remise."),
     href: Some("/societe/courrier"),

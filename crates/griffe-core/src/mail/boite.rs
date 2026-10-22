@@ -130,8 +130,10 @@ pub struct BoxPage {
     pub releve_at: Option<String>,
     /// Phrase de l'échec encore en cours.
     pub releve_error: Option<String>,
-    /// Adresses copiées. Vide : tout le compte.
+    /// Adresses copiées. Vide : pas encore choisi, ou tout le compte.
     pub kept_addresses: Vec<String>,
+    /// Choix qui distingue une liste vide d'un compte entier.
+    pub kept_scope: super::KeptScope,
 }
 
 /// Ce qu'on demande à la page.
@@ -191,6 +193,7 @@ pub fn read_box(vault: &Store, query: BoxQuery<'_>) -> Result<BoxPage, AppError>
             releve_at: None,
             releve_error: None,
             kept_addresses: super::kept_addresses(vault.connection())?,
+            kept_scope: profile_scope(vault)?,
         });
     }
     let mailbox = vault.open_mailbox()?;
@@ -235,7 +238,12 @@ pub fn read_box(vault: &Store, query: BoxQuery<'_>) -> Result<BoxPage, AppError>
         releve_at,
         releve_error,
         kept_addresses: super::kept_addresses(vault.connection())?,
+        kept_scope: profile_scope(vault)?,
     })
+}
+
+fn profile_scope(vault: &Store) -> Result<super::KeptScope, AppError> {
+    Ok(super::profile(vault.connection())?.kept_scope)
 }
 
 /// Range le message, puis retient la relance si un dossier est choisi.

@@ -72,9 +72,9 @@ ouvre la feuille. L’identifiant du serveur n’apparaît que lorsqu’il
 diffère de l’adresse. L’envoi du jour reste à part.
 
 Une lettre partie est aussi déposée dans Envoyés du compte qui l’envoie.
-iCloud le fait sans champ de plus. Un autre serveur le fait si l’hôte des
-copies est saisi, sur le port 993. Vide, la lettre part et la copie n’ira
-pas dans Envoyés : l’essai de liaison le dit. Si le dépôt échoue, la lettre
+iCloud le fait sans champ de plus. Un autre serveur le fait si l’hôte du
+serveur des lettres est saisi, sur le port 993. Vide, la lettre part, la
+copie n’est pas déposée, et le courriel n’est pas lu. Si le dépôt échoue, la lettre
 est quand même partie. Griffe réessaie plus tard.
 
 Le courriel lit ce même compte : les lettres reçues, et celles déjà envoyées.
@@ -84,9 +84,9 @@ vide, et une phrase si le compte ne répond pas ou ne se lit pas.
 Elle dit aussi si la relève est en cours, ou l'heure de la dernière qui
 a abouti. « Relever le courrier » en demande une. La période se règle
 dans Le courrier : une minute, trois, quinze ou trente. Trois minutes,
-sinon. Les adresses, dans le même chapitre, limitent ce qui est lu :
-reçues et envoyées. Les autres ne sont pas relevées, et ne restent pas
-dans le coffre. Tant que la liste est vide, tout le compte est lu.
+sinon. Les adresses, dans le même chapitre, disent ce qui est lu :
+reçues et envoyées. Rien n’est lu tant que ce choix n’est pas gardé.
+Les autres ne restent pas dans le coffre. Tout le compte est un geste à part.
 Les lettres déjà lues ne sont pas dans À lire : elles sont dans Tout.
 Le texte d'une lettre lourde n'est pas recopié ici.
 Ouvrir une lettre la marque lue. On la rattache à un dossier. Sur le

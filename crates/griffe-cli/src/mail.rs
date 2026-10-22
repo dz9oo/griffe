@@ -7,12 +7,12 @@ use std::path::PathBuf;
 use clap::{ArgGroup, Subcommand};
 use griffe_core::app::{ExecutionContext, Executor};
 use griffe_core::mail::{
-    ArmOutbound, CancelOutbound, ClearMailSecret, CustomSheet, DeliveryOutcome, LetterTheme,
-    MailPreset, MailSecret, RecordMailProbe, RememberImapUsername, SaveLetterface, SaveMailAccount,
-    SaveMailSecret, SaveMailSignature, SentCopyStatus, SetAutomaticSend, SetKeptAddresses,
-    SetReleveInterval, SubmissionBatch, UNDO_SECS, abandon_held, commit_outbound, custom_sheet,
-    french_submit_error, hourly_pause, kept_addresses, probe_material, profile, record_copies,
-    record_deliveries, selected_id, take_copies, take_due, trial_letter,
+    ArmOutbound, CancelOutbound, ClearMailSecret, CustomSheet, DeliveryOutcome, KeptScope,
+    LetterTheme, MailPreset, MailSecret, RecordMailProbe, RememberImapUsername, SaveLetterface,
+    SaveMailAccount, SaveMailSecret, SaveMailSignature, SentCopyStatus, SetAutomaticSend,
+    SetKeptAddresses, SetReleveInterval, SubmissionBatch, UNDO_SECS, abandon_held, commit_outbound,
+    custom_sheet, french_submit_error, hourly_pause, kept_addresses, probe_material, profile,
+    record_copies, record_deliveries, selected_id, take_copies, take_due, trial_letter,
 };
 use griffe_core::store::Store;
 use time::OffsetDateTime;
@@ -65,6 +65,7 @@ pub enum MailCommand {
         minutes: u16,
     },
     /// Adresses que la relève copie, reçues et envoyées. Sans argument, les montre.
+    /// Rien n'est lu avant une adresse ou --tout.
     Adresses {
         /// Adresses tenues.
         addresses: Vec<String>,
@@ -132,25 +133,44 @@ fn adresses(
     tout: bool,
 ) -> Result<String, CliError> {
     if !tout && addresses.is_empty() {
+        let scope = profile(store.connection())?.kept_scope;
         let kept = kept_addresses(store.connection())?;
         if json {
-            return Ok(format_json(&kept));
+            return Ok(format_json(&serde_json::json!({
+                "scope": scope.as_str(),
+                "addresses": kept,
+            })));
         }
-        if kept.is_empty() {
-            return Ok("Tout le compte.".to_string());
-        }
-        return Ok(kept.join("\n"));
+        return Ok(scope_line(scope, &kept));
     }
+    let blank = !tout && addresses.iter().all(|line| line.trim().is_empty());
     let list = if tout { Vec::new() } else { addresses };
-    let empty = list.is_empty();
-    let outcome = Executor::new(store).execute(&SetKeptAddresses { addresses: list }, ctx)?;
+    let outcome = Executor::new(store).execute(
+        &SetKeptAddresses {
+            addresses: list,
+            all: tout,
+        },
+        ctx,
+    )?;
     Ok(format_outcome_as(&outcome, json, |_| {
-        if empty {
+        if tout {
             "Tout le compte est lu.".to_string()
+        } else if blank {
+            "Rien n'est lu.".to_string()
         } else {
             "Ces adresses sont gardées.".to_string()
         }
     }))
+}
+
+fn scope_line(scope: KeptScope, kept: &[String]) -> String {
+    if scope == KeptScope::All {
+        return "Tout le compte.".to_string();
+    }
+    if kept.is_empty() {
+        return "Rien n'est lu.".to_string();
+    }
+    kept.join("\n")
 }
 
 pub fn run(

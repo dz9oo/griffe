@@ -673,14 +673,16 @@ La société, reste le réglage du compte. On ne le renomme pas.
 
 Les adresses, dans ce chapitre, disent ce que ce compte mélange. Griffe ne
 relève que celles qui y sont écrites, reçues et envoyées. Les autres ne sont
-pas lues, et ne restent pas dans le coffre. Une liste vide lit tout le compte.
+pas lues, et ne restent pas dans le coffre. Rien n’est lu tant que le choix
+n’est pas gardé. Tout le compte est un geste explicite.
 
 La page prend le bureau (`#e6dfd2`). Trois colonnes dès que la fenêtre le
 permet : les vues (À lire, Avec les dossiers, Envoyées, Tout, En échec), les
 lettres en cartes `#fbf7f0`, puis la lettre. Les dossiers du serveur
 (INBOX, Sent, Brouillons, Archive) restent fermés. Une phrase de statut ouvre
-la page, même carte que le matin. Sous la phrase, les adresses tenues, ou
-« Tout le compte ». Pendant la lecture, cette phrase le dit.
+la page, même carte que le matin. Sous la phrase, les adresses tenues,
+« Aucune adresse choisie », ou « Tout le compte ». Le compte qui attend
+les adresses le dit, et ouvre Le courrier. Pendant la lecture, cette phrase le dit.
 Le grand paraphe ne paraît que si le courriel est encore vide. Une relève
 suivante ne recouvre pas la lettre ouverte. L'échec, et le compte qui ne
 se lit pas, s'écrivent. La phrase dit « Relève du courrier en cours. » ou

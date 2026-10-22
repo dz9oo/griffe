@@ -50,6 +50,8 @@ pub struct LectureAsk {
     pub mirror_empty: bool,
     /// `releve_plan` a un compte lisible.
     pub readable: bool,
+    /// Le compte pourrait être lu. Les adresses ne sont pas choisies.
+    pub waiting_addresses: bool,
 }
 
 /// Ce que le sondage emporte. Le paraphe n'est pas dans le bloc sondé.
@@ -138,9 +140,14 @@ const FAILED_QUIET: &str = "Le compte n'a pas répondu. Nouvel essai dans un ins
 #[must_use]
 pub fn lecture_face(ask: &LectureAsk) -> LectureFace {
     if !ask.readable {
+        let sentence = if ask.waiting_addresses {
+            "Choisissez les adresses dans Le courrier."
+        } else {
+            UNREADABLE
+        };
         return LectureFace {
             show: LectureShow::Replace {
-                sentence: UNREADABLE.to_string(),
+                sentence: sentence.to_string(),
                 link: true,
             },
             poll: false,
@@ -358,6 +365,7 @@ mod tests {
             address: "nicolas@lumen-conseil.fr".to_string(),
             mirror_empty: empty,
             readable,
+            waiting_addresses: false,
         }
     }
 
@@ -393,6 +401,23 @@ mod tests {
         );
         assert!(!face.poll);
         assert_eq!(face.empty, "Aucune lettre dans cette vue.");
+        assert_eq!(face.mode, LectureMode::Mute);
+    }
+
+    #[test]
+    fn a_readable_account_without_addresses_asks_for_them() {
+        let face = lecture_face(&LectureAsk {
+            waiting_addresses: true,
+            ..ask(LecturePhase::Opening, true, false)
+        });
+        assert_eq!(
+            face.show,
+            LectureShow::Replace {
+                sentence: "Choisissez les adresses dans Le courrier.".to_string(),
+                link: true,
+            }
+        );
+        assert!(!face.poll);
         assert_eq!(face.mode, LectureMode::Mute);
     }
 

@@ -130,5 +130,7 @@ pub fn migrations() -> Migrations<'static> {
             .down(include_str!("migrations/0055_releve_interval_down.sql")),
         M::up(include_str!("migrations/0056_kept_addresses_up.sql"))
             .down(include_str!("migrations/0056_kept_addresses_down.sql")),
+        M::up(include_str!("migrations/0057_kept_scope_up.sql"))
+            .down(include_str!("migrations/0057_kept_scope_down.sql")),
     ])
 }

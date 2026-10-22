@@ -435,8 +435,8 @@ const COURRIER: &[Cmd] = &[
     },
     Cmd {
         verb: r#"courrier adresses"#,
-        said: r#"Adresses que la relève copie, reçues et envoyées. Sans argument, les montre. --tout lit tout le compte. Avec un agent, le geste attend une personne."#,
-        example: r#"griffe courrier adresses ada@exemple.fr"#,
+        said: r#"Adresses que la relève copie, reçues et envoyées. Sans argument, les montre. Rien n'est lu avant une adresse ou --tout. Avec un agent, le geste attend une personne."#,
+        example: r#"griffe courrier adresses --tout"#,
     },
     Cmd {
         verb: r#"courrier auto"#,
@@ -1084,6 +1084,6 @@ mod tests {
                 assert!(!blob.contains("collection://"), "{}", cmd.verb);
             }
         }
-        assert_eq!(seen.len(), 197);
+        assert_eq!(seen.len(), 199);
     }
 }

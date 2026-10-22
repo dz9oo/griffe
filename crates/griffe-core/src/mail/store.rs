@@ -7,9 +7,9 @@ use uuid::Uuid;
 
 use super::error::MailError;
 use super::model::{
-    HOURLY_CAP, LetterChrome, MISSING_ADDRESS, MailPreset, MailProbeStatus, MailProfile, MailTick,
-    OutboundMessage, OutboundStatus, OutboundView, ProbeMaterial, ReadyLetter, SmtpEndpoint,
-    SubmissionBatch, TlsMode,
+    HOURLY_CAP, KeptScope, LetterChrome, MISSING_ADDRESS, MailPreset, MailProbeStatus, MailProfile,
+    MailTick, OutboundMessage, OutboundStatus, OutboundView, ProbeMaterial, ReadyLetter,
+    SmtpEndpoint, SubmissionBatch, TlsMode,
 };
 use super::secret::MailSecret;
 use super::theme::LetterTheme;
@@ -26,7 +26,7 @@ pub(super) fn profile(conn: &Connection) -> Result<MailProfile, AppError> {
             "SELECT from_name, from_address, smtp_host, smtp_port, smtp_tls, smtp_username,
                     secret IS NOT NULL AND length(secret) > 0, preset, auto_send, signature,
                     probe_ok, probe_detail, imap_host, imap_port, imap_username,
-                    link_ink, metier, site, releve_every_secs
+                    link_ink, metier, site, releve_every_secs, kept_scope
              FROM mail_account WHERE id = 1",
             [],
             |row| {
@@ -50,6 +50,7 @@ pub(super) fn profile(conn: &Connection) -> Result<MailProfile, AppError> {
                     row.get::<_, String>(16)?,
                     row.get::<_, String>(17)?,
                     row.get::<_, i64>(18)?,
+                    row.get::<_, String>(19)?,
                 ))
             },
         )
@@ -74,6 +75,7 @@ pub(super) fn profile(conn: &Connection) -> Result<MailProfile, AppError> {
         metier,
         site,
         releve_every,
+        kept_scope,
     )) = row
     else {
         return Ok(MailProfile::default());
@@ -105,6 +107,7 @@ pub(super) fn profile(conn: &Connection) -> Result<MailProfile, AppError> {
         metier,
         site,
         releve_every_secs: u64::try_from(releve_every).unwrap_or(super::RELEVE_EVERY_SECS),
+        kept_scope: KeptScope::parse(&kept_scope),
     })
 }
 
@@ -253,6 +256,17 @@ pub(super) fn kept_addresses(conn: &Connection) -> Result<Vec<String>, AppError>
     rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
 }
 
+pub(super) fn kept_scope(conn: &Connection) -> Result<KeptScope, AppError> {
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT kept_scope FROM mail_account WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(raw.map_or(KeptScope::Pending, |value| KeptScope::parse(&value)))
+}
+
 pub(super) fn kept_generation(conn: &Connection) -> Result<i64, AppError> {
     let generation = conn
         .query_row(
@@ -267,10 +281,11 @@ pub(super) fn kept_generation(conn: &Connection) -> Result<i64, AppError> {
 pub(super) fn replace_kept_addresses(
     conn: &Connection,
     addresses: &[String],
+    scope: KeptScope,
     now: &str,
 ) -> Result<(), AppError> {
     let current = kept_addresses(conn)?;
-    if current == addresses {
+    if current == addresses && kept_scope(conn)? == scope {
         return Ok(());
     }
     let exists: i64 = conn.query_row(
@@ -295,8 +310,10 @@ pub(super) fn replace_kept_addresses(
         }
     }
     conn.execute(
-        "UPDATE mail_account SET kept_generation = kept_generation + 1, updated_at = ?1 WHERE id = 1",
-        [now],
+        "UPDATE mail_account
+         SET kept_scope = ?1, kept_generation = kept_generation + 1, updated_at = ?2
+         WHERE id = 1",
+        params![scope.as_str(), now],
     )?;
     Ok(())
 }

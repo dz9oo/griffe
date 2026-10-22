@@ -434,6 +434,7 @@ pub async fn releve_interval(
 pub struct AddressForm {
     address: Vec<String>,
     intent: String,
+    scope: String,
 }
 
 /// Le formulaire répète `address`. `serde_urlencoded` livre chaque exemplaire
@@ -449,7 +450,7 @@ impl<'de> Deserialize<'de> for AddressForm {
             type Value = AddressForm;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                formatter.write_str("les adresses et l'intention")
+                formatter.write_str("les adresses, le choix et l'intention")
             }
 
             fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
@@ -458,16 +459,22 @@ impl<'de> Deserialize<'de> for AddressForm {
             {
                 let mut address = Vec::new();
                 let mut intent = String::new();
+                let mut scope = String::new();
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
                         "address" => address.push(map.next_value()?),
                         "intent" => intent = map.next_value()?,
+                        "scope" => scope = map.next_value()?,
                         _ => {
                             map.next_value::<de::IgnoredAny>()?;
                         }
                     }
                 }
-                Ok(AddressForm { address, intent })
+                Ok(AddressForm {
+                    address,
+                    intent,
+                    scope,
+                })
             }
         }
 
@@ -481,8 +488,9 @@ pub async fn save_addresses(
     Form(form): Form<AddressForm>,
 ) -> Response {
     let intent = form.intent.trim();
+    let scope = if form.scope == "all" { "all" } else { "listed" };
     if intent == "ajouter" {
-        return redisplay(&state, &headers, None, add_line(form.address)).await;
+        return redisplay(&state, &headers, None, add_line(form.address), scope).await;
     }
     if let Some(index) = intent.strip_prefix("retirer:") {
         let mut lines = form.address;
@@ -491,17 +499,29 @@ pub async fn save_addresses(
         {
             lines.remove(index);
         }
-        return redisplay(&state, &headers, None, with_blank(lines)).await;
+        return redisplay(&state, &headers, None, with_blank(lines), scope).await;
     }
     if !intent.is_empty() && intent != "garder" {
-        return redisplay(&state, &headers, None, with_blank(form.address)).await;
+        return redisplay(&state, &headers, None, with_blank(form.address), scope).await;
+    }
+    let read_all = scope == "all";
+    if !read_all && form.address.iter().all(|line| line.trim().is_empty()) {
+        return redisplay(
+            &state,
+            &headers,
+            Some("Écrivez une adresse.".to_string()),
+            with_blank(form.address),
+            scope,
+        )
+        .await;
     }
     let posted = form.address.clone();
     let result = state
         .with_store_mut(|store| {
             Executor::new(store).execute(
                 &SetKeptAddresses {
-                    addresses: form.address,
+                    addresses: if read_all { Vec::new() } else { form.address },
+                    all: read_all,
                 },
                 &AppState::human_ctx(),
             )
@@ -510,15 +530,22 @@ pub async fn save_addresses(
     match result {
         None => locked(&state, &headers),
         Some(Err(error)) => {
-            redisplay(&state, &headers, Some(french(&error)), with_blank(posted)).await
+            redisplay(
+                &state,
+                &headers,
+                Some(french(&error)),
+                with_blank(posted),
+                scope,
+            )
+            .await
         }
         Some(Ok(_)) => {
             state.request_releve();
             kick_releve(&state).await;
-            let notice = if posted.iter().all(|line| line.trim().is_empty()) {
+            let notice = if read_all {
                 "Tout le compte est lu."
             } else {
-                "Ces adresses sont gardées."
+                "Ces adresses sont gardées. Les autres lettres quittent le coffre à cette relève."
             };
             saved(
                 &state,
@@ -561,6 +588,7 @@ async fn redisplay(
     headers: &HeaderMap,
     error: Option<String>,
     lines: Vec<String>,
+    scope: &str,
 ) -> Response {
     respond(
         state,
@@ -570,6 +598,7 @@ async fn redisplay(
             Some(&CourrierForm {
                 error,
                 kept_lines: Some(lines),
+                address_scope: Some(scope.to_string()),
                 ..CourrierForm::blank()
             }),
         )
@@ -1049,12 +1078,12 @@ impl CourrierForm {
             username: String::new(),
             preset: String::new(),
             imap_host: String::new(),
-            imap_port: "993".to_string(),
             error: None,
             notice: None,
             signature: None,
             redisplay: false,
             kept_lines: None,
+            address_scope: None,
         }
     }
 }
@@ -1068,17 +1097,13 @@ fn posted_from(form: &AccountForm) -> CourrierForm {
         username: form.username.clone(),
         preset: form.preset.clone(),
         imap_host: form.imap_host.clone(),
-        imap_port: if form.imap_port.trim().is_empty() {
-            "993".to_string()
-        } else {
-            form.imap_port.clone()
-        },
         port,
         error: None,
         notice: None,
         signature: None,
         redisplay: true,
         kept_lines: None,
+        address_scope: None,
     }
 }
 
@@ -1091,12 +1116,12 @@ fn posted_from_command(command: &SaveMailAccount) -> CourrierForm {
         username: command.username.clone(),
         preset: command.preset.clone(),
         imap_host: command.imap_host.clone(),
-        imap_port: command.imap_port.to_string(),
         error: None,
         notice: None,
         signature: None,
         redisplay: true,
         kept_lines: None,
+        address_scope: None,
     }
 }
 

@@ -36,17 +36,18 @@ pub use lecture::{
 };
 pub use model::{
     DeliveryOutcome, HOURLY_CAP, ICLOUD_HOST, ICLOUD_IMAP_HOST, ICLOUD_SENT_MAILBOX, IMAP_PORT,
-    ImapEndpoint, LetterChrome, MISSING_ADDRESS, MailPreset, MailProbeStatus, MailProfile,
-    MailSubmitError, MailTick, OutboundMail, OutboundMessage, OutboundStatus, OutboundView,
-    PROBE_OK_SENTENCE, ProbeMaterial, ProbeVerdict, ReadyLetter, RecordingMail, SentCopyStatus,
-    SmtpEndpoint, SubmissionBatch, SubmissionReceipt, TlsMode, UNDO_SECS,
+    ImapEndpoint, KeptScope, LetterChrome, MISSING_ADDRESS, MailPreset, MailProbeStatus,
+    MailProfile, MailSubmitError, MailTick, OutboundMail, OutboundMessage, OutboundStatus,
+    OutboundView, PROBE_OK_SENTENCE, ProbeMaterial, ProbeVerdict, ReadyLetter, RecordingMail,
+    SentCopyStatus, SmtpEndpoint, SubmissionBatch, SubmissionReceipt, TlsMode, UNDO_SECS,
 };
 pub use present::{LINK_HINT, LetterParts, close_letter, letter_card, letter_html, readable_links};
 pub use releve::{
     AbsorbReport, BODY_CAP_BYTES, BoxLine, HEADER_BATCH, PullEvent, PullScope, PulledBody,
     PulledMailbox, PulledMessage, RECENT_BODIES, RELEVE_CHOICES_SECS, RELEVE_EVERY_SECS,
     RelevePlan, absorb, list_box, note_kept_applied, note_releve_failure, note_releve_success,
-    prepare_pull, releve_cadence, releve_clock, releve_due, releve_every, releve_plan, releve_word,
+    prepare_pull, releve_cadence, releve_clock, releve_due, releve_every, releve_plan,
+    releve_waits, releve_word,
 };
 pub use secret::MailSecret;
 pub use theme::{
@@ -64,7 +65,7 @@ pub fn profile(conn: &rusqlite::Connection) -> Result<MailProfile, AppError> {
     store::profile(conn)
 }
 
-/// Adresses que la relève copie. Vide : tout le compte.
+/// Adresses tenues. Vide : pas encore choisi, ou tout le compte si le geste l'a dit.
 ///
 /// # Errors
 ///
@@ -445,8 +446,9 @@ mod tests {
         MISSING_ADDRESS, MailError, MailSubmitError, MarkAddress, PROBE_OK_SENTENCE,
         RecordMailProbe, RecordingMail, ReleaseReplyHold, RetryOutbound, SaveLetterface,
         SaveMailAccount, SaveMailSecret, SaveMailSignature, SentCopyStatus, SetAutomaticSend,
-        SubmissionReceipt, abandon_held, commit_outbound, deliver_with, mail_tick, profile,
-        record_deliveries, take_copies, take_due, trial_letter,
+        SetKeptAddresses, SubmissionReceipt, abandon_held, commit_outbound, deliver_with,
+        mail_tick, profile, record_deliveries, releve_plan, releve_waits, take_copies, take_due,
+        trial_letter,
     };
     use crate::app::{Actor, AppError, ExecutionContext, Executor, Outcome, recent_audit_entries};
     use crate::clients::{CreateClient, CreateContact, DeleteContact, UpdateClient, UpdateContact};
@@ -1417,6 +1419,54 @@ mod tests {
             )
             .unwrap_err();
         assert!(matches!(err, AppError::Domain(msg) if msg.contains("993")));
+    }
+
+    #[test]
+    fn a_ready_icloud_account_waits_until_the_addresses_are_chosen() {
+        let mut store = test_store("mail-wait-addresses");
+        save_ready(&mut store);
+        assert!(releve_plan(&store).unwrap().is_none());
+        assert!(releve_waits(&store).unwrap());
+        let human = human();
+        Executor::new(&mut store)
+            .execute(
+                &SetKeptAddresses {
+                    addresses: vec!["camille@icloud.test".into()],
+                    all: false,
+                },
+                &human,
+            )
+            .unwrap();
+        let plan = releve_plan(&store).unwrap().expect("liste");
+        assert_eq!(plan.kept, vec!["camille@icloud.test".to_string()]);
+        assert_eq!(plan.endpoint.host, "imap.mail.me.com");
+        assert!(!releve_waits(&store).unwrap());
+        Executor::new(&mut store)
+            .execute(
+                &SetKeptAddresses {
+                    addresses: vec!["ailleurs@icloud.test".into()],
+                    all: true,
+                },
+                &human,
+            )
+            .unwrap();
+        let whole = releve_plan(&store).unwrap().expect("tout");
+        assert!(whole.kept.is_empty());
+        Executor::new(&mut store)
+            .execute(
+                &SetKeptAddresses {
+                    addresses: Vec::new(),
+                    all: false,
+                },
+                &human,
+            )
+            .unwrap();
+        assert!(releve_plan(&store).unwrap().is_none());
+        assert!(releve_waits(&store).unwrap());
+        assert_eq!(
+            profile(store.connection()).unwrap().kept_scope,
+            crate::mail::KeptScope::Pending
+        );
     }
 
     fn new_client(store: &mut crate::store::Store, name: &str) -> crate::domain::ClientId {

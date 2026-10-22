@@ -359,10 +359,14 @@ impl Command for SetAutomaticSend {
     }
 }
 
-/// Adresses que la relève copie. Une liste vide relit tout le compte.
+/// Adresses que la relève copie.
+/// `all` lit tout le compte. Une liste vide sans `all` n'ouvre pas la relève.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SetKeptAddresses {
     pub addresses: Vec<String>,
+    /// INBOX et Envoyés. La liste est ignorée.
+    #[serde(default)]
+    pub all: bool,
 }
 
 impl Command for SetKeptAddresses {
@@ -374,8 +378,17 @@ impl Command for SetKeptAddresses {
     }
 
     fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
-        let addresses = normalize_kept(&self.addresses)?;
-        store::replace_kept_addresses(conn, &addresses, &now_stamp()?)
+        let (addresses, scope) = if self.all {
+            (Vec::new(), super::model::KeptScope::All)
+        } else {
+            let addresses = normalize_kept(&self.addresses)?;
+            if addresses.is_empty() {
+                (Vec::new(), super::model::KeptScope::Pending)
+            } else {
+                (addresses, super::model::KeptScope::Listed)
+            }
+        };
+        store::replace_kept_addresses(conn, &addresses, scope, &now_stamp()?)
     }
 }
 

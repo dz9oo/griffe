@@ -170,13 +170,16 @@ button { font-family: inherit; color: inherit; cursor: pointer; background: none
   color: var(--seal);
   font-size: 12px;
 }
-.address-board {
+.address-board { display: grid; gap: 12px; }
+.address-board:not(:has(input[name="scope"][value="all"]:checked)) .address-all { display: none; }
+.address-board:not(:has(input[name="scope"][value="listed"]:checked)) .address-listed { display: none; }
+.address-listed {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px 12px;
   align-items: center;
 }
-.address-board input[type="text"] {
+.address-listed input[type="text"] {
   grid-column: 1;
   min-width: 0;
   height: 36px;
@@ -188,7 +191,7 @@ button { font-family: inherit; color: inherit; cursor: pointer; background: none
   font-family: var(--sans);
   font-size: 16px;
 }
-.address-board input:focus { border-color: var(--ink); outline: none; }
+.address-listed input:focus { border-color: var(--ink); outline: none; }
 .address-remove { grid-column: 2; }
 .address-actions {
   grid-column: 1 / -1;

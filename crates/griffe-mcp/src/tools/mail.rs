@@ -67,9 +67,12 @@ pub(crate) struct RythmeArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct AdressesArgs {
-    /// Adresses tenues, reçues et envoyées. Vide : tout le compte est lu.
+    /// Adresses tenues, reçues et envoyées. Vide sans `tout` : rien n'est lu.
     #[serde(default)]
     addresses: Vec<String>,
+    /// Lit tout le compte.
+    #[serde(default)]
+    tout: bool,
     #[serde(default)]
     dry_run: bool,
 }
@@ -261,7 +264,7 @@ impl FreeflowServer {
 
     #[tool(
         name = "mail.adresses",
-        description = "Adresses que la relève copie, reçues et envoyées. Une liste vide lit tout le compte. Un agent laisse le geste en attente.",
+        description = "Adresses que la relève copie, reçues et envoyées. `tout` lit tout le compte. Une liste vide sans `tout` n'ouvre pas la relève. Un agent laisse le geste en attente.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -271,7 +274,12 @@ impl FreeflowServer {
     async fn mail_adresses(&self, Parameters(args): Parameters<AdressesArgs>) -> CallToolResult {
         let mut store = self.store.lock().await;
         let cmd = SetKeptAddresses {
-            addresses: args.addresses,
+            addresses: if args.tout {
+                Vec::new()
+            } else {
+                args.addresses
+            },
+            all: args.tout,
         };
         match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),

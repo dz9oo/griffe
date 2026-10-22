@@ -2,8 +2,8 @@
 
 use griffe_core::app::AppError;
 use griffe_core::mail::{
-    LetterChrome, LetterParts, MailPreset, MailProfile, OutboundView, TrialLetter, close_letter,
-    custom_sheet, letter_html, own_sheet_note, profile, selected_id, sheet_choices,
+    KeptScope, LetterChrome, LetterParts, MailPreset, MailProfile, OutboundView, TrialLetter,
+    close_letter, custom_sheet, letter_html, own_sheet_note, profile, selected_id, sheet_choices,
 };
 use griffe_core::store::Store;
 use maud::{Markup, html};
@@ -20,7 +20,6 @@ pub struct CourrierForm {
     pub username: String,
     pub preset: String,
     pub imap_host: String,
-    pub imap_port: String,
     pub error: Option<String>,
     pub notice: Option<String>,
     /// Texte posté quand l'enregistrement de la formule a échoué.
@@ -29,6 +28,8 @@ pub struct CourrierForm {
     pub redisplay: bool,
     /// Lignes retapées. Absentes : la liste enregistrée.
     pub kept_lines: Option<Vec<String>>,
+    /// `listed` ou `all`, quand le formulaire des adresses est rejoué.
+    pub address_scope: Option<String>,
 }
 
 pub fn page(store: &Store, form: Option<&CourrierForm>) -> Result<Markup, AppError> {
@@ -89,16 +90,6 @@ fn markup(
     let preset = posted.map_or(account.preset, |item| MailPreset::parse(&item.preset));
     let port = posted.map_or(account.port, |item| item.port);
     let imap_host = posted.map_or(account.imap_host.as_str(), |item| item.imap_host.as_str());
-    let imap_port = posted.map_or_else(
-        || {
-            if account.imap_host.is_empty() {
-                "993".to_string()
-            } else {
-                account.imap_port.to_string()
-            }
-        },
-        |item| item.imap_port.clone(),
-    );
     let icloud = preset == MailPreset::Icloud;
     let signature = form
         .and_then(|item| item.signature.as_deref())
@@ -109,6 +100,15 @@ fn markup(
     let sheet_open = !known || form.is_some_and(|item| item.redisplay);
     let other_id = !username.trim().is_empty() && username.trim() != from_address.trim();
     let copies = !imap_host.trim().is_empty();
+    let address_choice = form
+        .and_then(|item| item.address_scope.as_deref())
+        .filter(|value| *value == "all" || *value == "listed")
+        .unwrap_or(if account.kept_scope == KeptScope::All {
+            "all"
+        } else {
+            "listed"
+        });
+    let account_readable = account.ready && account.copy_target().is_some();
 
     html! {
         div class="letter courrier-desk reglages-desk" data-view=(ViewId::Societe.slug()) {
@@ -217,7 +217,7 @@ fn markup(
                             p class="prose" {
                                 "iCloud, port 587. L'identifiant est cette adresse. Le mot de passe est un mot de passe d'application. "
                                 a href="https://account.apple.com" { "Le compte Apple" }
-                                " le crée. La copie part dans Envoyés."
+                                " le crée. Griffe lit ce compte. Les adresses, plus bas, disent lesquelles. Rien n'est lu avant ce choix. La copie part dans Envoyés."
                             }
                         }
                         div class="serveur-custom" {
@@ -241,19 +241,14 @@ fn markup(
                                 }
                             }
                             details class="courrier-fold" open[copies] {
-                                summary { "Les copies dans Envoyés" }
-                                div class="courrier-grid" {
-                                    div class="field" {
-                                        label for="imap_host" { "Hôte des copies" }
-                                        input id="imap_host" name="imap_host" type="text" value=(imap_host) autocomplete="off";
-                                    }
-                                    div class="field" {
-                                        label for="imap_port" { "Port des copies" }
-                                        input id="imap_port" name="imap_port" type="text" value=(imap_port) autocomplete="off";
-                                    }
+                                summary { "Le serveur des lettres" }
+                                div class="field" {
+                                    label for="imap_host" { "Hôte" }
+                                    input id="imap_host" name="imap_host" type="text" value=(imap_host) autocomplete="off";
                                 }
+                                input type="hidden" name="imap_port" value="993";
                                 p class="prose" {
-                                    "Vide, la lettre part et la copie n'ira pas dans Envoyés. Le port est 993."
+                                    "Griffe s'y relie en chiffré, port 993. Il y lit les lettres, et il y dépose la copie des lettres parties. Vide, rien n'est lu, et la copie n'est pas déposée."
                                 }
                             }
                         }
@@ -282,12 +277,16 @@ fn markup(
                     }
                 }
             }
-            (address_card(kept))
+            (address_card(kept, address_choice, account.kept_scope, account_readable))
             div id="releve" class="reglages-card courrier-block" {
                 h3 class="panel-title" { "La relève" }
                 p class="prose" {
-                    "Pendant que le coffre est ouvert, Griffe relève ce compte. "
-                    (griffe_core::mail::releve_cadence(account.releve_every_secs))
+                    @if account.kept_scope == KeptScope::Pending {
+                        "La relève attend les adresses."
+                    } @else {
+                        "Pendant que le coffre est ouvert, Griffe relève ce compte. "
+                        (griffe_core::mail::releve_cadence(account.releve_every_secs))
+                    }
                 }
                 form hx-post="/societe/courrier/releve" hx-target="#content" {
                     fieldset class="word-choice" {
@@ -343,38 +342,75 @@ pub fn preview_card(store: &Store, signature: &str) -> Result<Markup, AppError> 
     ))
 }
 
-fn address_card(lines: &[String]) -> Markup {
+fn address_card(lines: &[String], choice: &str, saved: KeptScope, readable: bool) -> Markup {
     let room = lines.len() < griffe_core::mail::KEPT_ADDRESS_CAP;
     let actions_row = lines.len() + 1;
+    let listed = choice != "all";
     html! {
         div id="adresses" class="reglages-card courrier-block" {
             h3 class="panel-title" { "Les adresses" }
             p class="prose" {
-                "Ce compte peut en porter plusieurs. Griffe ne relève que celles écrites ici, reçues et envoyées. Les autres ne sont pas lues, et ne restent pas dans le coffre. Tant que la liste est vide, tout le compte est lu."
+                (address_sentence(saved))
+                @if !readable {
+                    " La relève attend aussi le serveur."
+                }
+            }
+            p class="field-help" {
+                "L'adresse se compare telle quelle. Une variante avec + ne compte pas."
             }
             form id="adresses-form" class="address-board" hx-post="/societe/courrier/adresses" hx-target="#content" {
-                @for (index, address) in lines.iter().enumerate() {
-                    input type="text" inputmode="email" name="address" value=(address)
-                          autocomplete="off" spellcheck="false"
-                          aria-label=(format!("Adresse {}", index + 1))
-                          style=(format!("grid-row: {}", index + 1));
-                }
-                div class="row-actions address-actions" style=(format!("grid-row: {actions_row}")) {
-                    button class="seal" type="submit" name="intent" value="garder" { "Garder ces adresses" }
-                    @if room {
-                        button class="quiet" type="submit" name="intent" value="ajouter" { "Une autre" }
+                fieldset class="word-choice" {
+                    legend { "Ce qui est lu" }
+                    div class="word-choice-row" {
+                        label {
+                            input type="radio" name="scope" value="listed" checked[listed];
+                            "Ces adresses"
+                        }
+                        label {
+                            input type="radio" name="scope" value="all" checked[!listed];
+                            "Tout le compte"
+                        }
                     }
                 }
-                @for (index, address) in lines.iter().enumerate() {
-                    @if !address.trim().is_empty() {
-                        button class="quiet address-remove" type="submit" name="intent"
-                                value=(format!("retirer:{index}"))
-                                aria-label=(format!("Retirer l'adresse {}", index + 1))
-                                style=(format!("grid-row: {}", index + 1)) { "Retirer" }
+                div class="address-listed" {
+                    @for (index, address) in lines.iter().enumerate() {
+                        input type="text" inputmode="email" name="address" value=(address)
+                              autocomplete="off" spellcheck="false"
+                              aria-label=(format!("Adresse {}", index + 1))
+                              style=(format!("grid-row: {}", index + 1));
+                    }
+                    div class="row-actions address-actions" style=(format!("grid-row: {actions_row}")) {
+                        button class="seal" type="submit" name="intent" value="garder" { "Garder ces adresses" }
+                        @if room {
+                            button class="quiet" type="submit" name="intent" value="ajouter" { "Une autre" }
+                        }
+                    }
+                    @for (index, address) in lines.iter().enumerate() {
+                        @if !address.trim().is_empty() {
+                            button class="quiet address-remove" type="submit" name="intent"
+                                    value=(format!("retirer:{index}"))
+                                    aria-label=(format!("Retirer l'adresse {}", index + 1))
+                                    style=(format!("grid-row: {}", index + 1)) { "Retirer" }
+                        }
+                    }
+                }
+                div class="address-all" {
+                    div class="row-actions" {
+                        button class="seal" type="submit" name="intent" value="garder" { "Lire tout le compte" }
                     }
                 }
             }
         }
+    }
+}
+
+fn address_sentence(saved: KeptScope) -> &'static str {
+    match saved {
+        KeptScope::Pending => "Rien n'est lu tant que ce choix n'est pas gardé.",
+        KeptScope::Listed => {
+            "Griffe ne relève que celles-ci, reçues et envoyées. Une autre adresse quitte le coffre à la relève."
+        }
+        KeptScope::All => "Tout le compte est lu.",
     }
 }
 

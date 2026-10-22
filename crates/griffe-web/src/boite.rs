@@ -6,7 +6,8 @@ use axum::response::{Html, IntoResponse, Response};
 use griffe_core::app::{Executor, Outcome};
 use griffe_core::mail::{
     AddressFault, BoxQuery, BoxVue, LectureAsk, LectureShow, MarkAddress, SeenMark, SeenTarget,
-    file_human, french_submit_error, lecture_face, prepare_seen, read_box, releve_plan, seal_count,
+    file_human, french_submit_error, lecture_face, prepare_seen, read_box, releve_plan,
+    releve_waits, seal_count,
 };
 use maud::{Markup, html};
 use serde::Deserialize;
@@ -93,12 +94,14 @@ pub(crate) async fn lecture(
             .into_response();
     }
     let readable = account_readable(&state).await;
+    let waiting_addresses = account_waiting(&state).await;
     let snap = state.take_lecture(Some(form.generation));
     let face = lecture_face(&LectureAsk {
         phase: snap.phase,
         address: snap.address,
         mirror_empty: page.counts.tout == 0,
         readable,
+        waiting_addresses,
     });
     let col = if matches!(face.show, LectureShow::Glyph { .. }) {
         "glyph"
@@ -323,17 +326,26 @@ async fn account_readable(state: &AppState) -> bool {
         .unwrap_or(false)
 }
 
+async fn account_waiting(state: &AppState) -> bool {
+    state
+        .with_store(|store| releve_waits(store).unwrap_or(false))
+        .await
+        .unwrap_or(false)
+}
+
 async fn paint_lecture(state: &AppState, page: &griffe_core::mail::BoxPage) -> Option<LectureView> {
     if !state.lecture_engaged() {
         return None;
     }
     let readable = account_readable(state).await;
+    let waiting_addresses = account_waiting(state).await;
     let snap = state.take_lecture(None);
     let face = lecture_face(&LectureAsk {
         phase: snap.phase,
         address: snap.address,
         mirror_empty: page.counts.tout == 0,
         readable,
+        waiting_addresses,
     });
     Some(LectureView {
         face,

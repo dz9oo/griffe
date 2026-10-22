@@ -174,7 +174,7 @@ impl Mailbox {
         rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
     }
 
-    /// Remet les curseurs au début. La liste vide relit tout le compte.
+    /// Remet les curseurs au début. L'état `all` relit alors tout le compte.
     ///
     /// # Errors
     ///

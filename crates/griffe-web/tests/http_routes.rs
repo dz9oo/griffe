@@ -14107,7 +14107,10 @@ async fn the_box_page_reads_a_letter_and_confirms_a_failed_address() {
     assert!(failed_body.contains("Elle est bonne"), "{failed_body}");
     assert!(failed_body.contains("data-view=\"boite\""), "{failed_body}");
     assert!(failed_body.contains("Courriel"), "{failed_body}");
-    assert!(failed_body.contains("Tout le compte"), "{failed_body}");
+    assert!(
+        failed_body.contains("Aucune adresse choisie"),
+        "{failed_body}"
+    );
     let boite_link = failed_body
         .split("class=\"boite-link\"")
         .nth(1)
@@ -14328,7 +14331,15 @@ async fn les_adresses_se_gardent_sans_enregistrer_une_ligne_de_plus() {
     )
     .await;
     assert!(page.contains("Les adresses"), "{page}");
-    assert!(page.contains("Tant que la liste est vide"), "{page}");
+    assert!(
+        page_has(&page, "Rien n'est lu tant que ce choix n'est pas gardé."),
+        "{page}"
+    );
+    assert!(page.contains("La relève attend les adresses."), "{page}");
+    assert!(page.contains("Le serveur des lettres"), "{page}");
+    assert!(page_has(&page, "Rien n'est lu avant ce choix."), "{page}");
+    assert!(page.contains("name=\"imap_port\" value=\"993\""), "{page}");
+    assert!(!page.contains("Port des copies"), "{page}");
     let releve_at = page.find("id=\"releve\"").unwrap_or(0);
     let adresses_at = page.find("id=\"adresses\"").unwrap_or(usize::MAX);
     assert!(adresses_at < releve_at, "la carte précède la relève");
@@ -14395,10 +14406,74 @@ async fn les_adresses_se_gardent_sans_enregistrer_une_ligne_de_plus() {
     .await;
     assert!(refused.contains("illisible"), "{refused}");
     assert!(refused.contains("pas-une-adresse"), "{refused}");
+
+    let empty = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/societe/courrier/adresses")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from("address=&scope=listed&intent=garder"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(empty.headers().get("HX-Trigger").is_none());
+    let empty_body = body_text(empty).await;
+    assert!(
+        page_has(&empty_body, "Écrivez une adresse."),
+        "{empty_body}"
+    );
+    let (_, _, kept) = read_route(&router, "/societe/courrier").await;
+    assert!(
+        kept.contains("value=\"nicolas@lumen.test\""),
+        "le refus laisse l'adresse déjà gardée : {kept}"
+    );
+    assert!(page_has(&kept, "Griffe ne relève que celles-ci"), "{kept}");
+
+    let whole = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/societe/courrier/adresses")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from("scope=all&intent=garder"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        whole
+            .headers()
+            .get("HX-Trigger")
+            .and_then(|value| value.to_str().ok()),
+        Some("griffe:saved")
+    );
+    let whole_body = body_text(whole).await;
+    assert!(
+        whole_body.contains("Tout le compte est lu."),
+        "{whole_body}"
+    );
 }
 
 fn engage_releve(state: &AppState) {
     state.set_releve_fetch(|_endpoint, _secret, _scope, _on| Ok(()));
+}
+
+fn keep_all(store: &mut Store) {
+    let ctx = ExecutionContext::new(Actor::System, false);
+    Executor::new(store)
+        .execute(
+            &griffe_core::mail::SetKeptAddresses {
+                addresses: Vec::new(),
+                all: true,
+            },
+            &ctx,
+        )
+        .unwrap();
 }
 
 fn save_account(store: &mut Store, preset: &str, imap_host: &str) {
@@ -14475,6 +14550,7 @@ async fn the_box_says_it_is_reading_and_the_poll_stops_at_rest() {
     let empty_path = test_db_path("boite-lecture-vide");
     let mut empty_store = Store::create(&empty_path, &Passphrase::from(PASSPHRASE)).unwrap();
     save_account(&mut empty_store, "icloud", "");
+    keep_all(&mut empty_store);
     drop(empty_store);
     let empty = open_saved(&empty_path).await;
     engage_releve(&empty);
@@ -14592,6 +14668,7 @@ async fn the_box_says_it_is_reading_and_the_poll_stops_at_rest() {
     let mut filled_store =
         Store::open_with_passphrase(&filled_path, &Passphrase::from(PASSPHRASE)).unwrap();
     save_account(&mut filled_store, "icloud", "");
+    keep_all(&mut filled_store);
     drop(filled_store);
     let filled = open_saved(&filled_path).await;
     engage_releve(&filled);
@@ -14679,6 +14756,32 @@ async fn the_box_says_it_is_reading_and_the_poll_stops_at_rest() {
     assert!(!unreadable.contains("every 1s"), "{unreadable}");
     assert!(!unreadable.contains("class=\"glyph"), "{unreadable}");
     assert!(!unreadable.contains("hx-on"), "{unreadable}");
+}
+
+#[tokio::test]
+async fn a_ready_icloud_box_waits_for_the_addresses() {
+    let path = test_db_path("boite-attend-adresses");
+    let mut store = Store::create(&path, &Passphrase::from(PASSPHRASE)).unwrap();
+    save_account(&mut store, "icloud", "");
+    drop(store);
+    let state = open_saved(&path).await;
+    engage_releve(&state);
+    state.note_lecture(
+        griffe_core::mail::LecturePhase::Opening,
+        "nicolas@lumen-conseil.fr",
+    );
+    let router = griffe_web::router(state);
+    let (_, _, body) = read_route(&router, "/boite").await;
+    assert!(
+        body.contains("Choisissez les adresses dans Le courrier."),
+        "{body}"
+    );
+    assert!(body.contains("Aucune adresse choisie"), "{body}");
+    assert!(body.contains("/societe/courrier"), "{body}");
+    assert!(!body.contains("Le compte ne se lit pas."), "{body}");
+    assert!(!body.contains("Griffe ouvre"), "{body}");
+    assert!(!body.contains("every 1s"), "{body}");
+    assert!(!body.contains("hx-on"), "{body}");
 }
 
 #[tokio::test]

@@ -1,7 +1,7 @@
 //! Le courriel. Le texte reçu est montré tel quel. Le HTML reçu passe dans un cadre fermé.
 
 use griffe_core::mail::{
-    BoxCard, BoxPage, BoxVue, ClassChoice, LectureFace, LectureShow, LetterPlace,
+    BoxCard, BoxPage, BoxVue, ClassChoice, KeptScope, LectureFace, LectureShow, LetterPlace,
 };
 use maud::{Markup, html};
 use time::OffsetDateTime;
@@ -120,10 +120,11 @@ fn facts(page: &BoxPage, keep: &Keep, lecture: Option<&LectureView>) -> Markup {
 }
 
 fn kept_line(page: &BoxPage) -> Markup {
-    let line = if page.kept_addresses.is_empty() {
-        "Tout le compte".to_string()
-    } else {
-        page.kept_addresses.join(" · ")
+    let line = match page.kept_scope {
+        KeptScope::Pending => "Aucune adresse choisie".to_string(),
+        KeptScope::All => "Tout le compte".to_string(),
+        KeptScope::Listed if page.kept_addresses.is_empty() => "Aucune adresse choisie".to_string(),
+        KeptScope::Listed => page.kept_addresses.join(" · "),
     };
     html! {
         p class="quiet-line kept-line" { (line) }

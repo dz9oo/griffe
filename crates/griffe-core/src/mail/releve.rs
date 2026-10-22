@@ -114,7 +114,7 @@ pub struct RelevePlan {
     pub cursors: Vec<MailboxCursor>,
     /// Adresse du compte. Pas un secret.
     pub address: String,
-    /// Adresses copiées. Vide : tout le compte.
+    /// Adresses copiées. Vide avec l'état `all` : tout le compte.
     pub kept: Vec<String>,
     /// Génération écrite dans le coffre.
     pub kept_generation: i64,
@@ -222,12 +222,15 @@ pub fn note_releve_failure(vault: &crate::store::Store, error: &str) -> Result<(
     vault.open_mailbox()?.note_releve(None, Some(error))
 }
 
-/// Prépare la liaison. `None` : le compte ne permet pas de lire.
+/// Prépare la liaison. `None` : le compte ne permet pas de lire, ou les adresses ne sont pas choisies.
 ///
 /// # Errors
 ///
 /// Lecture du coffre ou du miroir impossible.
 pub fn releve_plan(vault: &crate::store::Store) -> Result<Option<RelevePlan>, AppError> {
+    if store::kept_scope(vault.connection())? == super::model::KeptScope::Pending {
+        return Ok(None);
+    }
     let Some(material) = probe_material(vault.connection())? else {
         return Ok(None);
     };
@@ -246,6 +249,21 @@ pub fn releve_plan(vault: &crate::store::Store) -> Result<Option<RelevePlan>, Ap
         kept_generation: store::kept_generation(vault.connection())?,
         applied_generation,
     }))
+}
+
+/// Vrai quand le compte pourrait être lu et que les adresses ne sont pas encore choisies.
+///
+/// # Errors
+///
+/// Lecture impossible.
+pub fn releve_waits(vault: &crate::store::Store) -> Result<bool, AppError> {
+    if store::kept_scope(vault.connection())? != super::model::KeptScope::Pending {
+        return Ok(false);
+    }
+    let Some(material) = probe_material(vault.connection())? else {
+        return Ok(false);
+    };
+    Ok(material.copy.is_some())
 }
 
 /// Aligne les curseurs sur la liste. Vrai : la passe suivante efface ce qui n'est plus tenu.
@@ -874,7 +892,7 @@ mod tests {
 
     use super::{
         PulledBody, PulledMailbox, PulledMessage, absorb, list_box, note_releve_failure,
-        note_releve_success, releve_due, releve_every,
+        note_releve_success, prepare_pull, releve_due, releve_every,
     };
     use crate::app::{Actor, ExecutionContext, Executor, recent_audit_entries};
     use crate::mail::{SetKeptAddresses, SetReleveInterval};
@@ -1170,6 +1188,7 @@ Message-ID: <ada@example.test>\n\
             .execute(
                 &SetKeptAddresses {
                     addresses: vec!["Nicolas@Lumen.test".into(), "pas une adresse".into()],
+                    all: false,
                 },
                 &human,
             )
@@ -1179,6 +1198,7 @@ Message-ID: <ada@example.test>\n\
             .execute(
                 &SetKeptAddresses {
                     addresses: vec!["Nicolas@Lumen.test".into(), "nicolas@lumen.test".into()],
+                    all: false,
                 },
                 &human,
             )
@@ -1205,6 +1225,7 @@ secret\n";
             .execute(
                 &SetKeptAddresses {
                     addresses: vec!["nicolas@lumen.test".into()],
+                    all: false,
                 },
                 &human,
             )
@@ -1294,13 +1315,20 @@ secret\n";
             many.push(format!("a{index}@exemple.test"));
         }
         let refused = Executor::new(&mut vault)
-            .execute(&SetKeptAddresses { addresses: many }, &human)
+            .execute(
+                &SetKeptAddresses {
+                    addresses: many,
+                    all: false,
+                },
+                &human,
+            )
             .unwrap_err();
         assert!(refused.to_string().contains("Seize"), "{refused}");
         Executor::new(&mut vault)
             .execute(
                 &SetKeptAddresses {
                     addresses: vec!["ada@exemple.test".into(), "  ".into()],
+                    all: false,
                 },
                 &human,
             )
@@ -1313,6 +1341,7 @@ secret\n";
             .execute(
                 &SetKeptAddresses {
                     addresses: Vec::new(),
+                    all: false,
                 },
                 &human,
             )
@@ -1322,6 +1351,80 @@ secret\n";
                 .unwrap()
                 .is_empty()
         );
+        let scope: String = vault
+            .connection()
+            .query_row(
+                "SELECT kept_scope FROM mail_account WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(scope, "pending");
+    }
+
+    #[test]
+    fn choosing_addresses_sweeps_the_letter_that_is_outside() {
+        let mut vault = test_store("releve-choose-sweep");
+        seed(&mut vault);
+        let personal = "\
+From: Ami <ami@exemple.test>\n\
+To: perso@icloud.com\n\
+Subject: Privé\n\
+Message-ID: <prive-choix@exemple.test>\n\
+\n\
+secret\n";
+        let mut mailbox = vault.open_mailbox().unwrap();
+        absorb(
+            &mut vault,
+            &mut mailbox,
+            &[folder(4, false, vec![pulled(2, personal)])],
+            &system(),
+        )
+        .unwrap();
+        drop(mailbox);
+        let human = ExecutionContext::new(Actor::Human, false);
+        Executor::new(&mut vault)
+            .execute(
+                &SetKeptAddresses {
+                    addresses: vec!["nicolas@lumen.test".into()],
+                    all: false,
+                },
+                &human,
+            )
+            .unwrap();
+        let kept = crate::mail::kept_addresses(vault.connection()).unwrap();
+        let generation: i64 = vault
+            .connection()
+            .query_row(
+                "SELECT kept_generation FROM mail_account WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let mut plan = super::RelevePlan {
+            endpoint: crate::mail::ImapEndpoint {
+                host: "imap.mail.me.com".to_string(),
+                port: 993,
+                username: "nicolas@lumen.test".to_string(),
+                remembered: None,
+                icloud: true,
+            },
+            secret: crate::mail::MailSecret::new("mot-de-passe-application").unwrap(),
+            cursors: vault.open_mailbox().unwrap().cursors().unwrap(),
+            address: "nicolas@lumen.test".to_string(),
+            kept,
+            kept_generation: generation,
+            applied_generation: 0,
+        };
+        assert!(prepare_pull(&vault, &mut plan).unwrap());
+        let mut sweep = folder(4, false, Vec::new());
+        sweep.keep_uids = Some(Vec::new());
+        sweep.examined_uid = 2;
+        let mut mailbox = vault.open_mailbox().unwrap();
+        absorb(&mut vault, &mut mailbox, &[sweep], &system()).unwrap();
+        drop(mailbox);
+        let mailbox = vault.open_mailbox().unwrap();
+        assert!(list_box(&vault, &mailbox).unwrap().is_empty());
     }
 
     #[test]
