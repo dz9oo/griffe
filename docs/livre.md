@@ -89,7 +89,9 @@ reçues et envoyées. Les autres ne sont pas relevées, et ne restent pas
 dans le coffre. Tant que la liste est vide, tout le compte est lu.
 Les lettres déjà lues ne sont pas dans À lire : elles sont dans Tout.
 Le texte d'une lettre lourde n'est pas recopié ici.
-Ouvrir une lettre la marque lue. On la rattache à un dossier. Répondre
+Ouvrir une lettre la marque lue. On la rattache à un dossier. Sur le
+dossier, elle rejoint l’histoire, avec les lettres parties : une ligne,
+qu’on ouvre. Le texte reçu reste celui qui est arrivé. Répondre
 arme une lettre, avec cinq secondes pour la retenir. Une réponse reçue
 retient la relance. Laisser partir la relance la rend à son jour. Un avis
 certain dit que l’adresse ne reçoit pas. On la corrige, ou on dit qu’elle

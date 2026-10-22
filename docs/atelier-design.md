@@ -690,19 +690,21 @@ et se lit sous la phrase. Tant que la page est ouverte, le sondage continue :
 chaque seconde pendant la relève, toutes les deux secondes au repos. Sans
 crochet de lecture, il ne démarre pas.
 
-Sur le dossier, pas de sixième pastille. Le fil est le haut d’En cours, avant
-le projet et l’histoire. Les pastilles restent : En cours, Écrire, La fiche,
-L’estimation, Les travaux, Noter une rencontre. Répondre suit la lettre reçue.
-Écrire prépare encore la lettre de la série. Les deux ne se confondent pas.
+Sur le dossier, pas de sixième pastille. Les lettres parties et les lettres
+reçues sont dans l’histoire, au même pli qu’une lettre classée : une ligne,
+le texte en l’ouvrant. Pas de colonne de messages à gauche. Les pastilles
+restent : En cours, Écrire, La fiche, L’estimation, Les travaux, Noter une
+rencontre. Répondre se déplie sous la lettre reçue. Écrire prépare encore la
+lettre de la série. Les deux ne se confondent pas.
 
 Une lettre partie par Griffe, et la réponse qu’on écrit, reprennent la feuille
 et la formule de Le courrier (Clair, Sauge, ou le fichier lisible). Le courrier
 reçu n’est pas repeint. Ces réglages ne se refont pas dans le courriel.
 
-Quand la personne répond, le fil le montre et la prochaine relance automatique
-de ce dossier reste là : « Camille a répondu. La relance ne part pas. »
-« Laisser partir la relance » la rend de nouveau. Répondre soi-même est un
-envoi, avec les cinq secondes, et ne réarme pas la série.
+Quand la personne répond, la phrase reste au-dessus des deux colonnes :
+« Camille a répondu. La relance ne part pas. » La lettre reçue est dans
+l’histoire. « Laisser partir la relance » la rend de nouveau. Répondre
+soi-même est un envoi, avec les cinq secondes, et ne réarme pas la série.
 
 Un avis de non-remise certain dit que l’adresse ne reçoit pas. Griffe n’efface
 pas l’adresse. On la corrige, ou on confirme « Elle est bonne ». Un indice

@@ -88,8 +88,8 @@ pub(super) const BOITE: Letter = Letter {
     steps: &[
         "Courriel, dans la barre, entre les trois pièces et la date. Une enveloppe l'accompagne. Le sceau compte une réponse de dossier pas encore ouverte, et une adresse qui ne reçoit pas.",
         "À lire, Avec les dossiers, Envoyées, Tout, En échec. Ouvrir une lettre la marque lue.",
-        "Plusieurs fiches, ou aucune : on rattache la lettre. Le dossier la montre en haut, avec les lettres parties.",
-        "Répondre se déplie sous le message reçu. Envoyer l'arme, avec cinq secondes pour la retenir. Écrire, sur le dossier, reste la lettre de la série.",
+        "Plusieurs fiches, ou aucune : on rattache la lettre. Sur le dossier, elle est dans l'histoire, une ligne qu'on ouvre, avec les lettres parties.",
+        "Répondre se déplie sous la lettre reçue. Envoyer l'arme, avec cinq secondes pour la retenir. Écrire, sur le dossier, reste la lettre de la série.",
         "Une réponse reçue retient la relance. Laisser partir la relance la rend à son jour.",
         "Un avis certain dit que l'adresse ne reçoit pas. Corriger l'adresse ouvre la fiche. Elle est bonne la confirme.",
     ],

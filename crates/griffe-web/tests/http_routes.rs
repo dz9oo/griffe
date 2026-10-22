@@ -14787,6 +14787,29 @@ async fn the_dossier_thread_holds_the_reply_and_refuses_a_dead_address() {
     assert!(dossier.contains("Répondre"), "{dossier}");
     assert!(dossier.contains("Laisser partir la relance"), "{dossier}");
     assert!(dossier.contains("<textarea"), "{dossier}");
+    assert!(
+        !dossier.contains("class=\"msg\""),
+        "pas de fil à gauche : {dossier}"
+    );
+    let histoire = dossier
+        .find("<h3>Histoire</h3>")
+        .expect("l'histoire est là");
+    assert!(
+        dossier[histoire..].contains("PHRASE-FIL"),
+        "la lettre reçue est dans l'histoire : {dossier}"
+    );
+    assert!(
+        dossier[histoire..].contains("PARTIE-FIL"),
+        "la lettre partie est dans l'histoire : {dossier}"
+    );
+    assert!(
+        dossier[histoire..].contains("letter-fold"),
+        "la lettre reçue se replie : {dossier}"
+    );
+    assert!(
+        dossier[histoire..].contains(">Reçu<"),
+        "la ligne reçue se nomme : {dossier}"
+    );
     assert!(!dossier.contains("hx-on"), "{dossier}");
 
     let released = router
