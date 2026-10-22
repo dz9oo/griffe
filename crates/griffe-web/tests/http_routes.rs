@@ -14284,6 +14284,282 @@ async fn the_box_page_reads_a_letter_and_confirms_a_failed_address() {
     );
 }
 
+fn engage_releve(state: &AppState) {
+    state.set_releve_fetch(|_endpoint, _secret, _cursors, _tick| Ok(Vec::new()));
+}
+
+fn save_account(store: &mut Store, preset: &str, imap_host: &str) {
+    let ctx = ExecutionContext::new(Actor::System, false);
+    Executor::new(store)
+        .execute(
+            &griffe_core::mail::SaveMailAccount {
+                from_name: Some("Nicolas".to_string()),
+                from_address: "nicolas@lumen-conseil.fr".to_string(),
+                host: "smtp.exemple.test".to_string(),
+                port: 587,
+                tls: "starttls".to_string(),
+                username: "nicolas@lumen-conseil.fr".to_string(),
+                preset: preset.to_string(),
+                imap_host: imap_host.to_string(),
+                imap_port: 993,
+            },
+            &ctx,
+        )
+        .unwrap();
+    Executor::new(store)
+        .execute(
+            &griffe_core::mail::SaveMailSecret {
+                secret: griffe_core::mail::MailSecret::new("mot-de-passe-application").unwrap(),
+            },
+            &ctx,
+        )
+        .unwrap();
+}
+
+async fn open_saved(db_path: &Path) -> AppState {
+    let state = AppState::new(db_path.to_path_buf());
+    state
+        .unlock(&Passphrase::from(PASSPHRASE), false)
+        .await
+        .unwrap();
+    state
+}
+
+async fn read_route(router: &axum::Router, uri: &str) -> (StatusCode, Option<String>, String) {
+    let response = router
+        .clone()
+        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let trigger = response
+        .headers()
+        .get("HX-Trigger")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let body = body_text(response).await;
+    (status, trigger, body)
+}
+
+#[tokio::test]
+async fn the_box_says_it_is_reading_and_the_poll_stops_at_rest() {
+    let quiet_path = test_db_path("boite-lecture-quiet");
+    let quiet = unlocked_state(&quiet_path).await;
+    let quiet_router = griffe_web::router(quiet);
+    let (_, _, quiet_body) = read_route(&quiet_router, "/boite").await;
+    assert!(
+        !quiet_body.contains("every 1s"),
+        "sans crochet, pas de sondage : {quiet_body}"
+    );
+    assert!(!quiet_body.contains("Griffe ouvre"), "{quiet_body}");
+    assert!(!quiet_body.contains("hx-on"), "{quiet_body}");
+    assert!(
+        quiet_body.contains("Aucune lettre dans cette vue."),
+        "{quiet_body}"
+    );
+
+    let empty_path = test_db_path("boite-lecture-vide");
+    let mut empty_store = Store::create(&empty_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    save_account(&mut empty_store, "icloud", "");
+    drop(empty_store);
+    let empty = open_saved(&empty_path).await;
+    engage_releve(&empty);
+    empty.note_lecture(
+        griffe_core::mail::LecturePhase::Reading {
+            folder: griffe_core::mail::LectureFolder::Reception,
+            read: 3,
+            total: Some(14),
+        },
+        "nicolas@lumen-conseil.fr",
+    );
+    let empty_router = griffe_web::router(empty.clone());
+    let (_, trigger, reading) = read_route(&empty_router, "/boite").await;
+    assert_eq!(trigger.as_deref(), None);
+    assert!(reading.contains("Griffe lit la réception."), "{reading}");
+    assert!(reading.contains("3 sur 14"), "{reading}");
+    assert!(
+        reading.contains("La réception · nicolas@lumen-conseil.fr"),
+        "{reading}"
+    );
+    assert!(reading.contains("Les lettres arrivent."), "{reading}");
+    assert!(reading.contains("every 1s"), "{reading}");
+    assert!(reading.contains("class=\"glyph draw\""), "{reading}");
+    assert!(reading.contains("pathLength=\"100\""), "{reading}");
+    assert!(!reading.contains("hx-on"), "{reading}");
+
+    let (_, trigger, poll) = read_route(
+        &empty_router,
+        "/boite/lecture?gen=0&mode=glyph&col=glyph&stall=0",
+    )
+    .await;
+    assert_eq!(trigger.as_deref(), None);
+    assert!(poll.contains("Griffe lit la réception."), "{poll}");
+    assert!(poll.contains("3 sur 14"), "{poll}");
+    assert!(
+        !poll.contains("pathLength"),
+        "le sondage ne relance pas le trait : {poll}"
+    );
+    assert!(!poll.contains("hx-on"), "{poll}");
+    assert!(poll.contains("every 1s"), "{poll}");
+
+    empty.note_lecture(
+        griffe_core::mail::LecturePhase::Failed,
+        "nicolas@lumen-conseil.fr",
+    );
+    let (_, _, failed) = read_route(&empty_router, "/boite").await;
+    assert!(failed.contains("Le compte n'a pas répondu."), "{failed}");
+    assert!(
+        failed.contains("nicolas@lumen-conseil.fr · nouvel essai dans un instant."),
+        "{failed}"
+    );
+    assert!(failed.contains("Aucune lettre pour l'instant."), "{failed}");
+    assert!(failed.contains("class=\"glyph stall\""), "{failed}");
+    assert!(failed.contains("every 1s"), "{failed}");
+    assert!(!failed.contains("hx-on"), "{failed}");
+
+    let (_, _, stalled) = read_route(
+        &empty_router,
+        "/boite/lecture?gen=0&mode=fail&col=glyph&stall=1",
+    )
+    .await;
+    assert!(
+        !stalled.contains("pathLength"),
+        "un échec déjà montré ne retrace pas : {stalled}"
+    );
+
+    empty.note_lecture(
+        griffe_core::mail::LecturePhase::Filing { on_dossier: 1 },
+        "nicolas@lumen-conseil.fr",
+    );
+    let (_, _, filing) = read_route(&empty_router, "/boite").await;
+    assert!(
+        filing.contains("Une lettre se pose sur un dossier."),
+        "{filing}"
+    );
+    assert!(filing.contains("every 1s"), "{filing}");
+    let (_, _, after) = read_route(&empty_router, "/boite").await;
+    assert!(
+        !after.contains("Une lettre se pose sur un dossier."),
+        "{after}"
+    );
+    assert!(
+        !after.contains("every 1s"),
+        "au repos le sondage s'arrête : {after}"
+    );
+
+    let (_, trigger, rest) = read_route(
+        &empty_router,
+        "/boite/lecture?gen=0&mode=idle&col=letter&stall=0",
+    )
+    .await;
+    assert_ne!(trigger.as_deref(), Some("griffe:saved"));
+    assert!(!rest.contains("every 1s"), "{rest}");
+    assert!(!rest.contains("hx-on"), "{rest}");
+
+    let filled_path = test_db_path("boite-lecture-pleine");
+    let filled_store = Store::create(&filled_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    let letter = plant_letter(
+        &filled_store,
+        4,
+        "<camille-lecture@riviere.test>",
+        None,
+        "Reponse Camille",
+        "PHRASE-SECRETE-LECTURE",
+        None,
+    );
+    drop(filled_store);
+    let mut filled_store =
+        Store::open_with_passphrase(&filled_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    save_account(&mut filled_store, "icloud", "");
+    drop(filled_store);
+    let filled = open_saved(&filled_path).await;
+    engage_releve(&filled);
+    filled.note_lecture(
+        griffe_core::mail::LecturePhase::Reading {
+            folder: griffe_core::mail::LectureFolder::Reception,
+            read: 1,
+            total: Some(1),
+        },
+        "nicolas@lumen-conseil.fr",
+    );
+    let filled_router = griffe_web::router(filled.clone());
+    let (_, _, reread) = read_route(&filled_router, "/boite").await;
+    assert!(reread.contains("Griffe relit la réception."), "{reread}");
+    assert!(reread.contains("Reponse Camille"), "{reread}");
+    assert!(!reread.contains("class=\"glyph"), "{reread}");
+    assert!(!reread.contains("hx-on"), "{reread}");
+
+    let (_, _, kept) = read_route(
+        &filled_router,
+        &format!("/boite/lecture?gen=0&mode=quiet&col=letter&stall=0&lettre={letter}"),
+    )
+    .await;
+    assert!(kept.contains("Griffe relit la réception."), "{kept}");
+    assert!(
+        !kept.contains("PHRASE-SECRETE-LECTURE"),
+        "la lettre ouverte n'est pas remplacée : {kept}"
+    );
+    assert!(!kept.contains("hx-on"), "{kept}");
+
+    filled.note_fresh(2, vec![letter.clone()]);
+    let (status, trigger, arrived_rows) = read_route(
+        &filled_router,
+        "/boite/lecture?vue=tout&gen=0&mode=idle&col=letter&stall=0",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(trigger.as_deref(), Some("griffe:box"));
+    assert_ne!(trigger.as_deref(), Some("griffe:saved"));
+    assert!(arrived_rows.contains("arriving"), "{arrived_rows}");
+    assert!(arrived_rows.contains("Reponse Camille"), "{arrived_rows}");
+    assert!(!arrived_rows.contains("hx-on"), "{arrived_rows}");
+
+    filled.note_lecture(
+        griffe_core::mail::LecturePhase::Arrived { fresh: 1 },
+        "nicolas@lumen-conseil.fr",
+    );
+    let (_, _, one) = read_route(&filled_router, "/boite").await;
+    assert!(one.contains("Une lettre nouvelle."), "{one}");
+    let (_, _, settled) = read_route(&filled_router, "/boite").await;
+    assert!(!settled.contains("Une lettre nouvelle."), "{settled}");
+    assert!(!settled.contains("every 1s"), "{settled}");
+
+    filled.note_lecture(
+        griffe_core::mail::LecturePhase::Failed,
+        "nicolas@lumen-conseil.fr",
+    );
+    let (_, _, quiet_fail) = read_route(&filled_router, "/boite?vue=tout").await;
+    assert!(
+        quiet_fail.contains("Le compte n'a pas répondu. Nouvel essai dans un instant."),
+        "{quiet_fail}"
+    );
+    assert!(quiet_fail.contains("Reponse Camille"), "{quiet_fail}");
+    assert!(!quiet_fail.contains("class=\"glyph"), "{quiet_fail}");
+    assert!(quiet_fail.contains("every 1s"), "{quiet_fail}");
+    assert!(!quiet_fail.contains("hx-on"), "{quiet_fail}");
+
+    let mute_path = test_db_path("boite-lecture-muet");
+    let mut mute_store = Store::create(&mute_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    save_account(&mut mute_store, "custom", "");
+    drop(mute_store);
+    let mute = open_saved(&mute_path).await;
+    engage_releve(&mute);
+    let mute_router = griffe_web::router(mute);
+    let (_, _, unreadable) = read_route(&mute_router, "/boite").await;
+    assert!(
+        unreadable.contains("Le compte ne se lit pas."),
+        "{unreadable}"
+    );
+    assert!(unreadable.contains("/societe/courrier"), "{unreadable}");
+    assert!(
+        unreadable.contains("Aucune lettre dans cette vue."),
+        "{unreadable}"
+    );
+    assert!(!unreadable.contains("every 1s"), "{unreadable}");
+    assert!(!unreadable.contains("class=\"glyph"), "{unreadable}");
+    assert!(!unreadable.contains("hx-on"), "{unreadable}");
+}
+
 #[tokio::test]
 async fn the_dossier_thread_holds_the_reply_and_refuses_a_dead_address() {
     let db_path = test_db_path("boite-fil");

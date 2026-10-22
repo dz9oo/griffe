@@ -45,44 +45,13 @@ fn spawn_releve_clock(state: AppState) {
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tick.tick().await;
-            if let Err(error) = pull_mail(&state).await {
-                eprintln!("⚠ boîte : {error}");
-            }
+            pull_mail(&state).await;
         }
     });
 }
 
-async fn pull_mail(state: &AppState) -> Result<(), String> {
-    if !state.vault_is_open().await {
-        return Ok(());
-    }
-    let ctx = ExecutionContext::new(Actor::System, false);
-    let prepared = state
-        .with_store_mut(|store| griffe_core::mail::releve_plan(store))
-        .await;
-    let Some(prepared) = prepared else {
-        return Ok(());
-    };
-    let Some(plan) = prepared.map_err(|error| error.to_string())? else {
-        return Ok(());
-    };
-    let icloud = plan.endpoint.icloud;
-    let pulled = tokio::task::spawn_blocking(move || {
-        griffe_mail::fetch_new(&plan.endpoint, &plan.secret, &plan.cursors)
-    })
-    .await
-    .map_err(|error| error.to_string())?
-    .map_err(|error| griffe_core::mail::french_submit_error(&error, icloud))?;
-    let recorded = state
-        .with_store_mut(|store| {
-            let mut mailbox = store.open_mailbox()?;
-            griffe_core::mail::absorb(store, &mut mailbox, &pulled, &ctx)
-        })
-        .await;
-    if let Some(result) = recorded {
-        result.map_err(|error| error.to_string())?;
-    }
-    Ok(())
+async fn pull_mail(state: &AppState) {
+    griffe_web::kick_releve(state).await;
 }
 
 fn spawn_mail_clock(state: AppState) {
@@ -236,6 +205,9 @@ fn main() {
     });
     state.set_mark_seen(|endpoint, secret, mailbox, uid| {
         griffe_mail::store_seen(endpoint, secret, mailbox, uid)
+    });
+    state.set_releve_fetch(|endpoint, secret, cursors, tick| {
+        griffe_mail::fetch_reporting(endpoint, secret, cursors, tick)
     });
 
     tauri::async_runtime::block_on(state.try_open_cached());

@@ -218,6 +218,34 @@ impl Mailbox {
         Ok(())
     }
 
+    /// Nombre de lettres du miroir.
+    ///
+    /// # Errors
+    ///
+    /// Lecture impossible.
+    pub fn count(&self) -> Result<i64, AppError> {
+        self.conn
+            .query_row("SELECT COUNT(*) FROM message", [], |row| row.get(0))
+            .map_err(AppError::from)
+    }
+
+    /// Identifiants des dernières lignes déposées. Un seul écrivain : ce sont
+    /// les `limit` insertions les plus récentes.
+    ///
+    /// # Errors
+    ///
+    /// Lecture impossible.
+    pub fn recent_ids(&self, limit: u32) -> Result<Vec<String>, AppError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id FROM message ORDER BY rowid DESC LIMIT ?1")?;
+        let rows = stmt.query_map([i64::from(limit)], |row| row.get(0))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+    }
+
     /// # Errors
     ///
     /// Lecture impossible.

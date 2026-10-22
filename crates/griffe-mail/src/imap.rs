@@ -8,8 +8,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use griffe_core::mail::{
-    ICLOUD_SENT_MAILBOX, IMAP_PORT, ImapEndpoint, MailSecret, MailSubmitError, PulledMailbox,
-    PulledMessage, SentCopyStatus,
+    ICLOUD_SENT_MAILBOX, IMAP_PORT, ImapEndpoint, MailSecret, MailSubmitError, PullRole, PullTick,
+    PulledMailbox, PulledMessage, SentCopyStatus,
 };
 use griffe_core::mailbox::MailboxCursor;
 use rustls::pki_types::ServerName;
@@ -63,6 +63,21 @@ pub fn fetch_new(
     secret: &MailSecret,
     cursors: &[MailboxCursor],
 ) -> Result<Vec<PulledMailbox>, MailSubmitError> {
+    fetch_reporting(endpoint, secret, cursors, &mut |_| {})
+}
+
+/// Comme [`fetch_new`], et annonce `EXISTS` puis chaque message analysé.
+/// Le rappel ne reçoit ni mot de passe ni corps.
+///
+/// # Errors
+///
+/// La liaison, l'identifiant ou la lecture échoue. Le mot de passe n'est pas dans le message.
+pub fn fetch_reporting(
+    endpoint: &ImapEndpoint,
+    secret: &MailSecret,
+    cursors: &[MailboxCursor],
+    tick: &mut dyn FnMut(PullTick),
+) -> Result<Vec<PulledMailbox>, MailSubmitError> {
     let (mut session, _) = login(endpoint, secret)?;
     let password = secret.expose();
     let listed = session.list(password)?;
@@ -85,7 +100,7 @@ pub fn fetch_new(
         } else {
             "sent"
         };
-        pulled.push(session.pull(password, &name, role, cursors)?);
+        pulled.push(session.pull(password, &name, role, cursors, tick)?);
     }
     session.logout();
     Ok(pulled)
@@ -110,6 +125,26 @@ pub fn store_seen(
         .map(|_| ())?;
     session.logout();
     Ok(())
+}
+
+/// `EXISTS` lu dans la réponse `SELECT`. `* 14 EXISTS`.
+#[must_use]
+pub fn parse_exists(lines: &[String]) -> Option<u32> {
+    for line in lines {
+        let Some(rest) = line.trim().strip_prefix('*') else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        let Some((number, tail)) = rest.split_once(char::is_whitespace) else {
+            continue;
+        };
+        if tail.trim().eq_ignore_ascii_case("EXISTS")
+            && let Ok(value) = number.parse()
+        {
+            return Some(value);
+        }
+    }
+    None
 }
 
 /// `UIDVALIDITY` lu dans la réponse `SELECT`.
@@ -373,8 +408,16 @@ impl Session {
         name: &str,
         role: &str,
         cursors: &[MailboxCursor],
+        tick: &mut dyn FnMut(PullTick),
     ) -> Result<PulledMailbox, MailSubmitError> {
         let lines = self.select_lines(name, secret)?;
+        let total = parse_exists(&lines);
+        let role_tick = PullRole::parse(role);
+        tick(PullTick {
+            role: role_tick,
+            read: 0,
+            total,
+        });
         let uidvalidity = parse_uidvalidity(&lines)
             .map(i64::try_from)
             .transpose()
@@ -399,6 +442,12 @@ impl Session {
         for line in fetched {
             if let Some(message) = parse_fetch_line(&line) {
                 messages.push(message);
+                let read = u32::try_from(messages.len()).unwrap_or(u32::MAX);
+                tick(PullTick {
+                    role: role_tick,
+                    read,
+                    total,
+                });
             }
         }
         Ok(PulledMailbox {
@@ -692,8 +741,8 @@ fn skip_astring(input: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::{
-        choose_sent_mailbox, login_names, parse_fetch_line, parse_list_line, parse_uidvalidity,
-        probe_copy,
+        choose_sent_mailbox, login_names, parse_exists, parse_fetch_line, parse_list_line,
+        parse_uidvalidity, probe_copy,
     };
     use griffe_core::mail::{ImapEndpoint, MailSecret, MailSubmitError};
 
@@ -753,6 +802,21 @@ mod tests {
             "* OK [UIDVALIDITY 3857529045] UIDs valid".to_string(),
             "A1 OK [READ-WRITE] SELECT completed".to_string(),
         ];
+        assert_eq!(parse_uidvalidity(&lines), Some(3_857_529_045));
+        assert_eq!(parse_exists(&lines), None);
+    }
+
+    #[test]
+    fn a_select_response_gives_exists() {
+        let lines = [
+            "* 14 EXISTS".to_string(),
+            "* 3 RECENT".to_string(),
+            "* OK [UIDVALIDITY 3857529045] UIDs valid".to_string(),
+            "A1 OK [READ-WRITE] SELECT completed".to_string(),
+        ];
+        assert_eq!(parse_exists(&lines), Some(14));
+        assert_eq!(parse_exists(&["* 0 EXISTS".to_string()]), Some(0));
+        assert_eq!(parse_exists(&["A1 OK SELECT".to_string()]), None);
         assert_eq!(parse_uidvalidity(&lines), Some(3_857_529_045));
     }
 

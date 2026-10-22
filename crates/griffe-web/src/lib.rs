@@ -22,11 +22,13 @@ mod papiers;
 mod premiers_pas;
 mod prospection;
 mod relances;
+mod releve;
 mod societe;
 mod state;
 mod unlock;
 mod views;
 
+pub use releve::kick_releve;
 pub use state::{AppState, parse_today_opt};
 
 use axum::Router;
@@ -154,6 +156,7 @@ pub fn router(state: AppState) -> Router {
         .route("/", get(handlers::index))
         .route("/jour", get(handlers::jour))
         .route("/boite", get(boite::page))
+        .route("/boite/lecture", get(boite::lecture))
         .route("/boite/sceau", get(boite::seal))
         .route("/boite/classer", post(boite::classer))
         .route("/boite/adresse", post(boite::adresse))

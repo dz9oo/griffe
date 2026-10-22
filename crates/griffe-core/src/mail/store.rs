@@ -274,6 +274,7 @@ pub(super) fn probe_material(conn: &Connection) -> Result<Option<ProbeMaterial>,
     let Some(secret) = load_secret(conn)? else {
         return Ok(None);
     };
+    let address = current.from_address.clone();
     let copy = current.copy_target();
     Ok(Some(ProbeMaterial {
         endpoint: SmtpEndpoint {
@@ -284,6 +285,7 @@ pub(super) fn probe_material(conn: &Connection) -> Result<Option<ProbeMaterial>,
         },
         copy,
         secret,
+        address,
     }))
 }
 

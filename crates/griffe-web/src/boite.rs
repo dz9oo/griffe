@@ -5,15 +5,16 @@ use axum::http::{HeaderMap, HeaderValue};
 use axum::response::{Html, IntoResponse, Response};
 use griffe_core::app::{Executor, Outcome};
 use griffe_core::mail::{
-    AddressFault, BoxQuery, BoxVue, MarkAddress, SeenMark, SeenTarget, file_human,
-    french_submit_error, prepare_seen, read_box, releve_plan, seal_count,
+    AddressFault, BoxQuery, BoxVue, LectureAsk, LectureShow, MarkAddress, SeenMark, SeenTarget,
+    file_human, french_submit_error, lecture_face, prepare_seen, read_box, releve_plan, seal_count,
 };
 use maud::{Markup, html};
 use serde::Deserialize;
 
 use crate::layout::{self, ViewId};
+use crate::releve::kick_releve;
 use crate::state::AppState;
-use crate::views::boite::Keep;
+use crate::views::boite::{Keep, LectureView};
 
 #[derive(Debug, Deserialize, Default)]
 pub struct BoiteForm {
@@ -35,12 +36,93 @@ pub struct BoiteForm {
     address: String,
 }
 
+#[derive(Debug, Deserialize, Default)]
+pub(crate) struct LectureForm {
+    #[serde(default)]
+    vue: String,
+    #[serde(default)]
+    q: String,
+    #[serde(default)]
+    lettre: String,
+    #[serde(default)]
+    dossier: String,
+    #[serde(default, rename = "gen")]
+    generation: u64,
+    #[serde(default)]
+    mode: String,
+    #[serde(default)]
+    col: String,
+    #[serde(default)]
+    stall: String,
+}
+
 pub async fn page(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(form): Query<BoiteForm>,
 ) -> Response {
+    kick_releve(&state).await;
     show(&state, &headers, &form, None, false).await
+}
+
+pub(crate) async fn lecture(
+    State(state): State<AppState>,
+    Query(form): Query<LectureForm>,
+) -> Response {
+    let keep = keep_of(&form.vue, &form.q, &form.lettre, &form.dossier);
+    let Some(page) = read_page(&state, &keep).await else {
+        return Html(r#"<p class="plateau-sentence">Le coffre est verrouillé.</p>"#.to_string())
+            .into_response();
+    };
+    let Ok(page) = page else {
+        return Html(r#"<p class="plateau-sentence">La boîte ne s'ouvre pas.</p>"#.to_string())
+            .into_response();
+    };
+    if !state.lecture_engaged() {
+        return Html(crate::views::boite::render(&page, &keep, None, None).into_string())
+            .into_response();
+    }
+    let readable = account_readable(&state).await;
+    let snap = state.take_lecture(Some(form.generation));
+    let face = lecture_face(&LectureAsk {
+        phase: snap.phase,
+        address: snap.address,
+        mirror_empty: page.counts.tout == 0,
+        readable,
+    });
+    let col = if matches!(face.show, LectureShow::Glyph { .. }) {
+        "glyph"
+    } else {
+        "letter"
+    };
+    let stall = match &face.show {
+        LectureShow::Glyph { stall: true, .. } => "1",
+        _ => "0",
+    };
+    let requested_col = if form.col.is_empty() && form.mode == "glyph" {
+        "glyph"
+    } else {
+        form.col.as_str()
+    };
+    let refresh_list = form.generation != snap.generation;
+    let refresh_column =
+        keep.lettre.is_empty() && (requested_col != col || (col == "glyph" && form.stall != stall));
+    let view = LectureView {
+        face,
+        generation: snap.generation,
+        fresh: snap.fresh_ids,
+    };
+    let mut response = Html(
+        crate::views::boite::poll_fragment(&page, &keep, &view, refresh_list, refresh_column)
+            .into_string(),
+    )
+    .into_response();
+    if refresh_list {
+        response
+            .headers_mut()
+            .insert("HX-Trigger", HeaderValue::from_static("griffe:box"));
+    }
+    response
 }
 
 pub async fn seal(State(state): State<AppState>) -> Html<String> {
@@ -146,7 +228,7 @@ async fn show(
             return page_response(
                 state,
                 headers,
-                crate::views::boite::render(&first, &keep, note.as_deref()),
+                crate::views::boite::render(&first, &keep, note.as_deref(), None),
                 saved,
                 false,
             );
@@ -167,13 +249,62 @@ async fn show(
     } else {
         first
     };
+    let lecture = paint_lecture(state, &page).await;
     page_response(
         state,
         headers,
-        crate::views::boite::render(&page, &keep, note.as_deref()),
+        crate::views::boite::render(&page, &keep, note.as_deref(), lecture.as_ref()),
         saved,
         marked,
     )
+}
+
+fn keep_of(vue: &str, q: &str, lettre: &str, dossier: &str) -> Keep {
+    Keep {
+        vue: BoxVue::parse(vue),
+        q: q.to_string(),
+        lettre: lettre.to_string(),
+        dossier: dossier.to_string(),
+    }
+}
+
+async fn read_page(
+    state: &AppState,
+    keep: &Keep,
+) -> Option<Result<griffe_core::mail::BoxPage, griffe_core::app::AppError>> {
+    let query = BoxQuery {
+        vue: keep.vue,
+        q: &keep.q,
+        letter: nonempty(&keep.lettre),
+        folder: nonempty(&keep.dossier),
+    };
+    state.with_store(|store| read_box(store, query)).await
+}
+
+async fn account_readable(state: &AppState) -> bool {
+    state
+        .with_store(|store| releve_plan(store).ok().flatten().is_some())
+        .await
+        .unwrap_or(false)
+}
+
+async fn paint_lecture(state: &AppState, page: &griffe_core::mail::BoxPage) -> Option<LectureView> {
+    if !state.lecture_engaged() {
+        return None;
+    }
+    let readable = account_readable(state).await;
+    let snap = state.take_lecture(None);
+    let face = lecture_face(&LectureAsk {
+        phase: snap.phase,
+        address: snap.address,
+        mirror_empty: page.counts.tout == 0,
+        readable,
+    });
+    Some(LectureView {
+        face,
+        generation: snap.generation,
+        fresh: snap.fresh_ids,
+    })
 }
 
 async fn mark_letter(state: &AppState, id: &str) -> bool {

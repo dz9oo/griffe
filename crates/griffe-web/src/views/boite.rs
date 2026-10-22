@@ -1,12 +1,25 @@
 //! La boîte. Le texte reçu est montré tel quel. Le HTML reçu passe dans un cadre fermé.
 
-use griffe_core::mail::{BoxCard, BoxPage, BoxVue, ClassChoice, LetterPlace};
+use griffe_core::mail::{
+    BoxCard, BoxPage, BoxVue, ClassChoice, LectureFace, LectureShow, LetterPlace,
+};
 use maud::{Markup, html};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc2822;
 
+use crate::brand;
 use crate::views::copy::month_fr;
 use crate::views::gens::person_href;
+
+/// Lecture en cours, déjà traduite en phrases.
+pub struct LectureView {
+    /// Phrases et mode.
+    pub face: LectureFace,
+    /// Génération du miroir, emportée par le sondage.
+    pub generation: u64,
+    /// Lignes qui arrivent dans cette réponse.
+    pub fresh: Vec<String>,
+}
 
 /// Ce que la page doit garder dans ses liens.
 pub struct Keep {
@@ -17,23 +30,140 @@ pub struct Keep {
 }
 
 #[must_use]
-pub fn render(page: &BoxPage, keep: &Keep, note: Option<&str>) -> Markup {
+pub fn render(
+    page: &BoxPage,
+    keep: &Keep,
+    note: Option<&str>,
+    lecture: Option<&LectureView>,
+) -> Markup {
     let open_id = page.open.as_ref().map(|letter| letter.id.as_str());
+    let fresh = lecture.map(|view| view.fresh.as_slice()).unwrap_or(&[]);
+    let empty = lecture
+        .map(|view| view.face.empty)
+        .unwrap_or("Aucune lettre dans cette vue.");
     html! {
         div class="boite" data-view="boite" {
             article class="plateau-status" {
-                (status(page.dossier_letters, page.failed_addresses))
+                (facts(page, keep, lecture))
             }
             @if let Some(note) = note {
                 p class="note" role="alert" { (note) }
             }
             div class="board" {
-                (vues(page, keep))
-                (list(page, keep, open_id))
-                (reading(page, keep))
+                (vues(page, keep, false))
+                (list(page, keep, open_id, empty, fresh, false))
+                (reading(page, keep, lecture.map(|view| &view.face), false))
             }
         }
     }
+}
+
+/// Bloc sondé, et la liste ou la colonne seulement si elles changent.
+#[must_use]
+pub fn poll_fragment(
+    page: &BoxPage,
+    keep: &Keep,
+    lecture: &LectureView,
+    refresh_list: bool,
+    refresh_column: bool,
+) -> Markup {
+    let open_id = page.open.as_ref().map(|letter| letter.id.as_str());
+    let update_measure = is_glyph(&lecture.face) && !refresh_column;
+    html! {
+        (facts(page, keep, Some(lecture)))
+        @if refresh_list {
+            (vues(page, keep, true))
+            (list(page, keep, open_id, lecture.face.empty, &lecture.fresh, true))
+        }
+        @if refresh_column {
+            (reading(page, keep, Some(&lecture.face), true))
+        } @else if update_measure {
+            (measure_oob(&lecture.face))
+        }
+    }
+}
+
+fn facts(page: &BoxPage, keep: &Keep, lecture: Option<&LectureView>) -> Markup {
+    let Some(lecture) = lecture else {
+        return status(page.dossier_letters, page.failed_addresses);
+    };
+    let trigger = lecture.face.poll.then_some("every 1s");
+    let url = lecture_href(keep, lecture);
+    html! {
+        div id="lecture" hx-get=(url) hx-trigger=[trigger] hx-swap="outerHTML" hx-target="this" {
+            (shown_sentence(page, &lecture.face))
+        }
+    }
+}
+
+fn shown_sentence(page: &BoxPage, face: &LectureFace) -> Markup {
+    match &face.show {
+        LectureShow::Glyph {
+            sentence, stall, ..
+        } => html! {
+            p class={ "plateau-sentence" @if *stall { " seal" } } aria-live="polite" { (sentence) }
+        },
+        LectureShow::Replace { sentence, link } => html! {
+            p class="plateau-sentence" aria-live="polite" {
+                (sentence)
+                @if *link {
+                    " "
+                    a href="/societe/courrier"
+                      hx-get="/societe/courrier"
+                      hx-target="#content"
+                      hx-push-url="true"
+                      hx-swap="innerHTML" { "Le courrier" }
+                }
+            }
+        },
+        LectureShow::Quiet { line, seal } => html! {
+            (status(page.dossier_letters, page.failed_addresses))
+            p class={ "quiet-line" @if *seal { " seal" } } { (line) }
+        },
+        LectureShow::Rest => status(page.dossier_letters, page.failed_addresses),
+    }
+}
+
+fn measure(count: &str, meta: &str) -> Markup {
+    html! {
+        p id="live-count" class="live-count" { (count) }
+        p id="live-meta" class="live-meta" { (meta) }
+    }
+}
+
+fn measure_oob(face: &LectureFace) -> Markup {
+    let LectureShow::Glyph { count, meta, .. } = &face.show else {
+        return html! {};
+    };
+    html! {
+        p id="live-count" class="live-count" hx-swap-oob="outerHTML" { (count) }
+        p id="live-meta" class="live-meta" hx-swap-oob="outerHTML" { (meta) }
+    }
+}
+
+fn is_glyph(face: &LectureFace) -> bool {
+    matches!(face.show, LectureShow::Glyph { .. })
+}
+
+fn lecture_href(keep: &Keep, lecture: &LectureView) -> String {
+    let col = if is_glyph(&lecture.face) {
+        "glyph"
+    } else {
+        "letter"
+    };
+    let stall = match &lecture.face.show {
+        LectureShow::Glyph { stall: true, .. } => "1",
+        _ => "0",
+    };
+    format!(
+        "/boite/lecture?vue={}&q={}&lettre={}&dossier={}&gen={}&mode={}&col={col}&stall={stall}",
+        enc(keep.vue.as_str()),
+        enc(&keep.q),
+        enc(&keep.lettre),
+        enc(&keep.dossier),
+        lecture.generation,
+        lecture.face.mode.as_str(),
+    )
 }
 
 fn status(letters: u32, failed: u32) -> Markup {
@@ -58,10 +188,11 @@ fn status(letters: u32, failed: u32) -> Markup {
     }
 }
 
-fn vues(page: &BoxPage, keep: &Keep) -> Markup {
+fn vues(page: &BoxPage, keep: &Keep, oob: bool) -> Markup {
     let folder_on = !keep.dossier.is_empty();
     html! {
-        nav class="vues" aria-label="Vues de la boîte" {
+        nav id="boite-vues" class="vues" aria-label="Vues de la boîte"
+          hx-swap-oob=[oob.then_some("outerHTML")] {
             (vue_link(BoxVue::Lire, "À lire", page.counts.lire, keep, folder_on, false))
             (vue_link(BoxVue::Dossiers, "Avec les dossiers", page.counts.dossiers, keep, folder_on, false))
             (vue_link(BoxVue::Envoyees, "Envoyées", page.counts.envoyees, keep, folder_on, false))
@@ -113,9 +244,16 @@ fn vue_link(
     }
 }
 
-fn list(page: &BoxPage, keep: &Keep, open_id: Option<&str>) -> Markup {
+fn list(
+    page: &BoxPage,
+    keep: &Keep,
+    open_id: Option<&str>,
+    empty: &str,
+    fresh: &[String],
+    oob: bool,
+) -> Markup {
     html! {
-        div class="list" {
+        div id="boite-list" class="list" hx-swap-oob=[oob.then_some("outerHTML")] {
             form method="get" action="/boite" {
                 input type="hidden" name="vue" value=(keep.vue.as_str());
                 input type="hidden" name="lettre" value=(keep.lettre);
@@ -131,11 +269,11 @@ fn list(page: &BoxPage, keep: &Keep, open_id: Option<&str>) -> Markup {
                   hx-swap="innerHTML";
             }
             @if page.cards.is_empty() {
-                p class="empty" { "Aucune lettre dans cette vue." }
+                p class="empty" { (empty) }
             } @else {
                 ol class="letters" {
                     @for card in &page.cards {
-                        (row(card, keep, open_id))
+                        (row(card, keep, open_id, fresh.iter().any(|id| id == &card.id)))
                     }
                 }
             }
@@ -143,11 +281,15 @@ fn list(page: &BoxPage, keep: &Keep, open_id: Option<&str>) -> Markup {
     }
 }
 
-fn row(card: &BoxCard, keep: &Keep, open_id: Option<&str>) -> Markup {
+fn row(card: &BoxCard, keep: &Keep, open_id: Option<&str>, arriving: bool) -> Markup {
     let target = href(keep.vue, &keep.q, &card.id, &keep.dossier);
     let current = open_id == Some(card.id.as_str());
     html! {
-        li class={ @if card.notice.as_deref() == Some("certain") { "fail" } @if card.seen { " read" } }
+        li class={
+            @if arriving { "arriving" }
+            @if card.notice.as_deref() == Some("certain") { " fail" }
+            @if card.seen { " read" }
+        }
           aria-current=[current.then_some("true")] {
             a class="row" href=(target)
               hx-get=(target)
@@ -175,13 +317,28 @@ fn fact(card: &BoxCard) -> &'static str {
     }
 }
 
-fn reading(page: &BoxPage, keep: &Keep) -> Markup {
+fn reading(page: &BoxPage, keep: &Keep, face: Option<&LectureFace>, oob: bool) -> Markup {
+    if let Some(LectureShow::Glyph {
+        count, meta, stall, ..
+    }) = face.map(|face| &face.show)
+    {
+        return html! {
+            article id="boite-reading" class="reading live" hx-swap-oob=[oob.then_some("outerHTML")] {
+                (brand::reading_glyph(*stall))
+                (measure(count, meta))
+            }
+        };
+    }
     let Some(letter) = &page.open else {
-        return html! { article class="reading" { p class="empty" { "Rien à ouvrir." } } };
+        return html! {
+            article id="boite-reading" class="reading" hx-swap-oob=[oob.then_some("outerHTML")] {
+                p class="empty" { "Rien à ouvrir." }
+            }
+        };
     };
     let html_frame = letter.html.as_deref().and_then(received_html);
     html! {
-        article class="reading" {
+        article id="boite-reading" class="reading" hx-swap-oob=[oob.then_some("outerHTML")] {
             (kicker(letter))
             h2 { (letter.subject) }
             p class="meta" { (meta(letter)) }

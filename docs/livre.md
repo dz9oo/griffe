@@ -78,6 +78,8 @@ pas dans Envoyés : l’essai de liaison le dit. Si le dépôt échoue, la lettr
 est quand même partie. Griffe réessaie plus tard.
 
 La boîte lit ce même compte : les lettres reçues, et celles déjà envoyées.
+Ouvrir la page le dit : le grand paraphe seulement si la boîte est encore
+vide, et une phrase si le compte ne répond pas ou ne se lit pas.
 Ouvrir une lettre la marque lue. On la rattache à un dossier. Répondre
 arme une lettre, avec cinq secondes pour la retenir. Une réponse reçue
 retient la relance. Laisser partir la relance la rend à son jour. Un avis

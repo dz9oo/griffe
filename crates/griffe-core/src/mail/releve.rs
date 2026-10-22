@@ -37,6 +37,8 @@ pub struct RelevePlan {
     pub endpoint: ImapEndpoint,
     pub secret: MailSecret,
     pub cursors: Vec<MailboxCursor>,
+    /// Adresse du compte. Pas un secret.
+    pub address: String,
 }
 
 /// Compte du passage. Les corps n'y figurent pas.
@@ -46,6 +48,8 @@ pub struct AbsorbReport {
     pub held: u32,
     pub failed: u32,
     pub choices: u32,
+    /// Lettres posées sur un dossier pendant ce passage.
+    pub on_dossier: u32,
 }
 
 /// Ligne montrée par `griffe boite`, sans le corps.
@@ -80,6 +84,7 @@ pub fn releve_plan(vault: &crate::store::Store) -> Result<Option<RelevePlan>, Ap
         endpoint,
         secret: material.secret,
         cursors,
+        address: material.address,
     }))
 }
 
@@ -143,15 +148,18 @@ fn absorb_folder(
         report.held += u32::from(placed.held);
         report.failed += u32::from(placed.failed);
         report.choices += u32::from(placed.choice);
+        report.on_dossier += u32::from(placed.on_dossier);
     }
     mailbox.remember(&folder.name, folder.uidvalidity, last_uid)?;
     Ok(())
 }
 
+#[allow(clippy::struct_excessive_bools)]
 struct Placed {
     held: bool,
     failed: bool,
     choice: bool,
+    on_dossier: bool,
 }
 
 struct OpenDossier {
@@ -185,9 +193,18 @@ fn place(
         held: false,
         failed: false,
         choice: choice_ids.is_some(),
+        on_dossier: false,
     };
     if !already && !ours {
         placed.held = file_link(vault, ctx, parsed.message_id.as_ref(), &link, hold)?;
+        placed.on_dossier = parsed.message_id.is_some()
+            && matches!(
+                link,
+                DossierLink::One {
+                    opportunity_id: Some(_),
+                    ..
+                }
+            );
         placed.failed = mark_notice(
             vault,
             ctx,
@@ -654,9 +671,13 @@ Message-ID: <dead@griffe.local>\n\
         let report = absorb(&mut vault, &mut mailbox, &batch, &system()).unwrap();
         assert_eq!(report.stored, 2);
         assert_eq!(report.held, 1);
+        assert_eq!(report.on_dossier, 1);
+        assert_eq!(mailbox.count().unwrap(), 2);
+        assert_eq!(mailbox.recent_ids(report.stored).unwrap().len(), 2);
         let again = absorb(&mut vault, &mut mailbox, &batch, &system()).unwrap();
         assert_eq!(again.stored, 0);
         assert_eq!(again.held, 0);
+        assert_eq!(again.on_dossier, 0);
         let hold: i64 = vault
             .connection()
             .query_row(

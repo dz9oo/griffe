@@ -672,7 +672,10 @@ La page prend le bureau (`#e6dfd2`). Trois colonnes dès que la fenêtre le
 permet : les vues (À lire, Avec les dossiers, Envoyées, Tout, En échec), les
 lettres en cartes `#fbf7f0`, puis la lettre. Les dossiers du serveur
 (INBOX, Sent, Brouillons, Archive) restent fermés. Une phrase de statut ouvre
-la page, même carte que le matin.
+la page, même carte que le matin. Pendant la lecture, cette phrase le dit.
+Le grand paraphe ne paraît que si la boîte est encore vide. Une relève
+suivante ne recouvre pas la lettre ouverte. L'échec, et le compte qui ne
+se lit pas, s'écrivent. Au repos, le sondage s'arrête.
 
 Sur le dossier, pas de sixième pastille. Le fil est le haut d’En cours, avant
 le projet et l’histoire. Les pastilles restent : En cours, Écrire, La fiche,

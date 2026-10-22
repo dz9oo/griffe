@@ -210,6 +210,8 @@ pub struct ProbeMaterial {
     /// `None` : la copie n'est pas demandée.
     pub copy: Option<ImapEndpoint>,
     pub secret: MailSecret,
+    /// Adresse d'envoi. La page la montre pendant la lecture.
+    pub address: String,
 }
 
 /// Où déposer la copie de la lettre partie.

@@ -5,6 +5,7 @@ mod boite;
 mod commands;
 mod error;
 mod inbound;
+mod lecture;
 mod model;
 mod present;
 mod releve;
@@ -27,6 +28,10 @@ pub use commands::{
 pub use error::MailError;
 pub use inbound::{
     DossierLink, FicheAddress, Filing, KnownLetter, Notice, ParsedMessage, classify, read_message,
+};
+pub use lecture::{
+    AbsorbBeat, LectureAsk, LectureFace, LectureFolder, LectureMode, LecturePhase, LectureShow,
+    PullRole, PullTick, beat_after_absorb, lecture_face,
 };
 pub use model::{
     DeliveryOutcome, HOURLY_CAP, ICLOUD_HOST, ICLOUD_IMAP_HOST, ICLOUD_SENT_MAILBOX, IMAP_PORT,
