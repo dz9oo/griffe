@@ -305,7 +305,7 @@ des cartes crème posées sur la teinte de la famille.
 | Tenir | la banque | La piste, Le relevé. Sous le fait : les mois de piste. L’encaissement prévu (partie · montant) est une mention, pas un lien. |
 | Te payer | le montant du mois | Ce mois-ci, Le compte, L’année |
 | L’État | la date courte de la prochaine échéance (« 24 sept. ») | Les échéances, Clore. Le nom de l’échéance reste dans la phrase et dans le fait. |
-| Les réglages | La maison | La carte, Le courrier, Les phrases, Les papiers |
+| Les réglages | La maison | La carte, Le courrier, Les phrases, Les papiers, Le coffre |
 
 La piste a sa propre adresse, `/societe/piste`. Elle montre le **paysage de
 trésorerie** (encre sur papier, pointillés = si l’encaissement prévu arrive).
@@ -315,13 +315,14 @@ Le fil nomme la famille et le titre. Les voisins sont des pastilles ; la pastill
 courante est en encre. Échap, depuis `app.js`, ramène au menu. Le chapitre garde
 son marquage dans `.work`. Te payer est peint en cartes. L’État peint Les
 échéances et Clore. Tenir peint La piste et Le relevé. Les réglages peignent
-La carte, Le courrier, Les phrases et Les papiers. Les lettres d’échéance
-gardent le marquage. Les teintes de lecture restent `#fbf7f0`,
+La carte, Le courrier, Les phrases, Les papiers et Le coffre. Le sous-titre
+de la famille est « Carte, courrier, phrases, papiers, coffre. ». Les lettres
+d’échéance gardent le marquage. Les teintes de lecture restent `#fbf7f0`,
 `#f8f1e2`, `#f8ebe4`, `#f3ecdf`.
 
 Voisins : Tenir = La piste et Le relevé ; Te payer = Ce mois-ci, Le compte et
 L’année ; L’État = Les échéances et Clore ; Les réglages = La carte, Le courrier,
-Les phrases et Les papiers.
+Les phrases, Les papiers et Le coffre.
 
 Une lettre `/societe/impots/{kind}` a pour parent « Les échéances » (lien vers
 `/societe/impots`) et pour voisins « L’État » et « Clore ». « Revenir au menu »
@@ -464,12 +465,12 @@ Classes `.tenir-*`. Ces deux adresses restent sans CA3, 3514, 2777.
 Le fil, « Revenir au menu » et les pastilles restent. La teinte de menu reste
 `#efe6d6`. La teinte de lecture des cartes est `#f3ecdf`. Le texte est en
 encre. Les cartes se posent sur le bureau `#e6dfd2`. Les queries et les POST
-ne changent pas.
+de La carte, du courrier, des phrases et des papiers ne changent pas.
 
-La carte, les phrases et les papiers posent leurs cartes l’une sous l’autre,
-pleine largeur. Pas de grille à deux ou trois colonnes pour ces cartes. Sous
-1 100 px et sous 700 px, les cartes empilées restent une colonne. Elles
-suivent leur texte. Le défilement de `.work` reste permis. Le courrier garde
+La carte, les phrases, les papiers et le coffre posent leurs cartes l’une
+sous l’autre, pleine largeur. Pas de grille à deux ou trois colonnes pour
+ces cartes. Sous 1 100 px et sous 700 px, les cartes empilées restent une
+colonne. Elles suivent leur texte. Le défilement de `.work` reste permis. Le courrier garde
 `courrier-desk` et prend la largeur du bureau. Les phrases gardent
 `phrase-desk`. Les papiers gardent `letter` et `#papiers-letter`.
 
@@ -480,10 +481,10 @@ La racine reste `div.letter` dans le bureau. Deux cartes. La première porte
 `ul.people`, une liste dans la carte : Nom, Forme avec le capital quand il
 n’est pas nul, Siège s’il est là, Président s’il est là, SIREN s’il est là,
 Clôture, TVA. Une ligne absente le reste. Pas une carte par ligne. La seconde
-porte « Le coffre » : les deux phrases déjà écrites, et les liens déjà écrits
-vers Le courrier et vers les phrases. « Modifier la carte » reste le lien
-quiet vers `/view/societe`, sous les cartes. Pas un formulaire, pas une carte.
-Aucun formulaire inventé.
+porte « Le coffre » : les deux phrases déjà écrites restent, sans formulaire,
+et les liens déjà écrits vers Le courrier et vers les phrases. « Modifier la
+carte » reste le lien quiet vers `/view/societe`, sous les cartes. Pas un
+formulaire, pas une carte. Aucun formulaire inventé.
 
 **Le courrier** (`/societe/courrier`). Le `h1` « Le courrier. » sort. Le lien
 « ← La société » reste, le pli le masque. La racine garde `letter` et
@@ -561,16 +562,47 @@ coffre reste le chemin. Le formulaire « Préparer le dossier d’un contrôle �
 reste dans « Pour un contrôle », le bouton dans le form, le résultat dans
 `#pack-result`.
 
+**Le coffre** (`/societe/coffre`). Une ligne de plus dans Les réglages. Le
+plateau se replie comme pour La carte. Le fil porte « Le coffre ». Le `h1`
+sort. Le lien « ← La société » reste, le pli le masque. La racine reste
+`div.letter` et `reglages-desk`, comme La carte. La teinte de lecture est
+`#f3ecdf`. Le texte est en encre. Coffre ouvert, quatre cartes, l’une sous
+l’autre, pleine largeur. Pas de grille à deux ou trois colonnes. Sous
+1 100 px et sous 700 px, une colonne. Les cartes suivent leur texte. Le
+défilement de `.work` reste permis.
+
+**Où il est.** Le chemin du fichier.
+
+**Vérifier.** Une phrase : le fichier, le journal, les factures. Pas de nom
+de pragma.
+
+**Une copie.** Maintenant, la copie s’écrit dans `backups/`. Ailleurs, un
+champ de dossier. La cadence est de 7 jours, coffre ouvert. Après une
+écriture automatique, il reste les 12 dernières `backup-*`.
+`pre-approve-*` et `pre-passphrase-change-*` restent à leur place.
+
+**La passphrase.** L’ancienne, la nouvelle, la confirmation. Le chemin de
+la copie d’avant. Les trois champs restent `type="password"`. La page ne
+les réécrit pas.
+
+Les écrans verrouillés. Dossier absent : « Créer le coffre » et « J’apporte
+un coffre ». Coffre présent illisible, ou vérification échouée avec la bonne
+passphrase : « Mettre de côté et reprendre une copie », en deux temps, vers
+`mis-de-cote/<horodatage>/`. D’abord mettre de côté, puis reprendre une
+copie. Si la reprise échoue, le coffre mis de côté revient en place. Une
+mauvaise passphrase redemande la passphrase.
+
 Ce qui reste une figure : `mail-pane` dans la carte de lecture du courrier,
 la feuille `#phrase-sheet` dans le formulaire des phrases. Ce qui reste une
 liste : `ul.people` dans La carte, `ol.papers` dans chaque carte de liste,
 chaque pièce un `li`. Ce qui reste un formulaire : l’envoi d’essai, la
 formule, le serveur, le retrait du mot de passe, l’envoi du jour, le
 formulaire unique des phrases, le dépôt d’une pièce, le dépôt « une autre
-pièce », la préparation du dossier d’un contrôle. La carte n’a pas de
-formulaire.
+pièce », la préparation du dossier d’un contrôle, le champ de dossier d’une
+copie, la passphrase (ancienne, nouvelle, confirmation). La carte n’a pas de
+formulaire. Vérifier est une phrase.
 
-Classes `.reglages-*`. Ces quatre adresses restent sans CA3, 3514, 2777. Le
+Classes `.reglages-*`. Ces cinq adresses restent sans CA3, 3514, 2777. Le
 SIREN déjà écrit reste.
 
 | Chapitre | Contenu |
@@ -579,7 +611,8 @@ SIREN déjà écrit reste.
 | Ce que tu dois à l’État | Dates + montants. Chaque ligne ouvre une **lettre** (chemin sur le site, montant visible, ce que l’écran demandera) avant de partir. On prépare, on ne transmet pas. |
 | Clore l’exercice | Le parcours (lot 34) en phrases, pas seize étapes techniques d’un coup. |
 | Le relevé | Chaque mouvement = une phrase, trois lectures : dépense, règlement d’une dette, *c’est moi que je me paie*. |
-| La carte | Carte (nom, forme, siège, président, SIREN, clôture, régime de TVA). Le coffre se dit ici. |
+| La carte | Carte (nom, forme, siège, président, SIREN, clôture, régime de TVA). Les deux phrases sur le coffre restent, sans formulaire. |
+| Le coffre | Où il est. Vérifier, une phrase. Une copie. La passphrase. |
 
 « Te payer » et le paysage montrent des **chiffres déjà dans le domaine**
 (prévisionnel, rémunération du dirigeant, affectation).
