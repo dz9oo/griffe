@@ -64,12 +64,12 @@ site-check:
     test -f site/sitemap.xml
     test -f site/404.html
     test -f site/.nojekyll
-    ! grep -E 'googleapis|fonts.gstatic|CA3|3514|2777' site/index.html site/app.css site/404.html
-    ! grep -F 'freeflow ' site/index.html
-    ! grep -E 'dz9oo/freeflow|github.io/freeflow' site/index.html README.md site/robots.txt site/sitemap.xml site/404.html
-    ! grep -E 'licence MIT|license MIT' site/index.html
-    ! grep -F "c'est déjà là" site/index.html
-    ! grep -E 'open source|Open Source|OSI' site/index.html README.md
+    ! grep -E 'googleapis|fonts.gstatic|CA3|3514|2777' site/index.html site/histoire.html site/fonctionnalites.html site/app.css site/fonctionnalites.css site/404.html
+    ! grep -F 'freeflow ' site/index.html site/histoire.html site/fonctionnalites.html
+    ! grep -E 'dz9oo/freeflow|github.io/freeflow' site/index.html site/histoire.html site/fonctionnalites.html README.md site/robots.txt site/sitemap.xml site/404.html
+    ! grep -E 'licence MIT|license MIT' site/index.html site/histoire.html site/fonctionnalites.html
+    ! grep -F "c'est déjà là" site/index.html site/histoire.html site/fonctionnalites.html
+    ! grep -E 'open source|Open Source|OSI' site/index.html site/histoire.html site/fonctionnalites.html README.md
     grep -q 'Griffe' site/index.html
     grep -q 'La lettre du matin' site/index.html
     grep -q 'Tout le tour de ta SASU' site/index.html
@@ -83,7 +83,6 @@ site-check:
     grep -q '1 000' site/index.html
     grep -q 'Le code est ouvert' site/index.html
     grep -q 'PolyForm Shield' site/index.html
-    grep -q 'Alpha · L’atelier de l’indépendant' site/index.html
     grep -q 'Alpha · Linux · AppImage' site/index.html
     grep -q 'github.com/dz9oo/griffe' site/index.html
     grep -q 'github.io/griffe' site/index.html
@@ -92,5 +91,37 @@ site-check:
     grep -q 'og:image' site/index.html
     grep -q 'application/ld+json' site/index.html
     grep -q 'body:has(#tour:target)' site/app.css
+    test -f site/histoire.html
+    test -f site/shots/jour.png
+    test -f site/shots/jour-etroit.png
+    test -f site/shots/ecrire.png
+    test -f site/shots/ecrire-etroit.png
+    test -f site/shots/releve.png
+    test -f site/shots/releve-etroit.png
+    test -f site/shots/payer.png
+    test -f site/shots/payer-etroit.png
+    test -f site/shots/impots.png
+    test -f site/shots/impots-etroit.png
+    test -f site/fonctionnalites.html
+    test -f site/fonctionnalites.css
+    test -f site/lettre.js
+    test -f site/sommaire.js
+    grep -q 'fonctionnalites.html' site/index.html
+    grep -q 'href="#sceau"' site/index.html
+    grep -q 'src="./lettre.js"' site/index.html
+    grep -q 'src="./sommaire.js"' site/fonctionnalites.html
+    grep -q 'n’émet pas' site/fonctionnalites.html
+    grep -q 'La matinée est dans la lettre.' site/histoire.html
+    ! grep -F 'Factur-X' site/index.html site/fonctionnalites.html site/histoire.html site/404.html
+    ! grep -F 'lettre.html' site/index.html site/fonctionnalites.html
+    ! grep -F '../../../site/' site/index.html site/fonctionnalites.html site/app.css site/fonctionnalites.css
+    grep -q 'href="./app.css"' site/histoire.html
+    grep -q '#f1ebe0' site/app.css
+    grep -q 'object-fit: contain' site/app.css
+    ! grep -F 'object-fit: cover' site/app.css
+    ! grep -F 'softwareVersion' site/index.html site/histoire.html site/fonctionnalites.html
+    grep -q 'histoire.html' site/sitemap.xml
+    grep -q 'fonctionnalites.html' site/sitemap.xml
+    grep -q 'body.is-open' site/app.css
     grep -q 'github.io/griffe' site/robots.txt
     grep -q 'github.io/griffe' site/sitemap.xml
