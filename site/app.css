@@ -147,7 +147,7 @@ body {
   text-transform: uppercase;
   text-decoration: none;
   color: var(--ink-2);
-  padding: 2px 0;
+  padding: 6px 0;
   box-shadow: inset 0 -1px 0 transparent;
 }
 
@@ -157,7 +157,12 @@ body {
 body:has(#tour:target) .toc a[href="#tour"],
 body:has(#economies:target) .toc a[href="#economies"],
 body:has(#confiance:target) .toc a[href="#confiance"],
-body:has(#code:target) .toc a[href="#code"] {
+body:has(#code:target) .toc a[href="#code"],
+body:has(#matin:target) .toc a[href="#matin"],
+body:has(#ecrire:target) .toc a[href="#ecrire"],
+body:has(#releve:target) .toc a[href="#releve"],
+body:has(#verser:target) .toc a[href="#verser"],
+body:has(#deposer:target) .toc a[href="#deposer"] {
   color: var(--seal);
   box-shadow: inset 0 -2px 0 var(--seal);
 }
@@ -292,16 +297,12 @@ h3 {
 
 .hero-shot { margin-bottom: 0; }
 
-.piece .shot {
-  max-height: 15.5rem;
-  object-fit: cover;
-  object-position: top center;
-}
-
 .shot {
   display: block;
   width: 100%;
   height: auto;
+  object-fit: contain;
+  object-position: top center;
   border: 1px solid var(--rule);
 }
 
@@ -389,20 +390,15 @@ h3 {
 .tour-grid {
   list-style: none;
   counter-reset: verb;
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 0;
   border-top: 1px solid var(--rule);
-  border-left: 1px solid var(--rule);
 }
 
 .tour-grid li {
   counter-increment: verb;
   display: grid;
-  grid-template-columns: 2rem 1fr;
-  column-gap: 10px;
-  padding: 20px 18px 22px;
-  border-right: 1px solid var(--rule);
+  grid-template-columns: 2.5rem 1fr;
+  column-gap: 12px;
+  padding: 18px 0 20px;
   border-bottom: 1px solid var(--rule);
 }
 
@@ -433,6 +429,42 @@ h3 {
   font-size: 15px;
   line-height: 1.45;
   grid-column: 2;
+}
+
+.rooms {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 28px;
+  margin: 8px 0 22px;
+  padding-top: 22px;
+  border-top: 1px solid var(--rule);
+}
+
+.rooms h2 {
+  margin-bottom: 6px;
+  font-size: 24px;
+}
+
+.rooms p {
+  font-size: 15px;
+  color: var(--ink-2);
+}
+
+.invite {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 18px;
+  line-height: 1.45;
+  color: var(--ink-2);
+  max-width: 46ch;
+  margin-bottom: 64px;
+}
+
+.invite a {
+  color: var(--seal);
+  font-style: normal;
+  text-decoration: none;
+  box-shadow: inset 0 -1px 0 var(--seal);
 }
 
 .pieces {
@@ -596,8 +628,8 @@ h3 {
 
   .hero-shot .shot {
     width: 100%;
-    height: 22rem;
-    object-fit: cover;
+    height: auto;
+    object-fit: contain;
     object-position: top center;
   }
 
@@ -605,8 +637,8 @@ h3 {
 }
 
 @media (max-width: 900px) {
-  .tour-grid { grid-template-columns: 1fr 1fr; }
-  .pieces { grid-template-columns: 1fr; gap: 36px; }
+  .pieces,
+  .rooms { grid-template-columns: 1fr; gap: 22px; }
 }
 
 @media (max-width: 700px) {
@@ -617,21 +649,9 @@ h3 {
   .plate { padding: 24px 20px; }
 
   .map > div,
-  .split,
-  .tour-grid {
+  .split {
     grid-template-columns: 1fr;
     gap: 6px;
-  }
-
-  .tour-grid {
-    border-left: 0;
-    gap: 0;
-  }
-
-  .tour-grid li {
-    padding-left: 0;
-    padding-right: 0;
-    border-right: 0;
   }
 
   .map dd { padding-bottom: 4px; }
@@ -639,4 +659,78 @@ h3 {
 
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
+}
+
+/* Une matinée — planches pleine largeur, capture sur le bureau. */
+body.recit { --page: 1200px; }
+
+body.recit .topbar-inner {
+  grid-template-areas: "brand cta";
+  grid-template-columns: 1fr auto;
+}
+
+.planche {
+  padding-block: 28px 64px;
+  scroll-margin-top: calc(var(--sticky) + 16px);
+}
+
+.planche h2 {
+  font-size: clamp(28px, 4vw, 40px);
+  max-width: 22ch;
+}
+
+.planche .lede {
+  margin-bottom: 22px;
+}
+
+.planche-shot {
+  margin: 0;
+  padding: 16px;
+  background: #e6dfd2;
+}
+
+.planche-shot img {
+  display: block;
+  width: 100%;
+  height: auto;
+  object-fit: contain;
+  object-position: top center;
+  background: #e6dfd2;
+}
+
+.planche figcaption {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 15px;
+  line-height: 1.45;
+  color: var(--ink-2);
+  max-width: 52ch;
+  margin-top: 12px;
+}
+
+.sommaire {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 22px;
+  margin: 8px 0 36px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--rule);
+}
+
+@media (min-width: 900px) {
+  body.recit .topbar-inner {
+    grid-template-areas: "brand cta";
+    grid-template-columns: 1fr auto;
+  }
+}
+
+@media (max-width: 700px) {
+  body.recit .topbar { position: static; }
+  body.recit { --sticky: 0px; }
+  .planche-shot { padding: 8px; }
+}
+
+body.recit .sommaire {
+  justify-content: flex-start;
+  padding-right: 0;
 }
