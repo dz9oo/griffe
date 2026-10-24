@@ -2,6 +2,12 @@
 
 Ce qui change pour qui se sert de Griffe. Une section par version publiée.
 
+## 0.3.18
+
+- Une lettre reçue s'ouvre avec sa mise en page. Les scripts n'y sont pas. Le texte brut, quand il est là, reste sous « Le texte ». Sans mise en page utilisable, ce texte est la lettre.
+- Les images qui viennent d'un autre serveur ne se chargent pas. Dans Le courrier, la carte « Les images distantes » peut les afficher. L'expéditeur peut alors savoir que la lettre a été ouverte. Les images jointes à la lettre restent.
+- Ouvrir un coffre déjà créé avance son schéma. La version précédente ne peut plus l'ouvrir.
+
 ## 0.3.17
 
 - Courriel se souligne dans la barre. Tant qu'aucune lettre n'est là, le grand paraphe tient la page. Il s'efface dès qu'une lettre arrive.

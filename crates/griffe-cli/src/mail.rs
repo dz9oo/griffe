@@ -10,9 +10,10 @@ use griffe_core::mail::{
     ArmOutbound, CancelOutbound, ClearMailSecret, CustomSheet, DeliveryOutcome, KeptScope,
     LetterTheme, MailPreset, MailSecret, RecordMailProbe, RememberImapUsername, SaveLetterface,
     SaveMailAccount, SaveMailSecret, SaveMailSignature, SentCopyStatus, SetAutomaticSend,
-    SetKeptAddresses, SetReleveInterval, SubmissionBatch, UNDO_SECS, abandon_held, commit_outbound,
-    custom_sheet, french_submit_error, hourly_pause, kept_addresses, probe_material, profile,
-    record_copies, record_deliveries, selected_id, take_copies, take_due, trial_letter,
+    SetKeptAddresses, SetReleveInterval, SetRemoteImages, SubmissionBatch, UNDO_SECS, abandon_held,
+    commit_outbound, custom_sheet, french_submit_error, hourly_pause, kept_addresses,
+    probe_material, profile, record_copies, record_deliveries, selected_id, take_copies, take_due,
+    trial_letter,
 };
 use griffe_core::store::Store;
 use time::OffsetDateTime;
@@ -63,6 +64,16 @@ pub enum MailCommand {
     Rythme {
         /// Minutes entre deux relèves.
         minutes: u16,
+    },
+    /// Images distantes des lettres reçues. Les images jointes restent.
+    #[command(group(ArgGroup::new("mode").required(true).args(["on", "off"])))]
+    Images {
+        /// Les charge. L'expéditeur peut savoir que la lettre a été ouverte.
+        #[arg(long)]
+        on: bool,
+        /// Ne les charge pas.
+        #[arg(long)]
+        off: bool,
     },
     /// Adresses que la relève copie, reçues et envoyées. Sans argument, les montre.
     /// Rien n'est lu avant une adresse ou --tout.
@@ -229,6 +240,15 @@ pub fn run(
             let sentence = griffe_core::mail::releve_cadence(seconds);
             Ok(format_outcome_as(&outcome, json, |_| sentence.to_string()))
         }
+        MailCommand::Images { on, .. } => {
+            let outcome = Executor::new(store).execute(&SetRemoteImages { allowed: on }, ctx)?;
+            let sentence = if on {
+                "Les images distantes se chargent. L'expéditeur peut savoir que la lettre a été ouverte."
+            } else {
+                "Les images distantes ne se chargent pas."
+            };
+            Ok(format_outcome_as(&outcome, json, |_| sentence.to_string()))
+        }
         MailCommand::Adresses { addresses, tout } => adresses(store, ctx, json, addresses, tout),
         MailCommand::Auto { on, .. } => {
             let outcome = Executor::new(store).execute(&SetAutomaticSend { enabled: on }, ctx)?;
@@ -296,6 +316,14 @@ fn show(store: &Store, json: bool) -> Result<String, CliError> {
                 "actif".to_string()
             } else {
                 "éteint".to_string()
+            },
+        ),
+        (
+            "images distantes",
+            if account.block_remote {
+                "retirées".to_string()
+            } else {
+                "affichées".to_string()
             },
         ),
         ("liaison", liaison_line(&account)),
@@ -451,6 +479,7 @@ fn account_json(account: &griffe_core::mail::MailProfile) -> serde_json::Value {
         "preset": account.preset.as_str(),
         "has_secret": account.has_secret,
         "auto_send": account.auto_send,
+        "block_remote": account.block_remote,
         "ready": account.ready,
         "signature": account.signature,
         "link_ink": account.link_ink.as_str(),

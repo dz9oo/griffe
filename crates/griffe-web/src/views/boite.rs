@@ -1,4 +1,5 @@
-//! Le courriel. Le texte reçu est montré tel quel. Le HTML reçu passe dans un cadre fermé.
+//! Le courriel. Le HTML reçu, quand il reste montrable, est la lettre.
+//! Le texte brut est le repli, dans un volet fermé.
 
 use griffe_core::mail::{
     BoxCard, BoxPage, BoxVue, ClassChoice, KeptScope, LectureFace, LectureShow, LetterPlace,
@@ -426,7 +427,16 @@ fn reading(page: &BoxPage, keep: &Keep, face: Option<&LectureFace>, oob: bool) -
             }
         };
     };
-    let html_frame = letter.html.as_deref().and_then(received_html);
+    let remote = if page.block_remote {
+        griffe_core::mail::RemoteContent::Blocked
+    } else {
+        griffe_core::mail::RemoteContent::Allowed
+    };
+    let html_ready = letter.body_state == "ready"
+        && letter
+            .html
+            .as_deref()
+            .is_some_and(|raw| griffe_core::mail::received_fragment(raw, remote).is_some());
     html! {
         article id="boite-reading" class="reading" hx-swap-oob=[oob.then_some("outerHTML")] {
             (kicker(letter))
@@ -440,17 +450,28 @@ fn reading(page: &BoxPage, keep: &Keep, face: Option<&LectureFace>, oob: bool) -
             @if let Some(sentence) = crate::releve::body_sentence(&letter.body_state) {
                 p class="note" { (sentence) }
             }
-            @if letter.body_state == "ready" && !letter.text.trim().is_empty() {
-                div class="body" { (letter.text) }
-            }
-            @if letter.body_state == "ready" {
-                @if let Some(document) = html_frame {
-                    iframe class="received-frame" sandbox="" title="Le message reçu" srcdoc=(document) {}
+            @if html_ready {
+                iframe class="received-frame"
+                    sandbox="allow-popups allow-popups-to-escape-sandbox"
+                    referrerpolicy="no-referrer"
+                    title="Le message reçu"
+                    src=(corps_src(&letter.id)) {}
+                @if !letter.text.trim().is_empty() {
+                    details class="text-fold" {
+                        summary { "Le texte" }
+                        div class="body" { (letter.text) }
+                    }
                 }
+            } @else if letter.body_state == "ready" && !letter.text.trim().is_empty() {
+                div class="body" { (letter.text) }
             }
             (actions(letter, keep))
         }
     }
+}
+
+fn corps_src(id: &str) -> String {
+    format!("/boite/lettre/{id}/corps")
 }
 
 fn kicker(letter: &griffe_core::mail::BoxLetter) -> Markup {
@@ -619,282 +640,4 @@ fn when_of(raw: Option<&str>) -> String {
         |_| "—".to_string(),
         |at| format!("{} {}", at.day(), month_fr(u8::from(at.month()))),
     )
-}
-
-fn received_html(raw: &str) -> Option<String> {
-    let cleaned = strip_received(raw);
-    if visible_text(&cleaned).is_empty() {
-        None
-    } else {
-        Some(cleaned)
-    }
-}
-
-fn visible_text(html: &str) -> String {
-    let mut out = String::new();
-    let mut rest = html;
-    while let Some(start) = rest.find('<') {
-        out.push_str(&rest[..start]);
-        rest = &rest[start + 1..];
-        let Some(end) = rest.find('>') else {
-            break;
-        };
-        rest = &rest[end + 1..];
-    }
-    out.push_str(rest);
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-fn strip_received(html: &str) -> String {
-    let mut out = String::with_capacity(html.len());
-    let mut i = 0;
-    while i < html.len() {
-        if !html.is_char_boundary(i) {
-            i += 1;
-            continue;
-        }
-        if !html[i..].starts_with('<') {
-            let Some(ch) = html[i..].chars().next() else {
-                break;
-            };
-            out.push(ch);
-            i += ch.len_utf8();
-            continue;
-        }
-        if html[i..].starts_with("<!--") {
-            i = match html[i..].find("-->") {
-                Some(end) => i + end + 3,
-                None => html.len(),
-            };
-            continue;
-        }
-        let Some(name) = element_name(&html[i..]) else {
-            out.push('<');
-            i += 1;
-            continue;
-        };
-        if dropped(&name) {
-            i += skip_dropped(&html[i..], &name);
-            continue;
-        }
-        if name == "img" && tag_is_remote(&html[i..]) {
-            i += tag_len(&html[i..]);
-            continue;
-        }
-        let len = tag_len(&html[i..]);
-        out.push_str(&strip_remote_style(&html[i..i + len]));
-        i += len;
-    }
-    out
-}
-
-fn dropped(name: &str) -> bool {
-    matches!(
-        name,
-        "script"
-            | "style"
-            | "iframe"
-            | "object"
-            | "embed"
-            | "link"
-            | "meta"
-            | "base"
-            | "form"
-            | "svg"
-    )
-}
-
-fn void_tag(name: &str) -> bool {
-    matches!(
-        name,
-        "link" | "meta" | "base" | "embed" | "img" | "br" | "hr"
-    )
-}
-
-fn element_name(html: &str) -> Option<String> {
-    let bytes = html.as_bytes();
-    if bytes.first() != Some(&b'<') {
-        return None;
-    }
-    let mut i = 1;
-    if bytes.get(i) == Some(&b'/') {
-        i += 1;
-    }
-    if bytes.get(i) == Some(&b'!') {
-        return None;
-    }
-    let start = i;
-    while bytes.get(i).is_some_and(u8::is_ascii_alphanumeric) {
-        i += 1;
-    }
-    if i == start {
-        return None;
-    }
-    Some(html[start..i].to_ascii_lowercase())
-}
-
-fn tag_len(html: &str) -> usize {
-    let bytes = html.as_bytes();
-    let mut quote: Option<u8> = None;
-    for (i, &byte) in bytes.iter().enumerate() {
-        if let Some(mark) = quote {
-            if byte == mark {
-                quote = None;
-            }
-            continue;
-        }
-        match byte {
-            b'"' | b'\'' => quote = Some(byte),
-            b'>' => return i + 1,
-            _ => {}
-        }
-    }
-    html.len()
-}
-
-fn skip_dropped(html: &str, name: &str) -> usize {
-    let open = tag_len(html).max(1);
-    let head = &html[..open.min(html.len())];
-    if void_tag(name) || head.ends_with("/>") {
-        return open;
-    }
-    let mut depth = 1_u32;
-    let mut i = open;
-    while i < html.len() {
-        if !html[i..].starts_with('<') {
-            let Some(ch) = html[i..].chars().next() else {
-                break;
-            };
-            i += ch.len_utf8();
-            continue;
-        }
-        let Some(inner) = element_name(&html[i..]) else {
-            i += 1;
-            continue;
-        };
-        let len = tag_len(&html[i..]).max(1);
-        let closing = html[i..].starts_with("</");
-        if inner == name {
-            if closing {
-                depth = depth.saturating_sub(1);
-                i += len;
-                if depth == 0 {
-                    return i;
-                }
-                continue;
-            }
-            depth = depth.saturating_add(1);
-        }
-        i += len;
-    }
-    html.len()
-}
-
-fn tag_is_remote(html: &str) -> bool {
-    let len = tag_len(html);
-    let tag = &html[..len];
-    attr_values(tag, "src")
-        .chain(attr_values(tag, "srcset"))
-        .any(|value| url_is_remote(&value))
-}
-
-fn url_is_remote(value: &str) -> bool {
-    let lower = value.trim().to_ascii_lowercase();
-    lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("//")
-}
-
-fn attr_values(tag: &str, name: &str) -> impl Iterator<Item = String> {
-    let mut found = Vec::new();
-    let lower = tag.to_ascii_lowercase();
-    let mut search = lower.as_str();
-    let mut base = 0;
-    while let Some(at) = search.find(name) {
-        let abs = base + at;
-        let before_ok = abs == 0
-            || tag
-                .as_bytes()
-                .get(abs - 1)
-                .is_some_and(|byte| byte.is_ascii_whitespace() || *byte == b'<');
-        let after = abs + name.len();
-        if before_ok
-            && lower
-                .as_bytes()
-                .get(after)
-                .is_some_and(|byte| *byte == b'=')
-            && let Some(value) = read_attr(&tag[after + 1..])
-        {
-            found.push(value);
-        }
-        let next = at + name.len();
-        search = &search[next..];
-        base += next;
-    }
-    found.into_iter()
-}
-
-fn read_attr(raw: &str) -> Option<String> {
-    let trimmed = raw.trim_start();
-    let bytes = trimmed.as_bytes();
-    let quote = bytes.first().copied()?;
-    if quote == b'"' || quote == b'\'' {
-        let rest = &trimmed[1..];
-        let end = rest.find(char::from(quote))?;
-        return Some(rest[..end].to_string());
-    }
-    let end = trimmed
-        .find(|ch: char| ch.is_ascii_whitespace() || ch == '>')
-        .unwrap_or(trimmed.len());
-    Some(trimmed[..end].to_string())
-}
-
-fn strip_remote_style(tag: &str) -> String {
-    let Some((start, end)) = style_span(tag) else {
-        return tag.to_string();
-    };
-    let value = &tag[start..end];
-    if style_is_remote(value) {
-        let mut out = String::new();
-        out.push_str(tag[..start].trim_end());
-        out.push_str(&tag[end..]);
-        return out;
-    }
-    tag.to_string()
-}
-
-fn style_span(tag: &str) -> Option<(usize, usize)> {
-    let lower = tag.to_ascii_lowercase();
-    let at = lower.find("style")?;
-    let before_ok = at == 0
-        || tag
-            .as_bytes()
-            .get(at - 1)
-            .is_some_and(|byte| byte.is_ascii_whitespace());
-    if !before_ok {
-        return None;
-    }
-    let after = &lower[at + "style".len()..];
-    let eq = after.find('=')?;
-    if !after[..eq].trim().is_empty() {
-        return None;
-    }
-    let value_at = at + "style".len() + eq + 1;
-    let rest = tag[value_at..].trim_start();
-    let skipped = tag[value_at..].len() - rest.len();
-    let bytes = rest.as_bytes();
-    let quote = *bytes.first()?;
-    if quote == b'"' || quote == b'\'' {
-        let close = rest[1..].find(char::from(quote))?;
-        let start = value_at + skipped;
-        return Some((at, start + 1 + close + 1));
-    }
-    None
-}
-
-fn style_is_remote(tag_slice: &str) -> bool {
-    let compact: String = tag_slice
-        .chars()
-        .filter(|ch| !ch.is_whitespace())
-        .collect::<String>()
-        .to_ascii_lowercase();
-    compact.contains("http://") || compact.contains("https://") || compact.contains("url(//")
 }

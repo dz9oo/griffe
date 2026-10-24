@@ -1,4 +1,4 @@
-//! Chapitre Le courrier. Un panneau pour le serveur, puis la formule, l'essai, l'envoi du jour.
+//! Chapitre Le courrier. Un panneau pour le serveur, puis la formule, l'essai, les images, l'envoi du jour.
 
 use griffe_core::app::AppError;
 use griffe_core::mail::{
@@ -300,6 +300,24 @@ fn markup(
                     }
                     div class="row-actions" {
                         button class="seal" type="submit" { "Régler la relève" }
+                    }
+                }
+            }
+            div id="images" class="reglages-card courrier-block" {
+                h3 class="panel-title" { "Les images distantes" }
+                p class="prose" {
+                    "Celles qui viennent d'un autre serveur. Les afficher permet à l'expéditeur de savoir que la lettre a été ouverte. Celles qui sont jointes à la lettre restent."
+                }
+                p class="prose" { (image_sentence(account.block_remote)) }
+                form hx-post="/societe/courrier/images" hx-target="#content" {
+                    div class="row-actions" {
+                        @if account.block_remote {
+                            input type="hidden" name="allowed" value="1";
+                            button class="quiet" type="submit" { "Les afficher" }
+                        } @else {
+                            input type="hidden" name="allowed" value="0";
+                            button class="seal" type="submit" { "Ne plus les charger" }
+                        }
                     }
                 }
             }
@@ -612,6 +630,14 @@ fn releve_choice(current: u64, seconds: u64, word: &str) -> Markup {
             input type="radio" name="minutes" value=(minutes) checked[current == seconds];
             (word)
         }
+    }
+}
+
+fn image_sentence(blocked: bool) -> &'static str {
+    if blocked {
+        "Elles ne se chargent pas."
+    } else {
+        "Elles se chargent."
     }
 }
 

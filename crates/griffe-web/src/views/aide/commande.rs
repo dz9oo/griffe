@@ -434,6 +434,11 @@ const COURRIER: &[Cmd] = &[
         example: r#"griffe courrier rythme 3"#,
     },
     Cmd {
+        verb: r#"courrier images"#,
+        said: r#"Affiche ou retire les images distantes des lettres reçues. --on les charge : l'expéditeur peut savoir que la lettre a été ouverte. --off les laisse. Les images jointes à la lettre restent."#,
+        example: r#"griffe courrier images --off"#,
+    },
+    Cmd {
         verb: r#"courrier adresses"#,
         said: r#"Adresses que la relève copie, reçues et envoyées. Sans argument, les montre. Rien n'est lu avant une adresse ou --tout. Avec un agent, le geste attend une personne."#,
         example: r#"griffe courrier adresses --tout"#,
@@ -1084,6 +1089,6 @@ mod tests {
                 assert!(!blob.contains("collection://"), "{}", cmd.verb);
             }
         }
-        assert_eq!(seen.len(), 199);
+        assert_eq!(seen.len(), 200);
     }
 }

@@ -175,6 +175,7 @@ impl KeptScope {
 }
 
 /// Compte tel que l'écran le montre. Jamais le secret.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MailProfile {
     pub from_name: String,
@@ -207,6 +208,8 @@ pub struct MailProfile {
     pub releve_every_secs: u64,
     /// Adresses tenues, tout le compte, ou pas encore choisi.
     pub kept_scope: KeptScope,
+    /// Vrai : les images distantes des lettres reçues ne se chargent pas.
+    pub block_remote: bool,
 }
 
 /// Ce qui habille la lettre au moment où elle part. Indépendant du texte écrit.
@@ -314,6 +317,7 @@ impl Default for MailProfile {
             site: String::new(),
             releve_every_secs: super::RELEVE_EVERY_SECS,
             kept_scope: KeptScope::Pending,
+            block_remote: true,
         }
     }
 }

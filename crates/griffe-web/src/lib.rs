@@ -161,6 +161,7 @@ pub fn router(state: AppState) -> Router {
         .route("/boite/sceau", get(boite::seal))
         .route("/boite/classer", post(boite::classer))
         .route("/boite/adresse", post(boite::adresse))
+        .route("/boite/lettre/{id}/corps", get(boite::letter_corps))
         .nest("/affaires", people_routes())
         .nest("/dossiers", people_routes())
         .nest("/gens", people_routes())
@@ -321,6 +322,7 @@ pub fn router(state: AppState) -> Router {
         .route("/societe/courrier/retirer", post(courrier::clear_secret))
         .route("/societe/courrier/automatique", post(courrier::automatic))
         .route("/societe/courrier/releve", post(courrier::releve_interval))
+        .route("/societe/courrier/images", post(courrier::remote_images))
         .route("/societe/courrier/adresses", post(courrier::save_addresses))
         .route(
             "/societe/courrier/signature",

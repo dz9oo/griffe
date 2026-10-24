@@ -4,6 +4,7 @@
 
 mod hub;
 mod imap;
+mod parts;
 
 pub use hub::MailHub;
 pub use imap::{

@@ -191,6 +191,7 @@ async fn lists_every_domain_tool_with_correct_annotations() {
         "mail.arm",
         "mail.adresses",
         "mail.automatic",
+        "mail.images",
         "mail.rythme",
         "mail.save_letterface",
         "mail.save_signature",

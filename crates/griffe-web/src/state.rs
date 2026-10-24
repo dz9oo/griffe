@@ -45,9 +45,14 @@ pub type ReleveFetch = Arc<
         + Sync,
 >;
 
-/// Corps d'une lettre déjà indexée. Absente : le texte reste en attente.
+/// Corps d'un lot déjà indexé, dans un même dossier. Absente : le texte reste en attente.
 pub type BodyFetch = Arc<
-    dyn Fn(&ImapEndpoint, &MailSecret, &str, u32) -> Result<PulledMessage, MailSubmitError>
+    dyn for<'a> Fn(
+            &ImapEndpoint,
+            &MailSecret,
+            &str,
+            &'a [u32],
+        ) -> Result<Vec<PulledMessage>, MailSubmitError>
         + Send
         + Sync,
 >;
@@ -333,10 +338,15 @@ impl AppState {
         self.releve_fetch.lock().ok().and_then(|slot| slot.clone())
     }
 
-    /// Installe la lecture d'un corps. La fenêtre passe le fil IMAP.
+    /// Installe la lecture d'un lot de corps. La fenêtre passe le fil IMAP.
     pub fn set_body_fetch(
         &self,
-        fetch: impl Fn(&ImapEndpoint, &MailSecret, &str, u32) -> Result<PulledMessage, MailSubmitError>
+        fetch: impl for<'a> Fn(
+            &ImapEndpoint,
+            &MailSecret,
+            &str,
+            &'a [u32],
+        ) -> Result<Vec<PulledMessage>, MailSubmitError>
         + Send
         + Sync
         + 'static,

@@ -4,7 +4,7 @@
 use griffe_core::app::Executor;
 use griffe_core::mail::{
     ArmOutbound, SaveLetterface, SaveMailSignature, SetAutomaticSend, SetKeptAddresses,
-    SetReleveInterval, profile, trial_letter,
+    SetReleveInterval, SetRemoteImages, profile, trial_letter,
 };
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
@@ -78,6 +78,14 @@ pub(crate) struct AdressesArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct ImagesArgs {
+    /// Vrai : les images distantes se chargent. L'expéditeur peut savoir que la lettre a été ouverte.
+    enabled: bool,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct AutomaticArgs {
     /// Vrai : les lettres dues aujourd'hui partent pendant que le coffre est ouvert.
     enabled: bool,
@@ -105,6 +113,7 @@ impl FreeflowServer {
                 "preset": account.preset.as_str(),
                 "has_secret": account.has_secret,
                 "auto_send": account.auto_send,
+                "block_remote": account.block_remote,
                 "ready": account.ready,
                 "signature": account.signature,
                 "link_ink": account.link_ink.as_str(),
@@ -235,6 +244,26 @@ impl FreeflowServer {
             client_id: None,
             in_reply_to: None,
             references: None,
+        };
+        match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
+            Ok(outcome) => ok_json(outcome_json(&outcome)),
+            Err(error) => err_text(error.to_string()),
+        }
+    }
+
+    #[tool(
+        name = "mail.images",
+        description = "Affiche ou retire les images distantes des lettres reçues. Activées, l'expéditeur peut savoir que la lettre a été ouverte. Les images jointes restent.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true
+        )
+    )]
+    async fn mail_images(&self, Parameters(args): Parameters<ImagesArgs>) -> CallToolResult {
+        let mut store = self.store.lock().await;
+        let cmd = SetRemoteImages {
+            allowed: args.enabled,
         };
         match Executor::new(&mut store).execute(&cmd, &self.ctx(args.dry_run)) {
             Ok(outcome) => ok_json(outcome_json(&outcome)),

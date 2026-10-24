@@ -214,8 +214,8 @@ fn main() {
         fetch_hub.sync(endpoint, secret, scope, on)
     });
     let body_hub = hub;
-    state.set_body_fetch(move |endpoint, secret, mailbox, uid| {
-        body_hub.body(endpoint, secret, mailbox, uid)
+    state.set_body_fetch(move |endpoint, secret, mailbox, uids| {
+        body_hub.bodies(endpoint, secret, mailbox, uids)
     });
 
     tauri::async_runtime::block_on(state.try_open_cached());
