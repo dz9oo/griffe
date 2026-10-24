@@ -215,43 +215,70 @@ async fn fill_recent(state: &AppState) {
     let mut queue = pending;
     loop {
         if let Some(rushed) = state.take_preferred() {
-            fill_one(state, &fetch, &plan, &rushed).await;
             queue.retain(|item| item.mailbox != rushed.mailbox || item.uid != rushed.uid);
-            continue;
+            queue.insert(0, rushed);
         }
         if queue.is_empty() {
             break;
         }
-        let next = queue.remove(0);
-        fill_one(state, &fetch, &plan, &next).await;
+        let group = take_group(&mut queue);
+        fill_batch(state, &fetch, &plan, &group).await;
     }
 }
 
-async fn fill_one(state: &AppState, fetch: &BodyFetch, plan: &RelevePlan, item: &PendingBody) {
-    let Ok(uid) = u32::try_from(item.uid) else {
+fn take_group(queue: &mut Vec<PendingBody>) -> Vec<PendingBody> {
+    let Some(first) = queue.first().cloned() else {
+        return Vec::new();
+    };
+    let mut group = Vec::new();
+    queue.retain(|item| {
+        let same = item.mailbox == first.mailbox && item.uidvalidity == first.uidvalidity;
+        if same {
+            group.push(item.clone());
+        }
+        !same
+    });
+    group
+}
+
+async fn fill_batch(state: &AppState, fetch: &BodyFetch, plan: &RelevePlan, items: &[PendingBody]) {
+    let mut uids = Vec::new();
+    for item in items {
+        if let Ok(uid) = u32::try_from(item.uid) {
+            uids.push(uid);
+        }
+    }
+    if uids.is_empty() {
+        return;
+    }
+    let Some(first) = items.first() else {
         return;
     };
     let endpoint = plan.endpoint.clone();
     let secret = password_of(&plan.secret);
-    let mailbox = item.mailbox.clone();
-    let uidvalidity = item.uidvalidity;
+    let mailbox = first.mailbox.clone();
+    let uidvalidity = first.uidvalidity;
     let fetch = fetch.clone();
+    let asked = mailbox.clone();
     let joined = tokio::task::spawn_blocking(move || {
         let Ok(secret) = mail::MailSecret::new(secret) else {
             return Err(mail::MailSubmitError::Auth);
         };
-        fetch(&endpoint, &secret, &mailbox, uid)
+        fetch(&endpoint, &secret, &asked, &uids)
     })
     .await;
-    let Ok(Ok(message)) = joined else {
+    let Ok(Ok(messages)) = joined else {
         return;
     };
+    if messages.is_empty() {
+        return;
+    }
     let batch = PulledMailbox {
-        name: item.mailbox.clone(),
+        name: mailbox,
         uidvalidity,
         resync: false,
         role: "inbox".to_string(),
-        messages: vec![message],
+        messages,
         modseq: None,
         examined_uid: 0,
         keep_uids: None,
@@ -272,7 +299,7 @@ pub fn request_body(state: &AppState, body: PendingBody) {
         let Some(Ok(Some(plan))) = state.with_store(mail::releve_plan).await else {
             return;
         };
-        fill_one(&state, &fetch, &plan, &body).await;
+        fill_batch(&state, &fetch, &plan, std::slice::from_ref(&body)).await;
     });
 }
 
@@ -288,5 +315,37 @@ pub fn body_sentence(state: &str) -> Option<&'static str> {
         "too_large" => Some("Cette lettre est trop lourde pour être gardée ici."),
         "unreadable" => Some("Cette lettre n'a pas pu être lue."),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::take_group;
+    use griffe_core::mailbox::PendingBody;
+
+    fn item(mailbox: &str, uid: i64, uidvalidity: i64) -> PendingBody {
+        PendingBody {
+            mailbox: mailbox.to_string(),
+            uid,
+            uidvalidity,
+        }
+    }
+
+    #[test]
+    fn a_rushed_letter_leads_its_mailbox() {
+        let mut queue = vec![
+            item("INBOX", 1, 7),
+            item("Sent", 2, 7),
+            item("INBOX", 3, 7),
+            item("INBOX", 4, 8),
+        ];
+        queue.insert(0, item("Sent", 9, 7));
+        let sent = take_group(&mut queue);
+        assert_eq!(sent.iter().map(|row| row.uid).collect::<Vec<_>>(), [9, 2]);
+        let inbox = take_group(&mut queue);
+        assert_eq!(inbox.iter().map(|row| row.uid).collect::<Vec<_>>(), [1, 3]);
+        let other = take_group(&mut queue);
+        assert_eq!(other.iter().map(|row| row.uid).collect::<Vec<_>>(), [4]);
+        assert!(queue.is_empty());
     }
 }

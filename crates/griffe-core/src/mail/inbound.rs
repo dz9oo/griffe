@@ -436,24 +436,111 @@ fn plain_and_html(parts: &[Part]) -> (String, Option<String>) {
             html = Some(part_text(part));
         }
     }
+    let html = html.map(|value| embed_cids(&value, parts));
     let text = plain.unwrap_or_else(|| html.as_deref().map(html_to_text).unwrap_or_default());
     (text, html)
 }
 
+fn embed_cids(html: &str, parts: &[Part]) -> String {
+    let mut images = Vec::new();
+    for part in parts {
+        let kind = header(&part.headers, "content-type").unwrap_or("");
+        let mime = kind.split(';').next().unwrap_or("").trim().to_string();
+        if !mime.to_ascii_lowercase().starts_with("image/") {
+            continue;
+        }
+        let Some(raw_id) = header(&part.headers, "content-id") else {
+            continue;
+        };
+        let id = cid_token(raw_id);
+        if id.is_empty() {
+            continue;
+        }
+        let bytes = part_bytes(part);
+        if bytes.is_empty() {
+            continue;
+        }
+        images.push((id, format!("data:{mime};base64,{}", encode_base64(&bytes))));
+    }
+    images.sort_by_key(|left| std::cmp::Reverse(left.0.len()));
+    let mut html = html.to_string();
+    for (id, data) in images {
+        html = replace_ci(&html, &format!("cid:<{id}>"), &data);
+        html = replace_ci(&html, &format!("cid:{id}"), &data);
+    }
+    html
+}
+
+fn cid_token(raw: &str) -> String {
+    raw.trim()
+        .trim_matches(|ch| ch == '<' || ch == '>')
+        .trim()
+        .to_string()
+}
+
+fn replace_ci(haystack: &str, needle: &str, with: &str) -> String {
+    let lower_hay = haystack.to_ascii_lowercase();
+    let lower_needle = needle.to_ascii_lowercase();
+    let mut out = String::new();
+    let mut rest = 0;
+    while let Some(at) = lower_hay[rest..].find(&lower_needle) {
+        let start = rest + at;
+        out.push_str(&haystack[rest..start]);
+        out.push_str(with);
+        rest = start + needle.len();
+    }
+    out.push_str(&haystack[rest..]);
+    out
+}
+
+fn encode_base64(bytes: &[u8]) -> String {
+    const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        let first = u32::from(bytes[index]);
+        let second = bytes.get(index + 1).copied().map(u32::from);
+        let third = bytes.get(index + 2).copied().map(u32::from);
+        let packed = (first << 16) | (second.unwrap_or(0) << 8) | third.unwrap_or(0);
+        out.push(base64_digit((packed >> 18) & 63, TABLE));
+        out.push(base64_digit((packed >> 12) & 63, TABLE));
+        if second.is_some() {
+            out.push(base64_digit((packed >> 6) & 63, TABLE));
+        } else {
+            out.push('=');
+        }
+        if third.is_some() {
+            out.push(base64_digit(packed & 63, TABLE));
+        } else {
+            out.push('=');
+        }
+        index += 3;
+    }
+    out
+}
+
+fn base64_digit(value: u32, table: &[u8]) -> char {
+    let index = usize::try_from(value & 63).unwrap_or(0);
+    char::from(table[index])
+}
+
 fn part_text(part: &Part) -> String {
+    let charset = header(&part.headers, "content-type")
+        .and_then(|value| parameter(value, "charset"))
+        .unwrap_or_else(|| "utf-8".to_string());
+    decode_bytes(&part_bytes(part), &charset)
+}
+
+fn part_bytes(part: &Part) -> Vec<u8> {
     let encoding = header(&part.headers, "content-transfer-encoding")
         .unwrap_or("7bit")
         .trim()
         .to_ascii_lowercase();
-    let charset = header(&part.headers, "content-type")
-        .and_then(|value| parameter(value, "charset"))
-        .unwrap_or_else(|| "utf-8".to_string());
-    let bytes = match encoding.as_str() {
+    match encoding.as_str() {
         "base64" => decode_base64(&part.body).unwrap_or_default(),
         "quoted-printable" => decode_qp(&part.body),
         _ => part.body.as_bytes().to_vec(),
-    };
-    decode_bytes(&bytes, &charset)
+    }
 }
 
 fn html_to_text(html: &str) -> String {
@@ -875,6 +962,44 @@ Texte\n";
         assert_eq!(message.referenced, vec!["abc@griffe.local".to_string()]);
         assert!(message.text.contains("je suis partante"));
         assert!(message.notice.is_none());
+    }
+
+    #[test]
+    fn a_cid_image_stays_in_the_html_and_the_attachment_does_not() {
+        let raw = "\
+From: Camille <camille@riviere.test>\r\n\
+Subject: Avec image\r\n\
+Content-Type: multipart/related; boundary=rel\r\n\
+\r\n\
+--rel\r\n\
+Content-Type: text/plain; charset=utf-8\r\n\
+\r\n\
+Le texte.\r\n\
+--rel\r\n\
+Content-Type: text/html; charset=utf-8\r\n\
+\r\n\
+<p>Bonjour</p><img src=\"cid:logo@riviere.test\">\r\n\
+--rel\r\n\
+Content-Type: image/png\r\n\
+Content-ID: <logo@riviere.test>\r\n\
+Content-Transfer-Encoding: base64\r\n\
+\r\n\
+iVBORw0KGgo=\r\n\
+--rel\r\n\
+Content-Type: application/pdf\r\n\
+Content-Disposition: attachment; filename=devis.pdf\r\n\
+Content-Transfer-Encoding: base64\r\n\
+\r\n\
+JVBERi0=\r\n\
+--rel--\r\n";
+        let message = read_message(raw);
+        assert_eq!(message.text, "Le texte.");
+        let html = message.html.unwrap();
+        assert!(html.contains("Bonjour"), "{html}");
+        assert!(html.contains("data:image/png;base64,"), "{html}");
+        assert!(!html.to_ascii_lowercase().contains("cid:logo"), "{html}");
+        assert!(!html.contains("JVBERi0"), "{html}");
+        assert!(!html.contains("devis.pdf"), "{html}");
     }
 
     #[test]

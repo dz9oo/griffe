@@ -1,7 +1,7 @@
 //! Page Courriel. La socket, si la fenêtre en a installé une, reste hors du cœur.
 
-use axum::extract::{Form, Query, State};
-use axum::http::{HeaderMap, HeaderValue};
+use axum::extract::{Form, Path, Query, State};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use griffe_core::app::{Executor, Outcome};
 use griffe_core::mail::{
@@ -137,6 +137,59 @@ pub(crate) async fn lecture(
             .headers_mut()
             .insert("HX-Trigger", HeaderValue::from_static("griffe:box"));
     }
+    response
+}
+
+pub async fn letter_corps(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let found = state
+        .with_store(
+            move |store| -> Result<
+                Option<(String, griffe_core::mail::RemoteContent)>,
+                griffe_core::app::AppError,
+            > {
+                let remote = if griffe_core::mail::profile(store.connection())?.block_remote {
+                    griffe_core::mail::RemoteContent::Blocked
+                } else {
+                    griffe_core::mail::RemoteContent::Allowed
+                };
+                if !griffe_core::mailbox::mailbox_file(store.db_path()).exists() {
+                    return Ok(None);
+                }
+                let Some(letter) = store.open_mailbox()?.read(&id)? else {
+                    return Ok(None);
+                };
+                Ok(letter.html.as_deref().and_then(|html| {
+                    griffe_core::mail::received_fragment(html, remote).map(|fragment| {
+                        (
+                            griffe_core::mail::received_document(&fragment, remote),
+                            remote,
+                        )
+                    })
+                }))
+            },
+        )
+        .await;
+    let Some(Ok(Some((document, remote)))) = found else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let mut response = Html(document).into_response();
+    let headers = response.headers_mut();
+    headers.insert(
+        HeaderName::from_static("content-security-policy"),
+        HeaderValue::from_static(griffe_core::mail::received_policy(remote)),
+    );
+    headers.insert(
+        HeaderName::from_static("cache-control"),
+        HeaderValue::from_static("no-store"),
+    );
+    headers.insert(
+        HeaderName::from_static("referrer-policy"),
+        HeaderValue::from_static("no-referrer"),
+    );
+    headers.insert(
+        HeaderName::from_static("x-content-type-options"),
+        HeaderValue::from_static("nosniff"),
+    );
     response
 }
 

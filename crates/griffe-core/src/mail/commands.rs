@@ -412,6 +412,22 @@ fn normalize_kept(addresses: &[String]) -> Result<Vec<String>, AppError> {
     Ok(kept)
 }
 
+/// Images `http` et `https` des lettres reçues. `allowed` les charge.
+/// Les images jointes au message ne passent pas par ce réglage.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetRemoteImages {
+    pub allowed: bool,
+}
+
+impl Command for SetRemoteImages {
+    type Output = ();
+    const NAME: &'static str = "mail.set_remote_images";
+
+    fn apply(&self, conn: &Connection) -> Result<Self::Output, AppError> {
+        store::set_block_remote(conn, !self.allowed, &now_stamp()?)
+    }
+}
+
 /// Période entre deux relèves. Quatre valeurs, rien d'autre.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SetReleveInterval {

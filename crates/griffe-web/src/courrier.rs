@@ -9,8 +9,8 @@ use griffe_core::app::{AppError, Executor};
 use griffe_core::mail::{
     ArmOutbound, CancelOutbound, ClearMailSecret, KEPT_ADDRESS_CAP, MailSecret, RecordMailProbe,
     ResolveUncertain, RetryOutbound, SaveLetterface, SaveMailAccount, SaveMailSecret,
-    SaveMailSignature, SetAutomaticSend, SetKeptAddresses, SetReleveInterval, UNDO_SECS,
-    probe_material, profile,
+    SaveMailSignature, SetAutomaticSend, SetKeptAddresses, SetReleveInterval, SetRemoteImages,
+    UNDO_SECS, probe_material, profile,
 };
 use maud::{Markup, html};
 use serde::Deserialize;
@@ -352,6 +352,57 @@ pub async fn automatic(
         "L'envoi du jour est actif."
     } else {
         "L'envoi du jour est éteint."
+    };
+    match result {
+        None => locked(&state, &headers),
+        Some(Err(error)) => saved(
+            &state,
+            &headers,
+            courrier_markup(
+                &state,
+                Some(&CourrierForm {
+                    error: Some(french(&error)),
+                    ..CourrierForm::blank()
+                }),
+            )
+            .await,
+        ),
+        Some(Ok(_)) => saved(
+            &state,
+            &headers,
+            courrier_markup(
+                &state,
+                Some(&CourrierForm {
+                    notice: Some(notice.into()),
+                    ..CourrierForm::blank()
+                }),
+            )
+            .await,
+        ),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ImagesForm {
+    #[serde(default)]
+    allowed: String,
+}
+
+pub async fn remote_images(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(form): Form<ImagesForm>,
+) -> Response {
+    let allowed = form.allowed == "1";
+    let result = state
+        .with_store_mut(|store| {
+            Executor::new(store).execute(&SetRemoteImages { allowed }, &AppState::human_ctx())
+        })
+        .await;
+    let notice = if allowed {
+        "Les images distantes se chargent. L'expéditeur peut savoir que la lettre a été ouverte."
+    } else {
+        "Les images distantes ne se chargent pas."
     };
     match result {
         None => locked(&state, &headers),

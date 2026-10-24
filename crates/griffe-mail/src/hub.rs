@@ -20,12 +20,12 @@ enum Job {
         sweep: bool,
         reply: SyncSender<SyncNote>,
     },
-    Body {
+    Bodies {
         endpoint: ImapEndpoint,
         password: String,
         mailbox: String,
-        uid: u32,
-        reply: Sender<Result<PulledMessage, MailSubmitError>>,
+        uids: Vec<u32>,
+        reply: Sender<Result<Vec<PulledMessage>, MailSubmitError>>,
     },
 }
 
@@ -98,6 +98,31 @@ impl MailHub {
         Err(broken())
     }
 
+    /// Corps de messages déjà indexés, dans un même dossier.
+    ///
+    /// # Errors
+    ///
+    /// La liaison ou la lecture échoue.
+    pub fn bodies(
+        &self,
+        endpoint: &ImapEndpoint,
+        secret: &MailSecret,
+        mailbox: &str,
+        uids: &[u32],
+    ) -> Result<Vec<PulledMessage>, MailSubmitError> {
+        let (reply, incoming) = mpsc::channel();
+        self.jobs
+            .send(Job::Bodies {
+                endpoint: endpoint.clone(),
+                password: secret.expose().to_string(),
+                mailbox: mailbox.to_string(),
+                uids: uids.to_vec(),
+                reply,
+            })
+            .map_err(|_| broken())?;
+        incoming.recv().unwrap_or_else(|_| Err(broken()))
+    }
+
     /// Corps d'un message déjà indexé.
     ///
     /// # Errors
@@ -110,17 +135,8 @@ impl MailHub {
         mailbox: &str,
         uid: u32,
     ) -> Result<PulledMessage, MailSubmitError> {
-        let (reply, incoming) = mpsc::channel();
-        self.jobs
-            .send(Job::Body {
-                endpoint: endpoint.clone(),
-                password: secret.expose().to_string(),
-                mailbox: mailbox.to_string(),
-                uid,
-                reply,
-            })
-            .map_err(|_| broken())?;
-        incoming.recv().unwrap_or_else(|_| Err(broken()))
+        let mut messages = self.bodies(endpoint, secret, mailbox, &[uid])?;
+        messages.pop().ok_or_else(broken)
     }
 }
 
@@ -147,16 +163,16 @@ fn serve(incoming: Receiver<Job>) {
                 password.zeroize();
                 let _ = reply.send(SyncNote::Done(outcome));
             }
-            Job::Body {
+            Job::Bodies {
                 endpoint,
                 mut password,
                 mailbox,
-                uid,
+                uids,
                 reply,
             } => {
                 let outcome = secret_of(&password).and_then(|secret| {
                     let session = ensure(&mut live, &endpoint, &secret)?;
-                    session.read_one(secret.expose(), &mailbox, uid)
+                    session.read_bodies(secret.expose(), &mailbox, &uids)
                 });
                 password.zeroize();
                 let _ = reply.send(outcome);

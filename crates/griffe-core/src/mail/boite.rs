@@ -134,6 +134,8 @@ pub struct BoxPage {
     pub kept_addresses: Vec<String>,
     /// Choix qui distingue une liste vide d'un compte entier.
     pub kept_scope: super::KeptScope,
+    /// Vrai : la lettre ne charge pas les images distantes.
+    pub block_remote: bool,
 }
 
 /// Ce qu'on demande à la page.
@@ -194,6 +196,7 @@ pub fn read_box(vault: &Store, query: BoxQuery<'_>) -> Result<BoxPage, AppError>
             releve_error: None,
             kept_addresses: super::kept_addresses(vault.connection())?,
             kept_scope: profile_scope(vault)?,
+            block_remote: remote_blocked(vault)?,
         });
     }
     let mailbox = vault.open_mailbox()?;
@@ -239,11 +242,16 @@ pub fn read_box(vault: &Store, query: BoxQuery<'_>) -> Result<BoxPage, AppError>
         releve_error,
         kept_addresses: super::kept_addresses(vault.connection())?,
         kept_scope: profile_scope(vault)?,
+        block_remote: remote_blocked(vault)?,
     })
 }
 
 fn profile_scope(vault: &Store) -> Result<super::KeptScope, AppError> {
     Ok(super::profile(vault.connection())?.kept_scope)
+}
+
+fn remote_blocked(vault: &Store) -> Result<bool, AppError> {
+    Ok(super::profile(vault.connection())?.block_remote)
 }
 
 /// Range le message, puis retient la relance si un dossier est choisi.

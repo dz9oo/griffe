@@ -132,5 +132,7 @@ pub fn migrations() -> Migrations<'static> {
             .down(include_str!("migrations/0056_kept_addresses_down.sql")),
         M::up(include_str!("migrations/0057_kept_scope_up.sql"))
             .down(include_str!("migrations/0057_kept_scope_down.sql")),
+        M::up(include_str!("migrations/0058_block_remote_up.sql"))
+            .down(include_str!("migrations/0058_block_remote_down.sql")),
     ])
 }

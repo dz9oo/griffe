@@ -3710,10 +3710,17 @@ input[type="checkbox"] {
 .received-frame {
   display: block;
   width: 100%;
-  min-height: 8rem;
-  margin-top: 16px;
-  border: 0;
-  background: transparent;
+  height: min(70vh, 720px);
+  margin-top: 18px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: #fff;
+}
+.reading .text-fold { margin-top: 14px; }
+.reading .text-fold summary {
+  cursor: pointer;
+  color: var(--ink-2);
+  font-size: 14px;
 }
 .reading .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 18px; }
 .reading .raw { margin-top: 16px; color: var(--ink-2); font-size: 14px; }

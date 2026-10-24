@@ -106,7 +106,7 @@ pub fn fetch_body(
     uid: u32,
 ) -> Result<PulledMessage, MailSubmitError> {
     let (mut session, _) = login(endpoint, secret)?;
-    let message = session.fetch_one_body(secret.expose(), mailbox, uid)?;
+    let message = session.read_one(secret.expose(), mailbox, uid)?;
     session.logout();
     Ok(message)
 }
@@ -125,18 +125,24 @@ pub fn fetch_pending(
         return Ok(Vec::new());
     }
     let (mut session, _) = login(endpoint, secret)?;
-    let mut batches = Vec::with_capacity(pending.len());
-    for item in pending {
-        let Ok(uid) = u32::try_from(item.uid) else {
+    let mut remaining = pending.to_vec();
+    let mut batches = Vec::new();
+    while !remaining.is_empty() {
+        let group = take_pending_group(&mut remaining);
+        let uids = group
+            .iter()
+            .filter_map(|item| u32::try_from(item.uid).ok())
+            .collect::<Vec<_>>();
+        if uids.is_empty() {
             continue;
-        };
-        let message = session.fetch_one_body(secret.expose(), &item.mailbox, uid)?;
+        }
+        let messages = session.read_bodies(secret.expose(), &group[0].mailbox, &uids)?;
         batches.push(PulledMailbox {
-            name: item.mailbox.clone(),
-            uidvalidity: item.uidvalidity,
+            name: group[0].mailbox.clone(),
+            uidvalidity: group[0].uidvalidity,
             resync: false,
             role: "inbox".to_string(),
-            messages: vec![message],
+            messages,
             modseq: None,
             examined_uid: 0,
             keep_uids: None,
@@ -144,6 +150,23 @@ pub fn fetch_pending(
     }
     session.logout();
     Ok(batches)
+}
+
+fn take_pending_group(
+    pending: &mut Vec<griffe_core::mailbox::PendingBody>,
+) -> Vec<griffe_core::mailbox::PendingBody> {
+    let Some(first) = pending.first().cloned() else {
+        return Vec::new();
+    };
+    let mut group = Vec::new();
+    pending.retain(|item| {
+        let same = item.mailbox == first.mailbox && item.uidvalidity == first.uidvalidity;
+        if same {
+            group.push(item.clone());
+        }
+        !same
+    });
+    group
 }
 
 fn sync_folders(
@@ -924,36 +947,6 @@ impl Session {
         Ok(())
     }
 
-    fn fetch_one_body(
-        &mut self,
-        secret: &str,
-        mailbox: &str,
-        uid: u32,
-    ) -> Result<PulledMessage, MailSubmitError> {
-        self.select(mailbox, secret)?;
-        let fetched = self.fetch(
-            &format!("UID FETCH {uid} (UID FLAGS RFC822.SIZE BODY.PEEK[])"),
-            secret,
-            body_cap(),
-        )?;
-        let line = fetched
-            .into_iter()
-            .find(|line| std::str::from_utf8(line).is_ok_and(|text| text.contains(" FETCH ")))
-            .ok_or_else(|| unread(secret, ""))?;
-        let mut message = PulledMessage {
-            uid: i64::from(uid),
-            seen: false,
-            raw: String::new(),
-            body: PulledBody::Pending,
-            size: None,
-        };
-        apply_full_body(&mut message, &line);
-        if message.body == PulledBody::Pending {
-            return Err(unread(secret, ""));
-        }
-        Ok(message)
-    }
-
     fn fetch(
         &mut self,
         body: &str,
@@ -1016,7 +1009,107 @@ impl Session {
         mailbox: &str,
         uid: u32,
     ) -> Result<PulledMessage, MailSubmitError> {
-        self.fetch_one_body(secret, mailbox, uid)
+        let mut messages = self.read_bodies(secret, mailbox, &[uid])?;
+        messages.pop().ok_or_else(|| unread(secret, ""))
+    }
+
+    /// Un `SELECT`, puis les corps utiles. Pas de `NOOP` entre les UID.
+    pub(crate) fn read_bodies(
+        &mut self,
+        secret: &str,
+        mailbox: &str,
+        uids: &[u32],
+    ) -> Result<Vec<PulledMessage>, MailSubmitError> {
+        if uids.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.select(mailbox, secret)?;
+        let set = uids
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let listed = self.fetch(
+            &format!("UID FETCH {set} (UID BODYSTRUCTURE)"),
+            secret,
+            256 * 1024,
+        )?;
+        let mut plans = Vec::new();
+        for line in &listed {
+            let text = String::from_utf8_lossy(line);
+            if !text.contains(" FETCH ") {
+                continue;
+            }
+            let Some(uid) = uid_of(&text) else {
+                continue;
+            };
+            plans.push((uid, crate::parts::kept_from_fetch(&text)));
+        }
+        let mut out = Vec::with_capacity(uids.len());
+        for uid in uids {
+            let plan = plans
+                .iter()
+                .find(|(found, _)| found == uid)
+                .map(|(_, plan)| plan);
+            let Some(plan) = plan else {
+                out.push(blank_message(*uid, PulledBody::Unreadable));
+                continue;
+            };
+            out.push(self.fetch_planned(secret, *uid, plan)?);
+        }
+        Ok(out)
+    }
+
+    fn fetch_planned(
+        &mut self,
+        secret: &str,
+        uid: u32,
+        plan: &crate::parts::KeptBody,
+    ) -> Result<PulledMessage, MailSubmitError> {
+        match plan {
+            crate::parts::KeptBody::TooLarge => Ok(blank_message(uid, PulledBody::TooLarge)),
+            crate::parts::KeptBody::Unreadable => Ok(blank_message(uid, PulledBody::Unreadable)),
+            crate::parts::KeptBody::Parts(sections) => {
+                let mut items = String::from("UID FLAGS BODY.PEEK[HEADER]");
+                for section in sections {
+                    items.push_str(&format!(
+                        " BODY.PEEK[{}.MIME] BODY.PEEK[{}]",
+                        section.section, section.section
+                    ));
+                }
+                let fetched =
+                    self.fetch(&format!("UID FETCH {uid} ({items})"), secret, body_cap())?;
+                let Some(line) = fetched
+                    .into_iter()
+                    .find(|line| String::from_utf8_lossy(line).contains(" FETCH "))
+                else {
+                    return Ok(blank_message(uid, PulledBody::Unreadable));
+                };
+                if line.windows(12).any(|window| window == b"GRF-OVERSIZE") {
+                    return Ok(blank_message(uid, PulledBody::TooLarge));
+                }
+                let values = crate::parts::fetched_parts(&line);
+                if values.len() != 1 + sections.len() * 2 {
+                    return Ok(blank_message(uid, PulledBody::Unreadable));
+                }
+                let mut pieces = Vec::new();
+                for index in 0..sections.len() {
+                    pieces.push(crate::parts::piece_of(
+                        &values[1 + index * 2],
+                        &values[2 + index * 2],
+                    ));
+                }
+                let raw =
+                    crate::parts::assemble_kept(&String::from_utf8_lossy(&values[0]), &pieces);
+                Ok(PulledMessage {
+                    uid: i64::from(uid),
+                    seen: String::from_utf8_lossy(&line).contains("\\Seen"),
+                    raw,
+                    body: PulledBody::Ready,
+                    size: None,
+                })
+            }
+        }
     }
 
     fn command(&mut self, body: &str, secret: &str) -> Result<Vec<String>, MailSubmitError> {
@@ -1137,6 +1230,16 @@ fn quote(value: &str) -> String {
     }
     out.push('"');
     out
+}
+
+fn blank_message(uid: u32, body: PulledBody) -> PulledMessage {
+    PulledMessage {
+        uid: i64::from(uid),
+        seen: false,
+        raw: String::new(),
+        body,
+        size: None,
+    }
 }
 
 fn unread(secret: &str, line: &str) -> MailSubmitError {

@@ -12996,6 +12996,13 @@ async fn le_courrier_garde_le_mot_de_passe_et_arme_une_lettre() {
         chapter.contains("Envoyer l'essai") || chapter.contains("Envoyer l&#x27;essai"),
         "{chapter}"
     );
+    assert!(chapter.contains("Les images distantes"), "{chapter}");
+    assert!(chapter.contains("Les afficher"), "{chapter}");
+    assert!(
+        chapter.contains("hx-post=\"/societe/courrier/images\""),
+        "{chapter}"
+    );
+    assert!(chapter.contains("savoir que la lettre"), "{chapter}");
     assert!(chapter.contains("envoi du jour est"), "{chapter}");
     assert!(
         chapter.contains("Activer l'envoi du jour")
@@ -14062,7 +14069,7 @@ async fn the_box_page_reads_a_letter_and_confirms_a_failed_address() {
         "Avec cadre",
         "TEXTE-LOCAL",
         Some(
-            "<p style=\"background:url(https://pixel.evil.test/b.png)\">Bonjour Camille</p><img src=\"https://pixel.evil.test/a.png\"><script>pixel.evil.test</script>",
+            "<style>p{color:#112233;background:url(https://pixel.evil.test/c.png)}</style><p style=\"color:#112233;background:url(https://pixel.evil.test/b.png)\">Bonjour Camille</p><img src=\"https://pixel.evil.test/a.png\"><script>pixel.evil.test</script>",
         ),
     );
     let empty_id = plant_letter(
@@ -14253,10 +14260,138 @@ async fn the_box_page_reads_a_letter_and_confirms_a_failed_address() {
     )
     .await;
     assert!(framed.contains("TEXTE-LOCAL"), "{framed}");
-    assert!(framed.contains("Bonjour Camille"), "{framed}");
-    assert!(framed.contains("sandbox=\"\""), "{framed}");
+    assert!(framed.contains("Le texte"), "{framed}");
+    assert!(framed.contains("allow-popups"), "{framed}");
+    assert!(!framed.contains("allow-scripts"), "{framed}");
     assert!(framed.contains("<iframe"), "{framed}");
+    assert!(!framed.contains("srcdoc"), "{framed}");
+    assert!(!framed.contains("Bonjour Camille"), "{framed}");
     assert!(!framed.contains("pixel.evil.test"), "{framed}");
+    let corps = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/boite/lettre/{html_id}/corps"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(corps.status(), StatusCode::OK);
+    let policy = corps
+        .headers()
+        .get("content-security-policy")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    assert!(policy.contains("img-src data:"), "{policy}");
+    assert!(!policy.contains("https:"), "{policy}");
+    assert!(policy.contains("script-src 'none'"), "{policy}");
+    let corps_body = body_text(corps).await;
+    assert!(corps_body.contains("Bonjour Camille"), "{corps_body}");
+    assert!(corps_body.contains("#112233"), "{corps_body}");
+    assert!(!corps_body.contains("pixel.evil.test"), "{corps_body}");
+    assert!(!corps_body.contains("<script"), "{corps_body}");
+
+    let opened = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/societe/courrier/images")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from("allowed=1"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(opened.status(), StatusCode::OK);
+    assert_eq!(
+        opened
+            .headers()
+            .get("HX-Trigger")
+            .and_then(|value| value.to_str().ok()),
+        Some("griffe:saved")
+    );
+    let opened_body = body_text(opened).await;
+    assert!(opened_body.contains("Ne plus les charger"), "{opened_body}");
+    assert!(
+        opened_body.contains("peut savoir que la lettre a été ouverte")
+            || opened_body.contains("peut savoir que la lettre a &#x27;t"),
+        "{opened_body}"
+    );
+    let shown = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/boite/lettre/{html_id}/corps"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(shown.status(), StatusCode::OK);
+    let open_policy = shown
+        .headers()
+        .get("content-security-policy")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        open_policy.contains("img-src data: http: https:"),
+        "{open_policy}"
+    );
+    assert!(
+        open_policy.contains("font-src data: http: https:"),
+        "{open_policy}"
+    );
+    assert!(open_policy.contains("script-src 'none'"), "{open_policy}");
+    assert!(open_policy.contains("connect-src 'none'"), "{open_policy}");
+    assert!(!open_policy.contains("allow-scripts"), "{open_policy}");
+    let shown_body = body_text(shown).await;
+    assert!(
+        shown_body.contains("https://pixel.evil.test/a.png"),
+        "{shown_body}"
+    );
+    assert!(!shown_body.contains("<script"), "{shown_body}");
+    let closed = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/societe/courrier/images")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("HX-Request", "true")
+                .body(Body::from("allowed=0"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(closed.status(), StatusCode::OK);
+    assert_eq!(
+        closed
+            .headers()
+            .get("HX-Trigger")
+            .and_then(|value| value.to_str().ok()),
+        Some("griffe:saved")
+    );
+    let hidden = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/boite/lettre/{html_id}/corps"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let hidden_policy = hidden
+        .headers()
+        .get("content-security-policy")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    assert!(!hidden_policy.contains("https:"), "{hidden_policy}");
+    let hidden_body = body_text(hidden).await;
+    assert!(!hidden_body.contains("pixel.evil.test"), "{hidden_body}");
 
     let bare = body_text(
         router

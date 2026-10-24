@@ -26,7 +26,7 @@ pub(super) fn profile(conn: &Connection) -> Result<MailProfile, AppError> {
             "SELECT from_name, from_address, smtp_host, smtp_port, smtp_tls, smtp_username,
                     secret IS NOT NULL AND length(secret) > 0, preset, auto_send, signature,
                     probe_ok, probe_detail, imap_host, imap_port, imap_username,
-                    link_ink, metier, site, releve_every_secs, kept_scope
+                    link_ink, metier, site, releve_every_secs, kept_scope, block_remote
              FROM mail_account WHERE id = 1",
             [],
             |row| {
@@ -51,6 +51,7 @@ pub(super) fn profile(conn: &Connection) -> Result<MailProfile, AppError> {
                     row.get::<_, String>(17)?,
                     row.get::<_, i64>(18)?,
                     row.get::<_, String>(19)?,
+                    row.get::<_, i64>(20)?,
                 ))
             },
         )
@@ -76,6 +77,7 @@ pub(super) fn profile(conn: &Connection) -> Result<MailProfile, AppError> {
         site,
         releve_every,
         kept_scope,
+        block_remote,
     )) = row
     else {
         return Ok(MailProfile::default());
@@ -108,6 +110,7 @@ pub(super) fn profile(conn: &Connection) -> Result<MailProfile, AppError> {
         site,
         releve_every_secs: u64::try_from(releve_every).unwrap_or(super::RELEVE_EVERY_SECS),
         kept_scope: KeptScope::parse(&kept_scope),
+        block_remote: block_remote == 1,
     })
 }
 
@@ -315,6 +318,25 @@ pub(super) fn replace_kept_addresses(
          WHERE id = 1",
         params![scope.as_str(), now],
     )?;
+    Ok(())
+}
+
+pub(super) fn set_block_remote(
+    conn: &Connection,
+    blocked: bool,
+    now: &str,
+) -> Result<(), AppError> {
+    let updated = conn.execute(
+        "UPDATE mail_account SET block_remote = ?1, updated_at = ?2 WHERE id = 1",
+        params![i64::from(blocked), now],
+    )?;
+    if updated == 0 {
+        conn.execute(
+            "INSERT INTO mail_account (id, smtp_tls, preset, auto_send, block_remote, updated_at)
+             VALUES (1, 'starttls', 'custom', 0, ?1, ?2)",
+            params![i64::from(blocked), now],
+        )?;
+    }
     Ok(())
 }
 

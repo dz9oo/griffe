@@ -8,6 +8,7 @@ mod inbound;
 mod lecture;
 mod model;
 mod present;
+mod received;
 mod releve;
 mod secret;
 mod store;
@@ -23,7 +24,7 @@ pub use commands::{
     AddressFault, ArmOutbound, CancelOutbound, ClearMailSecret, FileMessage, FilingSource,
     HoldReply, MarkAddress, RecordMailProbe, ReleaseReplyHold, RememberImapUsername,
     ResolveUncertain, RetryOutbound, SaveLetterface, SaveMailAccount, SaveMailSecret,
-    SaveMailSignature, SetAutomaticSend, SetKeptAddresses, SetReleveInterval,
+    SaveMailSignature, SetAutomaticSend, SetKeptAddresses, SetReleveInterval, SetRemoteImages,
 };
 pub use error::MailError;
 pub use inbound::{
@@ -42,6 +43,7 @@ pub use model::{
     SentCopyStatus, SmtpEndpoint, SubmissionBatch, SubmissionReceipt, TlsMode, UNDO_SECS,
 };
 pub use present::{LINK_HINT, LetterParts, close_letter, letter_card, letter_html, readable_links};
+pub use received::{RemoteContent, received_document, received_fragment, received_policy};
 pub use releve::{
     AbsorbReport, BODY_CAP_BYTES, BoxLine, HEADER_BATCH, PullEvent, PullScope, PulledBody,
     PulledMailbox, PulledMessage, RECENT_BODIES, RELEVE_CHOICES_SECS, RELEVE_EVERY_SECS,
@@ -446,9 +448,9 @@ mod tests {
         MISSING_ADDRESS, MailError, MailSubmitError, MarkAddress, PROBE_OK_SENTENCE,
         RecordMailProbe, RecordingMail, ReleaseReplyHold, RetryOutbound, SaveLetterface,
         SaveMailAccount, SaveMailSecret, SaveMailSignature, SentCopyStatus, SetAutomaticSend,
-        SetKeptAddresses, SubmissionReceipt, abandon_held, commit_outbound, deliver_with,
-        mail_tick, profile, record_deliveries, releve_plan, releve_waits, take_copies, take_due,
-        trial_letter,
+        SetKeptAddresses, SetRemoteImages, SubmissionReceipt, abandon_held, commit_outbound,
+        deliver_with, mail_tick, profile, record_deliveries, releve_plan, releve_waits,
+        take_copies, take_due, trial_letter,
     };
     use crate::app::{Actor, AppError, ExecutionContext, Executor, Outcome, recent_audit_entries};
     use crate::clients::{CreateClient, CreateContact, DeleteContact, UpdateClient, UpdateContact};
@@ -1009,6 +1011,20 @@ mod tests {
         let second = take_due(&mut store, &human(), "fenetre", now, now.date(), true).unwrap();
         assert!(second.is_none());
         assert_eq!(first.letters.len(), 1);
+    }
+
+    #[test]
+    fn remote_images_stay_out_until_they_are_asked() {
+        let mut store = test_store("mail-remote");
+        assert!(profile(store.connection()).unwrap().block_remote);
+        Executor::new(&mut store)
+            .execute(&SetRemoteImages { allowed: true }, &human())
+            .unwrap();
+        assert!(!profile(store.connection()).unwrap().block_remote);
+        Executor::new(&mut store)
+            .execute(&SetRemoteImages { allowed: false }, &human())
+            .unwrap();
+        assert!(profile(store.connection()).unwrap().block_remote);
     }
 
     #[test]
