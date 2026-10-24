@@ -2535,9 +2535,10 @@ async fn la_societe_opens_on_the_plateau_and_folds_each_chapter() {
             }
             "/societe/courrier" => {
                 assert!(page.contains("courrier-desk"), "{page}");
-                assert_eq!(page.matches("reglages-card").count(), 6, "{page}");
+                assert_eq!(page.matches("reglages-card").count(), 7, "{page}");
                 assert!(page.contains(">Les adresses<"), "{page}");
                 assert!(page.contains(">La relève<"), "{page}");
+                assert!(page.contains(">Les images distantes<"), "{page}");
                 assert!(
                     page.contains("Pas encore branché") || page.contains("Prêt"),
                     "{page}"
