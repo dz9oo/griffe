@@ -1917,7 +1917,7 @@ dependencies = [
 
 [[package]]
 name = "griffe-cli"
-version = "0.3.17"
+version = "0.3.18"
 dependencies = [
  "assert_cmd",
  "clap",
@@ -1937,7 +1937,7 @@ dependencies = [
 
 [[package]]
 name = "griffe-core"
-version = "0.3.17"
+version = "0.3.18"
 dependencies = [
  "argon2",
  "calamine",
@@ -1962,7 +1962,7 @@ dependencies = [
 
 [[package]]
 name = "griffe-desktop"
-version = "0.3.17"
+version = "0.3.18"
 dependencies = [
  "axum",
  "griffe-core",
@@ -1979,7 +1979,7 @@ dependencies = [
 
 [[package]]
 name = "griffe-docs"
-version = "0.3.17"
+version = "0.3.18"
 dependencies = [
  "griffe-core",
  "serde",
@@ -1991,7 +1991,7 @@ dependencies = [
 
 [[package]]
 name = "griffe-invoice"
-version = "0.3.17"
+version = "0.3.18"
 dependencies = [
  "griffe-core",
  "quick-xml 0.42.0",
@@ -2003,7 +2003,7 @@ dependencies = [
 
 [[package]]
 name = "griffe-mail"
-version = "0.3.17"
+version = "0.3.18"
 dependencies = [
  "griffe-core",
  "lettre",
@@ -2015,7 +2015,7 @@ dependencies = [
 
 [[package]]
 name = "griffe-mcp"
-version = "0.3.17"
+version = "0.3.18"
 dependencies = [
  "base64 0.22.1",
  "griffe-cli",
@@ -2034,7 +2034,7 @@ dependencies = [
 
 [[package]]
 name = "griffe-web"
-version = "0.3.17"
+version = "0.3.18"
 dependencies = [
  "axum",
  "base64 0.22.1",
