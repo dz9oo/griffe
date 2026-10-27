@@ -144,7 +144,7 @@ cat >"$desktop" <<EOF
 [Desktop Entry]
 Type=Application
 Name=Griffe
-Exec=$bin
+Exec="$bin" desktop
 Icon=io.github.dz9oo.griffe
 StartupWMClass=Griffe-desktop
 Terminal=false

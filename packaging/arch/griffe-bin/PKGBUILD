@@ -22,6 +22,7 @@ package() {
   install -Dm755 typst "$pkgdir/usr/lib/griffe/typst"
   install -d "$pkgdir/usr/bin"
   ln -s /usr/lib/griffe/griffe-desktop "$pkgdir/usr/bin/griffe-desktop"
+  ln -s /usr/lib/griffe/griffe-desktop "$pkgdir/usr/bin/griffe"
   install -Dm644 io.github.dz9oo.griffe.png \
     "$pkgdir/usr/share/icons/hicolor/256x256/apps/io.github.dz9oo.griffe.png"
   install -Dm644 io.github.dz9oo.griffe.desktop \

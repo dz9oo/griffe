@@ -118,6 +118,7 @@ libdir="$HOME/.local/lib/griffe"
 elf="$libdir/griffe-desktop"
 typst_dest="$libdir/typst"
 link="$HOME/.local/bin/griffe-desktop"
+cli="$HOME/.local/bin/griffe"
 icon="$HOME/.local/share/icons/hicolor/256x256/apps/io.github.dz9oo.griffe.png"
 desktop="$HOME/.local/share/applications/io.github.dz9oo.griffe.desktop"
 
@@ -128,6 +129,11 @@ tmp=$(mktemp -d)
 rollback=1
 cleanup() {
   if [ "${rollback:-0}" -eq 1 ]; then
+    # Un fichier régulier (ancienne AppImage) reste. Un lien vers l'ELF
+    # qu'on retire ne doit pas pointer dans le vide.
+    if [ -L "$cli" ] && [ "$(readlink -f "$cli" 2>/dev/null || true)" = "$elf" ]; then
+      rm -f "$cli"
+    fi
     rm -f "$elf" "$typst_dest" "$link" "$icon" "$desktop"
   fi
   rm -rf "$tmp"
@@ -222,10 +228,8 @@ Terminal=false
 Categories=Office;Finance;
 EOF
 
-if [ -e "$HOME/.local/bin/griffe" ]; then
-  rm -f "$HOME/.local/bin/griffe"
-  echo "supprimé l'ancien lanceur AppImage ~/.local/bin/griffe" >&2
-fi
+mkdir -p "$HOME/.local/bin"
+ln -sfn "$elf" "$cli"
 
 rollback=0
-printf '%s\n' "$elf" "$typst_dest" "$link" "$icon" "$desktop"
+printf '%s\n' "$elf" "$typst_dest" "$link" "$icon" "$desktop" "$cli"

@@ -94,6 +94,19 @@ mode d’échec qui exige un vrai terminal. Elle exécute
 sur le `Store` déjà ouvert, jamais une seconde connexion, jamais le
 prompt TTY.
 
+## Un seul fichier installé
+
+L’AppImage, le tarball et le paquet pacman contiennent un seul ELF Griffe,
+celui de la fenêtre. Avant d’ouvrir le coffre, il choisit :
+
+- `griffe`, avec ou sans sous-commande, est la ligne de commande ;
+- `griffe desktop`, ou le nom `griffe-desktop`, ouvre la fenêtre ;
+- `griffe mcp`, ou le nom `griffe-mcp`, parle en stdio.
+
+Les trois crates restent trois adaptateurs. Ce choix n’est pas une règle
+métier. Aucune variable d’environnement ne le change. La session en mémoire
+de la fenêtre et la session du trousseau restent distinctes.
+
 ## Crates
 
 ```
@@ -106,7 +119,8 @@ crates/
   griffe-cli/       clap → core, exposé en bibliothèque
   griffe-mcp/       rmcp stdio → core (outils = commandes, ressources = requêtes)
   griffe-web/       axum + Maud + htmx ; pas de JS de framework
-  griffe-desktop/   Tauri v2 ; griffe:// → Router
+  griffe-desktop/   Tauri v2 ; griffe:// → Router. L'ELF installé
+                    démarre aussi la CLI et le MCP avant la fenêtre.
   griffe-invoice/   Typst → PDF/A-3b + XML CII EN 16931
   griffe-docs/      Typst : PV, affectation, synthèse, 2033-A, liasse JSON
 ```

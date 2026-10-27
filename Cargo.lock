@@ -1965,8 +1965,10 @@ name = "griffe-desktop"
 version = "0.3.18"
 dependencies = [
  "axum",
+ "griffe-cli",
  "griffe-core",
  "griffe-mail",
+ "griffe-mcp",
  "griffe-web",
  "http",
  "http-body-util",

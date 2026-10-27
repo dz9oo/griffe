@@ -33,7 +33,12 @@ grep -q 'releases/download/v${pkgver}/griffe-${pkgver}-x86_64-linux.tar.xz' \
 grep -q '/usr/lib/griffe/griffe-desktop' "$pkgbuild" || fail "libdir ELF"
 grep -q '/usr/lib/griffe/typst' "$pkgbuild" || fail "libdir typst"
 grep -q '/usr/bin/griffe-desktop' "$pkgbuild" || fail "bindir"
+grep -q 'ln -s /usr/lib/griffe/griffe-desktop "$pkgdir/usr/bin/griffe"' "$pkgbuild" \
+  || fail "lien /usr/bin/griffe"
 grep -q 'Exec=/usr/bin/griffe-desktop' "$pkgbuild" || fail "Exec= pacman"
+if grep -q 'griffe-mcp' "$pkgbuild"; then
+  fail "pas de binaire griffe-mcp"
+fi
 grep -q 'io.github.dz9oo.griffe.desktop' "$pkgbuild" || fail "fiche"
 grep -q 'hicolor/256x256/apps/io.github.dz9oo.griffe.png' "$pkgbuild" \
   || fail "icône"
@@ -64,6 +69,8 @@ if grep -nE '(^|[[:space:]])(curl|wget)([[:space:]]|$)' "$ci_script" \
   fail "ci-makepkg.sh ne doit pas appeler curl/wget"
 fi
 grep -q 'set -eu' "$ci_script" || fail "set -eu"
+grep -q "stat -Lc '%d:%i'" "$ci_script" || fail "même inode"
+grep -q 'griffe-mcp' "$ci_script" || fail "le script doit refuser griffe-mcp"
 if grep -qE 'cargo |tauri |nix develop' "$ci_script"; then
   fail "pas de compile dans ci-makepkg.sh"
 fi
