@@ -49,7 +49,7 @@ assert_three_paths() {
   fi
   grep -qx 'Type=Application' "$desktop" || fail "Type= manquant"
   grep -qx 'Name=Griffe' "$desktop" || fail "Name=Griffe manquant"
-  grep -Fqx "Exec=$bin" "$desktop" || fail "Exec= n'est pas le chemin absolu du binaire"
+  grep -Fqx "Exec=\"$bin\" desktop" "$desktop" || fail "Exec= n'est pas griffe desktop"
   if grep -Fq '$HOME' "$desktop"; then
     fail "la fiche contient un \$HOME littéral"
   fi

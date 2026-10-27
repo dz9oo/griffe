@@ -119,6 +119,18 @@ pacman -U --noconfirm "$pkgfile"
 resolved=$(readlink -f /usr/bin/griffe-desktop)
 [ "$resolved" = /usr/lib/griffe/griffe-desktop ] \
   || die "lien bindir → $resolved"
+[ -L /usr/bin/griffe ] || die "/usr/bin/griffe n'est pas un lien"
+resolved_cli=$(readlink -f /usr/bin/griffe)
+[ "$resolved_cli" = /usr/lib/griffe/griffe-desktop ] \
+  || die "lien griffe → $resolved_cli"
+if [ -e /usr/bin/griffe-mcp ]; then
+  die "pas de /usr/bin/griffe-mcp"
+fi
+inode=$(stat -Lc '%d:%i' /usr/lib/griffe/griffe-desktop)
+[ "$(stat -Lc '%d:%i' /usr/bin/griffe-desktop)" = "$inode" ] \
+  || die "griffe-desktop n'est pas le même inode que l'ELF"
+[ "$(stat -Lc '%d:%i' /usr/bin/griffe)" = "$inode" ] \
+  || die "griffe n'est pas le même inode que l'ELF"
 [ -x /usr/lib/griffe/griffe-desktop ] || die "ELF libdir manquant"
 [ -x /usr/lib/griffe/typst ] || die "typst libdir manquant"
 

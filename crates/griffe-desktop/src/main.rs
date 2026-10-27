@@ -12,6 +12,8 @@
 //! terminal pour voir un `eprintln!`, l'application reste utilisable.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod launch;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -199,7 +201,7 @@ fn error_response(status: http::StatusCode, message: String) -> http::Response<V
         .expect("une réponse d'erreur minimale se construit toujours")
 }
 
-fn main() {
+fn run_window() {
     let db_path = resolve_db_path();
     let state = AppState::new(db_path);
     state.set_mail_probe(|endpoint, copy, secret| {
@@ -249,4 +251,49 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("erreur au démarrage de l'application Griffe");
+}
+
+fn reexec_desktop() -> ! {
+    use std::os::unix::process::CommandExt;
+
+    let failed = || -> ! {
+        eprintln!("Griffe n'a pas pu relancer la fenêtre.");
+        std::process::exit(127);
+    };
+    let Ok(exe) = std::env::current_exe() else {
+        failed();
+    };
+    // GTK lit l'argv du système. Le jeton `desktop` disparaît ici, avant la fenêtre.
+    // L'exec suivant a pour nom `griffe-desktop` et zéro argument : il ne revient pas ici.
+    let _err = std::process::Command::new(exe)
+        .arg0("griffe-desktop")
+        .exec();
+    failed();
+}
+
+fn main() {
+    let mut raw = std::env::args_os();
+    let Some(argv0) = raw.next() else {
+        eprint!("{}", launch::REFUSE_MESSAGE);
+        std::process::exit(2);
+    };
+    let args: Vec<_> = raw.collect();
+    match launch::launch(&argv0, &args) {
+        launch::Launch::Desktop => run_window(),
+        launch::Launch::DesktopToken => reexec_desktop(),
+        launch::Launch::Mcp => {
+            if let Err(err) = griffe_mcp::run_stdio() {
+                eprintln!("Error: {err}");
+                std::process::exit(1);
+            }
+        }
+        launch::Launch::Cli => {
+            let code = griffe_cli::run(std::env::args());
+            std::process::exit(code);
+        }
+        launch::Launch::Refuse => {
+            eprint!("{}", launch::REFUSE_MESSAGE);
+            std::process::exit(2);
+        }
+    }
 }

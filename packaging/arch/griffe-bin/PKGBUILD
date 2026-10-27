@@ -2,7 +2,7 @@
 # Gabarit : ne pas soumettre tant que sha256sums n'est pas celui d'une Release réelle.
 # Le tarball publié est signé : packaging/SIGNATURES.md. Ce gabarit ne vérifie pas encore le .minisig.
 pkgname=griffe-bin
-pkgver=0.3.18
+pkgver=0.3.19
 pkgrel=1
 pkgdesc="Lettre du matin pour un indépendant en SASU à l'IS"
 arch=('x86_64')
@@ -22,6 +22,7 @@ package() {
   install -Dm755 typst "$pkgdir/usr/lib/griffe/typst"
   install -d "$pkgdir/usr/bin"
   ln -s /usr/lib/griffe/griffe-desktop "$pkgdir/usr/bin/griffe-desktop"
+  ln -s /usr/lib/griffe/griffe-desktop "$pkgdir/usr/bin/griffe"
   install -Dm644 io.github.dz9oo.griffe.png \
     "$pkgdir/usr/share/icons/hicolor/256x256/apps/io.github.dz9oo.griffe.png"
   install -Dm644 io.github.dz9oo.griffe.desktop \

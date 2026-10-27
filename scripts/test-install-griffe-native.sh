@@ -18,6 +18,7 @@ assert_no_install() {
   if [ -e "$HOME/.local/lib/griffe/griffe-desktop" ] \
     || [ -e "$HOME/.local/lib/griffe/typst" ] \
     || [ -e "$HOME/.local/bin/griffe-desktop" ] \
+    || [ -e "$HOME/.local/bin/griffe" ] \
     || [ -e "$HOME/.local/share/applications/io.github.dz9oo.griffe.desktop" ] \
     || [ -e "$HOME/.local/share/icons/hicolor/256x256/apps/io.github.dz9oo.griffe.png" ]; then
     fail "ne doit pas écrire une install ($1)"
@@ -27,25 +28,32 @@ assert_no_install() {
   fi
 }
 
-assert_five_paths() {
+assert_paths() {
   elf="$HOME/.local/lib/griffe/griffe-desktop"
   typst="$HOME/.local/lib/griffe/typst"
   link="$HOME/.local/bin/griffe-desktop"
   icon="$HOME/.local/share/icons/hicolor/256x256/apps/io.github.dz9oo.griffe.png"
   desktop="$HOME/.local/share/applications/io.github.dz9oo.griffe.desktop"
-  want=$(printf '%s\n' "$elf" "$typst" "$link" "$icon" "$desktop")
+  cli="$HOME/.local/bin/griffe"
+  want=$(printf '%s\n' "$elf" "$typst" "$link" "$icon" "$desktop" "$cli")
   if [ "$1" != "$want" ]; then
     echo "stdout obtenu:" >&2
     printf '%s\n' "$1" >&2
     echo "stdout attendu:" >&2
     printf '%s\n' "$want" >&2
-    fail "stdout doit être exactement les cinq chemins"
+    fail "stdout doit être exactement les six chemins"
   fi
   [ -x "$elf" ] || fail "ELF non exécutable"
   [ -x "$typst" ] || fail "typst non exécutable"
   [ -L "$link" ] || fail "le bindir doit être un lien"
   target=$(readlink -f "$link")
   [ "$target" = "$elf" ] || fail "le lien ne pointe pas vers le libdir"
+  [ -L "$cli" ] || fail "griffe doit être un lien vers le même ELF"
+  [ "$(readlink -f "$cli")" = "$elf" ] || fail "griffe ne pointe pas vers le libdir"
+  [ "$(stat -Lc '%i' "$cli")" = "$(stat -Lc '%i' "$elf")" ] \
+    || fail "griffe et l'ELF ne sont pas le même inode"
+  [ "$(stat -Lc '%d' "$cli")" = "$(stat -Lc '%d' "$elf")" ] \
+    || fail "griffe et l'ELF ne sont pas le même device"
   [ -f "$icon" ] || fail "icône absente"
   [ -f "$desktop" ] || fail "fiche .desktop absente"
   if [ -e "$HOME/.local/share/freeflow" ] || [ -e "$HOME/.local/share/griffe" ]; then
@@ -145,22 +153,22 @@ if webkit_present; then
   payload="$dir/ok"
   make_payload_dir "$payload"
   out=$("$installer" "$payload")
-  assert_five_paths "$out"
+  assert_paths "$out"
   cmp -s "$HOME/.local/share/icons/hicolor/256x256/apps/io.github.dz9oo.griffe.png" \
     "$payload/io.github.dz9oo.griffe.png" \
     || fail "l'icône du payload doit primer"
 
   # rejouer = mêmes chemins
   out=$("$installer" "$payload")
-  assert_five_paths "$out"
+  assert_paths "$out"
 
-  # ancien AppImage : supprimé
+  # ancien AppImage : même inode que l'ELF, plus les octets d'avant
   printf 'old\n' >"$HOME/.local/bin/griffe"
   chmod +x "$HOME/.local/bin/griffe"
   out=$("$installer" "$payload")
-  assert_five_paths "$out"
-  if [ -e "$HOME/.local/bin/griffe" ]; then
-    fail "l'ancien ~/.local/bin/griffe AppImage doit disparaître"
+  assert_paths "$out"
+  if cmp -s <(printf 'old\n') "$HOME/.local/bin/griffe"; then
+    fail "l'ancien AppImage est encore le fichier griffe"
   fi
 
   # tarball .tar.xz avec racine versionnée
@@ -171,7 +179,7 @@ if webkit_present; then
   tar -C "$(dirname "$staged")" -cJf "$dir/griffe-0.3.2-x86_64-linux.tar.xz" "$(basename "$staged")"
   sign_artifact "$keys/sec" "$keys/pub" "$dir/griffe-0.3.2-x86_64-linux.tar.xz"
   out=$("$signed" "$dir/griffe-0.3.2-x86_64-linux.tar.xz")
-  assert_five_paths "$out"
+  assert_paths "$out"
 
   # rollback : icône absente
   dir3=$(mktemp -d)
@@ -183,11 +191,19 @@ if webkit_present; then
   iso=$(mktemp -d)
   cp "$installer" "$iso/install-griffe-native.sh"
   chmod +x "$iso/install-griffe-native.sh"
+  mkdir -p "$HOME/.local/bin"
+  printf 'keep\n' >"$HOME/.local/bin/griffe"
+  chmod +x "$HOME/.local/bin/griffe"
   if "$iso/install-griffe-native.sh" "$lonely" 2>/dev/null; then
     fail "sans png ni clone, l'install doit échouer"
   fi
   if [ -e "$HOME/.local/lib/griffe/griffe-desktop" ]; then
     fail "rollback : ELF ne doit pas rester"
+  fi
+  cmp -s "$HOME/.local/bin/griffe" <(printf 'keep\n') \
+    || fail "rollback : un griffe préexistant doit rester"
+  if [ -L "$HOME/.local/bin/griffe" ]; then
+    fail "rollback : griffe ne doit pas devenir un lien"
   fi
   if [ -e "$HOME/.local/share/freeflow" ] || [ -e "$HOME/.local/share/griffe" ]; then
     fail "rollback : ne doit pas toucher le coffre"

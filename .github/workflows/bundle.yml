@@ -73,15 +73,31 @@ jobs:
           ./$(basename "${img[0]}") --appimage-extract
           test -x squashfs-root/usr/bin/griffe-desktop
           # linuxdeploy-plugin-gtk peut encore copier libwayland malgré l'env.
-          # Les retirer et recompresser : le Mesa de l'hôte parle au
-          # libwayland de l'hôte (double-clic, pas de LD_PRELOAD).
+          # Les retirer : le Mesa de l'hôte parle au libwayland de l'hôte.
           if find squashfs-root -name 'libwayland-client.so*' | grep -q .; then
             find squashfs-root -name 'libwayland-*.so*' -print -delete
-            curl -sSL -o /tmp/appimagetool.AppImage \
-              https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
-            chmod +x /tmp/appimagetool.AppImage
-            ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 \
-              /tmp/appimagetool.AppImage squashfs-root "$(basename "${img[0]}")"
+          fi
+          if find squashfs-root -name 'libwayland-client.so*' | grep -q .; then
+            echo "libwayland-client ne doit pas être dans l'AppImage" >&2
+            find squashfs-root -name 'libwayland-client.so*' >&2
+            exit 1
+          fi
+          # Tauri pose apprun-old, qui ignore $ARGV0. On le remplace, puis on
+          # recompress toujours : sinon une image sans libwayland garderait l'ancien AppRun.
+          install -m 755 "${{ github.workspace }}/packaging/appimage/AppRun" squashfs-root/AppRun
+          curl -sSL -o /tmp/appimagetool.AppImage \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x /tmp/appimagetool.AppImage
+          ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 \
+            /tmp/appimagetool.AppImage squashfs-root "$(basename "${img[0]}")"
+          rm -rf squashfs-root
+          ./$(basename "${img[0]}") --appimage-extract
+          test -x squashfs-root/usr/bin/griffe-desktop
+          head -n 1 squashfs-root/AppRun | grep -qx '#!/bin/bash'
+          magic=$(od -An -N4 -tx1 squashfs-root/AppRun | tr -d ' \n')
+          if [ "$magic" = "7f454c46" ]; then
+            echo "AppRun doit rester un script" >&2
+            exit 1
           fi
           if find squashfs-root -name 'libwayland-client.so*' | grep -q .; then
             echo "libwayland-client ne doit pas être dans l'AppImage" >&2
@@ -95,7 +111,6 @@ jobs:
           fi
           test -e squashfs-root/usr/bin/typst \
             -o -e squashfs-root/usr/bin/typst-x86_64-unknown-linux-gnu
-          # Après un éventuel recompress : le SHA publié doit matcher le fichier.
           sha256sum "$(basename "${img[0]}")" | tee "$(basename "${img[0]}").sha256"
           sha256sum -c "$(basename "${img[0]}").sha256"
       - name: Tarball natif (ELF + Typst, WebKit hôte)
@@ -109,6 +124,9 @@ jobs:
           test -x "$elf"
           test -x "$typst"
           test -f "$icon"
+          version_out=$(exec -a griffe "$elf" --version)
+          printf '%s\n' "$version_out"
+          printf '%s\n' "$version_out" | grep -qx "griffe ${ver}"
           # Magie ELF, pas de store Nix, WebKit en DT_NEEDED, pas de .so bundlé.
           od -An -N4 -tx1 "$elf" | tr -d ' \n' | grep -qx '7f454c46'
           ldd "$elf" | tee /tmp/ldd-native.txt

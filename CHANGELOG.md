@@ -2,6 +2,14 @@
 
 Ce qui change pour qui se sert de Griffe. Une section par version publiée.
 
+## 0.3.19
+
+- Un seul fichier installé ouvre la fenêtre, la commande et l'agent.
+- `griffe` est la ligne de commande. `griffe desktop` ouvre la fenêtre. `griffe mcp` parle à un agent. Le menu lance `griffe desktop`. Un double-clic sur l'AppImage ouvre la fenêtre.
+- Rejouer l'installation réécrit la fiche du menu. Une fiche ancienne ouvre l'aide : elle n'a pas le mot desktop.
+- Le paquet pose `/usr/bin/griffe` et `/usr/bin/griffe-desktop` vers ce même fichier. Le menu lance `griffe-desktop`.
+- Le coffre garde la même forme.
+
 ## 0.3.18
 
 - Une lettre reçue s'ouvre avec sa mise en page. Les scripts n'y sont pas. Le texte brut, quand il est là, reste sous « Le texte ». Sans mise en page utilisable, ce texte est la lettre.

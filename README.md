@@ -80,6 +80,12 @@ WebKit et Typst sont dans l’AppImage. Tes données restent dans
 Un coffre déjà présent dans `~/.local/share/freeflow/` est déplacé vers
 `griffe/` au premier lancement.
 
+`griffe` est la ligne de commande. `griffe desktop` ouvre la fenêtre.
+`griffe mcp` parle à un agent. Le menu lance `griffe desktop`.
+Un double-clic sur `Griffe_*.AppImage` ouvre la fenêtre.
+Rejouer le script réécrit la fiche : une fiche ancienne, sans le mot
+`desktop`, ouvre l’aide au lieu de la fenêtre.
+
 Mise à jour : télécharger le nouvel AppImage et rejouer le script (même
 chemin). Désinstall : `rm` des trois chemins, coffre intact.
 
@@ -107,7 +113,7 @@ cat >"$HOME/.local/share/applications/io.github.dz9oo.griffe.desktop" <<EOF
 [Desktop Entry]
 Type=Application
 Name=Griffe
-Exec=$HOME/.local/bin/griffe
+Exec="$HOME/.local/bin/griffe" desktop
 Icon=io.github.dz9oo.griffe
 StartupWMClass=Griffe-desktop
 Terminal=false
@@ -122,10 +128,15 @@ native (`~/.local/lib/griffe/`) existe, la retirer **avant** `pacman -U`
 (même id de fiche `io.github.dz9oo.griffe.desktop`) :
 
 ```bash
-rm -f ~/.local/bin/griffe-desktop \
-  ~/.local/lib/griffe/griffe-desktop ~/.local/lib/griffe/typst
+rm -f ~/.local/bin/griffe ~/.local/bin/griffe-desktop \
+  ~/.local/lib/griffe/griffe-desktop ~/.local/lib/griffe/typst \
+  ~/.local/share/applications/io.github.dz9oo.griffe.desktop
 sudo pacman -U ./griffe-bin-*-x86_64.pkg.tar.zst
 ```
+
+Le paquet pose un seul ELF. `/usr/bin/griffe` et `/usr/bin/griffe-desktop`
+sont deux liens vers ce fichier. `griffe` est la ligne de commande,
+`griffe desktop` ou le menu ouvrent la fenêtre, `griffe mcp` parle à un agent.
 
 Pour une Release qui publie le `.minisig`, la vérification précède `pacman -U` :
 
@@ -141,6 +152,8 @@ Sans pacman, le tarball `griffe-*-x86_64-linux.tar.xz` et
 `scripts/install-griffe-native.sh` restent le geste `~/.local`.
 Le script vérifie le `.minisig` du tarball de la même façon. Un répertoire
 déjà déballé sur la machine n’a pas cette signature.
+Il pose `~/.local/bin/griffe` et `~/.local/bin/griffe-desktop` vers le même ELF.
+Le menu lance `griffe-desktop`.
 
 ```bash
 minisign -Vm ./griffe-<version>-x86_64-linux.tar.xz -p packaging/minisign.pub

@@ -52,7 +52,8 @@ use vault::PassphraseOpts;
 #[command(
     name = "griffe",
     version,
-    about = "Gestion pour indépendant — pilotable en CLI et par un agent LLM (MCP)."
+    about = "Gestion pour indépendant — pilotable en CLI et par un agent LLM (MCP).",
+    after_help = "Dans l'application installée, `griffe desktop` ouvre la fenêtre, et `griffe mcp` démarre l'agent."
 )]
 struct Cli {
     /// Chemin du coffre chiffré. Sinon, lu depuis `GRIFFE_DB` (ou `FREEFLOW_DB`).

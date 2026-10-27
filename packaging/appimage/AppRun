@@ -1,0 +1,44 @@
+#!/bin/bash
+# Restitue le nom d'appel. Le mode (fenêtre, commande, agent) est décidé par l'ELF.
+# $0 est le chemin d'AppRun : le shebang a jeté argv[0]. Seul $ARGV0, posé par le
+# runtime type 2, dit comment l'utilisateur a lancé le fichier.
+set -euo pipefail
+
+if [ -n "${APPDIR:-}" ]; then
+  here=$APPDIR
+else
+  here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+fi
+
+for arg in "$@"; do
+  case $arg in
+    --appimage-*)
+      printf '%s\n' "option du runtime AppImage, refusée : $arg" >&2
+      exit 1
+      ;;
+  esac
+done
+
+bin=$here/usr/bin/griffe-desktop
+if [ ! -x "$bin" ]; then
+  printf '%s\n' "binaire introuvable : $bin" >&2
+  exit 127
+fi
+
+invoker=${ARGV0:-griffe-desktop}
+unset ARGV0
+
+export PATH="$here/usr/bin:${PATH:-}"
+old_ld=${LD_LIBRARY_PATH:-}
+export LD_LIBRARY_PATH="$here/usr/lib:$here/usr/lib/x86_64-linux-gnu:$here/usr/lib64:$here/lib:$here/lib/x86_64-linux-gnu${old_ld:+:$old_ld}"
+export XDG_DATA_DIRS="$here/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+old_gs=${GSETTINGS_SCHEMA_DIR:-}
+export GSETTINGS_SCHEMA_DIR="$here/usr/share/glib-2.0/schemas${old_gs:+:$old_gs}"
+
+cd "$here/usr"
+
+base=$(basename -- "$invoker")
+if [ "$#" -eq 0 ] && [ "$base" != "griffe" ] && [ "$base" != "griffe-mcp" ]; then
+  exec -a griffe-desktop "$bin"
+fi
+exec -a "$invoker" "$bin" "$@"

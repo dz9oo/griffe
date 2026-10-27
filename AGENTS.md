@@ -54,7 +54,8 @@ crates/
   griffe-cli/       clap → core, exposé en bibliothèque
   griffe-mcp/       rmcp stdio → core (outils = commandes, ressources = requêtes)
   griffe-web/       axum + Maud + htmx ; pas de JS de framework
-  griffe-desktop/   Tauri v2 ; griffe:// → Router
+  griffe-desktop/   Tauri v2 ; griffe:// → Router. L'ELF installé
+                    démarre aussi la CLI et le MCP avant la fenêtre.
   griffe-invoice/   Typst → PDF/A-3b + XML CII EN 16931
   griffe-docs/      Typst : PV, affectation, synthèse, 2033-A, liasse JSON
 ```

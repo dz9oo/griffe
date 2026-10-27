@@ -67,3 +67,5 @@ Options:
           Print help
   -V, --version
           Print version
+
+Dans l'application installée, `griffe desktop` ouvre la fenêtre, et `griffe mcp` démarre l'agent.
