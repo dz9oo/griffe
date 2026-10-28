@@ -12,6 +12,7 @@ use crate::domain::{
     self, EmlDraft, FollowUpEvent, FollowUpEventId, FollowUpFact, FollowUpKind, FollowUpSubject,
     InteractionKind, LetterRecipient, derive_cursor_with, fiche_channels, letter_address,
     letter_recipient_name, parse_email, phrase_from_editor, render_eml, render_template,
+    space_paragraphs,
 };
 use crate::prospection::{LogInteraction, opportunity_by_id};
 
@@ -721,8 +722,12 @@ impl Command for PrepareFollowUp {
         let ctx = loaded.template_context(conn)?;
         let subject_line = optional_letter_part(self.subject_line.clone())
             .unwrap_or_else(|| render_template(&step.subject, &ctx));
-        let body = optional_letter_part(self.body.clone())
-            .unwrap_or_else(|| render_template(&step.body, &ctx));
+        // Un corps fourni (l'import Notion) sépare les paragraphes.
+        // Le modèle de série reste tel qu'il est écrit.
+        let body = match optional_letter_part(self.body.clone()) {
+            Some(text) => space_paragraphs(&text),
+            None => render_template(&step.body, &ctx),
+        };
         let event_id = FollowUpEventId::new();
         let at = OffsetDateTime::now_utc();
         let draft = render_eml(

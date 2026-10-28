@@ -46,7 +46,7 @@ pub use follow_up::{
     format_date_fr, given_name, infer_letter_recipient, letter_address, letter_recipient_name,
     parse_email, phrase_from_editor, phrase_to_editor, render_eml, render_template,
     resolve_signature, respondent_view, settle_respondent, settled_display_name, snooze_date,
-    snooze_in_days, split_respondent,
+    snooze_in_days, space_paragraphs, split_respondent,
 };
 pub use ids::{
     BankTransactionId, ClientId, ContactId, DutyFilingId, ExpenseId, FiscalYearId, FixedAssetId,

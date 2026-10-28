@@ -2,6 +2,12 @@
 
 Ce qui change pour qui se sert de Griffe. Une section par version publiée.
 
+## 0.3.20
+
+- La formule du courrier se pose une fois. Une ligne qui n'est que `<signature>` disparaît à sa place. Une formule déjà écrite dans la lettre reste seule.
+- Un brouillon dont les paragraphes se suivent sans blanc en reçoit un. Les lignes vides déjà là restent. Une série de phrases déjà écrite reste telle quelle.
+- Le coffre garde la même forme.
+
 ## 0.3.19
 
 - Un seul fichier installé ouvre la fenêtre, la commande et l'agent.

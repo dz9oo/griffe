@@ -581,6 +581,40 @@ mod tests {
     }
 
     #[test]
+    fn a_draft_from_a_stuck_letter_separates_the_paragraphs() {
+        let mut store = test_store("aired-body");
+        let today = date(2026, Month::September, 5);
+        let (_, subject) = seed_opportunity(&mut store, today);
+        set_sender(&mut store);
+        let body = "Monsieur le Maire,\nLe site de la commune ne publie pas sa déclaration.\nBien cordialement,\n<signature>\n";
+        let Outcome::Applied(prepared) = Executor::new(&mut store)
+            .execute(
+                &PrepareFollowUp {
+                    subject,
+                    today,
+                    subject_line: None,
+                    body: Some(body.into()),
+                    recipient: None,
+                },
+                &human(),
+            )
+            .unwrap()
+        else {
+            panic!("expected Applied");
+        };
+        let aired = "Monsieur le Maire,\n\nLe site de la commune ne publie pas sa déclaration.\n\nBien cordialement,\n\n<signature>\n";
+        let events = events_for(store.connection(), subject).unwrap();
+        let draft = events
+            .iter()
+            .find(|e| e.fact == FollowUpFact::DraftPrepared)
+            .unwrap();
+        assert_eq!(draft.rendered_body.as_deref(), Some(aired));
+        assert!(prepared.draft.rfc5322.contains(
+            "Monsieur le Maire,\r\n\r\nLe site de la commune ne publie pas sa déclaration.\r\n"
+        ));
+    }
+
+    #[test]
     fn marking_sent_copies_the_last_draft_as_the_carbon_copy() {
         let mut store = test_store("carbon");
         let today = date(2026, Month::September, 5);

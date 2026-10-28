@@ -76,11 +76,13 @@ pub fn letter_card(letter: &LetterParts<'_>) -> String {
     html
 }
 
-/// Ajoute la formule quand le texte ne l'a pas déjà. Une formule vide ne change rien.
+/// Ajoute la formule quand le texte ne l'a pas déjà.
+/// Une ligne qui n'est que le jeton `<signature>` ou `{{signature}}` est cette
+/// place : elle disparaît. Une formule vide n'ajoute rien.
 #[must_use]
 pub fn close_letter(body: &str, signature: &str) -> String {
     let signature = normalize(signature).trim().to_string();
-    let body = normalize(body);
+    let body = without_signature_tokens(&normalize(body));
     if signature.is_empty() || signature_in_body(body.trim(), &signature) {
         return body;
     }
@@ -90,6 +92,46 @@ pub fn close_letter(body: &str, signature: &str) -> String {
     } else {
         format!("{trimmed}\n\n{signature}")
     }
+}
+
+/// Une ligne entière qui ne porte que le jeton de formule, pas une mention au milieu d'une phrase.
+fn signature_token_line(line: &str) -> bool {
+    matches!(line.trim(), "<signature>" | "{{signature}}")
+}
+
+/// Retire ces lignes. Le reste du texte, y compris une formule déjà écrite, ne bouge pas.
+/// Les blancs que le retrait crée se replient. Un texte sans ce jeton revient tel quel.
+fn without_signature_tokens(body: &str) -> String {
+    if !body.lines().any(signature_token_line) {
+        return body.to_string();
+    }
+    let lines: Vec<&str> = body.lines().collect();
+    let mut kept: Vec<&str> = Vec::with_capacity(lines.len());
+    let mut index = 0;
+    while index < lines.len() {
+        if !signature_token_line(lines[index]) {
+            kept.push(lines[index]);
+            index += 1;
+            continue;
+        }
+        while index < lines.len() && signature_token_line(lines[index]) {
+            index += 1;
+        }
+        let prev_blank = kept.last().is_some_and(|line| line.trim().is_empty());
+        let next_blank = lines.get(index).is_some_and(|line| line.trim().is_empty());
+        if prev_blank && next_blank {
+            index += 1;
+        }
+    }
+    let start = kept
+        .iter()
+        .position(|line| !line.trim().is_empty())
+        .unwrap_or(kept.len());
+    let end = kept
+        .iter()
+        .rposition(|line| !line.trim().is_empty())
+        .map_or(start, |at| at + 1);
+    kept[start..end].join("\n")
 }
 
 /// Le même texte, avec chaque adresse de suivi écrite sans ses paramètres `utm_`.
@@ -514,6 +556,67 @@ https://atelier.example/conformite?utm_source=mairie&utm_medium=email&utm_campai
         assert!(!html.contains("color:#0000ee"));
         let middle = format!("Avant.\n\n{signature}\n\nAprès.");
         assert_eq!(close_letter(&middle, signature), middle);
+    }
+
+    #[test]
+    fn a_whole_line_signature_token_becomes_the_formula_once() {
+        let signature = "\
+Nicolas COLLIER
+Ingénieur logiciel indépendant
+hello@atelier.example
+06 70 12 32 60
+https://atelier.example";
+        let prose = "Bonjour,\n\nLe site de la mairie.";
+        for token in ["<signature>", "{{signature}}", "  <signature>  "] {
+            let closed = close_letter(&format!("{prose}\n\n{token}"), signature);
+            assert_eq!(closed, format!("{prose}\n\n{signature}"));
+            assert_eq!(close_letter(&closed, signature), closed);
+            assert!(!closed.contains("<signature>"));
+            assert!(!closed.contains("{{signature}}"));
+        }
+        assert_eq!(close_letter("<signature>", signature), signature);
+        assert_eq!(
+            close_letter(&format!("{prose}\r\n\r\n<signature>\r\n"), signature),
+            format!("{prose}\n\n{signature}")
+        );
+        assert_eq!(close_letter(&format!("{prose}\n\n<signature>"), ""), prose);
+        assert_eq!(
+            close_letter("A\n\n\nB\n\n<signature>", signature),
+            format!("A\n\n\nB\n\n{signature}")
+        );
+
+        let mention = "La ligne voir <signature> reste dans le texte.";
+        let with_mention = close_letter(mention, signature);
+        assert!(with_mention.starts_with(mention));
+        assert!(with_mention.ends_with(signature));
+        assert_eq!(with_mention.matches("<signature>").count(), 1);
+
+        let already = format!("{prose}\n\n<signature>\n\n{signature}");
+        assert_eq!(
+            close_letter(&already, signature),
+            format!("{prose}\n\n{signature}")
+        );
+        let between = format!("Avant.\n\n{{{{signature}}}}\n\nAprès.\n\n{signature}");
+        assert_eq!(
+            close_letter(&between, signature),
+            format!("Avant.\n\nAprès.\n\n{signature}")
+        );
+
+        let chrome = LetterChrome {
+            palette: LetterPalette::clair(),
+            metier: "Ingénieur logiciel indépendant".into(),
+            site: "https://atelier.example".into(),
+            signature: signature.into(),
+        };
+        let html = letter_html(&LetterParts {
+            subject: "Mairie",
+            body: &close_letter(&format!("{prose}\n\n<signature>"), signature),
+            chrome: &chrome,
+        });
+        assert_eq!(html.matches("Nicolas COLLIER").count(), 1);
+        assert!(!html.contains("&lt;signature&gt;"));
+        assert!(!html.contains("{{signature}}"));
+        assert!(html.contains("Le site de la mairie."));
     }
 
     #[test]
