@@ -960,6 +960,17 @@ async fn the_help_catalog_covers_each_situation_and_hides_an_empty_shelf() {
                 "l'exemple fictif porte le montant : {body}"
             );
             assert!(body.contains("Refonte du site"), "{body}");
+            assert!(body.contains("echange verifier"), "{body}");
+            assert!(body.contains("echange appliquer"), "{body}");
+            assert!(
+                body.contains("n&#x27;ouvre pas Notion") || body.contains("n'ouvre pas Notion"),
+                "Griffe n'ouvre pas Notion : {body}"
+            );
+        }
+        if *slug == "cmd-gens" {
+            assert!(body.contains("echange verifier"), "{body}");
+            assert!(body.contains("echange appliquer"), "{body}");
+            assert!(body.contains("echange ecrire"), "{body}");
         }
         if *slug == "phrases" {
             assert!(

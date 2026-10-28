@@ -9,6 +9,7 @@ mod client;
 mod company;
 mod day;
 mod error;
+mod exchange;
 mod expense;
 mod fec;
 mod fiscal;
@@ -120,6 +121,9 @@ enum TopCommand {
     /// Prospection : opportunités, pipeline, interactions.
     #[command(subcommand)]
     Prospect(prospect::ProspectCommand),
+    /// Échange : vérifier un fichier, l'appliquer, écrire les séries.
+    #[command(subcommand)]
+    Echange(exchange::EchangeCommand),
     /// Missions : création, saisie de temps, TJM effectif, capacité.
     #[command(subcommand)]
     Mission(mission::MissionCommand),
@@ -411,6 +415,7 @@ fn run_command(
         TopCommand::Courrier(cmd) => mail::run(cmd, store, ctx, json),
         TopCommand::Boite(cmd) => boite::run(cmd, store, ctx, json),
         TopCommand::Prospect(cmd) => prospect::run(cmd, store, ctx, json),
+        TopCommand::Echange(cmd) => exchange::run(cmd, store, ctx, json),
         TopCommand::Mission(cmd) => mission::run(cmd, store, ctx, json),
         TopCommand::Quote(cmd) => quote::run(cmd, store, ctx, json),
         TopCommand::Invoice(cmd) => invoice::run_invoice(cmd, store, ctx, json),

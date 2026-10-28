@@ -5111,3 +5111,295 @@ fn work_kinds_follow_a_fiche_through_rename_and_wait_for_confirmation() {
         "Mairie"
     );
 }
+
+const ECHANGE_JOUR: &str = "2026-10-28";
+
+fn echange_file(db: &Path, name: &str, body: &serde_json::Value) -> PathBuf {
+    let path = db.with_file_name(name);
+    std::fs::write(&path, format!("{body}\n")).unwrap();
+    path
+}
+
+fn valvert_document(montant: &str) -> serde_json::Value {
+    serde_json::json!({
+        "version": 1,
+        "dossiers": [{
+            "origine": "opp-valvert",
+            "origine_fiche": "org-valvert",
+            "qui": "Mairie de Valvert",
+            "quoi": "Refonte du site",
+            "adresse": {
+                "rue": "1 place de la Mairie",
+                "code_postal": "59171",
+                "ville": "Valvert",
+                "pays": "FR"
+            },
+            "courriel": "mairie@valvert.example",
+            "telephone": "0327444444",
+            "siren": "552100554",
+            "tva": "FR96552100554",
+            "travaux": "Le site n'est pas conforme.",
+            "contact": {
+                "prenom": "Camille",
+                "nom": "Rivière",
+                "genre": "madame",
+                "courriel": "camille@valvert.example"
+            },
+            "probabilite": 40,
+            "prochaine_action": ECHANGE_JOUR,
+            "source": "Autre",
+            "lignes": [
+                {"libelle": "Diagnostic", "montant": "1200,00"},
+                {"libelle": "Atelier", "montant": montant}
+            ]
+        }]
+    })
+}
+
+fn prospect_rows(db: &Path) -> serde_json::Value {
+    json_result(
+        &unlocked(db)
+            .args(["--json", "prospect", "list"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    )
+}
+
+/// 1 200,00 et 400,00 font 1 600,00, posés à la main. Le jour est celui du fichier.
+#[test]
+fn exchange_verify_writes_nothing_and_apply_creates_valvert_once() {
+    let db = temp_db("echange");
+    provision(&db);
+    let good = echange_file(&db, "valvert.json", &valvert_document("400,00"));
+    let bad = echange_file(&db, "centimes.json", &valvert_document("12,345"));
+    let somme = griffe_core::domain::Money::from_cents(160_000).to_string();
+
+    let lu = String::from_utf8(
+        unlocked(&db)
+            .args(["echange", "verifier"])
+            .arg(&good)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    )
+    .unwrap();
+    assert!(lu.contains("Mairie de Valvert"), "{lu}");
+    assert!(lu.contains("Refonte du site"), "{lu}");
+    assert!(lu.contains(&somme), "{lu}");
+    assert!(lu.contains("Séries à créer"), "{lu}");
+    assert!(lu.contains("Reprendre écraserait"), "{lu}");
+    assert!(
+        prospect_rows(&db).as_array().unwrap().is_empty(),
+        "vérifier n'écrit pas"
+    );
+
+    let refuse = json_result(
+        &unlocked(&db)
+            .args(["--json", "echange", "appliquer"])
+            .arg(&bad)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert_eq!(refuse["status"], "applied");
+    assert_eq!(refuse["result"]["dossiers"][0]["statut"], "incomplet");
+    assert_eq!(
+        refuse["result"]["dossiers"][0]["raison"],
+        "montant illisible : 12,345"
+    );
+    assert!(
+        prospect_rows(&db).as_array().unwrap().is_empty(),
+        "un montant qui n'est pas un centime n'écrit rien"
+    );
+
+    let applique = json_result(
+        &unlocked(&db)
+            .args(["--json", "echange", "appliquer"])
+            .arg(&good)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert_eq!(applique["status"], "applied");
+    assert_eq!(applique["result"]["dossiers"][0]["statut"], "cree");
+    assert_eq!(
+        applique["result"]["dossiers"][0]["qui"],
+        "Mairie de Valvert"
+    );
+    let montre = json_result(
+        &unlocked(&db)
+            .args(["--json", "prospect", "show", "Refonte du site"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert_eq!(montre["name"], "Refonte du site");
+    assert_eq!(montre["amount"], 160_000);
+    assert_eq!(montre["next_action_at"], ECHANGE_JOUR);
+    let revision = montre["revision"].clone();
+
+    let encore = json_result(
+        &unlocked(&db)
+            .args(["--json", "echange", "appliquer"])
+            .arg(&good)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert_eq!(encore["result"]["dossiers"][0]["statut"], "inchange");
+    let relit = json_result(
+        &unlocked(&db)
+            .args(["--json", "prospect", "show", "Refonte du site"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert_eq!(relit["revision"], revision);
+    assert_eq!(relit["amount"], 160_000);
+    assert_eq!(relit["next_action_at"], ECHANGE_JOUR);
+    assert_eq!(prospect_rows(&db).as_array().unwrap().len(), 1);
+
+    let mut melange = valvert_document("400,00");
+    melange["dossiers"].as_array_mut().unwrap().insert(
+        0,
+        serde_json::json!({
+            "origine": "opp-autre",
+            "qui": "Atelier du Quai",
+            "quoi": "Une autre affaire",
+            "prochaine_action": ECHANGE_JOUR,
+            "lignes": [{"libelle": "Diagnostic", "montant": "12"}]
+        }),
+    );
+    let les_deux = echange_file(&db, "melange.json", &melange);
+    let rapport = json_result(
+        &unlocked(&db)
+            .args(["--json", "echange", "appliquer"])
+            .arg(&les_deux)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert_eq!(rapport["result"]["dossiers"][0]["statut"], "incomplet");
+    assert_eq!(rapport["result"]["dossiers"][1]["statut"], "inchange");
+    assert_eq!(prospect_rows(&db).as_array().unwrap().len(), 1);
+
+    let version = echange_file(
+        &db,
+        "version.json",
+        &serde_json::json!({"version": 2, "dossiers": []}),
+    );
+    unlocked(&db)
+        .args(["echange", "verifier"])
+        .arg(&version)
+        .assert()
+        .failure()
+        .code(4)
+        .stderr(predicate::str::contains("version d'échange inconnue"));
+    unlocked(&db)
+        .args(["echange", "verifier"])
+        .arg(db.with_file_name("absent.json"))
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("lecture"));
+
+    let series = db.with_file_name("series.json");
+    unlocked(&db)
+        .args(["echange", "ecrire", "--series"])
+        .arg(&series)
+        .assert()
+        .success();
+    let catalogue: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&series).unwrap()).unwrap();
+    assert_eq!(catalogue["version"], 1);
+    assert!(catalogue["dossiers"].as_array().unwrap().is_empty());
+    assert!(catalogue["series"].as_array().unwrap().is_empty());
+    assert!(
+        catalogue["cadence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|moment| {
+                moment["cle"] == "hello"
+                    && moment["libelle"] == "Premier message"
+                    && moment["ecart_ouvres"] == 0
+            })
+    );
+    let relu = json_result(
+        &unlocked(&db)
+            .args(["--json", "prospect", "show", "Refonte du site"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert_eq!(relu["revision"], revision);
+}
+
+#[test]
+fn an_agent_exchange_waits_for_a_person() {
+    let db = temp_db("echange-agent");
+    provision(&db);
+    let good = echange_file(&db, "valvert.json", &valvert_document("400,00"));
+    let pending = json_result(
+        &unlocked(&db)
+            .args([
+                "--json",
+                "--actor",
+                "agent:test-session",
+                "echange",
+                "appliquer",
+            ])
+            .arg(&good)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert_eq!(pending["status"], "pending_confirmation");
+    assert!(prospect_rows(&db).as_array().unwrap().is_empty());
+    let id = pending["pending_action_id"].as_str().unwrap();
+    let confirmed = json_result(
+        &unlocked(&db)
+            .args(["--json", "confirm", id])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert_eq!(confirmed["status"], "applied");
+    assert_eq!(
+        confirmed["result"]["dossiers"][0]["qui"],
+        "Mairie de Valvert"
+    );
+    let montre = json_result(
+        &unlocked(&db)
+            .args(["--json", "prospect", "show", "Refonte du site"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    );
+    assert_eq!(montre["next_action_at"], ECHANGE_JOUR);
+    assert_eq!(montre["amount"], 160_000);
+}

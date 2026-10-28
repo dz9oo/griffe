@@ -131,21 +131,21 @@ pub(super) const FICHIER: Letter = Letter {
     slug: "fichier",
     kicker: "Fichiers",
     title: "Un fichier à côté.",
-    lede: "Notion est le premier fichier. La forme sert pour le suivant.",
+    lede: "Vous vérifiez le fichier, puis vous l'appliquez.",
     steps: &[
-        "Vous tenez le barème : un nom de mission, un montant hors taxes. Vous tenez les séries. L'agent les lit. Il ne réécrit ni l'un ni les autres.",
-        "Des bots, par exemple des Grok Bots, ou tout agent branché sur la commande ou le MCP, remplissent le fichier. Griffe n'ouvre pas Notion.",
-        "Le Qui : le nom, et le standard — courriel et téléphone de l'organisation. Qui répond est le contact : prénom, nom, la ligne directe seulement. Monsieur ou Madame si une source le dit, sinon rien. Le nom affiché ne tient pas lieu de ce contact.",
+        "Griffe n'ouvre pas Notion. Le fichier est déjà là, à côté du coffre. Il porte la version 1.",
+        "Vous tenez le barème : un nom de mission, un montant hors taxes. Vous tenez les séries.",
+        "Le Qui est le nom, et le standard — courriel et téléphone de l'organisation. Qui répond est le contact : prénom, nom, la ligne directe seulement. Monsieur ou Madame si une source le dit, sinon rien. Le nom affiché ne tient pas lieu de ce contact.",
         "L'adresse s'écrit en entier — rue, code, ville, pays — ou pas du tout.",
-        "Le Quoi nomme la conversation. L'analyse va dans les travaux. Une ligne d'estimation par mission du barème, le montant copié. Une mission absente du barème est nommée à part, sans montant.",
-        "Une série déjà là, ou une série proposée à part. Le premier message suit la trame. Le constat prend la place de <constat>.",
-        "Vous seul marquez la file. L'agent n'écrit dans le coffre que les lignes marquées. L'import crée la fiche, le contact, les travaux, l'estimation, la série et le brouillon.",
-        "Le brouillon ne part pas. L'histoire du dossier ne reçoit pas une note de cet import.",
-        "La procédure que suit l'agent vit chez vous. Cette lettre est le contrat.",
-        "Un autre fichier, plus tard, tient la même forme. L'agent remplit. Vous marquez. Griffe écrit la fiche, le contact, les travaux, l'estimation, la série, le brouillon. Il laisse la file, l'envoi, un montant absent du barème, et la passphrase.",
+        "Le Quoi nomme la conversation. Pour la Mairie de Valvert, c'est Refonte du site. L'analyse va dans les travaux. Une ligne d'estimation par mission du barème, le montant copié. Une mission absente du barème est nommée à part, sans montant.",
+        "Vous lisez d'abord. griffe echange verifier montre ce qui serait créé, révisé, inchangé ou incomplet, les montants, les séries à créer, et les champs que reprendre écraserait. Rien n'est écrit.",
+        "Vous appliquez ensuite. griffe echange appliquer écrit la fiche, le contact, les travaux, l'estimation, la série et le brouillon. Le brouillon ne part pas. Avec un agent, ce geste attend une personne.",
+        "Le même fichier, une seconde fois, ne réécrit pas ce qui est déjà tenu. Reprendre écrase les champs que le compte-rendu avait laissés.",
+        "Un dossier incomplet reste dans le compte-rendu. Les dossiers valides du même fichier sont écrits. Un montant qui n'est pas un centime laisse ce dossier de côté.",
+        "griffe echange ecrire --series écrit le catalogue des séries et de la cadence, dans la même forme que le fichier.",
     ],
     does_not: Some(
-        "Le fichier d'à côté n'est pas le coffre. Griffe n'y va pas chercher les lignes tout seul.",
+        "Le fichier d'à côté n'est pas le coffre. Griffe n'y va pas chercher les lignes tout seul, et il n'ouvre pas Notion.",
     ),
     href: Some("/aide/trame"),
     action: Some("Les phrases"),
@@ -490,6 +490,13 @@ fn trame_regard() -> Markup {
 fn fichier_regard() -> Markup {
     html! {
         div class="block" {
+            h3 { "Vérifier, puis appliquer" }
+            pre class="aide-file" {
+                "griffe echange verifier valvert.json\n"
+                "griffe echange appliquer valvert.json\n"
+            }
+        }
+        div class="block" {
             h3 { "Mairie de Valvert" }
             dl class="aide-exemple" {
                 dt { "Qui" }
@@ -512,7 +519,7 @@ fn fichier_regard() -> Markup {
         div class="block" {
             h3 { "Le fichier suivant" }
             p class="prose" {
-                "L'agent remplit. Vous marquez. Griffe écrit la fiche, le contact, les travaux, l'estimation, la série, le brouillon. Il laisse la file, l'envoi, le montant absent, et la passphrase."
+                "La même forme. Vous vérifiez, puis vous appliquez. Griffe écrit la fiche, le contact, les travaux, l'estimation, la série, le brouillon. Il laisse la file, l'envoi, le montant absent, et la passphrase."
             }
         }
     }

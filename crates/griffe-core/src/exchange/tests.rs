@@ -12,7 +12,7 @@ use crate::domain::{
 use crate::dossier_work;
 use crate::exchange::{
     AddressFile, ApplyExchange, CadenceMoment, ContactFile, DossierFile, ExchangeDocument,
-    ExchangeReport, ExchangeStatus, LineFile, SeriesFile, SeriesMoment, preview,
+    ExchangeReport, ExchangeStatus, LineFile, SeriesFile, SeriesMoment, preview, series_catalog,
 };
 use crate::follow_up::bind::phrase_genre_named;
 use crate::follow_up::{
@@ -511,6 +511,59 @@ fn an_unknown_cadence_key_is_refused_and_the_vault_stays() {
     let stored = prospect_phrases(store.connection()).unwrap();
     let bump = stored.iter().find(|phrase| phrase.key == "bump").unwrap();
     assert_eq!(bump.offset_days, 3);
+}
+
+#[test]
+fn the_series_catalog_uses_the_document_shape_and_reads_again_unchanged() {
+    let mut store = test_store("echange-catalogue");
+    let empty = series_catalog(store.connection()).unwrap();
+    assert_eq!(empty.version, 1);
+    assert!(empty.dossiers.is_empty());
+    assert!(empty.series.is_empty());
+    let hello = empty
+        .cadence
+        .as_ref()
+        .expect("cadence")
+        .iter()
+        .find(|moment| moment.cle == "hello")
+        .expect("premier message");
+    assert_eq!(hello.libelle, "Premier message");
+    assert_eq!(hello.ecart_ouvres, 0);
+    assert_eq!(hello.sujet.as_deref(), Some("{{sujet}}"));
+
+    let mut doc = document(Vec::new());
+    doc.series = vec![SeriesFile {
+        nom: "Mairies".to_string(),
+        reprendre: false,
+        moments: vec![SeriesMoment {
+            cle: "hello".to_string(),
+            sujet: "Bonjour {{prenom}}".to_string(),
+            corps: "Un mot.\n\n{{signature}}\n".to_string(),
+        }],
+    }];
+    apply(&mut store, &doc);
+
+    let catalog = series_catalog(store.connection()).unwrap();
+    assert_eq!(catalog.series.len(), 1);
+    assert_eq!(catalog.series[0].nom, "Mairies");
+    let rewritten = catalog.series[0]
+        .moments
+        .iter()
+        .find(|moment| moment.cle == "hello")
+        .expect("hello");
+    assert_eq!(rewritten.sujet, "Bonjour {{prenom}}");
+    assert_eq!(rewritten.corps, "Un mot.\n\n{{signature}}\n");
+    let report = preview(store.connection(), &catalog, TODAY).unwrap();
+    assert!(
+        report
+            .series
+            .iter()
+            .all(|serie| serie.statut == ExchangeStatus::Inchange)
+    );
+    assert_eq!(
+        report.cadence.expect("cadence").statut,
+        ExchangeStatus::Inchange
+    );
 }
 
 fn live_cadence(store: &Store) -> Vec<CadenceMoment> {

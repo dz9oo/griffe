@@ -12,6 +12,7 @@ use griffe_core::billing::{
     UnsettleBankTransaction, VoidPayment, WriteOffReceivable,
 };
 use griffe_core::clients::{DeleteClient, DeleteContact};
+use griffe_core::exchange::ApplyExchange;
 use griffe_core::expenses::{DeleteExpense, ReconcileExpense, RecordExpense, UpdateExpense};
 use griffe_core::fiscal_year::{ApproveFiscalYear, CloseFiscalYear, DeleteFiscalYear};
 use griffe_core::fixed_assets::DeleteFixedAsset;
@@ -35,7 +36,7 @@ use griffe_core::store::Store;
 use griffe_core::work_kinds::DeleteWorkKind;
 
 use crate::error::CliError;
-use crate::output::{format_json, format_outcome};
+use crate::output::{format_json, format_outcome, format_outcome_as};
 use crate::table;
 
 fn human_ctx() -> ExecutionContext {
@@ -333,6 +334,15 @@ pub fn confirm(store: &mut Store, id: PendingActionId, json: bool) -> Result<Str
     } else if action.command_name == ReleaseReplyHold::NAME {
         let outcome = Executor::new(store).confirm::<ReleaseReplyHold>(id)?;
         Ok(format_outcome(&outcome, json))
+    } else if action.command_name == ApplyExchange::NAME {
+        let command: ApplyExchange =
+            serde_json::from_str(&action.command_json).map_err(|error| {
+                CliError::Unexpected(format!("action en attente illisible : {error}"))
+            })?;
+        let outcome = Executor::new(store).confirm::<ApplyExchange>(id)?;
+        Ok(format_outcome_as(&outcome, json, |report| {
+            crate::exchange::render_account(&command.document, report)
+        }))
     } else {
         Err(CliError::UnknownConfirmableCommand(action.command_name))
     }
