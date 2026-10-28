@@ -13,6 +13,7 @@ pub mod company;
 pub mod day;
 pub mod domain;
 pub mod dossier_work;
+pub mod exchange;
 pub mod expenses;
 pub mod fec;
 pub mod fiscal;
