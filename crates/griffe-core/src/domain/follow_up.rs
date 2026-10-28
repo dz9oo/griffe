@@ -929,6 +929,32 @@ pub fn phrase_to_editor(stored: &str) -> String {
     out
 }
 
+/// Une ligne non vide est un paragraphe. Deux paragraphes qui se suivent
+/// sans ligne vide en reçoivent une. Les lignes vides déjà écrites restent.
+/// Un texte déjà aéré ne change pas. Les retours chariot deviennent des
+/// sauts de ligne.
+#[must_use]
+pub fn space_paragraphs(text: &str) -> String {
+    let text = text.replace("\r\n", "\n").replace('\r', "\n");
+    let mut out: Vec<&str> = Vec::new();
+    let mut previous_content = false;
+    for line in text.split('\n') {
+        if line.trim().is_empty() {
+            if previous_content || !out.is_empty() {
+                out.push("");
+            }
+            previous_content = false;
+            continue;
+        }
+        if previous_content {
+            out.push("");
+        }
+        out.push(line);
+        previous_content = true;
+    }
+    out.join("\n")
+}
+
 /// Ce que le coffre garde. Une phrase déjà en jetons n'est pas modifiée.
 #[must_use]
 pub fn phrase_from_editor(edited: &str) -> String {
@@ -1386,6 +1412,19 @@ mod tests {
             retracts: None,
             interaction_id: None,
         }
+    }
+
+    #[test]
+    fn paragraphs_of_a_letter_keep_a_blank_line_between_them() {
+        let stuck = "Monsieur le Maire,\nHabitant de Lewarde, je vous écris.\n\n- Le site ne publie pas de déclaration.\nhttps://nicolascollier.dev/conformite\nBien cordialement,\n<signature>\n";
+        let aired = "Monsieur le Maire,\n\nHabitant de Lewarde, je vous écris.\n\n- Le site ne publie pas de déclaration.\n\nhttps://nicolascollier.dev/conformite\n\nBien cordialement,\n\n<signature>\n";
+        assert_eq!(space_paragraphs(stuck), aired);
+        assert_eq!(space_paragraphs(aired), aired);
+        assert_eq!(space_paragraphs("A\n\n\nB"), "A\n\n\nB");
+        assert_eq!(space_paragraphs("A\r\nB\r\n"), "A\n\nB\n");
+        assert_eq!(space_paragraphs("\nA"), "A");
+        assert_eq!(space_paragraphs(""), "");
+        assert_eq!(space_paragraphs("Seul."), "Seul.");
     }
 
     #[test]
