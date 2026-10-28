@@ -110,6 +110,12 @@ const LINES: &[Line] = &[
         pill: "Les papiers",
         family: Family::Reglages,
     },
+    Line {
+        href: "/societe/fichier",
+        title: "Le fichier",
+        pill: "Le fichier",
+        family: Family::Reglages,
+    },
 ];
 
 fn back() -> Markup {
@@ -230,7 +236,7 @@ fn home_markup(home: &SocietyHome, mast: &Mast, papers: &str, courrier: &str) ->
                 (family_card(
                     Family::Reglages,
                     "La maison",
-                    html! { p class="subfact" { "Carte, courrier, phrases, papiers." } },
+                    html! { p class="subfact" { "Carte, courrier, phrases, papiers, fichier." } },
                     family_menu(Family::Reglages, home, papers, courrier),
                     html! {},
                 ))
@@ -358,6 +364,7 @@ fn line_amount(href: &str, home: &SocietyHome, papers: &str, courrier: &str) -> 
         "/societe/courrier" => courrier.to_string(),
         PHRASES_LINE => "la série".to_string(),
         "/societe/papiers" => papers.to_string(),
+        "/societe/fichier" => "à côté".to_string(),
         _ => String::new(),
     }
 }

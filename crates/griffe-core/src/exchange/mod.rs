@@ -1,10 +1,12 @@
 //! Document d'échange v1 : une commande, un dossier à la fois, une origine stable.
 
+mod account;
 mod apply;
 mod catalog;
 mod document;
 mod report;
 
+pub use account::account;
 pub use apply::{ApplyExchange, preview};
 pub use catalog::series_catalog;
 pub use document::{

@@ -14,10 +14,12 @@ use crate::layout::{ViewId, view_head};
 use crate::views::form;
 
 mod courrier;
+mod fichier;
 mod letter;
 pub use courrier::{
     CourrierForm, page as courrier_page, preview_card, subtitle as courrier_subtitle,
 };
+pub use fichier::{Notice as FichierNotice, body as fichier_body, letter as fichier_letter};
 pub use letter::{
     PHRASES_LINE, ReleveFragment, ReleveQuery, VatCreditForm, account, bureau, closing, duties,
     duty, duty_with_vat_form, identity, pay, piece, piste, statement, year,

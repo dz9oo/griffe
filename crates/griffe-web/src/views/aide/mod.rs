@@ -138,7 +138,7 @@ const AGENT_SECTIONS: &[Section] = &[
     Section {
         label: "Fichiers",
         links: &[
-            ("fichier", "vérifier, puis appliquer"),
+            ("fichier", "choisir, lire, appliquer"),
             ("dehors", "la file, l'envoi, un montant inventé"),
         ],
     },

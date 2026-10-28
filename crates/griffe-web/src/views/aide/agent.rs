@@ -131,15 +131,15 @@ pub(super) const FICHIER: Letter = Letter {
     slug: "fichier",
     kicker: "Fichiers",
     title: "Un fichier à côté.",
-    lede: "Vous vérifiez le fichier, puis vous l'appliquez.",
+    lede: "Les réglages, Le fichier. Vous choisissez, vous lisez, vous appliquez.",
     steps: &[
-        "Griffe n'ouvre pas Notion. Le fichier est déjà là, à côté du coffre. Il porte la version 1.",
+        "Les réglages, la ligne Le fichier. Vous choisissez le fichier. Griffe n'ouvre pas Notion. Il est déjà là, à côté du coffre. Il porte la version 1.",
         "Vous tenez le barème : un nom de mission, un montant hors taxes. Vous tenez les séries.",
         "Le Qui est le nom, et le standard — courriel et téléphone de l'organisation. Qui répond est le contact : prénom, nom, la ligne directe seulement. Monsieur ou Madame si une source le dit, sinon rien. Le nom affiché ne tient pas lieu de ce contact.",
         "L'adresse s'écrit en entier — rue, code, ville, pays — ou pas du tout.",
         "Le Quoi nomme la conversation. Pour la Mairie de Valvert, c'est Refonte du site. L'analyse va dans les travaux. Une ligne d'estimation par mission du barème, le montant copié. Une mission absente du barème est nommée à part, sans montant.",
-        "Vous lisez d'abord. griffe echange verifier montre ce qui serait créé, révisé, inchangé ou incomplet, les montants, les séries à créer, et les champs que reprendre écraserait. Rien n'est écrit.",
-        "Vous appliquez ensuite. griffe echange appliquer écrit la fiche, le contact, les travaux, l'estimation, la série et le brouillon. Le brouillon ne part pas. Avec un agent, ce geste attend une personne.",
+        "Vous lisez d'abord. Le compte-rendu est celui de la commande : créé, révisé, inchangé ou incomplet, les montants, les séries à créer, et les champs que reprendre écraserait. griffe echange verifier écrit la même chose. Rien n'est écrit.",
+        "Vous appliquez ensuite. La fenêtre écrit. griffe echange appliquer écrit la même chose : la fiche, le contact, les travaux, l'estimation, la série et le brouillon. Le brouillon ne part pas. Avec un agent, ce geste attend une personne.",
         "Le même fichier, une seconde fois, ne réécrit pas ce qui est déjà tenu. Reprendre écrase les champs que le compte-rendu avait laissés.",
         "Un dossier incomplet reste dans le compte-rendu. Les dossiers valides du même fichier sont écrits. Un montant qui n'est pas un centime laisse ce dossier de côté.",
         "griffe echange ecrire --series écrit le catalogue des séries et de la cadence, dans la même forme que le fichier.",
@@ -147,8 +147,8 @@ pub(super) const FICHIER: Letter = Letter {
     does_not: Some(
         "Le fichier d'à côté n'est pas le coffre. Griffe n'y va pas chercher les lignes tout seul, et il n'ouvre pas Notion.",
     ),
-    href: Some("/aide/trame"),
-    action: Some("Les phrases"),
+    href: Some("/societe/fichier"),
+    action: Some("Le fichier"),
     rayon: Rayon::Agent,
 };
 
@@ -489,6 +489,12 @@ fn trame_regard() -> Markup {
 
 fn fichier_regard() -> Markup {
     html! {
+        div class="block" {
+            h3 { "Les réglages" }
+            p class="prose" {
+                "Le fichier. Vous choisissez valvert.json. Lire montre le compte-rendu. Appliquer écrit. La commande dit la même chose."
+            }
+        }
         div class="block" {
             h3 { "Vérifier, puis appliquer" }
             pre class="aide-file" {

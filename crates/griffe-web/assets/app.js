@@ -60,7 +60,8 @@ document.body.addEventListener("change", (event) => {
   if (input.type !== "file") return;
   const name = input.closest(".pick-file")?.querySelector(".pick-name");
   if (!name) return;
-  name.textContent = input.files && input.files[0] ? input.files[0].name : "le fichier";
+  const empty = name.dataset.empty || "le fichier";
+  name.textContent = input.files && input.files[0] ? input.files[0].name : empty;
 });
 
 document.body.addEventListener("click", (event) => {
