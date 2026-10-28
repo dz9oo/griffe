@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "dossiers": [
+    {
+      "origine": "11111111-1111-4111-8111-111111111111",
+      "origine_fiche": "22222222-2222-4222-8222-222222222222",
+      "qui": "Mairie de Valvert",
+      "quoi": "Refonte du site",
+      "adresse": {
+        "rue": "1 place de la Mairie",
+        "code_postal": "59171",
+        "ville": "Valvert",
+        "pays": "FR"
+      },
+      "courriel": "mairie@valvert.example",
+      "telephone": "0327444444",
+      "travaux": "Le site n'est pas conforme.",
+      "contact": {
+        "prenom": "Camille",
+        "nom": "Rivière",
+        "genre": "madame",
+        "courriel": "camille@valvert.example"
+      },
+      "prochaine_action": "2026-10-28",
+      "source": "Autre",
+      "lignes": [
+        {
+          "libelle": "Diagnostic",
+          "montant": "1200,00"
+        },
+        {
+          "libelle": "Atelier",
+          "montant": "400,00"
+        }
+      ],
+      "serie": "Mairies",
+      "brouillon": "Bonjour {{prenom}},\n\nLe site ne déclare pas ses horaires.\n\n<Monsieur le Maire/Madame la Maire>\n\n{{signature}}"
+    }
+  ],
+  "series": [
+    {
+      "nom": "Mairies",
+      "moments": [
+        {
+          "cle": "hello",
+          "sujet": "Bonjour {{prenom}} {{family_name}}",
+          "corps": "Un mot.\n\n{{constat}}\n\n{{signature}}"
+        }
+      ]
+    }
+  ]
+}

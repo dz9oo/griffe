@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "stop": false,
+  "dossiers": [],
+  "series": [
+    {
+      "nom": "Mairies",
+      "reprendre": false,
+      "moments": [
+        {
+          "cle": "hello",
+          "sujet": "Bonjour {{prenom}} {{family_name}}",
+          "corps": "Un mot.\n\n{{constat}}\n\n<Monsieur le Maire/Madame la Maire>\n\n{{signature}}"
+        }
+      ]
+    }
+  ],
+  "cadence": [
+    {
+      "cle": "hello",
+      "libelle": "Premier message",
+      "ecart_ouvres": 0,
+      "sujet": "Bonjour {{prenom}}",
+      "corps": "{{constat}}\n\n{{signature}}"
+    }
+  ]
+}

@@ -1,0 +1,709 @@
+{
+  "sources": {
+    "93a1d787-40e5-4ea9-a6fe-4eb3e5132706": [
+      {
+        "object": "page",
+        "id": "11111111-1111-4111-8111-111111111111",
+        "archived": false,
+        "in_trash": false,
+        "properties": {
+          "Name": {
+            "type": "title",
+            "title": [
+              {
+                "plain_text": "Valvert"
+              }
+            ]
+          },
+          "Quoi": {
+            "type": "rich_text",
+            "rich_text": [
+              {
+                "plain_text": "Refonte du site"
+              }
+            ]
+          },
+          "Griffe": {
+            "type": "select",
+            "select": {
+              "name": "À importer"
+            }
+          },
+          "Statut": {
+            "type": "status",
+            "status": {
+              "name": "À qualifier"
+            }
+          },
+          "Série": {
+            "type": "select",
+            "select": {
+              "name": "Mairies"
+            }
+          },
+          "Source": {
+            "type": "select",
+            "select": {
+              "name": "Autre"
+            }
+          },
+          "Catégorie": {
+            "type": "select",
+            "select": {
+              "name": "Site"
+            }
+          },
+          "freeflow_id": {
+            "type": "rich_text",
+            "rich_text": [
+              {
+                "plain_text": "ancienne-piste-valvert"
+              }
+            ]
+          },
+          "Date prochaine action": {
+            "type": "date",
+            "date": null
+          },
+          "Montant forfait (€ HT)": {
+            "type": "number",
+            "number": 9999
+          },
+          "Missions sans prix": {
+            "type": "rich_text",
+            "rich_text": [
+              {
+                "plain_text": "Veille"
+              }
+            ]
+          },
+          "Contact": {
+            "type": "relation",
+            "has_more": false,
+            "relation": [
+              {
+                "id": "33333333-3333-4333-8333-333333333333"
+              },
+              {
+                "id": "34343434-3434-4434-8434-343434343434"
+              }
+            ]
+          },
+          "Organisation": {
+            "type": "relation",
+            "has_more": false,
+            "relation": [
+              {
+                "id": "22222222-2222-4222-8222-222222222222"
+              }
+            ]
+          },
+          "Lignes": {
+            "type": "relation",
+            "has_more": false,
+            "relation": [
+              {
+                "id": "44444444-4444-4444-8444-444444444444"
+              },
+              {
+                "id": "55555555-5555-4555-8555-555555555555"
+              },
+              {
+                "id": "45454545-4545-4454-8454-454545454545"
+              },
+              {
+                "id": "46464646-4646-4464-8464-464646464646"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "object": "page",
+        "id": "77777777-7777-4777-8777-777777777777",
+        "archived": false,
+        "in_trash": false,
+        "properties": {
+          "Name": {
+            "type": "title",
+            "title": [
+              {
+                "plain_text": "Clos"
+              }
+            ]
+          },
+          "Quoi": {
+            "type": "rich_text",
+            "rich_text": [
+              {
+                "plain_text": "Déjà close"
+              }
+            ]
+          },
+          "Griffe": {
+            "type": "select",
+            "select": {
+              "name": "À importer"
+            }
+          },
+          "Statut": {
+            "type": "status",
+            "status": {
+              "name": "Perdue"
+            }
+          },
+          "freeflow_id": {
+            "type": "rich_text",
+            "rich_text": []
+          },
+          "Date prochaine action": {
+            "type": "date",
+            "date": null
+          },
+          "Organisation": {
+            "type": "relation",
+            "has_more": false,
+            "relation": [
+              {
+                "id": "88888888-8888-4888-8888-888888888888"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "object": "page",
+        "id": "99999999-9999-4999-8999-999999999999",
+        "archived": false,
+        "in_trash": false,
+        "properties": {
+          "Name": {
+            "type": "title",
+            "title": [
+              {
+                "plain_text": "Vide"
+              }
+            ]
+          },
+          "Quoi": {
+            "type": "rich_text",
+            "rich_text": [
+              {
+                "plain_text": "Sans titre travaux"
+              }
+            ]
+          },
+          "Griffe": {
+            "type": "select",
+            "select": {
+              "name": "À importer"
+            }
+          },
+          "Statut": {
+            "type": "status",
+            "status": {
+              "name": "À qualifier"
+            }
+          },
+          "freeflow_id": {
+            "type": "rich_text",
+            "rich_text": []
+          },
+          "Date prochaine action": {
+            "type": "date",
+            "date": null
+          },
+          "Organisation": {
+            "type": "relation",
+            "has_more": false,
+            "relation": [
+              {
+                "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "61995cfa-952f-4006-9248-b35a456779a3": [
+      {
+        "object": "page",
+        "id": "22222222-2222-4222-8222-222222222222",
+        "archived": false,
+        "in_trash": false,
+        "properties": {
+          "Name": {
+            "type": "title",
+            "title": [
+              {
+                "plain_text": "Mairie de Valvert"
+              }
+            ]
+          },
+          "Qui": {
+            "type": "rich_text",
+            "rich_text": [
+              {
+                "plain_text": "Mairie de Valvert"
+              }
+            ]
+          },
+          "Rue": {
+            "type": "rich_text",
+            "rich_text": [
+              {
+                "plain_text": "1 place de la Mairie"
+              }
+            ]
+          },
+          "Code postal": {
+            "type": "rich_text",
+            "rich_text": [
+              {
+                "plain_text": "59171"
+              }
+            ]
+          },
+          "Ville": {
+            "type": "rich_text",
+            "rich_text": [
+              {
+                "plain_text": "Valvert"
+              }
+            ]
+          },
+          "Courriel": {
+            "type": "email",
+            "email": "mairie@valvert.example"
+          },
+          "Téléphone": {
+            "type": "phone_number",
+            "phone_number": "0327444444"
+          },
+          "freeflow_id": {
+            "type": "rich_text",
+            "rich_text": []
+          },
+          "Griffe": {
+            "type": "select",
+            "select": {
+              "name": "Hors coffre"
+            }
+          }
+        }
+      },
+      {
+        "object": "page",
+        "id": "88888888-8888-4888-8888-888888888888",
+        "archived": false,
+        "in_trash": false,
+        "properties": {
+          "Name": {
+            "type": "title",
+            "title": [
+              {
+                "plain_text": "Atelier Clos"
+              }
+            ]
+          },
+          "Qui": {
+            "type": "rich_text",
+            "rich_text": [
+              {
+                "plain_text": "Atelier Clos"
+              }
+            ]
+          },
+          "freeflow_id": {
+            "type": "rich_text",
+            "rich_text": []
+          }
+        }
+      },
+      {
+        "object": "page",
+        "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "archived": false,
+        "in_trash": false,
+        "properties": {
+          "Name": {
+            "type": "title",
+            "title": [
+              {
+                "plain_text": "Atelier Vide"
+              }
+            ]
+          },
+          "Qui": {
+            "type": "rich_text",
+            "rich_text": [
+              {
+                "plain_text": "Atelier Vide"
+              }
+            ]
+          },
+          "freeflow_id": {
+            "type": "rich_text",
+            "rich_text": []
+          }
+        }
+      }
+    ],
+    "414faeaf-4028-4d9a-935d-4fea1052cfed": [
+      {
+        "object": "page",
+        "id": "33333333-3333-4333-8333-333333333333",
+        "archived": false,
+        "in_trash": false,
+        "properties": {
+          "Name": {
+            "type": "title",
+            "title": [
+              {
+                "plain_text": "Alex"
+              }
+            ]
+          },
+          "Prénom": {
+            "type": "rich_text",
+            "rich_text": [
+              {
+                "plain_text": "Alex"
+              }
+            ]
+          },
+          "Nom": {
+            "type": "rich_text",
+            "rich_text": []
+          }
+        }
+      },
+      {
+        "object": "page",
+        "id": "34343434-3434-4434-8434-343434343434",
+        "archived": false,
+        "in_trash": false,
+        "properties": {
+          "Name": {
+            "type": "title",
+            "title": [
+              {
+                "plain_text": "Camille Rivière"
+              }
+            ]
+          },
+          "Prénom": {
+            "type": "rich_text",
+            "rich_text": [
+              {
+                "plain_text": "Camille"
+              }
+            ]
+          },
+          "Nom": {
+            "type": "rich_text",
+            "rich_text": [
+              {
+                "plain_text": "Rivière"
+              }
+            ]
+          },
+          "Genre": {
+            "type": "select",
+            "select": {
+              "name": "Madame"
+            }
+          },
+          "Email": {
+            "type": "email",
+            "email": "camille@valvert.example"
+          }
+        }
+      }
+    ],
+    "f6f78908-a88b-4642-a6e8-1c28fa7625f7": [
+      {
+        "object": "page",
+        "id": "44444444-4444-4444-8444-444444444444",
+        "archived": false,
+        "in_trash": false,
+        "properties": {
+          "Name": {
+            "type": "title",
+            "title": [
+              {
+                "plain_text": "Diagnostic"
+              }
+            ]
+          },
+          "Mission": {
+            "type": "rich_text",
+            "rich_text": [
+              {
+                "plain_text": "Diagnostic"
+              }
+            ]
+          },
+          "Montant HT": {
+            "type": "number",
+            "number": 1200
+          }
+        }
+      },
+      {
+        "object": "page",
+        "id": "55555555-5555-4555-8555-555555555555",
+        "archived": false,
+        "in_trash": false,
+        "properties": {
+          "Name": {
+            "type": "title",
+            "title": [
+              {
+                "plain_text": "Atelier"
+              }
+            ]
+          },
+          "Mission": {
+            "type": "rich_text",
+            "rich_text": [
+              {
+                "plain_text": "Atelier"
+              }
+            ]
+          },
+          "Montant HT": {
+            "type": "number",
+            "number": 400
+          }
+        }
+      },
+      {
+        "object": "page",
+        "id": "45454545-4545-4454-8454-454545454545",
+        "archived": true,
+        "in_trash": true,
+        "properties": {
+          "Name": {
+            "type": "title",
+            "title": [
+              {
+                "plain_text": "Maintenance"
+              }
+            ]
+          },
+          "Mission": {
+            "type": "rich_text",
+            "rich_text": [
+              {
+                "plain_text": "Maintenance"
+              }
+            ]
+          },
+          "Montant HT": {
+            "type": "number",
+            "number": 50
+          }
+        }
+      }
+    ],
+    "a973606b-0097-401b-bdf1-94b417ea04fc": [
+      {
+        "object": "page",
+        "id": "66666666-6666-4666-8666-666666666666",
+        "archived": false,
+        "in_trash": false,
+        "properties": {
+          "Name": {
+            "type": "title",
+            "title": [
+              {
+                "plain_text": "Mairies"
+              }
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "enfants": {
+    "11111111-1111-4111-8111-111111111111": [
+      {
+        "object": "block",
+        "type": "heading_2",
+        "heading_2": {
+          "rich_text": [
+            {
+              "plain_text": "Premier message"
+            }
+          ]
+        }
+      },
+      {
+        "object": "block",
+        "type": "paragraph",
+        "paragraph": {
+          "rich_text": [
+            {
+              "plain_text": "Bonjour <prénom>,"
+            }
+          ]
+        }
+      },
+      {
+        "object": "block",
+        "type": "paragraph",
+        "paragraph": {
+          "rich_text": [
+            {
+              "plain_text": "Le site ne déclare pas ses horaires."
+            }
+          ]
+        }
+      },
+      {
+        "object": "block",
+        "type": "paragraph",
+        "paragraph": {
+          "rich_text": [
+            {
+              "plain_text": "<Monsieur le Maire/Madame la Maire>"
+            }
+          ]
+        }
+      },
+      {
+        "object": "block",
+        "type": "paragraph",
+        "paragraph": {
+          "rich_text": [
+            {
+              "plain_text": "<signature>"
+            }
+          ]
+        }
+      },
+      {
+        "object": "block",
+        "type": "heading_2",
+        "heading_2": {
+          "rich_text": [
+            {
+              "plain_text": "Travaux"
+            }
+          ]
+        }
+      },
+      {
+        "object": "block",
+        "type": "paragraph",
+        "paragraph": {
+          "rich_text": [
+            {
+              "plain_text": "Le site n'est pas conforme."
+            }
+          ]
+        }
+      },
+      {
+        "object": "block",
+        "type": "child_page",
+        "child_page": {
+          "title": "Sous-page"
+        }
+      }
+    ],
+    "99999999-9999-4999-8999-999999999999": [
+      {
+        "object": "block",
+        "type": "paragraph",
+        "paragraph": {
+          "rich_text": [
+            {
+              "plain_text": "note"
+            }
+          ]
+        }
+      }
+    ],
+    "66666666-6666-4666-8666-666666666666": [
+      {
+        "object": "block",
+        "type": "heading_2",
+        "heading_2": {
+          "rich_text": [
+            {
+              "plain_text": "hello"
+            }
+          ]
+        }
+      },
+      {
+        "object": "block",
+        "type": "heading_3",
+        "heading_3": {
+          "rich_text": [
+            {
+              "plain_text": "Sujet"
+            }
+          ]
+        }
+      },
+      {
+        "object": "block",
+        "type": "paragraph",
+        "paragraph": {
+          "rich_text": [
+            {
+              "plain_text": "Bonjour <prénom> <nom>"
+            }
+          ]
+        }
+      },
+      {
+        "object": "block",
+        "type": "heading_3",
+        "heading_3": {
+          "rich_text": [
+            {
+              "plain_text": "Corps"
+            }
+          ]
+        }
+      },
+      {
+        "object": "block",
+        "type": "paragraph",
+        "paragraph": {
+          "rich_text": [
+            {
+              "plain_text": "Un mot."
+            }
+          ]
+        }
+      },
+      {
+        "object": "block",
+        "type": "paragraph",
+        "paragraph": {
+          "rich_text": [
+            {
+              "plain_text": "<constat>"
+            }
+          ]
+        }
+      },
+      {
+        "object": "block",
+        "type": "paragraph",
+        "paragraph": {
+          "rich_text": [
+            {
+              "plain_text": "<signature>"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}
