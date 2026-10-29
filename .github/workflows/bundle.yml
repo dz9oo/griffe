@@ -85,6 +85,10 @@ jobs:
           # Tauri pose apprun-old, qui ignore $ARGV0. On le remplace, puis on
           # recompress toujours : sinon une image sans libwayland garderait l'ancien AppRun.
           install -m 755 "${{ github.workspace }}/packaging/appimage/AppRun" squashfs-root/AppRun
+          # Le runner crée des dossiers en 0700. appimagetool refuse alors de
+          # refermer l'image : un autre utilisateur n'y entrerait pas.
+          chmod -R a+rX squashfs-root
+          chmod a+rx squashfs-root/AppRun
           curl -sSL -o /tmp/appimagetool.AppImage \
             https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
           chmod +x /tmp/appimagetool.AppImage
