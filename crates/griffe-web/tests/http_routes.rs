@@ -899,7 +899,7 @@ async fn the_help_catalog_covers_each_situation_and_hides_an_empty_shelf() {
         ("cmd-courrier", "courrier flush", Some("/aide/dehors")),
         ("cmd-argent", "unit_price", Some("/aide/cmd-gens")),
         ("cmd-societe", "year opening set", Some("/aide/cmd-argent")),
-        ("fichier", "Mairie de Valvert", Some("/aide/trame")),
+        ("fichier", "Mairie de Valvert", Some("/societe/fichier")),
         ("dehors", "--secret-file", Some("/aide/fichier")),
     ];
     assert_eq!(pages.len(), AIDE_SLUGS.len());
@@ -960,6 +960,20 @@ async fn the_help_catalog_covers_each_situation_and_hides_an_empty_shelf() {
                 "l'exemple fictif porte le montant : {body}"
             );
             assert!(body.contains("Refonte du site"), "{body}");
+            assert!(body.contains("echange verifier"), "{body}");
+            assert!(body.contains("echange appliquer"), "{body}");
+            assert!(body.contains("Le fichier"), "{body}");
+            assert!(body.contains("compte-rendu"), "{body}");
+            assert!(body.contains("href=\"/societe/fichier\""), "{body}");
+            assert!(
+                body.contains("n&#x27;ouvre pas Notion") || body.contains("n'ouvre pas Notion"),
+                "Griffe n'ouvre pas Notion : {body}"
+            );
+        }
+        if *slug == "cmd-gens" {
+            assert!(body.contains("echange verifier"), "{body}");
+            assert!(body.contains("echange appliquer"), "{body}");
+            assert!(body.contains("echange ecrire"), "{body}");
         }
         if *slug == "phrases" {
             assert!(
@@ -2287,6 +2301,12 @@ async fn la_societe_opens_on_the_plateau_and_folds_each_chapter() {
     assert!(home.contains("/societe/payer"), "{home}");
     assert!(home.contains("Les papiers"), "{home}");
     assert!(home.contains("/societe/papiers"), "{home}");
+    assert!(home.contains(">Le fichier<"), "{home}");
+    assert!(home.contains("/societe/fichier"), "{home}");
+    assert!(
+        home.contains("Carte, courrier, phrases, papiers, fichier."),
+        "{home}"
+    );
     assert!(home.contains("Le courrier"), "{home}");
     assert!(home.contains("/societe/courrier"), "{home}");
     assert!(
@@ -2313,6 +2333,7 @@ async fn la_societe_opens_on_the_plateau_and_folds_each_chapter() {
         "/societe/identite",
         "/societe/courrier",
         "/societe/papiers",
+        "/societe/fichier",
         "/affaires/phrases?depuis=societe",
     ];
     for uri in chapters {
@@ -2557,6 +2578,22 @@ async fn la_societe_opens_on_the_plateau_and_folds_each_chapter() {
                 let mast = page.find("class=\"mast\"").expect("mât");
                 let card = page.find("reglages-card").expect("carte");
                 assert!(mast < card, "le mât reste au-dessus des cartes : {page}");
+            }
+            "/societe/fichier" => {
+                assert!(page.contains("id=\"fichier-letter\""), "{page}");
+                assert!(page.contains("id=\"compte-rendu\""), "{page}");
+                assert!(page.contains("Choisir le fichier"), "{page}");
+                assert!(page.contains(">Lire<"), "{page}");
+                assert!(page.contains(">Appliquer<"), "{page}");
+                assert!(!page.contains("<h1"), "{page}");
+                assert!(!page.contains("hx-on"), "{page}");
+                let form = page.split("<form").nth(1).expect("formulaire");
+                let form = form.split("</form>").next().expect("fin de formulaire");
+                assert!(form.contains("name=\"fichier\""), "{form}");
+                assert!(form.contains("value=\"lire\""), "{form}");
+                assert!(form.contains("value=\"appliquer\""), "{form}");
+                assert!(form.contains("multipart/form-data"), "{form}");
+                assert!(form.contains("hx-target=\"#compte-rendu\""), "{form}");
             }
             _ => {}
         }
@@ -15297,4 +15334,244 @@ fn plant_from(
         })
         .unwrap();
     mailbox.remember("INBOX", 1, uid, None).unwrap();
+}
+
+const FICHIER_JOUR: time::Date = time::macros::date!(2026 - 09 - 05);
+
+/// 1 200,00 et 400,00 font 1 600,00, posés à la main. Lire n'écrit pas.
+/// Appliquer écrit, répond 200, et pose `griffe:saved`.
+const VALVERT_ECHANGE: &str = r#"{
+  "version": 1,
+  "dossiers": [{
+    "origine": "opp-valvert",
+    "origine_fiche": "org-valvert",
+    "qui": "Mairie de Valvert",
+    "quoi": "Refonte du site",
+    "adresse": {
+      "rue": "1 place de la Mairie",
+      "code_postal": "59171",
+      "ville": "Valvert",
+      "pays": "FR"
+    },
+    "courriel": "mairie@valvert.example",
+    "telephone": "0327444444",
+    "travaux": "Le site n'est pas conforme.",
+    "contact": {
+      "prenom": "Hélène",
+      "nom": "Laurent",
+      "genre": "madame"
+    },
+    "probabilite": 40,
+    "prochaine_action": "2026-09-12",
+    "source": "Autre",
+    "lignes": [
+      {"libelle": "Diagnostic", "montant": "1200,00"},
+      {"libelle": "Atelier", "montant": "400,00"}
+    ]
+  }]
+}"#;
+
+async fn post_fichier(
+    router: &axum::Router,
+    geste: &str,
+    file: Option<(&str, &[u8])>,
+) -> axum::response::Response {
+    let (content_type, body) = multipart_form_file(&[("geste", geste)], "fichier", file);
+    router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/societe/fichier")
+                .header("content-type", content_type)
+                .header("HX-Request", "true")
+                .header("HX-Target", "compte-rendu")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+fn saved_header(response: &axum::response::Response) -> Option<&[u8]> {
+    response
+        .headers()
+        .get("HX-Trigger")
+        .map(|value| value.as_bytes())
+}
+
+#[tokio::test]
+async fn le_fichier_lit_le_compte_rendu_et_applique_valvert() {
+    let db_path = test_db_path("fichier-valvert");
+    let state = unlocked_state(&db_path).await.with_today(FICHIER_JOUR);
+    let router = griffe_web::router(state);
+    let somme = Money::from_cents(160_000);
+
+    let page = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/societe/fichier")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(page.contains("Revenir au menu"), "{page}");
+    assert!(page.contains("data-family=\"reglages\""), "{page}");
+    assert!(page.contains("Choisir le fichier"), "{page}");
+    assert!(!page.contains("hx-on"), "{page}");
+
+    let css = body_text(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/assets/app.css")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        css.contains(
+            ".fichier-geste {\n    flex-direction: column;\n    align-items: stretch;\n  }"
+        ),
+        "largeur étroite"
+    );
+
+    let vide = post_fichier(&router, "lire", None).await;
+    assert_eq!(vide.status(), StatusCode::OK);
+    assert!(saved_header(&vide).is_none());
+    let vide_body = body_text(vide).await;
+    assert!(vide_body.contains("Choisissez le fichier."), "{vide_body}");
+    assert!(opportunities(&db_path).is_empty());
+
+    let binaire = post_fichier(&router, "lire", Some(("valvert.json", &[0xff, 0xfe]))).await;
+    assert!(saved_header(&binaire).is_none());
+    let binaire_body = body_text(binaire).await;
+    assert!(binaire_body.contains("pas du texte"), "{binaire_body}");
+
+    let attendu = compte_rendu_actuel(&db_path, VALVERT_ECHANGE);
+    assert!(attendu.contains(&somme.to_string()), "{attendu}");
+    assert!(
+        attendu.contains("Mairie de Valvert — Refonte du site"),
+        "{attendu}"
+    );
+
+    let lu = post_fichier(
+        &router,
+        "lire",
+        Some(("valvert.json", VALVERT_ECHANGE.as_bytes())),
+    )
+    .await;
+    assert_eq!(lu.status(), StatusCode::OK);
+    assert!(saved_header(&lu).is_none(), "lire n'écrit pas");
+    let lu_body = body_text(lu).await;
+    assert!(lu_body.contains(&attendu), "{lu_body}");
+    assert!(!lu_body.contains("<!DOCTYPE html>"), "{lu_body}");
+    assert!(opportunities(&db_path).is_empty(), "lire n'écrit pas");
+    assert!(valvert_clients(&db_path).is_empty());
+
+    let cents = VALVERT_ECHANGE.replace("400,00", "12,345");
+    let refuse = post_fichier(
+        &router,
+        "appliquer",
+        Some(("centimes.json", cents.as_bytes())),
+    )
+    .await;
+    assert_eq!(refuse.status(), StatusCode::OK);
+    assert_eq!(saved_header(&refuse), Some(b"griffe:saved" as &[u8]));
+    let refuse_body = body_text(refuse).await;
+    assert!(
+        refuse_body.contains("montant illisible : 12,345"),
+        "{refuse_body}"
+    );
+    assert!(
+        opportunities(&db_path).is_empty(),
+        "un centime faux n'écrit pas"
+    );
+
+    let ecrit = post_fichier(
+        &router,
+        "appliquer",
+        Some(("valvert.json", VALVERT_ECHANGE.as_bytes())),
+    )
+    .await;
+    assert_eq!(ecrit.status(), StatusCode::OK);
+    assert_eq!(saved_header(&ecrit), Some(b"griffe:saved" as &[u8]));
+    let ecrit_body = body_text(ecrit).await;
+    assert!(ecrit_body.contains(&attendu), "{ecrit_body}");
+    let posees = opportunities(&db_path);
+    assert_eq!(posees.len(), 1);
+    assert_eq!(posees[0].name, "Refonte du site");
+    assert_eq!(posees[0].amount, somme);
+    assert_eq!(
+        posees[0].next_action_at,
+        Some(time::macros::date!(2026 - 09 - 12))
+    );
+    let revision = posees[0].revision;
+    let clients = valvert_clients(&db_path);
+    assert_eq!(clients.len(), 1);
+    assert_eq!(clients[0].name, "Mairie de Valvert");
+
+    let encore = compte_rendu_actuel(&db_path, VALVERT_ECHANGE);
+    assert!(encore.contains("Inchangées"), "{encore}");
+    let deuxieme = post_fichier(
+        &router,
+        "appliquer",
+        Some(("valvert.json", VALVERT_ECHANGE.as_bytes())),
+    )
+    .await;
+    assert_eq!(deuxieme.status(), StatusCode::OK);
+    assert_eq!(saved_header(&deuxieme), Some(b"griffe:saved" as &[u8]));
+    let deuxieme_body = body_text(deuxieme).await;
+    assert!(deuxieme_body.contains(&encore), "{deuxieme_body}");
+    let relues = opportunities(&db_path);
+    assert_eq!(relues.len(), 1);
+    assert_eq!(relues[0].revision, revision);
+    assert_eq!(relues[0].amount, somme);
+
+    let version = post_fichier(
+        &router,
+        "lire",
+        Some(("version.json", br#"{"version":2,"dossiers":[]}"#)),
+    )
+    .await;
+    assert_eq!(version.status(), StatusCode::OK);
+    assert!(saved_header(&version).is_none());
+    let version_body = body_text(version).await;
+    assert!(
+        version_body.contains("version d'échange inconnue")
+            || version_body.contains("version d&#x27;échange inconnue"),
+        "{version_body}"
+    );
+    assert_eq!(opportunities(&db_path).len(), 1);
+}
+
+fn compte_rendu_actuel(db_path: &Path, raw: &str) -> String {
+    let store = Store::open_with_passphrase(db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    let document = griffe_core::exchange::document_from_str(raw).unwrap();
+    let report =
+        griffe_core::exchange::preview(store.connection(), &document, FICHIER_JOUR).unwrap();
+    griffe_core::exchange::account(&document, &report)
+}
+
+fn opportunities(db_path: &Path) -> Vec<griffe_core::domain::Opportunity> {
+    let store = Store::open_with_passphrase(db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    list_opportunities(store.connection()).unwrap()
+}
+
+fn valvert_clients(db_path: &Path) -> Vec<griffe_core::domain::Client> {
+    let store = Store::open_with_passphrase(db_path, &Passphrase::from(PASSPHRASE)).unwrap();
+    list_clients(store.connection())
+        .unwrap()
+        .into_iter()
+        .filter(|client| client.name == "Mairie de Valvert")
+        .collect()
 }

@@ -21,6 +21,7 @@ Commands:
   courrier    Courrier : compte d'envoi, essai, lettres à poster
   boite       Courriel : lettres reçues, rattachement, relances retenues
   prospect    Prospection : opportunités, pipeline, interactions
+  echange     Échange : vérifier un fichier, l'appliquer, écrire les séries
   mission     Missions : création, saisie de temps, TJM effectif, capacité
   quote       Devis : création, révision, envoi, acceptation
   invoice     Facturation : émission, import, avoir, vérification de la chaîne, balance âgée

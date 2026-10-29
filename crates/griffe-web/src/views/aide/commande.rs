@@ -236,6 +236,21 @@ const GENS: &[Cmd] = &[
         example: r#"griffe prospect pipeline"#,
     },
     Cmd {
+        verb: r#"echange verifier"#,
+        said: r#"Lit le fichier et dit ce qui serait créé, révisé, inchangé ou incomplet. Montre les montants, les séries à créer, et les champs que reprendre écraserait. N'écrit rien."#,
+        example: r#"griffe echange verifier valvert.json"#,
+    },
+    Cmd {
+        verb: r#"echange appliquer"#,
+        said: r#"Écrit dans le coffre ce que le fichier porte. Le jour du brouillon est celui de la machine. Avec un agent, le geste attend une personne."#,
+        example: r#"griffe echange appliquer valvert.json"#,
+    },
+    Cmd {
+        verb: r#"echange ecrire"#,
+        said: r#"Écrit le catalogue des séries et de la cadence, dans la même forme que le fichier d'échange."#,
+        example: r#"griffe echange ecrire --series phrases.json"#,
+    },
+    Cmd {
         verb: r#"follow-up queue"#,
         said: r#"La file du jour : en retard, dû aujourd'hui, brouillon ouvert."#,
         example: r#"griffe follow-up queue"#,
@@ -1089,6 +1104,6 @@ mod tests {
                 assert!(!blob.contains("collection://"), "{}", cmd.verb);
             }
         }
-        assert_eq!(seen.len(), 200);
+        assert_eq!(seen.len(), 203);
     }
 }

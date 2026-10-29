@@ -12,6 +12,7 @@ mod console;
 mod courrier;
 mod depenses;
 mod devis;
+mod echange;
 mod facturation;
 mod gens;
 mod handlers;
@@ -347,6 +348,12 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/societe/courrier/envoi/decision",
             post(courrier::trial_decision),
+        )
+        .route(
+            "/societe/fichier",
+            get(echange::show)
+                .post(echange::soumettre)
+                .layer(echange::body_limit()),
         )
         .route(
             "/societe/papiers",

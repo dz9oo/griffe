@@ -2,6 +2,17 @@
 
 Ce qui change pour qui se sert de Griffe. Une section par version publiée.
 
+## 0.3.21
+
+- Dans Les réglages, la ligne Le fichier. On choisit un fichier déjà là, à côté du coffre. Griffe n'ouvre pas Notion.
+- Lire montre le compte-rendu, et laisse le coffre tel quel : créées, révisées, inchangées, incomplètes, les montants, les séries à créer, et les champs que reprendre écraserait.
+- Appliquer écrit ensuite la fiche, le contact, les travaux, l'estimation, la série et le brouillon. Le brouillon reste à envoyer. La fenêtre et la commande écrivent le même compte-rendu.
+- Le même fichier, une seconde fois, garde ce qui est déjà tenu. Reprendre écrase les champs que le compte-rendu avait nommés.
+- Un dossier incomplet reste au compte-rendu. Les dossiers valides du même fichier sont écrits.
+- `griffe echange ecrire --series` écrit les séries et la cadence, dans la même forme.
+- Avec un agent, appliquer attend une personne.
+- Ouvrir un coffre déjà créé avance son schéma. La version précédente ne peut plus l'ouvrir.
+
 ## 0.3.20
 
 - La formule du courrier se pose une fois. Une ligne qui n'est que `<signature>` disparaît à sa place. Une formule déjà écrite dans la lettre reste seule.
